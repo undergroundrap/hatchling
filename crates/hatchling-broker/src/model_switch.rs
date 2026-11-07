@@ -463,7 +463,8 @@ fn switch_with(
     }
     if let Some(root) = settings.get(env::HATCHLING_SCHEDULER_DIR.name) {
         let owner = crate::config::owner_dir_of(Path::new(root));
-        if std::fs::remove_file(owner.join(crate::model_choice::MODEL_FILE)).is_ok() {
+        let owners = crate::broker_user::own_users();
+        if forget(&owner, crate::model_choice::MODEL_FILE, &owners) {
             let _ = writeln!(
                 out,
                 "The model chosen in the app was one on the old server: it's forgotten."
@@ -471,7 +472,7 @@ fn switch_with(
         }
         // A switch the owner made in the app was between the old servers:
         // kept, it could come back to life on a later switch.
-        if std::fs::remove_file(owner.join(crate::model_choice::SERVER_FILE)).is_ok() {
+        if forget(&owner, crate::model_choice::SERVER_FILE, &owners) {
             let _ = writeln!(
                 out,
                 "The server switched to in the app was one of the old pair: it's forgotten."
@@ -491,6 +492,15 @@ fn switch_with(
         "Restarted the broker. Send a message in the app to check it."
     );
     Ok(())
+}
+
+/// Whether the owner's choice `name` in `dir` went: run as root, in a
+/// directory the broker's user owns, only a file of `owners`' does.
+/// Anything else planted at the name stays, and isn't said to be forgotten.
+fn forget(dir: &Path, name: &str, owners: &[u32]) -> bool {
+    let file = dir.join(name);
+    hatchling_sys::remove_file_of(&file, hatchling_sys::FileKind::Regular, owners)
+        .is_ok_and(|removed| removed)
 }
 
 /// Whether the local server `target` names has its model: before
@@ -1190,6 +1200,36 @@ mod tests {
             "restarted"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only a file of the owners' is forgotten: a link at the name stays,
+    /// with what it points at, as does a directory or a stranger's file,
+    /// and none is said to have gone.
+    #[test]
+    fn only_the_owners_file_is_forgotten() {
+        let dir = std::env::temp_dir().join(format!("hatchling-forget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let me = [hatchling_sys::euid()];
+        let stranger = [me[0].wrapping_add(1)];
+        let file = dir.join("model");
+        assert!(!forget(&dir, "model", &me), "nothing there");
+        std::fs::write(&file, b"m").unwrap();
+        assert!(!forget(&dir, "model", &stranger));
+        assert!(file.exists(), "a stranger's");
+        assert!(forget(&dir, "model", &me));
+        assert!(!file.exists());
+        let target = dir.join("target");
+        std::fs::write(&target, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&target, &file).unwrap();
+        assert!(!forget(&dir, "model", &me));
+        assert!(std::fs::symlink_metadata(&file).is_ok(), "the link went");
+        assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+        std::fs::remove_file(&file).unwrap();
+        std::fs::create_dir(&file).unwrap();
+        assert!(!forget(&dir, "model", &me));
+        assert!(file.is_dir());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

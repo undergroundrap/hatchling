@@ -17,10 +17,10 @@
 //! - no directory is entered that the walk is already in, or above: by
 //!   its identity, apart from the `.` and `..` names skipped, so the walk
 //!   can't climb out of the tree even if one of the two checks fails;
-//! - the tree must be this process's user's, and only that user's
-//!   directories are entered: one another user owns, renamed into the
-//!   tree, is left whole, so a root broker can't be steered into deleting
-//!   what that user couldn't.
+//! - the tree must be this process's user's (or, in [`remove_dir_tree_of`],
+//!   the one user named), and only that user's directories are entered:
+//!   one another user owns, renamed into the tree, is left whole, so a
+//!   root broker can't be steered into deleting what that user couldn't.
 
 use std::ffi::{CStr, CString, OsStr};
 use std::io;
@@ -170,6 +170,12 @@ fn look(dir: impl AsFd, name: &CStr) -> Result<Look, rustix::io::Errno> {
 /// on another mount than `root`, or if it isn't this process's user's;
 /// nothing is removed then.
 pub fn remove_tree(root: &Path, name: &OsStr, keep: &[DirId]) -> Result<Removed, Error> {
+    remove_tree_of(root, name, keep, rustix::process::geteuid().as_raw())
+}
+
+/// [`remove_tree`], for a tree of `owner`'s: the one user whose directories
+/// are entered.
+fn remove_tree_of(root: &Path, name: &OsStr, keep: &[DirId], owner: u32) -> Result<Removed, Error> {
     let bytes = name.as_encoded_bytes();
     if bytes.is_empty() || bytes == b"." || bytes == b".." || bytes.contains(&b'/') {
         return Err(Error::Removal {
@@ -193,11 +199,10 @@ pub fn remove_tree(root: &Path, name: &OsStr, keep: &[DirId]) -> Result<Removed,
             source: io::Error::new(io::ErrorKind::PermissionDenied, "it is another mount"),
         });
     }
-    let owner = rustix::process::geteuid().as_raw();
     if found.uid != owner {
         return Err(Error::Removal {
             operation: "enter the tree",
-            source: io::Error::new(io::ErrorKind::PermissionDenied, "it isn't this user's"),
+            source: io::Error::new(io::ErrorKind::PermissionDenied, "it isn't that user's"),
         });
     }
     if keep.contains(&found.id) {
@@ -230,13 +235,28 @@ pub fn remove_tree(root: &Path, name: &OsStr, keep: &[DirId]) -> Result<Removed,
 /// As [`remove_tree`]; and [`Error::Removal`] if `path` has no parent and
 /// final name.
 pub fn remove_dir_tree(path: &Path) -> Result<Removed, Error> {
+    remove_dir_tree_of(path, rustix::process::geteuid().as_raw())
+}
+
+/// [`remove_dir_tree`], for a tree `owner` owns.
+///
+/// For root clearing a store a service user owns: there every directory is
+/// that user's, and the walk keeps to all that [`remove_tree`] does, with
+/// `owner` as the one user. The caller says why `owner` is one whose trees
+/// go. The tree's owner is checked here, on what was opened, whatever the
+/// caller saw when it looked.
+///
+/// # Errors
+///
+/// As [`remove_dir_tree`], with `owner` for this process's user.
+pub fn remove_dir_tree_of(path: &Path, owner: u32) -> Result<Removed, Error> {
     let (Some(root), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(Error::Removal {
             operation: "name the tree",
             source: io::Error::new(io::ErrorKind::InvalidInput, "no parent and name"),
         });
     };
-    remove_tree(root, name, &[])
+    remove_tree_of(root, name, &[], owner)
 }
 
 /// An [`Error::Ownership`] for `operation`, from a rustix error.
@@ -626,6 +646,18 @@ mod tests {
         assert!(!tree.exists() && root.exists() && intact(&outside));
         assert!(remove_dir_tree(Path::new("/")).is_err(), "no parent");
         assert!(remove_dir_tree(&root.join("missing")).is_err());
+        // A tree another user owns is refused before anything in it goes;
+        // named as its owner's, it goes.
+        let me = rustix::process::geteuid().as_raw();
+        let theirs = root.join("theirs");
+        plant(&theirs, &outside);
+        assert!(remove_dir_tree_of(&theirs, me.wrapping_add(1)).is_err());
+        assert!(theirs.join("a").join("b").join("deep").exists());
+        assert!(matches!(
+            remove_dir_tree_of(&theirs, me),
+            Ok(Removed::Whole)
+        ));
+        assert!(!theirs.exists() && intact(&outside));
         // Bounded like the walk it goes through: a tree deeper than
         // MAX_DEPTH is removed only partly.
         let deep = root.join("deep");

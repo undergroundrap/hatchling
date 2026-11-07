@@ -241,10 +241,20 @@ pub fn start() -> Result<(StoreKeys, UnixStream, UnixStream), Error> {
         reason: format!("cannot locate the broker binary: {e}"),
     })?;
     let (keeper, keys, authority, spawner) = Keeper::start_with(Command::new(program))?;
+    install(keeper)?;
+    Ok((keys, authority, spawner))
+}
+
+/// Makes `keeper` the one this broker asks: once, as [`start`] does, and
+/// for a test's own process, which has no broker binary to start.
+///
+/// # Errors
+///
+/// [`Error::Keeper`] when a keeper is already running.
+pub fn install(keeper: Keeper) -> Result<(), Error> {
     KEEPER.set(keeper).map_err(|_| Error::Keeper {
         reason: String::from("a keeper is already running"),
-    })?;
-    Ok((keys, authority, spawner))
+    })
 }
 
 /// The keeper's user, its uid and gid, when this process runs as root;

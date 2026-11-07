@@ -393,6 +393,71 @@ pub fn replace_file(path: &Path, bytes: &[u8], owner: Option<(u32, u32)>) -> Res
         })
 }
 
+/// What a file must be for [`remove_file_of`] to remove it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileKind {
+    /// A regular file itself.
+    Regular,
+    /// A socket itself.
+    Socket,
+    /// Anything but a directory. A link is removed itself, never followed.
+    NotDirectory,
+}
+
+impl FileKind {
+    /// Whether what's of `found` type is this kind.
+    fn is(self, found: rustix::fs::FileType) -> bool {
+        use rustix::fs::FileType;
+        match self {
+            Self::Regular => found == FileType::RegularFile,
+            Self::Socket => found == FileType::Socket,
+            Self::NotDirectory => found != FileType::Directory,
+        }
+    }
+}
+
+/// Removes the file at `path`, if it's `kind` and one of `owners`' files:
+/// whether there was one.
+///
+/// A delete behind two guards (`docs/testing-destructive-code.md`). What
+/// it's in is opened without following a link, and all that follows is
+/// relative to that handle: where the name is can't be swapped from under
+/// the check.
+/// What stands at the name is then looked at, never through a link, for
+/// its type and its owner, and is left alone unless both are right. That
+/// nothing is there isn't an error.
+///
+/// # Errors
+///
+/// Returns [`Error::Ownership`] if `path` has no directory and name, the
+/// directory is a link or can't be opened, what's there isn't `kind` or
+/// isn't one of `owners`', or it can't be removed. Nothing is removed then.
+pub fn remove_file_of(path: &Path, kind: FileKind, owners: &[u32]) -> Result<bool, Error> {
+    use rustix::fs::{AtFlags, FileType};
+    use rustix::io::Errno;
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(refused("remove a file", "not a file in a directory"));
+    };
+    let handle = match open_dir_nofollow(dir) {
+        Ok(handle) => handle,
+        Err(Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(failed("open the directory")(error)),
+    };
+    let stat = match rustix::fs::statat(&handle, name, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(stat) => stat,
+        Err(Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(failed("look at the file")(error)),
+    };
+    if !kind.is(FileType::from_raw_mode(stat.st_mode)) {
+        return Err(refused("remove a file", "it isn't what's to be removed"));
+    }
+    if !owners.contains(&stat.st_uid) {
+        return Err(refused("remove a file", "it isn't one of ours"));
+    }
+    rustix::fs::unlinkat(&handle, name, AtFlags::empty()).map_err(failed("remove the file"))?;
+    Ok(true)
+}
+
 /// Writes `bytes` to the file at `path`, replacing what it holds, made
 /// 0600 if absent. It's opened without following a link, and must be a
 /// regular file: nothing it doesn't name itself is touched.
@@ -474,6 +539,100 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
         dir
+    }
+
+    /// Each kind removes what it names, and no other. A link is left, or
+    /// goes itself, and what it points at stays either way. A directory
+    /// is never one.
+    #[test]
+    fn a_file_goes_only_if_it_is_the_kind_named() {
+        let dir = scratch("remove-kind");
+        let me = [crate::euid()];
+        let file = dir.join("file");
+        let write = || std::fs::write(&file, b"x").unwrap();
+        write();
+        assert!(remove_file_of(&file, FileKind::Regular, &me).unwrap());
+        assert!(!file.exists());
+        assert!(!remove_file_of(&file, FileKind::Regular, &me).unwrap());
+        assert!(
+            !remove_file_of(&dir.join("none/file"), FileKind::Regular, &me).unwrap(),
+            "no directory, so no file"
+        );
+        write();
+        assert!(remove_file_of(&file, FileKind::Socket, &me).is_err());
+        assert!(file.exists(), "a file isn't a socket");
+        assert!(remove_file_of(&file, FileKind::NotDirectory, &me).unwrap());
+
+        let socket = dir.join("socket");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        assert!(remove_file_of(&socket, FileKind::Regular, &me).is_err());
+        assert!(socket.symlink_metadata().is_ok(), "a socket isn't a file");
+        assert!(remove_file_of(&socket, FileKind::Socket, &me).unwrap());
+        drop(listener);
+
+        write();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        for kind in [FileKind::Regular, FileKind::Socket] {
+            assert!(remove_file_of(&link, kind, &me).is_err(), "{kind:?}");
+            assert!(link.symlink_metadata().is_ok(), "{kind:?}");
+        }
+        assert!(remove_file_of(&link, FileKind::NotDirectory, &me).unwrap());
+        assert!(link.symlink_metadata().is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"x", "the link's target");
+
+        let sub = dir.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        for kind in [FileKind::Regular, FileKind::Socket, FileKind::NotDirectory] {
+            assert!(remove_file_of(&sub, kind, &me).is_err(), "{kind:?}");
+            assert!(sub.is_dir(), "{kind:?}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Another user's file stays, whichever kind is asked for, and the
+    /// answer doesn't turn on who else is named.
+    #[test]
+    fn a_file_goes_only_if_it_is_an_owners() {
+        let dir = scratch("remove-owner");
+        let file = dir.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        let me = crate::euid();
+        let stranger = me.wrapping_add(1);
+        for kind in [FileKind::Regular, FileKind::NotDirectory] {
+            assert!(
+                remove_file_of(&file, kind, &[stranger]).is_err(),
+                "{kind:?}"
+            );
+            assert!(remove_file_of(&file, kind, &[]).is_err(), "{kind:?}");
+            assert!(file.exists(), "{kind:?}");
+        }
+        assert!(remove_file_of(&file, FileKind::Regular, &[stranger, me]).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A name reached through a linked directory isn't removed, nor is a
+    /// path with no name to remove.
+    #[test]
+    fn a_file_is_never_removed_through_a_link_or_by_no_name() {
+        let dir = scratch("remove-through");
+        let real = dir.join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("file"), b"x").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let me = [crate::euid()];
+        for kind in [FileKind::Regular, FileKind::NotDirectory] {
+            assert!(
+                remove_file_of(&link.join("file"), kind, &me).is_err(),
+                "{kind:?}"
+            );
+            assert!(real.join("file").exists(), "{kind:?}");
+            for no_name in [Path::new("/"), real.join("..").as_path()] {
+                assert!(remove_file_of(no_name, kind, &me).is_err(), "{no_name:?}");
+            }
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A planted link is removed, and what it points at isn't written or

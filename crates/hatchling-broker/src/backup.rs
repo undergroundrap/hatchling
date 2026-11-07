@@ -23,11 +23,12 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use hatchling_sys::{FileKind, Removed, remove_dir_tree, remove_dir_tree_of, remove_file_of};
 use hatchling_vault::archive::{ArchiveReader, ArchiveWriter, Entry, archive_keyring, safe_path};
 use hatchling_vault::{FileKey, KeySource as _, Keyring, MasterKey};
 
@@ -233,20 +234,36 @@ fn write_backup(
             Ok(count)
         }
         Err(error) => {
-            let _ = fs::remove_file(&partial);
+            drop_partial(&partial);
             Err(error)
         }
     }
 }
 
-/// Clears `place`. A sealed store's dotfiles, its wrapped key among them,
-/// stay unless `all`: a store with no key can't take new secrets.
+/// What a backup that failed left at `partial`: the file it made, and
+/// nothing that took its name since.
+fn drop_partial(partial: &Path) {
+    let _ = remove_file_of(partial, FileKind::Regular, &[hatchling_sys::euid()]);
+}
+
+/// Clears `place`, of what Hatchling's own users own
+/// ([`crate::broker_user::own_users`]). A sealed store's dotfiles, its
+/// wrapped key among them, stay unless `all`: a store with no key can't
+/// take new secrets.
 fn clear(place: &Place, all: bool) -> Result<(), Error> {
+    clear_of(place, all, &crate::broker_user::own_users())
+}
+
+/// [`clear`], of what `owners` own. Anything else in `place` stops it,
+/// and stays: root clearing a store goes no further than its owner could.
+fn clear_of(place: &Place, all: bool, owners: &[u32]) -> Result<(), Error> {
     let Ok(kind) = fs::symlink_metadata(&place.path) else {
         return Ok(());
     };
     if !kind.is_dir() {
-        return fs::remove_file(&place.path).map_err(ring::io_error);
+        return remove_file_of(&place.path, FileKind::Regular, owners)
+            .map(drop)
+            .map_err(sys_error);
     }
     for entry in fs::read_dir(&place.path).map_err(ring::io_error)? {
         let entry = entry.map_err(ring::io_error)?;
@@ -256,12 +273,30 @@ fn clear(place: &Place, all: bool) -> Result<(), Error> {
         let path = entry.path();
         let inner = fs::symlink_metadata(&path).map_err(ring::io_error)?;
         if inner.is_dir() {
-            fs::remove_dir_all(&path).map_err(ring::io_error)?;
+            clear_tree(&path, inner.uid(), owners)?;
         } else {
-            fs::remove_file(&path).map_err(ring::io_error)?;
+            remove_file_of(&path, FileKind::NotDirectory, owners).map_err(sys_error)?;
         }
     }
     Ok(())
+}
+
+/// Removes the tree at `path`, `owner`'s when looked at, if that's one of
+/// `owners`: all of it, or it's said what wasn't.
+///
+/// Not [`remove_dir_tree`], which keeps to this process's user: run as
+/// root, as a reset is, every store here is a service user's.
+fn clear_tree(path: &Path, owner: u32, owners: &[u32]) -> Result<(), Error> {
+    let left = |why: &str| Error::Usage {
+        reason: format!("{} wasn't removed: {why}", path.display()),
+    };
+    if !owners.contains(&owner) {
+        return Err(left("it isn't Hatchling's"));
+    }
+    match remove_dir_tree_of(path, owner).map_err(sys_error)? {
+        Removed::Whole => Ok(()),
+        Removed::Partly => Err(left("some of it isn't Hatchling's, or can't be removed")),
+    }
 }
 
 /// Clears what `level` clears of `places`.
@@ -344,15 +379,23 @@ fn prune(dir: &Path) -> Result<(), Error> {
             let name = name.to_string_lossy();
             name.starts_with(PREFIX) && name.ends_with(SUFFIX)
         })
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .map(|entry| entry.path())
         .collect();
     // Their names start with the time, so they sort by it.
     kept.sort();
     let extra = kept.len().saturating_sub(KEEP);
     for old in kept.iter().take(extra) {
-        fs::remove_file(old).map_err(ring::io_error)?;
+        drop_backup(old)?;
     }
     Ok(())
+}
+
+/// The backup at `old` goes, if it's still a file of this user's.
+fn drop_backup(old: &Path) -> Result<(), Error> {
+    remove_file_of(old, FileKind::Regular, &[hatchling_sys::euid()])
+        .map(drop)
+        .map_err(sys_error)
 }
 
 /// A backup's file name for `seconds` after the epoch.
@@ -457,7 +500,7 @@ fn sys_error(source: hatchling_sys::Error) -> Error {
 fn mark_backup(dir: &Path) -> Result<(), Error> {
     private_dir(dir)?;
     let marked = dir.join(LAST);
-    let _ = fs::remove_file(&marked);
+    remove_file_of(&marked, FileKind::Regular, &[hatchling_sys::euid()]).map_err(sys_error)?;
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -553,15 +596,14 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
     service("stop")?;
     let restored = (|| {
         let staging = config.vault.root.with_extension("restoring");
-        let _ = fs::remove_dir_all(&staging);
-        fs::create_dir_all(&staging).map_err(ring::io_error)?;
+        fresh_staging(&staging)?;
         let mut reader = ArchiveReader::new(file, &key, &ring_bytes).map_err(ring::vault_error)?;
         let count = stage(&mut reader, &by_name, &staging)?;
         swap_in(&places, &staging)?;
         if let (Some(path), false) = (keyring_config.keyring.as_deref(), ring_bytes.is_empty()) {
             fs::rename(&staged_ring, path).map_err(ring::io_error)?;
         }
-        let _ = fs::remove_dir_all(&staging);
+        drop_staging(&staging);
         Ok::<usize, Error>(count)
     })();
     let started = service("start");
@@ -574,6 +616,22 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         crate::windows_setup::here(after_restart(needs_a_person(&keyring_config)))
     );
     Ok(())
+}
+
+/// A new directory at `staging`, this user's alone. What an earlier restore
+/// left there goes. Anything else stands, and stops the restore: a link
+/// isn't followed, and the directory is only ever a new one.
+fn fresh_staging(staging: &Path) -> Result<(), Error> {
+    drop_staging(staging);
+    if let Some(above) = staging.parent() {
+        fs::create_dir_all(above).map_err(ring::io_error)?;
+    }
+    hatchling_sys::create_private_dir(staging).map_err(sys_error)
+}
+
+/// What a restore staged goes, if it's still this user's tree.
+fn drop_staging(staging: &Path) {
+    let _ = remove_dir_tree(staging);
 }
 
 /// The key that opens a backup with keyring `ring_bytes`: the keyring is
@@ -974,7 +1032,7 @@ mod tests {
             .map(|place| (place.name.as_str(), place))
             .collect();
         let staging = scratch.0.join("staging");
-        fs::create_dir_all(&staging).unwrap();
+        fresh_staging(&staging).unwrap();
         assert_eq!(stage(&mut reader, &by_name, &staging).unwrap(), 4);
         swap_in(&places, &staging).unwrap();
         assert_eq!(scratch.read("conversation/chat").unwrap(), b"hello");
@@ -1033,5 +1091,190 @@ mod tests {
         assert!(scratch.read(&backup_name(3)).is_some());
         assert!(scratch.read("my-notes.txt").is_some());
         assert_eq!(backup_name(9).len(), backup_name(10_000).len());
+    }
+
+    /// Named as the oldest backups, a link and a directory aren't backups:
+    /// neither counts, neither goes, and what the link points at stays.
+    #[test]
+    fn only_files_are_pruned() {
+        let scratch = Scratch::new("prune-kind");
+        let backups = scratch.0.join("backups");
+        fs::create_dir(&backups).unwrap();
+        let target = scratch.0.join("mine");
+        fs::write(&target, b"mine").unwrap();
+        let link = backups.join(backup_name(1));
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let sub = backups.join(backup_name(2));
+        fs::create_dir(&sub).unwrap();
+        let file = |seconds| backups.join(backup_name(seconds));
+        for seconds in 3..=8 {
+            fs::write(file(seconds), b"x").unwrap();
+        }
+        prune(&backups).unwrap();
+        assert!(fs::symlink_metadata(&link).is_ok(), "the link went");
+        assert!(sub.is_dir(), "the directory went");
+        assert_eq!(fs::read(&target).unwrap(), b"mine");
+        assert!(!file(3).exists(), "six files, so the oldest of them goes");
+        assert!(file(4).exists());
+        // Past the listing, the delete itself looks again.
+        assert!(drop_backup(&link).is_err());
+        assert!(fs::symlink_metadata(&link).is_ok(), "the link went");
+        assert!(drop_backup(&sub).is_err());
+        assert!(sub.is_dir(), "the directory went");
+        drop_backup(&file(4)).unwrap();
+        assert!(!file(4).exists());
+    }
+
+    /// A place that's a link isn't cleared, and neither is what it points
+    /// at. One that's a file is, and a link in a place goes itself.
+    #[test]
+    fn clearing_follows_no_link() {
+        let scratch = Scratch::new("clear-link");
+        scratch.write("outside/note", b"not ours");
+        let outside = scratch.0.join("outside");
+        std::os::unix::fs::symlink(&outside, scratch.0.join("linked")).unwrap();
+        let place = scratch.place("linked", Part::Mind);
+        assert!(clear(&place, true).is_err());
+        assert!(fs::symlink_metadata(&place.path).is_ok(), "the link went");
+        assert_eq!(scratch.read("outside/note").unwrap(), b"not ours");
+
+        scratch.write("activity", b"log");
+        clear(&scratch.place("activity", Part::Mind), true).unwrap();
+        assert_eq!(scratch.read("activity"), None);
+
+        scratch.write("memory/note", b"ours");
+        std::os::unix::fs::symlink(&outside, scratch.0.join("memory/link")).unwrap();
+        clear(&scratch.place("memory", Part::Mind), true).unwrap();
+        assert!(fs::symlink_metadata(scratch.0.join("memory/link")).is_err());
+        assert_eq!(scratch.read("memory/note"), None);
+        assert_eq!(scratch.read("outside/note").unwrap(), b"not ours");
+    }
+
+    /// Root clears a store a service user owns, and nobody else's: what
+    /// isn't an owner's stops the clear and stays, a file, a directory or
+    /// a place that's a file; and a tree named as an owner's that isn't
+    /// goes no further for being named.
+    #[test]
+    fn clearing_takes_only_what_its_owners_own() {
+        let me = hatchling_sys::euid();
+        let stranger = [me.wrapping_add(1)];
+        let scratch = Scratch::new("clear-owner");
+        scratch.write("memory/note", b"ours");
+        let memory = scratch.place("memory", Part::Mind);
+        assert!(clear_of(&memory, true, &stranger).is_err());
+        assert_eq!(scratch.read("memory/note").unwrap(), b"ours");
+        scratch.write("files/deep/note", b"ours");
+        let files = scratch.place("files", Part::Mind);
+        let refused = clear_of(&files, true, &stranger).unwrap_err();
+        assert!(
+            refused.to_string().contains("isn't Hatchling's"),
+            "{refused}"
+        );
+        assert_eq!(scratch.read("files/deep/note").unwrap(), b"ours");
+        scratch.write("activity", b"log");
+        let activity = scratch.place("activity", Part::Mind);
+        assert!(clear_of(&activity, true, &stranger).is_err());
+        assert_eq!(scratch.read("activity").unwrap(), b"log");
+        // The owners' look isn't the tree's own check, which stands alone.
+        let tree = scratch.0.join("files/deep");
+        assert!(clear_tree(&tree, stranger[0], &stranger).is_err());
+        assert_eq!(scratch.read("files/deep/note").unwrap(), b"ours");
+        // With its owner named, all of it goes, whoever else is.
+        clear_of(&files, true, &[stranger[0], me]).unwrap();
+        clear_of(&memory, true, &[stranger[0], me]).unwrap();
+        clear_of(&activity, true, &[stranger[0], me]).unwrap();
+        assert_eq!(scratch.read("files/deep/note"), None);
+        assert_eq!(scratch.read("memory/note"), None);
+        assert_eq!(scratch.read("activity"), None);
+    }
+
+    /// What a tree too deep to clear whole leaves is said, not passed over.
+    #[test]
+    fn a_tree_left_partly_is_said() {
+        let scratch = Scratch::new("clear-deep");
+        let top = scratch.0.join("memory/top");
+        let deep = (0..=hatchling_sys::MAX_DEPTH + 1).fold(top, |path, _| path.join("d"));
+        fs::create_dir_all(deep).unwrap();
+        let refused = clear(&scratch.place("memory", Part::Mind), true).unwrap_err();
+        assert!(refused.to_string().contains("wasn't removed"), "{refused}");
+    }
+
+    /// A restore's staging starts empty and private. What's left there by
+    /// an earlier restore goes; a link stands and stops it, and what it
+    /// points at isn't touched; a file stands and stops it.
+    #[test]
+    fn staging_is_always_new() {
+        let scratch = Scratch::new("staging");
+        let staging = scratch.0.join("vault.restoring");
+        fresh_staging(&staging).unwrap();
+        fs::write(staging.join("left"), b"from before").unwrap();
+        fresh_staging(&staging).unwrap();
+        assert!(!staging.join("left").exists());
+        assert_eq!(
+            fs::metadata(&staging).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        fs::remove_dir(&staging).unwrap();
+
+        scratch.write("outside/note", b"not ours");
+        let outside = scratch.0.join("outside");
+        std::os::unix::fs::symlink(&outside, &staging).unwrap();
+        assert!(fresh_staging(&staging).is_err());
+        drop_staging(&staging);
+        assert!(fs::symlink_metadata(&staging).is_ok(), "the link went");
+        assert_eq!(scratch.read("outside/note").unwrap(), b"not ours");
+        fs::remove_file(&staging).unwrap();
+
+        fs::write(&staging, b"a file").unwrap();
+        assert!(fresh_staging(&staging).is_err());
+        assert_eq!(fs::read(&staging).unwrap(), b"a file");
+    }
+
+    /// A backup that fails leaves nothing behind it. Only the file it made
+    /// goes: a link or a directory at that name stays.
+    #[test]
+    fn a_failed_backup_leaves_only_what_was_there() {
+        let scratch = Scratch::new("partial");
+        let key = MasterKey::generate().unwrap();
+        // A file that lists, and can't be read, as root or not.
+        let unreadable = Place {
+            name: String::from("mem"),
+            path: PathBuf::from("/proc/self/mem"),
+            part: Part::Mind,
+        };
+        let file = scratch.0.join("h.backup");
+        assert!(write_backup(&[unreadable], &key, b"", &file).is_err());
+        assert!(!file.with_extension("partial").exists());
+
+        let partial = scratch.0.join("kept.partial");
+        scratch.write("mine", b"mine");
+        std::os::unix::fs::symlink(scratch.0.join("mine"), &partial).unwrap();
+        drop_partial(&partial);
+        assert!(fs::symlink_metadata(&partial).is_ok(), "the link went");
+        assert_eq!(scratch.read("mine").unwrap(), b"mine");
+        fs::remove_file(&partial).unwrap();
+        fs::create_dir(&partial).unwrap();
+        drop_partial(&partial);
+        assert!(partial.is_dir(), "the directory went");
+        fs::remove_dir(&partial).unwrap();
+        fs::write(&partial, b"made").unwrap();
+        drop_partial(&partial);
+        assert!(!partial.exists());
+    }
+
+    /// The time of the last backup goes only as a file: a link at its name
+    /// stops the marking, and neither it nor its target is touched.
+    #[test]
+    fn a_mark_replaces_only_a_file() {
+        let scratch = Scratch::new("mark-link");
+        let dir = scratch.0.join("backups");
+        mark_backup(&dir).unwrap();
+        scratch.write("mine", b"mine");
+        let last = dir.join(LAST);
+        fs::remove_file(&last).unwrap();
+        std::os::unix::fs::symlink(scratch.0.join("mine"), &last).unwrap();
+        assert!(mark_backup(&dir).is_err());
+        assert!(fs::symlink_metadata(&last).unwrap().is_symlink());
+        assert_eq!(scratch.read("mine").unwrap(), b"mine");
     }
 }

@@ -886,7 +886,7 @@ pub fn run_setup(
     // A stopped keeper leaves its socket: gone now, it's only there again
     // once the new one is really waiting.
     let socket = crate::unlock_relay::socket_path(&broker.vault);
-    let _ = std::fs::remove_file(&socket);
+    forget_socket(&socket, &crate::broker_user::own_users());
     // Whatever happened, the service goes back: an interrupted setup left
     // the vault as it was, or it says so.
     let started = Command::new("systemctl")
@@ -917,6 +917,13 @@ pub fn run_setup(
         crate::windows_setup::here("After each restart, the same: sudo hatchling-broker unlock")
     );
     Ok(())
+}
+
+/// What a stopped keeper left at `socket` goes, if it's a socket of one of
+/// `owners`. Run as root, in a directory the keeper's user owns: anything
+/// else at the name stays, and the new keeper's bind says so.
+fn forget_socket(socket: &Path, owners: &[u32]) {
+    let _ = hatchling_sys::remove_file_of(socket, hatchling_sys::FileKind::Socket, owners);
 }
 
 #[cfg(test)]
