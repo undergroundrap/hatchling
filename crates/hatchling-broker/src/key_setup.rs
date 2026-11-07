@@ -624,7 +624,10 @@ fn name_of(setup: &mut Setup<'_>, suggested: &str) -> Result<Label, Error> {
 
 /// Writes the marker, whose absence says the codes are confirmed.
 fn mark_codes(path: &Path) -> Result<(), Error> {
-    std::fs::write(codes_marker(path), b"").map_err(ring::io_error)
+    // As root, beside a keyring its service user owns: never through a
+    // link planted at the name.
+    hatchling_sys::hand_file_to(&codes_marker(path), hatchling_sys::euid())
+        .map_err(|error| ring::io_error(std::io::Error::other(error)))
 }
 
 /// Shows `codes`, and has part of one typed back. Until it is, the marker

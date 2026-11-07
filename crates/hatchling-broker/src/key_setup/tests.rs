@@ -816,3 +816,25 @@ fn the_marker_sits_beside_the_keyring() {
     );
     assert!(!codes_unconfirmed(path));
 }
+
+/// The marker that backup codes aren't confirmed yet is made as root,
+/// beside a keyring its service user owns: a link planted at its name
+/// isn't followed, and what it points at stays as it was.
+#[test]
+fn the_codes_marker_is_never_made_through_a_link() {
+    let dir = std::env::temp_dir().join(format!("hatchling-codes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let keyring = dir.join("keyring");
+    assert!(!codes_unconfirmed(&keyring));
+    mark_codes(&keyring).unwrap();
+    assert!(codes_unconfirmed(&keyring));
+    mark_codes(&keyring).unwrap();
+    std::fs::remove_file(codes_marker(&keyring)).unwrap();
+    let target = dir.join("target");
+    std::fs::write(&target, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&target, codes_marker(&keyring)).unwrap();
+    assert!(mark_codes(&keyring).is_err());
+    assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+    std::fs::remove_dir_all(&dir).unwrap();
+}

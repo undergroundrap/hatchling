@@ -1,4 +1,5 @@
 use std::io::{Read as _, Seek as _};
+use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
@@ -110,6 +111,22 @@ fn a_socket_left_by_an_earlier_start_is_replaced_and_only_its_being_there_shows(
         & 0o777;
     assert_eq!(mode, 0o711);
     drop(again);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The waiting socket's directory is opened, not looked up: with a link in
+/// its place, what it points at keeps its mode.
+#[test]
+fn the_sockets_directory_is_never_reached_through_a_link() {
+    let dir = scratch("linked-dir");
+    let target = dir.join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let linked = dir.join("linked");
+    std::os::unix::fs::symlink(&target, &linked).unwrap();
+    assert!(listen(&linked.join("unlock.sock")).is_err());
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
