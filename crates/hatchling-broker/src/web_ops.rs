@@ -252,7 +252,7 @@ fn search(config: &Config, keys: &dyn OpensStores, web: &mut WebSession, query: 
     let Some(searcher) = web.searcher.clone() else {
         return WebResult::Off;
     };
-    if let Some(reason) = held_secret_in(config, keys, query, "search") {
+    if let Some(reason) = held_secret_in(config, keys, query.as_bytes(), "search") {
         return refused(reason);
     }
     let chars = query.chars().count();
@@ -300,39 +300,44 @@ fn bounded_search(
 }
 
 /// Why `text`, which would leave the machine (a page's address, or a
-/// search), is refused: it holds a secret the broker keeps, in any form
-/// the output gate looks for, or those secrets can't be read to check.
+/// search), is refused: it holds a secret Hatchling keeps, a cell having
+/// had it or not ([`crate::held_check`]), or nothing can say it doesn't.
 /// `None` when it holds none.
 ///
 /// A held secret the model has seen, shown on a page or echoed by a
-/// service, would otherwise leave in an address or a search: to the site,
-/// in its log, or to the search provider. Typed text is checked the same
-/// way (`browser_ops`).
+/// service, or simply guessed, would otherwise leave in an address or a
+/// search: to the site, in its log, or to the search provider. Typed text
+/// is checked the same way (`browser_ops`).
+///
+/// One check for each thing sent. Each is a line in the vault's access log.
 pub(crate) fn held_secret_in(
     config: &Config,
     keys: &dyn OpensStores,
-    text: &str,
+    text: &[u8],
     what: &str,
 ) -> Option<String> {
-    // No keeper, and no secret the configuration names: nothing is held
-    // that could leave, and the vault isn't read.
-    if crate::keeper::keeper().is_none()
-        && crate::artifact_ops::held_secret_names(config).is_empty()
-    {
-        return None;
-    }
-    match crate::held_secrets(config, keys) {
-        Ok(secrets) if secrets.exposed_in(text.as_bytes()) => Some(format!(
+    match crate::held_check::check(crate::keeper::keeper(), config, keys, text) {
+        Ok(true) => Some(format!(
             "the {what} holds a secret the broker keeps: it isn't sent"
         )),
-        Ok(_) => None,
+        Ok(false) => None,
         Err(error) => {
-            tracing::error!(%error, what, "the held secrets couldn't be read: refused");
+            tracing::error!(%error, what, "the check for held secrets failed: refused");
             Some(format!(
                 "the broker couldn't check the {what} for secrets: it isn't sent"
             ))
         }
     }
+}
+
+/// [`held_secret_in`], for the page's address `url`, as a site reads it.
+pub(crate) fn held_secret_in_address(
+    config: &Config,
+    keys: &dyn OpensStores,
+    url: &WebUrl,
+) -> Option<String> {
+    let text = crate::held_check::as_read(&url.to_string());
+    held_secret_in(config, keys, &text, "page's address")
 }
 
 /// Reads the page at `url`, which the agent wants for `reason`.
@@ -358,7 +363,7 @@ fn fetch(
     if config.web.refuses(url.origin().host()) {
         return refused(String::from("the operator refuses this site"));
     }
-    if let Some(reason) = held_secret_in(config, keys, &url.to_string(), "page's address") {
+    if let Some(reason) = held_secret_in_address(config, keys, &url) {
         return refused(reason);
     }
     if let Err(answer) = allow(config, keys, web, &url, reason, false) {
@@ -1381,11 +1386,15 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(*asked.lock().unwrap(), ["rust changelog"]);
+        // With no keeper, the broker makes the one check itself, on the
+        // record. It reads no secret by name, and the key stays out of it.
         let (accesses, _) = crate::vault_access::read_log(&config.vault.root).unwrap();
-        assert!(
-            accesses.is_empty(),
-            "the broker read the vault: {accesses:?}"
-        );
+        let [only] = accesses.as_slice() else {
+            unreachable!("{accesses:?}");
+        };
+        assert_eq!(only.action, crate::vault_access::CHECK_ACTION);
+        assert!(only.names.is_empty(), "{only:?}");
+        assert_eq!(only.found, Some(false));
         assert!(logged.contains("web search"), "{logged}");
         assert!(logged.contains("chars=14"), "{logged}");
         assert!(!logged.contains("rust changelog"), "{logged}");

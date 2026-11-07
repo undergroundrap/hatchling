@@ -1927,10 +1927,7 @@ impl HarnessVault for VaultKeys<'_> {
     }
 
     fn contains(&self, text: &[u8]) -> Result<bool, String> {
-        self.keeper.map_or_else(
-            || crate::held_check::check_here(self.config, self.key, text),
-            |keeper| keeper.contains(text).map_err(|error| error.to_string()),
-        )
+        crate::held_check::check(self.keeper, self.config, self.key, text)
     }
 }
 
