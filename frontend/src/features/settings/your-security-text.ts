@@ -88,5 +88,4 @@ export const YOUR_SECURITY = [
     "**What the trail doesn't say.** It shows which tools a run used, not what it passed them.",
     "",
     "Found something that isn't here? [Report it privately](https://github.com/undergroundrap/hatchling/blob/main/SECURITY.md).",
-].join('
-');
+].join('\n');
