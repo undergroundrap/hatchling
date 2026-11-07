@@ -1122,11 +1122,15 @@ mod tests {
 
     #[test]
     fn no_section_is_orphaned_and_no_route_dangles() {
+        // Written for what isn't here yet: people's records, and channels
+        // beyond the app's chat. A prompt doesn't claim them until it is.
+        let waiting = ["relationships", "channels"];
         for section in SECTIONS {
             assert!(
-                PromptKind::ALL
-                    .iter()
-                    .any(|kind| sections_for(*kind).contains(&section.name)),
+                waiting.contains(&section.name)
+                    || PromptKind::ALL
+                        .iter()
+                        .any(|kind| sections_for(*kind).contains(&section.name)),
                 "{} is in no kind's prompt",
                 section.name
             );

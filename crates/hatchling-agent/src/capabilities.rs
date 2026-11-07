@@ -96,7 +96,10 @@ mod tests {
         assert!(!off.contains("installed skills"), "{off}");
         assert!(off.contains("can't run programs or commands"), "{off}");
         assert!(off.contains("no computer of your own yet"), "{off}");
-        assert!(off.contains("can't read a file the owner attaches"), "{off}");
+        assert!(
+            off.contains("can't read a file the owner attaches"),
+            "{off}"
+        );
         assert!(off.contains("can't use other accounts"), "{off}");
         assert!(off.contains("how you work or what you can do"), "{off}");
         assert!(
