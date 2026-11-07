@@ -307,7 +307,7 @@ fn a_key_no_cell_has_had_never_leaves_in_a_web_fetch() -> Result<(), String> {
     let clean = fetch(&mut web, "https://a.example/?k=nothing-held");
     assert!(
         matches!(clean, WebResult::Waiting { .. }),
-        "a clean address goes on to the owner: {clean:?}"
+        "a clean address goes on to the owner"
     );
     install.last_check_found(false)?;
     assert_eq!(
@@ -459,7 +459,7 @@ fn a_key_no_cell_has_had_is_never_gone_to() -> Result<(), String> {
     let clean = open("https://a.example/?k=nothing-held");
     assert!(
         !matches!(&clean, BrowserResult::Refused { reason } if reason.contains("secret")),
-        "{clean:?}"
+        "a clean text is not refused for a secret"
     );
     install.last_check_found(false)?;
     Ok(())
