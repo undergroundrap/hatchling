@@ -635,7 +635,7 @@ impl Store for SealedScheduleStore<'_> {
         // A claim settled late, say, would otherwise run what a hit held.
         let held = Self::latest(&vault, id)?
             .and_then(|stored| stored.ledger.occurrence)
-            .is_some_and(|fire| fire.due == due && held_state(fire.state));
+            .is_some_and(|fire| fire.due == due && held_state(&fire.state));
         if held && !matches!(state, OccurrenceState::Stopped { .. }) {
             return Ok(false);
         }
@@ -1554,7 +1554,7 @@ pub fn dispatch_once<L: Launcher>(
 
 /// Whether a fire in `state` is held for the owner: of unknown outcome, or
 /// its run stopped for a secret.
-const fn held_state(state: OccurrenceState) -> bool {
+const fn held_state(state: &OccurrenceState) -> bool {
     matches!(
         state,
         OccurrenceState::Unknown { .. } | OccurrenceState::Stopped { .. }
