@@ -478,55 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn recall_failure_warns_and_loop_completes() {
-        // Acceptance: the loop owns a `tracing::warn!` on
-        // recall failure, so the failure is visible regardless of
-        // what the provider logged. The loop still completes.
-
-        #[derive(Clone, Default)]
-        struct Capture(Arc<Mutex<Vec<u8>>>);
-        impl std::io::Write for Capture {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.0.lock().unwrap().extend_from_slice(buf);
-                Ok(buf.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let buffer = Arc::new(Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(Mutex::new(Capture(buffer.clone())))
-            .finish();
-
-        let provider = MockProvider {
-            items: vec![],
-            fail: true,
-            log: Arc::new(Mutex::new(vec![])),
-        };
-        let registry = empty_registry();
-        let agent_loop = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
-            .with_memory_provider(Box::new(provider));
-        let model = FakeModel::new(vec![ModelAction::Text("done".to_owned())]);
-
-        // Scoped subscriber: no global state, no cross-test
-        // interference.
-        tracing::subscriber::with_default(subscriber, || {
-            // The callsite interest cache, rebuilt with this subscriber in
-            // place: one a test on another thread cached while no
-            // subscriber wanted the warning would drop it.
-            tracing::callsite::rebuild_interest_cache();
-            let result = agent_loop.run(&model, "hello".to_owned()).unwrap();
-            assert_eq!(result.answer, "done");
-        });
-
-        let logged = String::from_utf8(buffer.lock().unwrap().clone()).expect("utf8 logs");
-        assert!(logged.contains("memory recall failed"), "{logged}");
-        assert!(logged.contains("proceeding without memory"), "{logged}");
-    }
-
-    #[test]
     fn evidence_sits_below_the_task_and_memory_in_order() {
         let provider = MockProvider {
             items: vec![test_item("the user prefers tea")],

@@ -435,18 +435,17 @@ impl BrowserSession {
     /// one (WO-030): its cookies read out, and sealed, only its sites',
     /// unless the owner signed the profile out since the browser took it.
     /// Kept or not, every cookie value read is hidden from the agent.
-    fn keep_jar(&mut self, config: &Config, keys: &dyn OpensStores) {
+    /// Whether what's hidden is whole: `false` when a browser's cookies
+    /// couldn't be read, so what it shows may hold one.
+    fn keep_jar(&mut self, config: &Config, keys: &dyn OpensStores) -> bool {
         let (Some(profile), Some(driven)) = (self.profile.clone(), self.browser.clone()) else {
-            return;
-        };
-        let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
-            return;
+            return true;
         };
         let jar = match read_jar(&driven) {
             Ok(jar) => jar,
             Err(error) => {
                 tracing::warn!(%profile, %error, "a signed-in session can't be read");
-                return;
+                return false;
             }
         };
         // Hidden before it's kept: a session the store refuses, or the
@@ -454,17 +453,22 @@ impl BrowserSession {
         for cookie in &jar {
             self.hide(&cookie.value);
         }
+        let Some(profiles) = crate::browser_profiles::Profiles::of(config, keys) else {
+            return true;
+        };
         let now = hatchling_scheduler::Timestamp::now().as_second();
         match profiles.keep_jar(&profile, jar, now, self.signed_out) {
             Ok(dropped) => tracing::info!(%profile, dropped, "a signed-in session is kept"),
             Err(error) => tracing::warn!(%profile, %error, "a signed-in session can't be kept"),
         }
+        true
     }
 
     /// After `op`, a signed-in browser's session is kept, so it outlives
     /// however the session ends (a page may sign in further, or set a
     /// cookie of its own), and every cookie value in it is hidden from
-    /// `result`, which the agent is given (WO-030).
+    /// `result`, which the agent is given (WO-030). A page is withheld when
+    /// the cookies can't be read: it could show one nothing knows to hide.
     fn kept(
         &mut self,
         config: &Config,
@@ -475,7 +479,16 @@ impl BrowserSession {
         if matches!(op, BrowserOp::Close {}) || self.profile.is_none() || !self.is_open() {
             return result;
         }
-        self.keep_jar(config, keys);
+        if !self.keep_jar(config, keys)
+            && matches!(
+                result,
+                BrowserResult::Page { .. } | BrowserResult::HandedBack { .. }
+            )
+        {
+            return BrowserResult::Failed {
+                failure: BrowserFailure::NoPage,
+            };
+        }
         self.hiding_from(result)
     }
 
@@ -1152,7 +1165,7 @@ fn answer(
         BrowserOp::Scroll { down } => browser.command(&BrowserCommand::Scroll { down: *down }),
         BrowserOp::Allow { site, reason } => allow_site(config, keys, web, browser, site, reason),
         BrowserOp::Close {} => {
-            browser.keep_jar(config, keys);
+            let _ = browser.keep_jar(config, keys);
             browser.close();
             BrowserResult::Closed
         }
@@ -1368,7 +1381,7 @@ fn open(
     // the browser, if this is another profile. Its session is kept.
     if switching {
         if browser.is_open() {
-            browser.keep_jar(config, keys);
+            let _ = browser.keep_jar(config, keys);
             browser.end(BrowserState::Completed);
         }
         browser.leave();
@@ -2988,7 +3001,7 @@ mod tests {
         let (_, mut browser) = session("t", &fake);
         browser.signed_in(&config, &keys, &profile);
         assert_eq!(browser.profile.as_deref(), Some(profile.id.as_str()));
-        browser.keep_jar(&config, &keys);
+        let _ = browser.keep_jar(&config, &keys);
         assert_eq!(
             kept_jar(&config, &keys, &profile.id),
             [cookie("a.example", "sid")]
@@ -2997,7 +3010,7 @@ mod tests {
         let (_, mut browser) = session("t", &fake);
         browser.browser = Some(driven(fake.clone()));
         browser.signed_in(&off, &keys, &profile);
-        browser.keep_jar(&off, &keys);
+        let _ = browser.keep_jar(&off, &keys);
         assert!(
             fake.log.lock().unwrap().commands.is_empty(),
             "no store: nothing asked"
@@ -4290,6 +4303,45 @@ mod tests {
     /// filled and what the broker hides are hidden there too, as a browser
     /// sends the name, in small letters. An entry hidden can't be allowed,
     /// and a controller that doesn't answer for the names shows none.
+    /// A signed-in browser whose cookies can't be read may show one nothing
+    /// knows to hide, so its page is withheld. What holds no page goes on.
+    #[test]
+    fn a_page_is_withheld_when_its_cookies_cannot_be_read() {
+        let (config, _scratch, keys, profile) = profiled(
+            "profile-unread",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        let fake = Fake::default();
+        let (_, mut browser) = session("t", &fake);
+        browser.browser = Some(driven_by(BrowserReply::Page {
+            snapshot: PageSnapshot::default(),
+        }));
+        browser.profile = Some(profile.id);
+        let page = BrowserResult::Page {
+            snapshot: PageSnapshot {
+                text: String::from("sid-value"),
+                ..PageSnapshot::default()
+            },
+            refused: Vec::new(),
+        };
+        assert_eq!(
+            browser.kept(&config, &keys, &BrowserOp::Read {}, page),
+            BrowserResult::Failed {
+                failure: BrowserFailure::NoPage
+            }
+        );
+        assert_eq!(
+            browser.kept(
+                &config,
+                &keys,
+                &BrowserOp::Read {},
+                BrowserResult::CodeDeclined
+            ),
+            BrowserResult::CodeDeclined
+        );
+    }
+
     #[test]
     fn what_a_page_read_is_hidden_from_the_sites_it_was_refused() {
         let (config, _scratch, keys, _profile) = with_sign_ins("refused-names", &["Work"]);
