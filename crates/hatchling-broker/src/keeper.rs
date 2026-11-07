@@ -17,14 +17,16 @@
 //!   credential, the gates' held secrets);
 //! - **a cell's vault op**, checked against the configuration's grants;
 //! - **the sign-ins** ([`crate::browser_credentials`]): the owner's keep,
-//!   list and delete, and a fill's read, recorded;
+//!   list and delete, and a fill;
 //! - **a check of a text** ([`Keeper::contains`]): whether it holds any
 //!   secret the keeper holds ([`crate::held_check`]), for the broker alone.
 //!
-//! Each is recorded in the vault's access log before the keeper answers,
-//! and one that can't be recorded is answered with nothing
-//! ([`crate::secrets`]). A read the configuration doesn't give its
-//! purpose is refused and recorded as denied.
+//! A read, a cell's op, a fill and a check are each recorded in the
+//! vault's access log before the keeper answers, and one that can't be
+//! recorded is answered with nothing ([`crate::secrets`]). A read the
+//! configuration doesn't give its purpose is refused and recorded as
+//! denied. Keeping, listing and deleting a sign-in release no secret, and
+//! aren't recorded there.
 //!
 //! **The check is an oracle, and the access log is what answers that.**
 //! Whoever can make the broker ask (an agent naming a harness's task, a
@@ -42,10 +44,11 @@
 //! vault's files, a copy of them or a backup, and gets only the secrets
 //! the configuration names, each release recorded by a process it
 //! doesn't share memory with. The keeper isn't dumpable, so a process of
-//! the same user without `CAP_SYS_PTRACE` can't read its memory. It is
-//! not yet an operating-system boundary: the broker starts it as its own
-//! user, and a root broker can reach any process. The spawner split, next,
-//! gives the broker a user of its own.
+//! the same user without `CAP_SYS_PTRACE` can't read its memory. A broker
+//! run as root starts it as [`KEEPER_USER`], its own user, and hands the
+//! vault to that user; not run as root, it's the broker's own user, and
+//! not dumpable is all that stands between them. Root can reach any
+//! process either way.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::{AsFd as _, AsRawFd as _};
@@ -974,10 +977,12 @@ impl Releases {
 
     /// What a gate scans for: the held secrets a cell has been given or
     /// has stored (`released`), and the channel accounts' credentials,
-    /// which the broker handles itself. A held secret no cell has had isn't
-    /// one a cell can leak. The egress destinations' credentials are the
-    /// egress authority's alone (WO-017, step 2): the broker never holds
-    /// one, so it can't leak one, and a scan never hands it one.
+    /// which the broker handles itself. A held secret no cell was given
+    /// isn't one Hatchling handed it. The egress destinations' credentials
+    /// are the egress authority's alone (WO-017, step 2), so a scan never
+    /// hands the broker one. That is what a scan knows, not all a cell can
+    /// know: the same value in a file it can read isn't looked for here,
+    /// and only the harness's check ([`Keeper::contains`]) covers that.
     fn scan_set(&self, released: &BTreeSet<String>) -> Vec<SecretName> {
         self.held
             .iter()

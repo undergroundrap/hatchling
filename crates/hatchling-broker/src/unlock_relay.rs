@@ -8,8 +8,10 @@
 //! protected by a security key never came back after a reboot.
 //!
 //! Now the keeper waits, locked, on a socket of its own
-//! ([`socket_path`], in a directory only its user and root can reach),
-//! and the operator unlocks it with `sudo hatchling-broker unlock`
+//! ([`socket_path`], 0600, in a directory only its user and root can list,
+//! though anyone may look for the socket by its name, as the app does to
+//! say it's locked), and the operator unlocks it with
+//! `sudo hatchling-broker unlock`
 //! ([`unlock_main`]), in their own terminal:
 //!
 //! 1. The command, as root, opens the security keys plugged in now (the
@@ -30,10 +32,13 @@
 //! the socket carries questions, answers and the keys' descriptors, and
 //! the unlock happens where it always did. Only root may connect (the
 //! peer's credentials are checked), as only root could start the broker
-//! at a terminal. The PIN crosses a local socket between two of root's
-//! processes, held in memory that's cleared after. Anyone who can't be
-//! root on this machine can't unlock it, and a stolen machine, powered
-//! off, opens nothing without the key.
+//! at a terminal. The PIN crosses a local socket between root's command
+//! and the keeper, in frames and buffers wiped after. What this doesn't
+//! reach: the terminal's and stdin's own buffers in the command, and, for
+//! an answer with a character JSON escapes (a quote, a backslash, a control
+//! character), the JSON parser's scratch buffer in the keeper. Anyone who
+//! can't be root on this machine can't unlock it, and a stolen machine,
+//! powered off, opens nothing without the key.
 
 use std::fs::File;
 use std::io::{IsTerminal as _, Write as _};
@@ -45,6 +50,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use hatchling_core::framing::{read_frame, write_frame};
+use hatchling_core::ui::Concealed;
 use hatchling_vault::{Keyring, MasterKey, Tier};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -95,8 +101,9 @@ enum ToOperator {
 enum ToKeeper {
     /// The security keys it opened, by node: as many descriptors follow.
     Keys { nodes: Vec<String> },
-    /// The answer to the last question.
-    Answer { text: String },
+    /// The answer to the last question, wiped when dropped: it can be a
+    /// PIN or a code.
+    Answer { text: Concealed },
 }
 
 /// The directory of the unlock socket: beside the vault, its keeper's
@@ -277,7 +284,6 @@ pub(crate) fn unlock_relayed(
             prompt,
             crate::vault_keyring::asks_for_a_code(prompt),
         )
-        .map(|answer| answer.to_string())
     };
     crate::vault_keyring::unlock_asking(vault, keyring, &mut ask, devices)
 }
@@ -346,7 +352,9 @@ fn relay(stream: &UnixStream, prompt: &str, secret: bool) -> Result<Zeroizing<St
     )?;
     let frame = Zeroizing::new(read_frame(stream).map_err(|e| framing(&e))?);
     match serde_json::from_slice::<ToKeeper>(&frame) {
-        Ok(ToKeeper::Answer { text }) if text.len() <= MAX_ANSWER => Ok(Zeroizing::new(text)),
+        Ok(ToKeeper::Answer { text }) if text.expose().len() <= MAX_ANSWER => {
+            Ok(Zeroizing::new(text.expose().to_owned()))
+        }
         _ => Err(protocol("its answer wasn't one")),
     }
 }
@@ -548,12 +556,7 @@ pub(crate) fn operate(
         match serde_json::from_slice::<ToOperator>(&frame) {
             Ok(ToOperator::Ask { prompt, secret }) => {
                 let text = answer(&prompt, secret)?;
-                let reply = Zeroizing::new(
-                    serde_json::to_vec(&ToKeeper::Answer {
-                        text: text.to_string(),
-                    })
-                    .map_err(|e| e.to_string())?,
-                );
+                let reply = answer_frame(&text).map_err(|e| e.to_string())?;
                 write_frame(stream, &reply).map_err(late)?;
                 asked = true;
             }
@@ -569,6 +572,19 @@ pub(crate) fn operate(
             }
         }
     }
+}
+
+/// `text` as the frame that answers a question: in a buffer sized up
+/// front, as no character takes more than six bytes in JSON, and wiped when
+/// dropped, so a buffer that grew leaves no copy of a PIN behind.
+fn answer_frame(text: &str) -> serde_json::Result<Zeroizing<Vec<u8>>> {
+    let answer = ToKeeper::Answer {
+        text: Concealed::new(text.to_owned()),
+    };
+    let room = text.len().saturating_mul(6).saturating_add(64);
+    let mut frame = Zeroizing::new(Vec::with_capacity(room));
+    serde_json::to_writer(&mut *frame, &answer)?;
+    Ok(frame)
 }
 
 /// What the keeper said last on `stream`, if it said why it stopped.

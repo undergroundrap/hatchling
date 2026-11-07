@@ -3,9 +3,10 @@
 //!
 //! These are not session ops — they run before the broker serves (or
 //! via the `migrate-vault` / `rekey-vault` subcommands) and never touch
-//! the protocol. They are the only code paths that enumerate the store
-//! directory, and they transform files in place without returning
-//! secret material to any caller.
+//! the protocol. They transform files in place without returning secret
+//! material to any caller. Others list the store directory's names (the
+//! owner's audit, and the keeper's check of a text): none of them hands a
+//! value on.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};

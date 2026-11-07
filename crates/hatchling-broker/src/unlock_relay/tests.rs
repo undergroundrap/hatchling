@@ -244,7 +244,7 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
     // Something else first is no try.
     let (keeper, operator_end) = pair();
     let answer = serde_json::to_vec(&ToKeeper::Answer {
-        text: String::from("x"),
+        text: Concealed::new(String::from("x")),
     })
     .unwrap();
     write_frame(&operator_end, &answer).unwrap();
@@ -288,11 +288,34 @@ fn a_node_is_hidraw_and_a_number() {
     }
 }
 
+/// An answer's frame reads back as the answer, and however many of its
+/// characters JSON escapes, it's made in the one buffer it started in.
+#[test]
+fn an_answers_frame_never_grows_its_buffer() {
+    for text in [
+        "1234",
+        "",
+        "\"\\\u{1}".repeat(40).as_str(),
+        "x".repeat(256).as_str(),
+    ] {
+        let frame = answer_frame(text).unwrap();
+        assert_eq!(
+            frame.capacity(),
+            text.len().saturating_mul(6).saturating_add(64),
+            "it grew"
+        );
+        let Ok(ToKeeper::Answer { text: read }) = serde_json::from_slice(&frame) else {
+            unreachable!("not an answer");
+        };
+        assert_eq!(read.expose(), text);
+    }
+}
+
 #[test]
 fn an_answer_too_long_or_not_an_answer_ends_the_try() {
     for reply in [
         serde_json::to_vec(&ToKeeper::Answer {
-            text: "9".repeat(MAX_ANSWER + 1),
+            text: Concealed::new("9".repeat(MAX_ANSWER + 1)),
         })
         .unwrap(),
         serde_json::to_vec(&ToKeeper::Keys { nodes: Vec::new() }).unwrap(),
@@ -315,7 +338,7 @@ fn an_answer_too_long_or_not_an_answer_ends_the_try() {
         write_frame(
             &operator_end,
             &serde_json::to_vec(&ToKeeper::Answer {
-                text: "9".repeat(MAX_ANSWER),
+                text: Concealed::new("9".repeat(MAX_ANSWER)),
             })
             .unwrap(),
         )

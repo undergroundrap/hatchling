@@ -162,13 +162,13 @@ fn run_doing(
         if let Some(key) = answer.strip_prefix("<plug ") {
             let key = key.trim_end_matches('>').parse().unwrap_or(0);
             *hands.borrow_mut() = vec![key];
-            return Ok(String::new());
+            return Ok(Zeroizing::default());
         }
-        Ok(if answer == "<code>" {
+        Ok(Zeroizing::new(if answer == "<code>" {
             last_code_end(&reads)
         } else {
             answer
-        })
+        }))
     };
     let mut pins: VecDeque<String> = pins.iter().map(|pin| (*pin).to_owned()).collect();
     let mut secret = |_: &str| {
@@ -681,7 +681,7 @@ fn changing(name: &str, bench: &mut Bench, pins: &[&str]) -> (Result<(), Error>,
     let (_scratch, vault, config) = vault(name);
     let stores = secrets(&vault);
     let mut pins: VecDeque<String> = pins.iter().map(|pin| (*pin).to_owned()).collect();
-    let mut ask = |_: &str| Ok(String::new());
+    let mut ask = |_: &str| Ok(Zeroizing::default());
     let mut secret = |_: &str| Ok(Zeroizing::new(pins.pop_front().unwrap_or_default()));
     let mut wait = || false;
     let said = Said::default();

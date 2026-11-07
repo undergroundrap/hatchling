@@ -892,7 +892,7 @@ mod tests {
         fs::write(&target, b"untouched").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
         let staged = dir.join("keyring.restoring");
-        let mut ask = |_: &str| Ok(String::new());
+        let mut ask = |_: &str| Ok(zeroize::Zeroizing::default());
         let open = |ask: Ask<'_>| {
             open_for_restore(&config, &keyring, &ring_bytes, ask, &mut ring::NoKeys).unwrap()
         };

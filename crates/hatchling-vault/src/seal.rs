@@ -198,9 +198,11 @@ const KEY_FILE_MODE: u32 = 0o600;
 ///
 /// Zeroized on drop via the `ZeroizeOnDrop` derive (declarative: no
 /// `Drop` body for a mutant to delete), redacted in `Debug`, and
-/// deliberately not `Clone` — key material is never duplicated. The
-/// single owner (the broker) hands out borrows; [`SealedVault`]
-/// holds `&MasterKey`, never an owned copy.
+/// deliberately not `Clone`: nothing copies it by accident. Its owner
+/// (the vault keeper, or a broker with none) hands out borrows, and
+/// [`SealedVault`] holds `&MasterKey`, never an owned copy. Copies made on
+/// purpose are keys of their own, each wiped: a [`crate::Kek`] from a key
+/// file, a store's key.
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct MasterKey([u8; 32]);
 

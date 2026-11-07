@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use hatchling_vault::{
-    Kek, Keyring, MasterKey, SealedVault, Secret, SecretName, Store, Vault, totp_code,
+    Kek, Keyring, MasterKey, SealedVault, Secret, SecretName, Store, StoreKeys, Vault, totp_code,
 };
 
 /// The shortest stretch of a canary that counts as a copy.
@@ -332,6 +332,57 @@ fn recovering_with_a_backup_code_frees_no_copy_of_it() {
         "recovering with a typed code"
     );
     assert!(!Path::new(&path).with_extension("tmp").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The store keys handed from one process to another are written in one
+/// buffer: a buffer that grew would free copies of the keys in it.
+#[test]
+fn handing_store_keys_frees_no_copy_of_them() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = test_dir("handoff");
+    let master = MasterKey::generate().unwrap();
+    let stores = [
+        (
+            Store::SECRETS,
+            dir.join("a-store-with-a-long-root-name-one"),
+        ),
+        (
+            Store::ARTIFACTS,
+            dir.join("a-store-with-a-long-root-name-two"),
+        ),
+    ];
+    for (store, root) in &stores {
+        SealedVault::open_in(root, &master, *store).unwrap();
+    }
+    let opened: Vec<(Store, &Path)> = stores
+        .iter()
+        .map(|(store, root)| (*store, root.as_path()))
+        .collect();
+    let keys = StoreKeys::unwrap(&master, &opened).unwrap();
+    // Each key, as the handoff holds it: 32 bytes after its root and before
+    // its flag. Any window of them is a copy.
+    let handed = keys.to_bytes().unwrap();
+    let roots: Vec<Vec<u8>> = stores
+        .iter()
+        .map(|(_, root)| root.as_os_str().as_encoded_bytes().to_vec())
+        .collect();
+    let canaries: Vec<Vec<u8>> = roots
+        .iter()
+        .map(|root| {
+            let at = handed
+                .windows(root.len())
+                .position(|window| window == root.as_slice())
+                .unwrap()
+                + root.len();
+            handed.get(at..at + 32).unwrap().to_vec()
+        })
+        .collect();
+    let borrowed: Vec<&[u8]> = canaries.iter().map(Vec::as_slice).collect();
+    watch_for(&borrowed);
+    assert!(!leaves_a_copy(|| drop(keys.to_bytes().unwrap())));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -233,8 +233,7 @@ pub fn run_change_pin(
     config: &KeyringConfig,
     stores: &[(Store, PathBuf)],
 ) -> Result<(), Error> {
-    let mut asking =
-        |prompt: &str| ring::terminal_answer(prompt, false).map(|answer| answer.to_string());
+    let mut asking = |prompt: &str| ring::terminal_answer(prompt, false);
     let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
     let mut devices = ring::platform_keys(Box::new(|| None));
     let mut wait = || false;
@@ -843,8 +842,7 @@ pub fn run_setup(
     stores: &[(Store, PathBuf)],
     action: Option<&str>,
 ) -> Result<(), Error> {
-    let mut asking =
-        |prompt: &str| ring::terminal_answer(prompt, false).map(|answer| answer.to_string());
+    let mut asking = |prompt: &str| ring::terminal_answer(prompt, false);
     let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
     let touches = Rc::new(Cell::new(0));
     let counted = Rc::clone(&touches);
