@@ -30,6 +30,7 @@ AppId={{7E0C6A52-4F0B-4B6E-9C3E-5A1D8E2B9F41}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher=Ocean Bennett
+AppCopyright=Copyright (c) 2026 Ocean Bennett
 AppPublisherURL=https://github.com/undergroundrap/hatchling
 DefaultDirName={autopf}\Hatchling
 DefaultGroupName=Hatchling
@@ -127,6 +128,8 @@ var
   Code: Integer;
 begin
   if CurUninstallStep <> usPostUninstall then Exit;
+  // With no one to ask, as under a package manager, data stays.
+  if UninstallSilent then Exit;
   if MsgBox('Delete your Hatchling data too? This removes the WSL distro {#Distro}, with your vault, conversations and memory. It can''t be undone.',
       mbConfirmation, MB_YESNO or MB_DEFBUTTON2) = IDYES then
     Exec('wsl.exe', '--unregister {#Distro}', '', SW_HIDE, ewWaitUntilTerminated, Code);

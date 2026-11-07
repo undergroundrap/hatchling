@@ -17,7 +17,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 - **A reminder to try your spare key.** With two keys, one that hasn't opened the vault in 90 days is mentioned by `unlock` and `vault-keyring status`, so a lost or broken spare is found while the other still works. `vault-keyring reminders-off` turns it off.
 - **What's next after a restart.** `backup`, `restore` and `reset` now say what to run next: the app's new address, or unlocking first.
 - **Change a key's PIN.** `vault-keyring change-pin` sets a new PIN on the key plugged in, and what's registered keeps working.
-- **Setting up, in Settings.** General now shows how to pick where your model runs, protect your vault and check everything, each a command to copy.
+- **Setting up, in Settings.** General now shows how to pick where your model runs, protect your vault and check everything, each a command to copy. Each command sits in its own dark block, beside its Copy button.
 - **A panic button.** `hatchling-broker lock` takes the vault's key out of memory at once, until you unlock it.
 - **Back up, restore, start over.** `backup` makes one sealed file that opens with what opens your vault, `restore` brings it back after checking all of it, and `reset` clears the conversation, the agent, or everything, with a backup first. Clearing the agent leaves your keys alone: `docs/backup-and-reset.md`.
 - **Losing a key is one command.** `vault-keyring lost-key` lists your keys by number, asks if it's lost or stolen, and offers a replacement. Stolen also changes the vault's key and your backup codes. If it was your only key, a backup code gets you in and its replacement comes first.

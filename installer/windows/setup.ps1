@@ -114,6 +114,11 @@ else {
     $model = @('--model-endpoint', 'http://localhost:11434/v1', '--model', $ModelName)
 }
 
+# Before the install: the broker reads this once, as it starts, to know how to
+# speak here.
+if ($Version) {
+    & wsl.exe -d $Distro -u root --exec sh -c "mkdir -p /etc/hatchling && echo $Version > /etc/hatchling/windows-setup-version"
+}
 if (-not $updating) { Say 'Installing Hatchling' }
 $install = @('-d', $Distro, '-u', 'root', '--exec', 'env', "SUDO_UID=$ownerUid", 'sh', '/root/hatchling-installer/scripts/install.sh', '--from', $from) + $model
 if ($Hosted -and -not $updating) {
@@ -128,9 +133,6 @@ else {
 }
 if ($LASTEXITCODE -ne 0) { Stop-Setup 'Hatchling didn''t install. The lines above say why, and running this again carries on.' }
 
-if ($Version) {
-    & wsl.exe -d $Distro -u root --exec sh -c "echo $Version > /etc/hatchling/windows-setup-version"
-}
 Say 'Keeping it running after this window closes'
 Start-KeepRunning $Distro
 Write-Host ''

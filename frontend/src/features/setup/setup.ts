@@ -22,9 +22,11 @@ function stepCard(ctx: AppContext, step: SetupStep, number: number): HTMLElement
     const mark = step.status === 'done' ? icon('check', 16) : h('span', {}, step.status === 'skipped' ? '–' : String(number));
     const card = h('section', { class: `setup-step is-${step.status}`, 'aria-label': step.title }, h('span', { class: 'setup-mark', 'aria-label': STEP_STATUS[step.status] }, mark), h('div', { class: 'setup-step-body' }, h('h2', {}, step.title), h('p', {}, step.said)));
     const body = card.querySelector('.setup-step-body');
-    const row = step.commands.length > 1 ? commandRow : commandLine;
-    if (step.commands.length > 0)
-        body?.append(h('div', { class: 'settings-group' }, ...step.commands.map(command => row(ctx, command))));
+    const [only] = step.commands;
+    if (step.commands.length > 1)
+        body?.append(h('div', { class: 'settings-group' }, ...step.commands.map(command => commandRow(ctx, command))));
+    else if (only !== undefined)
+        body?.append(commandLine(ctx, only));
     if (step.optional && step.status === 'next' && step.id === 'vault')
         body?.append(button('I don’t have a key', () => { ctx.setup?.remember('no-key'); ctx.render(); }, { variant: 'ghost' }));
     return card;

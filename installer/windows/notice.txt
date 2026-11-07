@@ -1,4 +1,7 @@
-Hatchling is free software, under the GNU Affero General Public License, version 3 or later. You don't need to accept anything to use it. The full license is installed with it, in LICENSE.txt.
+Hatchling is made by Ocean Bennett.
+Copyright (c) 2026 Ocean Bennett.
+
+It's free software, under the GNU Affero General Public License, version 3 or later. You don't need to accept anything to use it. The full license is installed with it, in LICENSE.txt.
 
 What this setup does:
 
