@@ -5,18 +5,21 @@
 //! the broker decides everything. It adds, lists and removes. Nothing here
 //! shows a stored username or password, to anyone.
 
-use std::io::{BufRead as _, IsTerminal as _, Write as _};
+use std::io::{BufRead, IsTerminal as _, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use hatchling_core::MAX_FRAME_BYTES;
 use hatchling_core::cli::EX_USAGE;
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::{
     Concealed, ProfileOp, ProfileResult, SignInOp, SignInRefusal, SignInResult, SiteSignIn,
     UI_SCHEMA_VERSION, UiAction, UiActionResult, UiRequest, UiResponse,
 };
+
+use zeroize::Zeroizing;
 
 use crate::schedule_cli::socket;
 
@@ -25,6 +28,9 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Who this command says it is.
 const CLIENT: &str = "hatchling-broker sign-in";
+
+/// The longest username line read: past anything the broker keeps.
+const MAX_USERNAME_LINE: usize = 4096;
 
 /// The usage, for a command that doesn't parse.
 pub const USAGE: &str = "\
@@ -118,9 +124,18 @@ fn connect(path: &Path) -> Result<UnixStream, String> {
     }
 }
 
+/// Sends `request`. A sign-in's username and password are in it, so its
+/// frame is wiped when dropped, and made in one buffer as large as any
+/// frame, as a buffer that grew would free copies of them.
 fn send(stream: &UnixStream, request: &UiRequest) -> Result<(), String> {
-    let bytes = serde_json::to_vec(request).map_err(|error| error.to_string())?;
+    let bytes = frame_of(request).map_err(|error| error.to_string())?;
     write_frame(stream, &bytes).map_err(|error| format!("couldn't reach the broker: {error}"))
+}
+
+fn frame_of(request: &UiRequest) -> serde_json::Result<Zeroizing<Vec<u8>>> {
+    let mut bytes = Zeroizing::new(Vec::with_capacity(MAX_FRAME_BYTES));
+    serde_json::to_writer(&mut *bytes, request)?;
+    Ok(bytes)
 }
 
 fn receive(stream: &UnixStream) -> Result<UiResponse, String> {
@@ -238,6 +253,8 @@ pub fn report(outcome: SignInResult) -> Result<Vec<String>, String> {
 }
 
 /// The username: a line, shown as it's typed, as on any sign-in page.
+/// What this wipes is what this command holds: stdin's own buffer keeps
+/// the line until the next read overwrites it.
 fn read_username() -> Result<Concealed, String> {
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
@@ -245,14 +262,24 @@ fn read_username() -> Result<Concealed, String> {
         let _ = write!(said, "Username: ");
         let _ = said.flush();
     }
-    let mut line = String::new();
-    stdin
-        .lock()
+    username_from(&mut stdin.lock())
+}
+
+/// The line `input` holds next, as a username: read into a buffer sized up
+/// front, and moved, never copied, into what's wiped when dropped.
+fn username_from(input: &mut impl BufRead) -> Result<Concealed, String> {
+    let mut line = Zeroizing::new(String::with_capacity(MAX_USERNAME_LINE));
+    let bound = u64::try_from(MAX_USERNAME_LINE).unwrap_or(0);
+    input
+        .take(bound)
         .read_line(&mut line)
         .map_err(|error| format!("can't read the username: {error}"))?;
-    Ok(Concealed::new(
-        line.trim_end_matches(['\r', '\n']).to_owned(),
-    ))
+    if line.len() == MAX_USERNAME_LINE {
+        return Err(String::from("that username is too long"));
+    }
+    let kept = line.trim_end_matches(['\r', '\n']).len();
+    line.truncate(kept);
+    Ok(Concealed::new(std::mem::take(&mut line)))
 }
 
 /// The password, at a prompt that doesn't show it.
@@ -334,6 +361,49 @@ mod tests {
 
     fn words(text: &str) -> Vec<String> {
         text.split(' ').map(str::to_owned).collect()
+    }
+
+    /// A username is its line, without its line ending, and one past what
+    /// could be kept isn't read as one.
+    #[test]
+    fn a_username_is_a_bounded_line() {
+        let read = |text: &str| {
+            username_from(&mut std::io::Cursor::new(text.to_owned()))
+                .map(|name| name.expose().to_owned())
+        };
+        assert_eq!(read("zoe\r\nnext\n"), Ok(String::from("zoe")));
+        assert_eq!(read("zoe\n"), Ok(String::from("zoe")));
+        assert_eq!(read("zoe"), Ok(String::from("zoe")));
+        assert_eq!(read(""), Ok(String::new()));
+        let fits = "x".repeat(MAX_USERNAME_LINE - 2);
+        assert_eq!(read(&format!("{fits}\n")), Ok(fits));
+        let long = "x".repeat(MAX_USERNAME_LINE - 1) + "\n";
+        assert_eq!(read(&long), Err(String::from("that username is too long")));
+        assert!(read(&"x".repeat(2 * MAX_USERNAME_LINE)).is_err());
+    }
+
+    /// A request with a sign-in in it is made in the one buffer it started
+    /// in, so no copy of them is freed, and reads back as it was.
+    #[test]
+    fn a_requests_frame_never_grows_its_buffer() {
+        let request = UiRequest::Action {
+            request_id: String::from("sign-in-1"),
+            action: UiAction::ManageSignIns {
+                op: SignInOp::Store {
+                    profile_id: String::from("p"),
+                    origin: String::from("https://a.example"),
+                    label: String::from("Work"),
+                    username: Concealed::new(String::from("zoe")),
+                    password: Concealed::new("\"\\".repeat(1000)),
+                },
+            },
+        };
+        let frame = frame_of(&request).unwrap();
+        assert_eq!(frame.capacity(), MAX_FRAME_BYTES, "it grew");
+        assert_eq!(
+            serde_json::to_vec(&request).unwrap().as_slice(),
+            frame.as_slice()
+        );
     }
 
     #[test]

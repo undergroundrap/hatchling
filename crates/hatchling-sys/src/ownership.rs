@@ -343,6 +343,101 @@ pub fn hand_file_to(path: &Path, owner: u32) -> Result<(), Error> {
     give_to(&file, owner)
 }
 
+/// Puts `bytes` in a new file at `path`, 0600, for `owner` (a uid and gid)
+/// if one is given, replacing whatever stood there.
+///
+/// For a root process writing into a directory another user owns: that
+/// user can plant a link at any name there, and a write by path would
+/// follow it with root's rights, and a mode or owner change by path after
+/// it would land on the link's target. Here the directory is opened, and
+/// all that follows is relative to that handle. A stale entry goes by its
+/// own name, so a link goes and its target doesn't. The file is made with
+/// `O_EXCL | O_NOFOLLOW`, so anything planted again meanwhile fails the
+/// call, and it's given its owner and mode through its descriptor before a
+/// byte is written. A directory at `path` isn't replaced.
+///
+/// # Errors
+///
+/// Returns [`Error::Ownership`] if `path` has no directory and name, the
+/// directory can't be opened, what stands there can't be removed, or the
+/// file can't be made, given or written.
+pub fn replace_file(path: &Path, bytes: &[u8], owner: Option<(u32, u32)>) -> Result<(), Error> {
+    use std::io::Write as _;
+    /// How the file is made: new, and never through a symlink.
+    const FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::WRONLY
+        .union(rustix::fs::OFlags::CREATE)
+        .union(rustix::fs::OFlags::EXCL)
+        .union(rustix::fs::OFlags::NOFOLLOW)
+        .union(rustix::fs::OFlags::CLOEXEC);
+    let mode = rustix::fs::Mode::from_raw_mode(0o600);
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(refused("make a file", "not a file in a directory"));
+    };
+    let handle = open_dir_nofollow(dir).map_err(failed("open the directory"))?;
+    match rustix::fs::unlinkat(&handle, name, rustix::fs::AtFlags::empty()) {
+        Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+        Err(error) => return Err(failed("remove what stood there")(error)),
+    }
+    let new = rustix::fs::openat(&handle, name, FLAGS, mode).map_err(failed("make the file"))?;
+    if let Some((uid, gid)) = owner {
+        let (uid, gid) = ids(uid, gid);
+        rustix::fs::fchown(&new, Some(uid), Some(gid)).map_err(failed("give the file"))?;
+    }
+    rustix::fs::fchmod(&new, mode).map_err(failed("chmod the file"))?;
+    let mut file = std::fs::File::from(new);
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .map_err(|source| Error::Ownership {
+            operation: "write the file",
+            source,
+        })
+}
+
+/// Writes `bytes` to the file at `path`, replacing what it holds, made
+/// 0600 if absent. It's opened without following a link, and must be a
+/// regular file: nothing it doesn't name itself is touched.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] when it can't be opened or made, isn't a regular
+/// file, or can't be written.
+pub fn write_file(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    use std::io::Write as _;
+    /// How the file is opened: not truncated yet, and never through a
+    /// symlink, or held on a pipe.
+    const FLAGS: rustix::fs::OFlags = rustix::fs::OFlags::WRONLY
+        .union(rustix::fs::OFlags::CREATE)
+        .union(rustix::fs::OFlags::NOFOLLOW)
+        .union(rustix::fs::OFlags::NONBLOCK)
+        .union(rustix::fs::OFlags::CLOEXEC);
+    let file = rustix::fs::open(path, FLAGS, rustix::fs::Mode::from_raw_mode(0o600))
+        .map_err(failed("open the file"))?;
+    let stat = rustix::fs::fstat(&file).map_err(failed("fstat the file"))?;
+    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        return Err(refused("write the file", "not a regular file"));
+    }
+    rustix::fs::ftruncate(&file, 0).map_err(failed("truncate the file"))?;
+    std::fs::File::from(file)
+        .write_all(bytes)
+        .map_err(|source| Error::Ownership {
+            operation: "write the file",
+            source,
+        })
+}
+
+/// Sets the directory at `path` to permission bits `mode`, through a
+/// handle opened without following a link.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] if `path` isn't a directory itself, or the change
+/// is refused.
+pub fn chmod_dir(path: &Path, mode: u32) -> Result<(), Error> {
+    let handle = open_dir_nofollow(path).map_err(failed("open the directory"))?;
+    rustix::fs::fchmod(&handle, rustix::fs::Mode::from_raw_mode(mode))
+        .map_err(failed("chmod the directory"))
+}
+
 /// Whether `name` is one plain name in a directory: not empty, not `.` or
 /// `..`, with no `/` and no NUL.
 fn plain_name(name: &str) -> bool {
@@ -373,6 +468,112 @@ pub const fn private_dir_ok(uid: u32, mode: u32, euid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// A scratch directory of a test's own.
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("hatchling-own-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    /// A planted link is removed, and what it points at isn't written or
+    /// changed. A stale file is replaced; the new one is 0600 and holds
+    /// only what was asked, whatever the old one's mode; a directory
+    /// stands, and a path that names no file is refused.
+    #[test]
+    fn a_file_replaces_what_stood_there_and_never_goes_through_a_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("replace");
+        let target = dir.join("target");
+        std::fs::write(&target, b"untouched").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let staged = dir.join("keyring.restoring");
+        let read = |path: &Path| std::fs::read(path).unwrap();
+        let mode = |path: &Path| {
+            std::fs::symlink_metadata(path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        std::os::unix::fs::symlink(&target, &staged).unwrap();
+        replace_file(&staged, b"ring", None).unwrap();
+        assert_eq!(read(&target), b"untouched");
+        assert_eq!(mode(&target), 0o644, "the link's target changed mode");
+        assert!(std::fs::symlink_metadata(&staged).unwrap().is_file());
+        assert_eq!(read(&staged), b"ring");
+        assert_eq!(mode(&staged), 0o600);
+
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o666)).unwrap();
+        replace_file(&staged, b"new", None).unwrap();
+        assert_eq!(read(&staged), b"new");
+        assert_eq!(mode(&staged), 0o600, "the stale file's mode was kept");
+
+        let owner = (crate::euid(), crate::egid());
+        replace_file(&staged, b"mine", Some(owner)).unwrap();
+        assert_eq!(read(&staged), b"mine");
+
+        std::fs::create_dir(dir.join("a-dir")).unwrap();
+        let refused = replace_file(&dir.join("a-dir"), b"x", None).unwrap_err();
+        assert!(
+            refused.to_string().contains("remove what stood"),
+            "{refused}"
+        );
+        assert!(dir.join("a-dir").is_dir());
+        let nameless = replace_file(Path::new("/"), b"x", None).unwrap_err();
+        assert!(nameless.to_string().contains("make a file"), "{nameless}");
+        assert!(replace_file(&dir.join("absent/file"), b"x", None).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A file is written in place, 0600 if it's new, and a link or
+    /// anything else at the path fails with its target untouched.
+    #[test]
+    fn a_write_never_goes_through_a_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("write");
+        let file = dir.join("seen");
+        write_file(&file, b"a long first line").unwrap();
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        write_file(&file, b"short").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"short", "not truncated");
+        let target = dir.join("target");
+        std::fs::write(&target, b"untouched").unwrap();
+        let link = dir.join("linked");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(write_file(&link, b"x").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+        let device = write_file(Path::new("/dev/null"), b"x").unwrap_err();
+        assert!(device.to_string().contains("write the file"), "{device}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A directory's mode is set on the directory, and a link to one fails
+    /// with its target's mode as it was.
+    #[test]
+    fn a_directorys_mode_never_goes_through_a_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("chmod-dir");
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let real = dir.join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+        chmod_dir(&real, 0o711).unwrap();
+        assert_eq!(mode(&real), 0o711);
+        let target = dir.join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = dir.join("linked");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(chmod_dir(&link, 0o711).is_err());
+        assert_eq!(mode(&target), 0o700);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A file is handed over made if absent (empty, 0600) and kept if
     /// present, never through a link, and only a regular file; given to
     /// another user only as root.

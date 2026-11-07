@@ -59,9 +59,9 @@ pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
 pub use ownership::{
-    DirShare, chmod_socket, create_private_dir, dir_share, ensure_private_dir, give_dir_to,
-    give_to, hand_file_to, hand_over_socket, owner_traverses, share_dir_with_cell,
-    write_new_file_for,
+    DirShare, chmod_dir, chmod_socket, create_private_dir, dir_share, ensure_private_dir,
+    give_dir_to, give_to, hand_file_to, hand_over_socket, owner_traverses, replace_file,
+    share_dir_with_cell, write_file, write_new_file_for,
 };
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{

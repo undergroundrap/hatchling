@@ -11,8 +11,10 @@
 //! [`SecretName`](hatchling_core::SecretName)s, so path traversal is
 //! unrepresentable; values are zeroized on drop ([`Secret`]) and never
 //! logged; writes are atomic (temp file + rename). There is deliberately
-//! no `list` operation — the store cannot enumerate, so a compromised
-//! reader cannot bulk-read.
+//! no `list` operation, so a caller handed a store and a name reads that
+//! name. It isn't a boundary against whoever holds the key and the
+//! directory: they can list its names and read each one, as the vault
+//! keeper's check of a text does.
 //!
 //! The [`seal`] module adds encryption at rest: [`SealedVault`] stores
 //! every secret as a versioned XChaCha20-Poly1305 envelope under a

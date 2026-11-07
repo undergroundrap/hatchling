@@ -8,8 +8,6 @@
 //! write it never stops an unlock.
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
-use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::{Path, PathBuf};
 
 use hatchling_vault::{KeyInfo, Keyring};
@@ -49,7 +47,10 @@ pub fn reminders_on(keyring: &Path) -> bool {
 pub fn set_reminders(keyring: &Path, on: bool) -> std::io::Result<()> {
     let marker = off_marker(keyring);
     if !on {
-        return std::fs::write(marker, b"");
+        // As root, beside a keyring its service user owns: never through
+        // a link planted at the name.
+        return hatchling_sys::hand_file_to(&marker, hatchling_sys::euid())
+            .map_err(std::io::Error::other);
     }
     match std::fs::remove_file(marker) {
         Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
@@ -85,13 +86,8 @@ pub(crate) fn note(keyring: &Path, id: &str, now: u64) -> std::io::Result<()> {
     let mut seen = read(keyring);
     seen.insert(id.to_owned(), now);
     let lines: Vec<String> = seen.iter().map(|(id, at)| format!("{id} {at}")).collect();
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(record(keyring))?
-        .write_all(lines.join("\n").as_bytes())
+    hatchling_sys::write_file(&record(keyring), lines.join("\n").as_bytes())
+        .map_err(std::io::Error::other)
 }
 
 /// What to say of `key`, if it's gone quiet. It's quiet from when it was
@@ -165,6 +161,38 @@ mod tests {
 
     fn seen_at(at: u64) -> BTreeMap<String, u64> {
         BTreeMap::from([(String::from("wrap-1"), at)])
+    }
+
+    /// Reminders go off and on by the marker beside the keyring, and a
+    /// link planted at the marker's name, or the record's, isn't followed:
+    /// what it points at is untouched.
+    #[test]
+    fn the_files_beside_a_keyring_are_never_reached_through_a_link() {
+        let dir = std::env::temp_dir().join(format!("hatchling-seen-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let keyring = dir.join("keyring");
+        assert!(reminders_on(&keyring));
+        set_reminders(&keyring, false).unwrap();
+        assert!(!reminders_on(&keyring));
+        set_reminders(&keyring, false).unwrap();
+        assert!(!reminders_on(&keyring), "off twice is off");
+        set_reminders(&keyring, true).unwrap();
+        assert!(reminders_on(&keyring));
+        set_reminders(&keyring, true).unwrap();
+        note(&keyring, "wrap-1", 7).unwrap();
+        note(&keyring, "wrap-2", 8).unwrap();
+        assert_eq!(read(&keyring).get("wrap-1"), Some(&7));
+        erase(&keyring);
+
+        let target = dir.join("target");
+        std::fs::write(&target, b"untouched").unwrap();
+        std::os::unix::fs::symlink(&target, off_marker(&keyring)).unwrap();
+        std::os::unix::fs::symlink(&target, record(&keyring)).unwrap();
+        assert!(set_reminders(&keyring, false).is_err());
+        assert!(note(&keyring, "wrap-1", 7).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

@@ -41,6 +41,9 @@ const KEPT_MAGIC: &[u8; 4] = b"HKK1";
 pub const MAX_HANDED: usize = 8;
 /// The longest root a handoff carries, in bytes.
 pub const MAX_ROOT_BYTES: usize = 4096;
+/// What a store takes in a handoff past its label, root and wrapped key:
+/// their lengths, its 32-byte key and its pending flag.
+const STORE_FIXED_BYTES: usize = 1 + 2 + 32 + 1;
 
 impl StoreKeys {
     /// The keys of `stores` alone, each with its root, as held here: what
@@ -78,7 +81,18 @@ impl StoreKeys {
             .ok_or(Error::HandoffMalformed {
                 reason: "too many stores",
             })?;
-        let mut bytes = Zeroizing::new(Vec::new());
+        // At its full size: a buffer that grew would free copies of keys.
+        let room: usize = self
+            .held
+            .iter()
+            .map(|held| {
+                held.store.label().len()
+                    + held.root.as_os_str().len()
+                    + WRAPPED_STORE_KEY_LEN
+                    + STORE_FIXED_BYTES
+            })
+            .sum();
+        let mut bytes = Zeroizing::new(Vec::with_capacity(MAGIC.len() + 1 + room));
         bytes.extend_from_slice(MAGIC);
         bytes.push(count);
         for held in &self.held {

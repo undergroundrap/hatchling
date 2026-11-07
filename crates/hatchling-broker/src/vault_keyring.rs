@@ -28,6 +28,8 @@ use hatchling_vault::{
     Warning,
 };
 
+use zeroize::Zeroizing;
+
 use crate::environment as env;
 use crate::{Error, VaultConfig};
 
@@ -225,9 +227,9 @@ pub struct Factors<'a> {
     /// A FIDO2 security key, for the hardware-key tier.
     pub authenticator: Option<&'a mut dyn Authenticator>,
     /// A one-time code from the authenticator app, for the TOTP tier.
-    pub code: Option<String>,
+    pub code: Option<Zeroizing<String>>,
     /// A backup code, to recover a hardware-key vault no key can reach.
-    pub backup_code: Option<String>,
+    pub backup_code: Option<Zeroizing<String>>,
 }
 
 /// Asks for what the file and TOTP tiers need: a current code for the
@@ -284,8 +286,9 @@ pub fn ask(prompt: &str, input: &mut dyn BufRead, output: &mut dyn Write) -> Res
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
 
-/// How the operator is asked for a line: the prompt in, the answer out.
-pub type Ask<'a> = &'a mut dyn FnMut(&str) -> Result<String, Error>;
+/// How the operator is asked for a line: the prompt in, the answer out,
+/// wiped when dropped, as it can be a code.
+pub type Ask<'a> = &'a mut dyn FnMut(&str) -> Result<Zeroizing<String>, Error>;
 
 /// Opens `keyring` through its current tier.
 fn open(
@@ -341,16 +344,18 @@ pub fn unlock(vault: &VaultConfig, config: &KeyringConfig) -> Result<MasterKey, 
     clippy::significant_drop_tightening,
     reason = "the console moves into the returned prompt and lives exactly as long as it does"
 )]
-pub(crate) fn terminal_operator() -> (impl FnMut(&str) -> Result<String, Error>, impl Devices) {
+pub(crate) fn terminal_operator() -> (
+    impl FnMut(&str) -> Result<Zeroizing<String>, Error>,
+    impl Devices,
+) {
     let console = Console::terminal();
     let devices = platform_keys(pin_prompt(&console));
     (
         move |prompt: &str| {
             if asks_for_a_code(prompt) {
-                let answer = console.borrow_mut().ask_secret(prompt)?;
-                Ok(answer.to_string())
+                console.borrow_mut().ask_secret(prompt)
             } else {
-                console.borrow_mut().ask(prompt)
+                console.borrow_mut().ask(prompt).map(Zeroizing::new)
             }
         },
         devices,
@@ -865,12 +870,13 @@ impl<R: BufRead, W: Write> Console<R, W> {
     /// One secret answer to `prompt`: not shown as it's typed (on the
     /// terminal), and read into memory wiped when it's dropped. The read
     /// is bounded to a buffer sized up front, so no copy is left behind
-    /// by a string that grew.
-    fn ask_secret(&mut self, prompt: &str) -> Result<zeroize::Zeroizing<String>, Error> {
+    /// by a string that grew. Stdin's own buffer isn't this code's to wipe:
+    /// the line stays there until the next read overwrites it.
+    fn ask_secret(&mut self, prompt: &str) -> Result<Zeroizing<String>, Error> {
         let _ = write!(self.output, "{prompt} ");
         let _ = self.output.flush();
         let _echo = self.stdin.then(hatchling_sys::EchoOff::on_stdin);
-        let mut answer = zeroize::Zeroizing::new(String::with_capacity(MAX_SECRET_ANSWER));
+        let mut answer = Zeroizing::new(String::with_capacity(MAX_SECRET_ANSWER));
         let bound = u64::try_from(MAX_SECRET_ANSWER).unwrap_or(0);
         (&mut self.input)
             .take(bound)
@@ -894,10 +900,7 @@ pub(crate) const PIN_PROMPT: &str = "Type your key's PIN, then press Enter. Noth
 /// # Errors
 ///
 /// Returns [`Error::Vault`] if the terminal can't be read.
-pub(crate) fn terminal_answer(
-    prompt: &str,
-    secret: bool,
-) -> Result<zeroize::Zeroizing<String>, Error> {
+pub(crate) fn terminal_answer(prompt: &str, secret: bool) -> Result<Zeroizing<String>, Error> {
     let mut console = Console {
         input: std::io::stdin().lock(),
         output: std::io::stderr(),
@@ -906,7 +909,7 @@ pub(crate) fn terminal_answer(
     if secret {
         console.ask_secret(prompt)
     } else {
-        console.ask(prompt).map(zeroize::Zeroizing::new)
+        console.ask(prompt).map(Zeroizing::new)
     }
 }
 
@@ -1001,7 +1004,10 @@ pub(crate) fn opening(
 /// How the operator authorizes a change to the keys, asked once: a
 /// backup code (`Some`, not yet checked or spent), or `None` for the
 /// security key plugged in.
-fn authorization(ask: Ask<'_>, devices: &mut dyn Devices) -> Result<Option<String>, Error> {
+fn authorization(
+    ask: Ask<'_>,
+    devices: &mut dyn Devices,
+) -> Result<Option<Zeroizing<String>>, Error> {
     // A key that's there is the answer: nothing to ask, so a PIN typed
     // early has no prompt to land on.
     if devices.plugged_in().is_some() {
@@ -1009,7 +1015,7 @@ fn authorization(ask: Ask<'_>, devices: &mut dyn Devices) -> Result<Option<Strin
     }
     let answer = ask(AUTHORIZE_CODE_PROMPT)?;
     let code = answer.trim();
-    Ok((!code.is_empty()).then(|| code.to_owned()))
+    Ok((!code.is_empty()).then(|| Zeroizing::new(code.to_owned())))
 }
 
 /// Unlocks `keyring` with the security key plugged in, or stops if none
@@ -1936,7 +1942,7 @@ pub(crate) mod tests {
             status(&config).unwrap(),
             "vault-keyring: tier hardware key, 0 backup code(s) left"
         );
-        let err = unlock_asking(&vault, &config, &mut |_| Ok(String::new())).unwrap_err();
+        let err = unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap_err();
         assert!(
             matches!(&err, Error::Usage { reason } if reason.contains("stopped; nothing was changed")),
             "{err}"
@@ -2085,7 +2091,10 @@ pub(crate) mod tests {
     fn totp_enrollment_shows_the_uri_once_retries_a_wrong_code_and_then_start_up_asks_for_a_code() {
         let (_scratch, vault, config) = adopted("totp");
         let mut app = App::new(1);
-        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        enroll_totp(&vault, &config, &mut |prompt| {
+            Ok(Zeroizing::new(app.answer(prompt)))
+        })
+        .unwrap();
         assert_eq!(app.asked.len(), 2, "the URI, then one retry");
         assert!(
             app.asked
@@ -2108,7 +2117,7 @@ pub(crate) mod tests {
         let dek = unlock_asking(&vault, &config, &mut |prompt| {
             asked += 1;
             assert!(prompt.contains("Current code"));
-            Ok(app.code(30))
+            Ok(Zeroizing::new(app.code(30)))
         })
         .unwrap();
         assert_eq!(asked, 1);
@@ -2121,7 +2130,9 @@ pub(crate) mod tests {
             "no code, no start"
         );
         assert!(matches!(
-            unlock_asking(&vault, &config, &mut |_| Ok(String::from("000000"))),
+            unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::new(String::from(
+                "000000"
+            )))),
             Err(Error::Vault { .. })
         ));
         assert!(matches!(
@@ -2141,7 +2152,10 @@ pub(crate) mod tests {
         use std::os::unix::net::UnixStream;
         let (_scratch, vault, config) = adopted("relay");
         let mut app = App::new(1);
-        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        enroll_totp(&vault, &config, &mut |prompt| {
+            Ok(Zeroizing::new(app.answer(prompt)))
+        })
+        .unwrap();
         assert!(crate::unlock_relay::needs_a_person(&config));
         let operator = |stream: UnixStream, code: String| {
             stream
@@ -2151,7 +2165,7 @@ pub(crate) mod tests {
                 let mut heard = Vec::new();
                 let result = crate::unlock_relay::operate(&stream, &[], &mut |prompt, secret| {
                     heard.push((prompt.to_owned(), secret));
-                    Ok(zeroize::Zeroizing::new(code.clone()))
+                    Ok(Zeroizing::new(code.clone()))
                 });
                 (result, heard)
             })
@@ -2179,7 +2193,10 @@ pub(crate) mod tests {
     fn re_enrolling_totp_asks_for_a_current_code_first() {
         let (_scratch, vault, config) = adopted("totp-again");
         let mut app = App::new(0);
-        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        enroll_totp(&vault, &config, &mut |prompt| {
+            Ok(Zeroizing::new(app.answer(prompt)))
+        })
+        .unwrap();
         // The enrollment spent this step's code; the next step's is current.
         let mut again = App::new(0);
         let mut first = true;
@@ -2187,15 +2204,15 @@ pub(crate) mod tests {
             if first {
                 first = false;
                 assert!(prompt.contains("Current code"));
-                return Ok(app.code(30));
+                return Ok(Zeroizing::new(app.code(30)));
             }
-            Ok(again.answer(prompt))
+            Ok(Zeroizing::new(again.answer(prompt)))
         })
         .unwrap();
         assert_ne!(again.seed, app.seed, "a new seed");
         assert!(reads_the_secret(
             &vault,
-            &unlock_asking(&vault, &config, &mut |_| Ok(again.code(30))).unwrap()
+            &unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::new(again.code(30)))).unwrap()
         ));
     }
 
@@ -2204,7 +2221,9 @@ pub(crate) mod tests {
         let (_scratch, vault, config) = adopted("totp-wrong");
         let mut app = App::new(3);
         assert!(matches!(
-            enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))),
+            enroll_totp(&vault, &config, &mut |prompt| Ok(Zeroizing::new(
+                app.answer(prompt)
+            ))),
             Err(Error::Vault {
                 source: hatchling_vault::Error::CodeRejected
             })
@@ -2215,7 +2234,7 @@ pub(crate) mod tests {
                 .unwrap()
                 .starts_with("vault-keyring: tier file")
         );
-        let mut never = |_: &str| -> Result<String, Error> {
+        let mut never = |_: &str| -> Result<Zeroizing<String>, Error> {
             Err(Error::Usage {
                 reason: String::from("asked"),
             })
@@ -2250,7 +2269,7 @@ pub(crate) mod tests {
             .enroll_hardware_keys(&unlocked, &mut [&mut primary, &mut backup])
             .unwrap();
         settle(&mut keyring, &vault, &config, &rotated);
-        let err = enroll_totp(&vault, &config, &mut |_| Ok(String::new())).unwrap_err();
+        let err = enroll_totp(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap_err();
         assert!(
             matches!(&err, Error::Usage { reason } if reason.contains("stopped; nothing was changed")),
             "{err}"
@@ -2261,7 +2280,7 @@ pub(crate) mod tests {
     fn hardware_with_codes(name: &str) -> (Scratch, VaultConfig, KeyringConfig, Vec<String>) {
         use hatchling_vault::virtual_key::VirtualAuthenticator;
         let (scratch, vault, config) = adopted(name);
-        backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
+        backup_codes(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap();
         let path = config.keyring.clone().unwrap();
         let mut keyring = Keyring::load(&path).unwrap();
         let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
@@ -2280,7 +2299,7 @@ pub(crate) mod tests {
         let mut asked = Vec::new();
         let file = asked_factors(Tier::File, &mut |prompt| {
             asked.push(prompt.to_owned());
-            Ok(String::from("x"))
+            Ok(Zeroizing::new(String::from("x")))
         })
         .unwrap();
         assert!(
@@ -2289,15 +2308,21 @@ pub(crate) mod tests {
                 && file.authenticator.is_none()
                 && asked.is_empty()
         );
-        let totp = asked_factors(Tier::Totp, &mut |_| Ok(String::from("123456"))).unwrap();
+        let totp = asked_factors(Tier::Totp, &mut |_| {
+            Ok(Zeroizing::new(String::from("123456")))
+        })
+        .unwrap();
         assert_eq!(
-            (totp.code.as_deref(), totp.backup_code.as_deref()),
+            (
+                totp.code.as_ref().map(|code| code.as_str()),
+                totp.backup_code.as_ref().map(|code| code.as_str())
+            ),
             (Some("123456"), None)
         );
         let mut hardware_asked = 0;
         let hardware = asked_factors(Tier::HardwareKey, &mut |_| {
             hardware_asked += 1;
-            Ok(String::from("ABCD"))
+            Ok(Zeroizing::new(String::from("ABCD")))
         })
         .unwrap();
         assert!(
@@ -2325,7 +2350,7 @@ pub(crate) mod tests {
         let mut asked = 0;
         let codes = backup_codes(&vault, &config, &mut |_| {
             asked += 1;
-            Ok(String::new())
+            Ok(Zeroizing::default())
         })
         .unwrap();
         assert_eq!(
@@ -2338,11 +2363,9 @@ pub(crate) mod tests {
             "vault-keyring: tier file, 10 backup code(s) left"
         );
         assert!(matches!(
-            backup_codes(
-                &vault,
-                &KeyringConfig::default(),
-                &mut |_| Ok(String::new())
-            ),
+            backup_codes(&vault, &KeyringConfig::default(), &mut |_| Ok(
+                Zeroizing::default()
+            )),
             Err(Error::Usage { .. })
         ));
     }
@@ -2352,7 +2375,7 @@ pub(crate) mod tests {
         let (_scratch, vault, config, codes, mut desk) = desk_vault("key-seen", 2);
         let seen = crate::key_seen::record(config.keyring.as_deref().unwrap());
         let keys = keys_of(&config);
-        let mut no_answer = |_: &str| Ok(String::new());
+        let mut no_answer = |_: &str| Ok(Zeroizing::default());
         drop(super::unlock_asking(&vault, &config, &mut no_answer, &mut desk).unwrap());
         let noted = std::fs::read_to_string(&seen).unwrap();
         assert_eq!(
@@ -2362,7 +2385,7 @@ pub(crate) mod tests {
         );
         std::fs::remove_file(&seen).unwrap();
         let code = codes.first().unwrap().clone();
-        drop(unlock_asking(&vault, &config, &mut |_| Ok(code.clone())).unwrap());
+        drop(unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::new(code.clone()))).unwrap());
         assert!(!seen.exists(), "a code says nothing of any key");
     }
 
@@ -2392,7 +2415,7 @@ pub(crate) mod tests {
         crate::key_seen::note(path, &keys.first().unwrap().id, long_ago).unwrap();
         let mut run = |action: &str| {
             let mut out = Vec::new();
-            let mut no_answer = |_: &str| Ok(String::new());
+            let mut no_answer = |_: &str| Ok(Zeroizing::default());
             let stores = secrets(&vault);
             let done = command(
                 &vault,
@@ -2472,7 +2495,7 @@ pub(crate) mod tests {
         let mut prompts = Vec::new();
         let dek = unlock_asking(&vault, &config, &mut |prompt| {
             prompts.push(prompt.to_owned());
-            Ok(code.clone())
+            Ok(Zeroizing::new(code.clone()))
         })
         .unwrap();
         assert!(reads_the_secret(&vault, &dek));
@@ -2480,12 +2503,15 @@ pub(crate) mod tests {
         assert!(status(&config).unwrap().ends_with("9 backup code(s) left"));
         assert!(
             matches!(
-                unlock_asking(&vault, &config, &mut |_| Ok(code.clone())),
+                unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::new(code.clone()))),
                 Err(Error::Vault { .. })
             ),
             "used up"
         );
-        let err = unlock_asking(&vault, &config, &mut |_| Ok(String::from("  "))).unwrap_err();
+        let err = unlock_asking(&vault, &config, &mut |_| {
+            Ok(Zeroizing::new(String::from("  ")))
+        })
+        .unwrap_err();
         assert!(
             matches!(&err, Error::Usage { reason } if reason.contains("stopped; nothing was changed")),
             "no code, no start: {err}"
@@ -2495,7 +2521,7 @@ pub(crate) mod tests {
                 &vault,
                 &config,
                 Factors {
-                    backup_code: Some(code),
+                    backup_code: Some(Zeroizing::new(code)),
                     ..Factors::default()
                 }
             ),
@@ -2507,26 +2533,32 @@ pub(crate) mod tests {
     fn a_backup_code_can_renew_the_codes_but_never_lower_the_tier() {
         let (_scratch, vault, config, codes) = hardware_with_codes("codes-renew");
         let mut answers = codes.iter().cloned();
-        let renewed: Vec<String> =
-            backup_codes(&vault, &config, &mut |_| Ok(answers.next().unwrap()))
-                .unwrap()
-                .codes()
-                .map(str::to_owned)
-                .collect();
+        let renewed: Vec<String> = backup_codes(&vault, &config, &mut |_| {
+            Ok(Zeroizing::new(answers.next().unwrap()))
+        })
+        .unwrap()
+        .codes()
+        .map(str::to_owned)
+        .collect();
         assert!(
             status(&config).unwrap().ends_with("10 backup code(s) left"),
             "a new set"
         );
         assert!(
             matches!(
-                unlock_asking(&vault, &config, &mut |_| Ok(codes.get(1).unwrap().clone())),
+                unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::new(
+                    codes.get(1).unwrap().clone()
+                ))),
                 Err(Error::Vault { .. })
             ),
             "the old set is gone"
         );
         // Recovery restores; it does not downgrade to TOTP.
         let mut fresh = renewed.iter().cloned();
-        let err = enroll_totp(&vault, &config, &mut |_| Ok(fresh.next().unwrap())).unwrap_err();
+        let err = enroll_totp(&vault, &config, &mut |_| {
+            Ok(Zeroizing::new(fresh.next().unwrap()))
+        })
+        .unwrap_err();
         assert!(
             matches!(
                 err,
@@ -2598,12 +2630,12 @@ pub(crate) mod tests {
             require_key_pin: false,
             ..config
         };
-        let err = unlock_asking(&vault, &config, &mut |_| Ok(String::new())).unwrap_err();
+        let err = unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap_err();
         assert!(
             matches!(&err, Error::Usage { reason } if reason.contains("lower tier")),
             "{err}"
         );
-        let err = enroll_totp(&vault, &config, &mut |_| Ok(String::new())).unwrap_err();
+        let err = enroll_totp(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap_err();
         assert!(
             matches!(&err, Error::Usage { reason } if reason.contains("TOTP is below it")),
             "{err}"
@@ -2620,8 +2652,10 @@ pub(crate) mod tests {
             require_key_pin: false,
             ..config
         };
-        let dek =
-            unlock_asking(&vault, &config, &mut |_| Ok(codes.first().unwrap().clone())).unwrap();
+        let dek = unlock_asking(&vault, &config, &mut |_| {
+            Ok(Zeroizing::new(codes.first().unwrap().clone()))
+        })
+        .unwrap();
         assert!(reads_the_secret(&vault, &dek));
     }
 
@@ -2629,7 +2663,7 @@ pub(crate) mod tests {
     fn the_command_runs_each_action_and_reports_it() {
         let (scratch, vault) = scratch("command");
         let config = keyring_config(&scratch);
-        let mut never = |_: &str| -> Result<String, Error> { Ok(String::new()) };
+        let mut never = |_: &str| -> Result<Zeroizing<String>, Error> { Ok(Zeroizing::default()) };
         let run = |action: Option<&str>, ask: Ask<'_>| {
             let mut out = Vec::new();
             command(
@@ -2657,9 +2691,11 @@ pub(crate) mod tests {
         assert_eq!(codes.lines().count(), 11, "a heading and ten codes");
         let mut app = App::new(0);
         assert!(
-            run(Some("enroll-totp"), &mut |prompt| Ok(app.answer(prompt)))
-                .unwrap()
-                .contains("TOTP tier")
+            run(Some("enroll-totp"), &mut |prompt| Ok(Zeroizing::new(
+                app.answer(prompt)
+            )))
+            .unwrap()
+            .contains("TOTP tier")
         );
         for bad in [None, Some("bogus")] {
             assert!(matches!(run(bad, &mut never), Err(Error::Usage { .. })));
@@ -2734,7 +2770,7 @@ pub(crate) mod tests {
     ) -> (Scratch, VaultConfig, KeyringConfig, Vec<String>, Desk) {
         use hatchling_vault::virtual_key::VirtualAuthenticator;
         let (scratch, vault, config) = adopted(name);
-        backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
+        backup_codes(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap();
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         let kek = Kek::from_file_key(&FileKey::new(config.kek_file(&vault)).load().unwrap());
         let unlocked = keyring.unlock_file(&kek).unwrap();
@@ -2922,7 +2958,7 @@ pub(crate) mod tests {
         );
         let added = add_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         )
         .unwrap();
@@ -2982,7 +3018,7 @@ pub(crate) mod tests {
         );
         add_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         )
         .unwrap();
@@ -3004,7 +3040,7 @@ pub(crate) mod tests {
         );
         let declined = add_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         );
         assert!(refused(&declined, "stopped; nothing was changed"));
@@ -3022,7 +3058,7 @@ pub(crate) mod tests {
         assert!(refused(
             &add_key(
                 &config,
-                &mut |prompt| Ok(operator.answer(prompt)),
+                &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
                 &mut desk
             ),
             "stopped"
@@ -3033,7 +3069,7 @@ pub(crate) mod tests {
         assert!(refused(
             &add_key(
                 &config,
-                &mut |prompt| Ok(operator.answer(prompt)),
+                &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
                 &mut desk
             ),
             "stopped"
@@ -3057,7 +3093,7 @@ pub(crate) mod tests {
             &config,
             &mut |prompt| {
                 asked.push(prompt.to_owned());
-                Ok(String::new())
+                Ok(Zeroizing::default())
             },
             &mut NoKeys,
         );
@@ -3079,7 +3115,7 @@ pub(crate) mod tests {
             &low,
             &mut |prompt| {
                 asked.push(prompt.to_owned());
-                Ok(String::new())
+                Ok(Zeroizing::default())
             },
             &mut NoKeys,
         );
@@ -3102,7 +3138,7 @@ pub(crate) mod tests {
             Operator::new(&desk, &[(first, Some(0)), ("yes", Some(0)), ("", Some(0))]);
         let own = remove_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         );
         assert!(
@@ -3117,7 +3153,7 @@ pub(crate) mod tests {
             Operator::new(&desk, &[(first, Some(0)), ("yes", Some(1)), ("", Some(1))]);
         let removed = remove_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         )
         .unwrap();
@@ -3127,7 +3163,7 @@ pub(crate) mod tests {
         assert!(refused(
             &remove_key(
                 &config,
-                &mut |prompt| Ok(operator.answer(prompt)),
+                &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
                 &mut desk
             ),
             "stopped"
@@ -3156,7 +3192,7 @@ pub(crate) mod tests {
         );
         remove_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut NoKeys,
         )
         .unwrap();
@@ -3169,7 +3205,7 @@ pub(crate) mod tests {
         let mut operator = Operator::new(&desk, &[(third, None)]);
         let last = remove_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         );
         assert!(refused(&last, "it is the last security key"));
@@ -3199,7 +3235,7 @@ pub(crate) mod tests {
         let mut operator = Operator::new(&desk, &[(second.as_str(), None)]);
         let up_front = remove_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut NoKeys,
         );
         assert!(
@@ -3221,12 +3257,17 @@ pub(crate) mod tests {
         assert_eq!((keys_of(&config).len(), codes_left(&config)), (2, 1));
         // The asking and the key's unlock, on their own.
         let mut operator = Operator::new(&desk, &[("  a-code ", None), ("", None)]);
-        let mut answer = |prompt: &str| -> Result<String, Error> { Ok(operator.answer(prompt)) };
+        let mut answer = |prompt: &str| -> Result<Zeroizing<String>, Error> {
+            Ok(Zeroizing::new(operator.answer(prompt)))
+        };
         // A key that's there is the answer: nothing's asked.
         desk.plugged.set(Some(0));
         assert_eq!(authorization(&mut answer, &mut desk).unwrap(), None);
         assert_eq!(
-            authorization(&mut answer, &mut NoKeys).unwrap().as_deref(),
+            authorization(&mut answer, &mut NoKeys)
+                .unwrap()
+                .as_ref()
+                .map(|code| code.as_str()),
             Some("a-code")
         );
         assert_eq!(authorization(&mut answer, &mut NoKeys).unwrap(), None);
@@ -3253,7 +3294,7 @@ pub(crate) mod tests {
         );
         let removed = remove_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         )
         .unwrap();
@@ -3275,7 +3316,7 @@ pub(crate) mod tests {
             assert!(matches!(
                 remove_key(
                     &config,
-                    &mut |prompt| Ok(operator.answer(prompt)),
+                    &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
                     &mut desk
                 ),
                 Err(Error::Vault {
@@ -3295,7 +3336,7 @@ pub(crate) mod tests {
         assert!(refused(
             &remove_key(
                 &bare,
-                &mut |prompt| Ok(operator.answer(prompt)),
+                &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
                 &mut bare_desk
             ),
             "one security key and no backup codes"
@@ -3305,15 +3346,25 @@ pub(crate) mod tests {
         let (_low_scratch, _low_vault, low) = adopted("remove-low");
         let mut operator = Operator::new(&desk, &[]);
         assert!(refused(
-            &remove_key(&low, &mut |prompt| Ok(operator.answer(prompt)), &mut desk),
+            &remove_key(
+                &low,
+                &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
+                &mut desk
+            ),
             "no security keys"
         ));
         assert!(refused(
-            &label_key(&low, &mut |prompt| Ok(operator.answer(prompt)), &mut desk),
+            &label_key(
+                &low,
+                &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
+                &mut desk
+            ),
             "no security keys"
         ));
         assert!(refused(
-            &chosen_key(&[], "name", &mut |prompt| Ok(operator.answer(prompt))),
+            &chosen_key(&[], "name", &mut |prompt| Ok(Zeroizing::new(
+                operator.answer(prompt)
+            ))),
             "no security keys"
         ));
     }
@@ -3333,7 +3384,7 @@ pub(crate) mod tests {
         );
         let named = label_key(
             &config,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         )
         .unwrap();
@@ -3346,7 +3397,7 @@ pub(crate) mod tests {
         assert!(report(&config).unwrap().contains(&line));
         let mut operator = Operator::new(&desk, &[("one", None), ("two", None), ("three", None)]);
         assert_eq!(
-            asked_label(&mut |prompt| Ok(operator.answer(prompt)))
+            asked_label(&mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))))
                 .unwrap()
                 .as_str(),
             "one"
@@ -3356,14 +3407,14 @@ pub(crate) mod tests {
         let mut operator = Operator::new(&desk, &[("", Some(1))]);
         let by_key = authorize(
             &mut keyring,
-            &mut |prompt| Ok(operator.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         )
         .unwrap();
         assert_eq!(by_key.opened_by(), Some(second.as_str()));
         let mut operator = Operator::new(&desk, &[("", None)]);
         assert!(matches!(
-            authorize(&mut keyring, &mut |prompt| Ok(operator.answer(prompt)), &mut NoKeys),
+            authorize(&mut keyring, &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))), &mut NoKeys),
             Err(Error::Usage { reason }) if reason == "stopped; nothing was changed"
         ));
         assert!(
@@ -3383,7 +3434,7 @@ pub(crate) mod tests {
                 &config,
                 &secrets(&vault),
                 Some(action),
-                &mut |prompt| Ok(operator.answer(prompt)),
+                &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
                 desk,
                 &mut out,
             )
@@ -3530,7 +3581,7 @@ pub(crate) mod tests {
         let mut keyring = Keyring::load(config.keyring.as_ref().unwrap()).unwrap();
         let mut ask = |prompt: &str| {
             said.push(prompt.to_owned());
-            Ok(String::new())
+            Ok(Zeroizing::default())
         };
         let mut devices = SecurityKeys::new(Tray {
             keys: Vec::new(),
@@ -3614,14 +3665,16 @@ pub(crate) mod tests {
     fn answers<'a>(
         given: &'a [&'a str],
         asked: &'a mut Vec<String>,
-    ) -> impl FnMut(&str) -> Result<String, Error> + 'a {
+    ) -> impl FnMut(&str) -> Result<Zeroizing<String>, Error> + 'a {
         let mut given = given.iter();
         move |prompt| {
             asked.push(prompt.to_owned());
-            Ok(given
-                .next()
-                .map(|answer| (*answer).to_owned())
-                .unwrap_or_default())
+            Ok(Zeroizing::new(
+                given
+                    .next()
+                    .map(|answer| (*answer).to_owned())
+                    .unwrap_or_default(),
+            ))
         }
     }
 
@@ -3709,7 +3762,7 @@ pub(crate) mod tests {
         assert!(
             matches!(&refused_without_codes, Err(Error::Usage { reason }) if reason.contains("make them first"))
         );
-        backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
+        backup_codes(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap();
         let mut asked = Vec::new();
         let declined = enroll_keys(
             &vault,
@@ -3765,7 +3818,7 @@ pub(crate) mod tests {
             &mut one,
         );
         assert!(matches!(unknown, Err(Error::Usage { reason }) if reason.contains("stopped")));
-        backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
+        backup_codes(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap();
         let (mut none, _) = tray(1, &[]);
         let mut asked = Vec::new();
         let absent = enroll_keys(
@@ -4236,7 +4289,7 @@ pub(crate) mod tests {
             &vault,
             &config,
             &stores,
-            &mut |_| Ok(String::new()),
+            &mut |_| Ok(Zeroizing::default()),
             &mut NoKeys,
         )
         .unwrap();
@@ -4262,13 +4315,16 @@ pub(crate) mod tests {
         );
         // At the TOTP tier, the app's next code is all it takes.
         let mut app = App::new(0);
-        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        enroll_totp(&vault, &config, &mut |prompt| {
+            Ok(Zeroizing::new(app.answer(prompt)))
+        })
+        .unwrap();
         let sealed = std::fs::read(vault.root.join("token")).unwrap();
         rekey(
             &vault,
             &config,
             &secrets(&vault),
-            &mut |_| Ok(app.code(30)),
+            &mut |_| Ok(Zeroizing::new(app.code(30))),
             &mut NoKeys,
         )
         .unwrap();
@@ -4314,7 +4370,7 @@ pub(crate) mod tests {
             &vault,
             &config,
             &stores,
-            &mut |_| Ok(String::new()),
+            &mut |_| Ok(Zeroizing::default()),
             &mut NoKeys,
         )
         .unwrap();
@@ -4336,7 +4392,7 @@ pub(crate) mod tests {
                 &vault,
                 &config,
                 &stores,
-                &mut |_| Ok(String::new()),
+                &mut |_| Ok(Zeroizing::default()),
                 &mut NoKeys
             )
             .is_err()
@@ -4363,7 +4419,7 @@ pub(crate) mod tests {
             &vault,
             &config,
             &stores,
-            &mut |prompt| Ok(app.answer(prompt)),
+            &mut |prompt| Ok(Zeroizing::new(app.answer(prompt))),
             &mut NoKeys,
         )
         .unwrap();
@@ -4392,7 +4448,8 @@ pub(crate) mod tests {
                 .is_err()
         }));
         assert!(!opens_all(&stores, from_copy.key()));
-        let now = unlock_asking(&vault, &config, &mut |_| Ok(app.code(30))).unwrap();
+        let now =
+            unlock_asking(&vault, &config, &mut |_| Ok(Zeroizing::new(app.code(30)))).unwrap();
         assert!(opens_all(&stores, &now));
     }
 
@@ -4421,7 +4478,10 @@ pub(crate) mod tests {
         assert!(settled(&keyring).is_ok());
         // A KEK file that can't be removed off the file tier is an error.
         let mut app = App::new(0);
-        enroll_totp(&vault, &config, &mut |prompt| Ok(app.answer(prompt))).unwrap();
+        enroll_totp(&vault, &config, &mut |prompt| {
+            Ok(Zeroizing::new(app.answer(prompt)))
+        })
+        .unwrap();
         let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
         assert!(off_the_file_tier(&keyring) && !opens_with_the_kek_file(&keyring));
         assert!(kek_file_may_go(&keyring));
@@ -4452,7 +4512,7 @@ pub(crate) mod tests {
         new_codes(&mut out, None);
         assert!(out.is_empty());
         let (_scratch, vault, config) = adopted("new-codes");
-        let codes = backup_codes(&vault, &config, &mut |_| Ok(String::new())).unwrap();
+        let codes = backup_codes(&vault, &config, &mut |_| Ok(Zeroizing::default())).unwrap();
         new_codes(&mut out, Some(&codes));
         let shown = String::from_utf8(out).unwrap();
         assert!(shown.starts_with("vault-keyring: new backup codes for the new key"));
@@ -4564,9 +4624,10 @@ pub(crate) mod tests {
                 && refused.contains("asks only for a touch"),
             "{refused}"
         );
-        let refused_asking = unlock_asking(&touch_vault, &strict, &mut |_| Ok(String::new()))
-            .unwrap_err()
-            .to_string();
+        let refused_asking =
+            unlock_asking(&touch_vault, &strict, &mut |_| Ok(Zeroizing::default()))
+                .unwrap_err()
+                .to_string();
         assert!(
             refused_asking.contains("HATCHLING_REQUIRE_KEY_PIN"),
             "{refused_asking}"

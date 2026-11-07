@@ -8,8 +8,10 @@
 //! protected by a security key never came back after a reboot.
 //!
 //! Now the keeper waits, locked, on a socket of its own
-//! ([`socket_path`], in a directory only its user and root can reach),
-//! and the operator unlocks it with `sudo hatchling-broker unlock`
+//! ([`socket_path`], 0600, in a directory only its user and root can list,
+//! though anyone may look for the socket by its name, as the app does to
+//! say it's locked), and the operator unlocks it with
+//! `sudo hatchling-broker unlock`
 //! ([`unlock_main`]), in their own terminal:
 //!
 //! 1. The command, as root, opens the security keys plugged in now (the
@@ -30,22 +32,26 @@
 //! the socket carries questions, answers and the keys' descriptors, and
 //! the unlock happens where it always did. Only root may connect (the
 //! peer's credentials are checked), as only root could start the broker
-//! at a terminal. The PIN crosses a local socket between two of root's
-//! processes, held in memory that's cleared after. Anyone who can't be
-//! root on this machine can't unlock it, and a stolen machine, powered
-//! off, opens nothing without the key.
+//! at a terminal. The PIN crosses a local socket between root's command
+//! and the keeper, in frames and buffers wiped after. What this doesn't
+//! reach: the terminal's and stdin's own buffers in the command, and, for
+//! an answer with a character JSON escapes (a quote, a backslash, a control
+//! character), the JSON parser's scratch buffer in the keeper. Anyone who
+//! can't be root on this machine can't unlock it, and a stolen machine,
+//! powered off, opens nothing without the key.
 
 use std::fs::File;
 use std::io::{IsTerminal as _, Write as _};
 use std::os::fd::AsFd as _;
-use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 use std::time::Duration;
 
+use hatchling_core::SocketPath;
 use hatchling_core::framing::{read_frame, write_frame};
+use hatchling_core::ui::Concealed;
 use hatchling_vault::{Keyring, MasterKey, Tier};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -96,8 +102,9 @@ enum ToOperator {
 enum ToKeeper {
     /// The security keys it opened, by node: as many descriptors follow.
     Keys { nodes: Vec<String> },
-    /// The answer to the last question.
-    Answer { text: String },
+    /// The answer to the last question, wiped when dropped: it can be a
+    /// PIN or a code.
+    Answer { text: Concealed },
 }
 
 /// The directory of the unlock socket: beside the vault, its keeper's
@@ -153,7 +160,10 @@ pub fn master_key_for_start(vault: &VaultConfig) -> Result<MasterKey, Error> {
 }
 
 /// A fresh socket at `path`, its directory made private if it isn't
-/// there, and a socket left by an earlier start replaced.
+/// there, and a socket left by an earlier start replaced. Bound the way
+/// every socket is ([`crate::listener::bind_socket`]): owner-only from the
+/// moment it exists, and anything at `path` but a socket of this user's is
+/// left where it is, and stops the wait.
 fn listen(path: &Path) -> Result<UnixListener, Error> {
     let failed = |why: String| Error::Keeper {
         reason: format!("cannot wait to be unlocked at {}: {why}", path.display()),
@@ -163,20 +173,16 @@ fn listen(path: &Path) -> Result<UnixListener, Error> {
             hatchling_sys::create_private_dir(dir).map_err(|e| failed(e.to_string()))?;
         }
     }
-    match std::fs::remove_file(path) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            return Err(failed(error.to_string()));
-        }
-        _ => {}
-    }
-    let listener = UnixListener::bind(path).map_err(|e| failed(e.to_string()))?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| failed(e.to_string()))?;
+    let socket: SocketPath = path
+        .to_str()
+        .and_then(|path| path.parse().ok())
+        .ok_or_else(|| failed(String::from("its path isn't one a socket can have")))?;
+    let listener =
+        crate::listener::bind_socket(&socket, 0o600).map_err(|e| failed(e.to_string()))?;
     // Past this directory, not into it: the app's host may see that the
     // socket is there, so the app can say it's locked. Only root may use it.
     if let Some(dir) = path.parent() {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o711))
-            .map_err(|e| failed(e.to_string()))?;
+        hatchling_sys::chmod_dir(dir, 0o711).map_err(|e| failed(e.to_string()))?;
     }
     Ok(listener)
 }
@@ -280,7 +286,6 @@ pub(crate) fn unlock_relayed(
             prompt,
             crate::vault_keyring::asks_for_a_code(prompt),
         )
-        .map(|answer| answer.to_string())
     };
     crate::vault_keyring::unlock_asking(vault, keyring, &mut ask, devices)
 }
@@ -349,7 +354,9 @@ fn relay(stream: &UnixStream, prompt: &str, secret: bool) -> Result<Zeroizing<St
     )?;
     let frame = Zeroizing::new(read_frame(stream).map_err(|e| framing(&e))?);
     match serde_json::from_slice::<ToKeeper>(&frame) {
-        Ok(ToKeeper::Answer { text }) if text.len() <= MAX_ANSWER => Ok(Zeroizing::new(text)),
+        Ok(ToKeeper::Answer { text }) if text.expose().len() <= MAX_ANSWER => {
+            Ok(Zeroizing::new(text.expose().to_owned()))
+        }
         _ => Err(protocol("its answer wasn't one")),
     }
 }
@@ -551,12 +558,7 @@ pub(crate) fn operate(
         match serde_json::from_slice::<ToOperator>(&frame) {
             Ok(ToOperator::Ask { prompt, secret }) => {
                 let text = answer(&prompt, secret)?;
-                let reply = Zeroizing::new(
-                    serde_json::to_vec(&ToKeeper::Answer {
-                        text: text.to_string(),
-                    })
-                    .map_err(|e| e.to_string())?,
-                );
+                let reply = answer_frame(&text).map_err(|e| e.to_string())?;
                 write_frame(stream, &reply).map_err(late)?;
                 asked = true;
             }
@@ -572,6 +574,19 @@ pub(crate) fn operate(
             }
         }
     }
+}
+
+/// `text` as the frame that answers a question: in a buffer sized up
+/// front, as no character takes more than six bytes in JSON, and wiped when
+/// dropped, so a buffer that grew leaves no copy of a PIN behind.
+fn answer_frame(text: &str) -> serde_json::Result<Zeroizing<Vec<u8>>> {
+    let answer = ToKeeper::Answer {
+        text: Concealed::new(text.to_owned()),
+    };
+    let room = text.len().saturating_mul(6).saturating_add(64);
+    let mut frame = Zeroizing::new(Vec::with_capacity(room));
+    serde_json::to_writer(&mut *frame, &answer)?;
+    Ok(frame)
 }
 
 /// What the keeper said last on `stream`, if it said why it stopped.

@@ -426,8 +426,7 @@ fn make_backup(
         Path::to_path_buf,
     );
     if to.is_none() {
-        fs::create_dir_all(BACKUPS).map_err(ring::io_error)?;
-        fs::set_permissions(BACKUPS, fs::Permissions::from_mode(0o700)).map_err(ring::io_error)?;
+        private_dir(Path::new(BACKUPS))?;
     }
     write_backup(&places(config)?, key, ring_bytes, &path)?;
     if to.is_none() {
@@ -440,10 +439,23 @@ fn make_backup(
     Ok(path)
 }
 
+/// Makes `dir`, and what's above it, and makes `dir` root's alone. Done on
+/// the directory itself, never through a link: root's own mode change
+/// would otherwise land on the link's target.
+fn private_dir(dir: &Path) -> Result<(), Error> {
+    if let Some(above) = dir.parent() {
+        fs::create_dir_all(above).map_err(ring::io_error)?;
+    }
+    hatchling_sys::ensure_private_dir(dir).map_err(sys_error)
+}
+
+fn sys_error(source: hatchling_sys::Error) -> Error {
+    ring::io_error(std::io::Error::other(source))
+}
+
 /// Marks a backup made now, in `dir`.
 fn mark_backup(dir: &Path) -> Result<(), Error> {
-    fs::create_dir_all(dir).map_err(ring::io_error)?;
-    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(ring::io_error)?;
+    private_dir(dir)?;
     let marked = dir.join(LAST);
     let _ = fs::remove_file(&marked);
     fs::OpenOptions::new()
@@ -588,11 +600,13 @@ fn open_for_restore(
         });
     }
     let staged = path.with_extension("restoring");
-    fs::write(&staged, ring_bytes).map_err(ring::io_error)?;
-    fs::set_permissions(&staged, fs::Permissions::from_mode(0o600)).map_err(ring::io_error)?;
-    if let Ok(Some((uid, gid))) = crate::keeper::keeper_user() {
-        std::os::unix::fs::chown(&staged, Some(uid), Some(gid)).map_err(ring::io_error)?;
-    }
+    // As root, in a directory the keeper's user owns: a name it can plant.
+    hatchling_sys::replace_file(
+        &staged,
+        ring_bytes,
+        crate::keeper::keeper_user().ok().flatten(),
+    )
+    .map_err(sys_error)?;
     let mut loaded = Keyring::load(&staged).map_err(ring::vault_error)?;
     let unlocked = ring::unlock_current(&mut loaded, &config.vault, keyring, ask, devices)?;
     Ok((unlocked.into_key(), staged))
@@ -831,6 +845,73 @@ mod tests {
         assert!(backup_marked(&dir).unwrap().abs_diff(now) < 60);
         note_last_backup(&dir);
         assert_eq!(last_backup(), backup_marked(&dir));
+    }
+
+    /// A link planted where the backups' directory goes isn't followed:
+    /// what it points at keeps its mode, and nothing is marked in it.
+    #[test]
+    fn a_backups_directory_is_never_reached_through_a_link() {
+        let scratch = Scratch::new("backup-link");
+        let target = scratch.0.join("target");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        let link = scratch.0.join("backups");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(mark_backup(&link).is_err());
+        let meta = fs::metadata(&target).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o755);
+        assert!(fs::read_dir(&target).unwrap().next().is_none());
+    }
+
+    /// A restore stages a backup's keyring beside the real one, as root, in
+    /// a directory the keeper's user owns. A link planted there, or a stale
+    /// file, is replaced; what the link pointed at isn't written, nor
+    /// changed in mode, and the keyring there is what's staged.
+    #[test]
+    fn a_restores_keyring_never_goes_through_a_planted_link() {
+        let scratch = Scratch::new("restore-link");
+        let dir = scratch.0.join("ring");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = scratch.0.join("vault");
+        config.vault.key_file = dir.join("vault.key");
+        drop(
+            FileKey::new(config.vault.key_file.clone())
+                .load_or_create()
+                .unwrap(),
+        );
+        let keyring = KeyringConfig {
+            keyring: Some(dir.join("keyring")),
+            kek_file: Some(dir.join("kek")),
+            ..KeyringConfig::default()
+        };
+        ring::init(&config.vault, &keyring).unwrap();
+        let ring_bytes = fs::read(dir.join("keyring")).unwrap();
+        let target = scratch.0.join("target");
+        fs::write(&target, b"untouched").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        let staged = dir.join("keyring.restoring");
+        let mut ask = |_: &str| Ok(zeroize::Zeroizing::default());
+        let open = |ask: Ask<'_>| {
+            open_for_restore(&config, &keyring, &ring_bytes, ask, &mut ring::NoKeys).unwrap()
+        };
+
+        std::os::unix::fs::symlink(&target, &staged).unwrap();
+        let (_, path) = open(&mut ask);
+        assert_eq!(path, staged);
+        assert_eq!(fs::read(&target).unwrap(), b"untouched");
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "the link's target changed mode");
+        let file = fs::symlink_metadata(&staged).unwrap();
+        assert!(file.is_file(), "the link is still there");
+        assert_eq!(file.permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::read(&staged).unwrap(), ring_bytes);
+
+        // A stale file of an earlier restore goes the same way.
+        fs::write(&staged, b"stale").unwrap();
+        open(&mut ask);
+        assert_eq!(fs::read(&staged).unwrap(), ring_bytes);
     }
 
     #[test]

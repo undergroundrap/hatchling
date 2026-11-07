@@ -1,4 +1,5 @@
 use std::io::{Read as _, Seek as _};
+use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 
@@ -110,6 +111,53 @@ fn a_socket_left_by_an_earlier_start_is_replaced_and_only_its_being_there_shows(
         & 0o777;
     assert_eq!(mode, 0o711);
     drop(again);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The socket is 0600, and only a stale socket is replaced: a file or a
+/// link at its path stops the wait, and is left as it was.
+#[test]
+fn only_a_socket_is_replaced_and_it_is_the_owners_alone() {
+    let dir = scratch("not-a-socket");
+    let path = dir.join("fresh").join("unlock.sock");
+    drop(listen(&path).unwrap());
+    let mode = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&path), 0o600);
+    std::fs::remove_file(&path).unwrap();
+
+    std::fs::write(&path, b"kept").unwrap();
+    assert!(listen(&path).is_err(), "a file was replaced");
+    assert_eq!(std::fs::read(&path).unwrap(), b"kept");
+    std::fs::remove_file(&path).unwrap();
+
+    let target = dir.join("target");
+    std::fs::write(&target, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(listen(&path).is_err(), "a link was replaced");
+    assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The waiting socket's directory is opened, not looked up: with a link in
+/// its place, what it points at keeps its mode.
+#[test]
+fn the_sockets_directory_is_never_reached_through_a_link() {
+    let dir = scratch("linked-dir");
+    let target = dir.join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let linked = dir.join("linked");
+    std::os::unix::fs::symlink(&target, &linked).unwrap();
+    assert!(listen(&linked.join("unlock.sock")).is_err());
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -227,7 +275,7 @@ fn keys_that_arent_ones_are_refused_before_any_is_taken() {
     // Something else first is no try.
     let (keeper, operator_end) = pair();
     let answer = serde_json::to_vec(&ToKeeper::Answer {
-        text: String::from("x"),
+        text: Concealed::new(String::from("x")),
     })
     .unwrap();
     write_frame(&operator_end, &answer).unwrap();
@@ -271,11 +319,34 @@ fn a_node_is_hidraw_and_a_number() {
     }
 }
 
+/// An answer's frame reads back as the answer, and however many of its
+/// characters JSON escapes, it's made in the one buffer it started in.
+#[test]
+fn an_answers_frame_never_grows_its_buffer() {
+    for text in [
+        "1234",
+        "",
+        "\"\\\u{1}".repeat(40).as_str(),
+        "x".repeat(256).as_str(),
+    ] {
+        let frame = answer_frame(text).unwrap();
+        assert_eq!(
+            frame.capacity(),
+            text.len().saturating_mul(6).saturating_add(64),
+            "it grew"
+        );
+        let Ok(ToKeeper::Answer { text: read }) = serde_json::from_slice(&frame) else {
+            unreachable!("not an answer");
+        };
+        assert_eq!(read.expose(), text);
+    }
+}
+
 #[test]
 fn an_answer_too_long_or_not_an_answer_ends_the_try() {
     for reply in [
         serde_json::to_vec(&ToKeeper::Answer {
-            text: "9".repeat(MAX_ANSWER + 1),
+            text: Concealed::new("9".repeat(MAX_ANSWER + 1)),
         })
         .unwrap(),
         serde_json::to_vec(&ToKeeper::Keys { nodes: Vec::new() }).unwrap(),
@@ -298,7 +369,7 @@ fn an_answer_too_long_or_not_an_answer_ends_the_try() {
         write_frame(
             &operator_end,
             &serde_json::to_vec(&ToKeeper::Answer {
-                text: "9".repeat(MAX_ANSWER),
+                text: Concealed::new("9".repeat(MAX_ANSWER)),
             })
             .unwrap(),
         )

@@ -132,9 +132,10 @@ impl hatchling_broker::harness::HarnessVault for Holding {
         None
     }
 
-    fn held(&self) -> Result<hatchling_artifact::SecretSet, String> {
+    fn contains(&self, text: &[u8]) -> Result<bool, String> {
         self.0
             .map(|held| hatchling_artifact::SecretSet::new([held.as_bytes().to_vec()]))
+            .map(|set| set.exposed_in(text))
             .map_err(str::to_owned)
     }
 }
@@ -310,7 +311,99 @@ fn a_harness_doesnt_start_when_the_secrets_cant_be_read() -> Result<(), String> 
     let input = brief("STUB edit src/lib.rs", &["src/lib.rs"]);
     let refused = invoke_with(&skills, "claude-code@1", &input, &Holding(Err("locked")));
     assert_eq!(refused, Err(format!("{:?}", SkillResult::SkillError)));
-    assert!(deployment.activity().is_empty(), "it never ran");
+    let activity = deployment.activity();
+    let [only] = activity.as_slice() else {
+        return Err(format!("{activity:?}"));
+    };
+    assert!(
+        matches!(
+            only.kind,
+            SubagentEvent::HarnessRun {
+                outcome: HarnessOutcome::Failed,
+                files_changed: 0,
+                ..
+            }
+        ),
+        "{only:?}"
+    );
+    assert!(
+        std::fs::read_dir(deployment.dir.join("workspace"))
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_none(),
+        "no patch"
+    );
+    Ok(())
+}
+
+/// A vault that answers `left` checks, then goes, as a keeper can.
+struct Goes {
+    left: std::cell::Cell<u32>,
+    checked: std::cell::Cell<u32>,
+}
+
+impl Goes {
+    const fn after(left: u32) -> Self {
+        Self {
+            left: std::cell::Cell::new(left),
+            checked: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl hatchling_broker::harness::HarnessVault for Goes {
+    fn key(&self, _secret: &str) -> Option<zeroize::Zeroizing<String>> {
+        None
+    }
+
+    fn contains(&self, _text: &[u8]) -> Result<bool, String> {
+        self.checked.set(self.checked.get() + 1);
+        let left = self.left.get();
+        if left == 0 {
+            return Err(String::from("gone"));
+        }
+        self.left.set(left - 1);
+        Ok(false)
+    }
+}
+
+/// The vault that goes while a run is under way: the run started, so its
+/// work tree is lost to the owner, but what it wrote isn't delivered
+/// unchecked: not its patch, and not its report. Three checks let it start:
+/// the task, the file's name, the file. The fourth is the patch's.
+#[test]
+fn what_a_run_wrote_goes_nowhere_when_the_vault_goes_during_it() -> Result<(), String> {
+    if !guard_cell_available()? {
+        return Ok(());
+    }
+    let deployment = Deployment::new("harness-goes")?;
+    let skills = deployment.skills("20")?;
+    let input = brief("Add a helper.\nSTUB edit src/lib.rs", &["src/lib.rs"]);
+    let goes = Goes::after(3);
+    let refused = invoke_with(&skills, "claude-code@1", &input, &goes);
+    assert_eq!(refused, Err(format!("{:?}", SkillResult::SkillError)));
+    assert!(goes.checked.get() > 3, "it never got to the patch");
+    assert!(
+        std::fs::read_dir(deployment.dir.join("workspace"))
+            .map_err(|e| e.to_string())?
+            .next()
+            .is_none(),
+        "a patch went out unchecked"
+    );
+    let activity = deployment.activity();
+    let [only] = activity.as_slice() else {
+        return Err(format!("{activity:?}"));
+    };
+    assert!(
+        matches!(
+            only.kind,
+            SubagentEvent::HarnessRun {
+                outcome: HarnessOutcome::Done,
+                ..
+            }
+        ),
+        "the harness ran: {only:?}"
+    );
     Ok(())
 }
 

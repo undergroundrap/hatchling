@@ -404,6 +404,45 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Whether it's locked is the host's to say to its own pages alone:
+    /// asked by another name, a rebound one, it's refused, and says nothing.
+    #[test]
+    fn another_host_is_refused_the_locked_answer() {
+        let dir = std::env::temp_dir().join(format!("hatchling-host-host-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("unlock.sock");
+        std::fs::write(&socket, b"").unwrap();
+        let settings = Settings {
+            ui_socket: dir.join("ui.sock"),
+            ui_dir: dir.clone(),
+            port: 0,
+            operator_socket: None,
+            unlock_socket: Some(socket),
+        };
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let serving = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            handle(stream, &settings)
+        });
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(
+            client,
+            "GET /hatchling-locked HTTP/1.1\r\nHost: evil.example:{port}\r\n\r\n"
+        )
+        .unwrap();
+        let mut answer = String::new();
+        client.read_to_string(&mut answer).unwrap();
+        serving.join().unwrap().unwrap();
+        assert!(answer.starts_with("HTTP/1.1 403"), "{answer}");
+        assert!(!answer.contains("locked"), "{answer}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The socket being there is what locked means, and nothing else is
     /// looked at.
     #[test]
