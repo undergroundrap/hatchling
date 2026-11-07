@@ -12,6 +12,12 @@ A few advanced commands, such as switching to a hosted model, are in Settings fo
 
 You'll see `sudo` elsewhere in these docs. That's for people who installed Hatchling from a Linux or WSL terminal, which is a different way to install it. [If you'd rather use a terminal](#if-youd-rather-use-a-terminal) shows the same commands for this setup.
 
+## Why it needs no administrator rights
+
+A setup with administrator rights can change anything on your PC. This one can't, because it never asks for them. It works only in your own account: your apps folder, your Start menu, your Startup folder, and its own WSL distro. That also means no admin prompt to trust, and it works on a PC where you aren't an administrator.
+
+There are two exceptions, each once, and each from Windows itself. If WSL isn't on your PC, installing it needs an administrator. So does allowing a security key with usbipd.
+
 ## What's in the Start menu
 
 | Item | What it does | What you'll type |
@@ -53,7 +59,15 @@ Then each time you use the key, in PowerShell:
 usbipd attach --wsl --busid <number> --auto-attach
 ```
 
-Leave that window open while you use **Protect your vault** or **Unlock**. Once Hatchling is unlocked, it doesn't need the key until the next restart, so you can close it. Making this automatic is the next thing on the list. More on keys, including what to do if you lose one: [Protecting the vault with a security key](security-keys.md).
+Leave that window open while you use **Protect your vault** or **Unlock**: it's what lets Hatchling see the key.
+
+Once Hatchling is unlocked, it doesn't need the key until the next restart, and it keeps working after you close that window. You only need to give the key back if you want to use it for something else: while it's attached to WSL, Windows can't use it, so a website or app on your PC that asks for your key won't find it. To give it back, press Ctrl+C in that window, then:
+
+```powershell
+usbipd detach --busid <number>
+```
+
+Making all of this automatic is the next thing on the list: the key will be attached for the unlock, and handed back straight after. More on keys, including what to do if you lose one: [Protecting the vault with a security key](security-keys.md).
 
 ## What keeps it apart from Windows
 
@@ -71,6 +85,16 @@ enabled=false
 enabled=false
 appendWindowsPath=false
 ```
+
+## What Hatchling can't protect you from
+
+Hatchling protects you from its own agent, which runs in a sandbox with no way to your files or keys. With a security key set up, a stolen disk won't open your vault.
+
+It's honest to say what's left:
+
+- **Without a security key, a stolen disk opens.** A default install keeps the vault's key in a file beside it, so it can restart by itself. **Protect your vault** is what changes that.
+- **Memory and goals aren't sealed yet.** They're private to Hatchling on your PC, but they're plain files inside the distro's disk. That's being fixed.
+- **Malware already running as you can reach Hatchling while it's unlocked.** On Windows, any program you run can use `wsl -u root` with no password. No local password manager can protect you from that either.
 
 ## Why they're separate
 
