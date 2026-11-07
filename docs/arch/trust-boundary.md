@@ -21,12 +21,12 @@ code behaving well.
   routes messages, enforces grants, and serves the local API.
   The broker never executes untrusted code directly.
 - **The vault.** Stores secrets (API keys, credentials).
-  Egress and channel credentials never enter a cell: the broker
-  refuses vault grants naming them at startup, and the egress
-  proxy substitutes the real credential at the boundary. A
-  `vault:fetch:<name>` grant deliberately hands that one secret
-  to the agent — the grant is the authorization, and a fetch
-  returns exactly the named secret, never the store.
+  No secret reaches the model, and no cell can read one: a fetch is
+  refused whatever a grant says, and the egress proxy substitutes
+  the real credential at the boundary. One named exception: a saved
+  sign-in's password enters the browser's cell at the moment it
+  fills a login. That's because something has to type it, not
+  because that cell is trusted, and it extends to nothing else.
 - **The owner.** You. You can inspect everything: cell contents,
   broker state, vault metadata, audit logs. There is no seal
   against the owner.
@@ -137,7 +137,12 @@ Hatchling is pre-1.0. Before launch we reviewed our own trust boundary: who may 
 | Usage limits | The broker checks the owner's limits before each model call and counts a call from its answer, so the call that crosses a limit finishes: past it by one call per cell running at the time. A model server that reports no usage counts nothing toward a limit. A limits file that doesn't read enforces none, and says so in the broker's log at error level. | None yet |
 | Egress | An upstream that echoes a credential back re-encoded (base64, hex) gets past the scrub, which matches its exact bytes. The upstream is the service the operator gave the credential to. | None yet |
 | Egress | Reading a page (`web_fetch`) and the browser's proxy run in the broker, not the egress authority. The owner's site grants bound them while the broker is sound, but a compromised broker can reach any `https` site through them, carrying what it holds, such as a signed-in profile's cookies. | None yet: planned from the 0.5.0 audit |
-| Hygiene | The broker wipes the copies of held secrets it frees: the vault's reads, keyring and backup codes, the output and artifact gates' sets of held secrets in every form they look for, and a fetched secret's reply frame (WO-011). The agent holds a fetched secret for its run, by design, and its cell's memory goes with the cell. The redaction audit log records a redacted message by an HMAC tag under a random key sealed beside the kept texts, so the log alone confirms no guess at it; records and overrides from before the tags keep their unkeyed hashes. A security key asks for its PIN only when enrolled to (`HATCHLING_REQUIRE_KEY_PIN`); by default a touch opens the vault. A host crash handler on a socket (`core_pattern` starting `@`, Linux 6.16 and later) isn't yet covered by the one-byte core limit below. | [Candidate](../workorders/README.md#candidates) (the rest: [WO-011](../workorders/workorder-011-secret-hygiene.md), done) |
+| Hygiene | The broker wipes the copies of held secrets it frees: the vault's reads, keyring and backup codes, the output and artifact gates' sets of held secrets in every form they look for (WO-011). The redaction audit log records a redacted message by an HMAC tag under a random key sealed beside the kept texts, so the log alone confirms no guess at it; records and overrides from before the tags keep their unkeyed hashes. A security key asks for its PIN only when enrolled to (`HATCHLING_REQUIRE_KEY_PIN`); by default a touch opens the vault. A host crash handler on a socket (`core_pattern` starting `@`, Linux 6.16 and later) isn't yet covered by the one-byte core limit below. | [Candidate](../workorders/README.md#candidates) (the rest: [WO-011](../workorders/workorder-011-secret-hygiene.md), done) |
+| At rest | A default install keeps the vault's key in a file on the same disk, so it restarts by itself and a stolen disk opens. A security key changes that. Authenticator codes don't: their seed is in the keyring, and there's no passphrase option yet. | [The scorecard](../scorecard.md) |
+| At rest | Memory, goals, feed posts, decisions, ideas, run specs and harness temp files aren't sealed where they live, on any install. A backup of them is. | [The scorecard](../scorecard.md) |
+| Browser | A saved sign-in's password enters the browser's cell at fill time, for the origin the cell reports. A hostile page can't get one for another site: the keeper checks the profile and exact origin, and the controller checks the top frame's real origin. With the agent also calling sign-in, a compromised browser cell can claim any origin kept for its own profile and receive that sign-in. It already holds that profile's session cookies, and the damage stays bounded by per-profile isolation and the approved sites. | [The scorecard](../scorecard.md) |
+| Windows | Any program running as the user can run `wsl -u root` with no password, so malware already running as the user can reach the keeper's memory while unlocked. No local password manager can protect against that either. The setup's distro is sealed from Windows below root: root in it could mount a drive again. | None yet |
+| Gates | The output, artifact, web, browser and subagent gates look for what a cell has had. Only what a harness is given and hands back is checked against every secret held, by the keeper. | [The scorecard](../scorecard.md) |
 
 Found something that isn't here? Report it privately: [SECURITY.md](../../SECURITY.md).
 
