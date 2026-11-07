@@ -21,9 +21,7 @@ use std::sync::{Arc, Mutex};
 use common::{BrokerBehavior, FixtureBroker};
 use hatchling_agent::{Cell, Config, Error, LogLevel, PeerUid, Ready, VaultAction};
 use hatchling_loop::LoopBudget;
-use hatchling_model::{
-    ChatCompletionsProvider, ProviderConfig, Transport, TransportError,
-};
+use hatchling_model::{ChatCompletionsProvider, ProviderConfig, Transport, TransportError};
 use serde_json::{Value, json};
 
 /// A `Ready` cell against the fixture broker's socket.
@@ -167,7 +165,10 @@ fn provider_drives_loop_with_real_tool_through_broker() {
     cell.vault_store("api-key", b"super-secret").unwrap();
 
     let transport = Scripted::new(vec![
-        &tool_call_reply("egress_request", &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"})),
+        &tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ),
         &text_reply("refused"),
     ]);
     let probe = transport.clone();
@@ -381,7 +382,10 @@ const LOCAL: &str = "http://localhost:11434/v1";
 fn cloud_and_local_providers_rail_identically() {
     // A call the broker refuses, fed back as an error, then an answer.
     let script = [
-        tool_call_reply("egress_request", &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"})),
+        tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ),
         text_reply("done"),
     ];
     let cloud = run_scenario("parity-cloud", CLOUD, &script);
@@ -396,7 +400,10 @@ fn cloud_and_local_providers_rail_identically() {
         .map(Value::to_string)
         .collect::<String>();
     assert!(!wire.contains("super-secret"), "a secret reached the model");
-    assert!(!wire.contains("vault_fetch"), "a model was offered a secret");
+    assert!(
+        !wire.contains("vault_fetch"),
+        "a model was offered a secret"
+    );
 
     // A tool the loop does not have runs nothing, and, asked for once
     // more than the loop allows, stops the run, the same way for both.

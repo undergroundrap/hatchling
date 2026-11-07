@@ -282,7 +282,10 @@ fn a_512_kib_request_and_answer_cross_the_session_whole() {
 fn a_task_runs_end_to_end_against_a_local_endpoint() {
     let server = LocalServer::start(vec![
         probe_reply(),
-        tool_call_reply("egress_request", &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"})),
+        tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ),
         text_reply("refused"),
     ]);
     let broker = local_broker("local-e2e", server.port);
@@ -354,7 +357,12 @@ fn a_task_runs_end_to_end_against_a_local_endpoint() {
 
 #[test]
 fn the_budget_holds_against_a_local_endpoint() {
-    let fetch = || tool_call_reply("egress_request", &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}));
+    let fetch = || {
+        tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        )
+    };
     let server = LocalServer::start(vec![probe_reply(), fetch(), fetch(), fetch(), fetch()]);
     let broker = local_broker("local-budget", server.port);
     let cell = ready_cell(&broker);
