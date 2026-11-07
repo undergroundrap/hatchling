@@ -99,6 +99,7 @@ pub mod keeper;
 pub mod key_seen;
 pub mod key_setup;
 pub mod schedule_cli;
+pub mod sign_in_cli;
 pub mod schedule_ops;
 pub mod schedule_proposals;
 pub mod secrets;

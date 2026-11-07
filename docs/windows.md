@@ -102,6 +102,7 @@ The rest of these docs show commands for Linux, with `sudo`. On Windows, type th
 |---|---|
 | `sudo hatchling-broker doctor` | `wsl -d hatchling-wsl -u root -- hatchling-broker doctor` |
 | `hatchling-host url` | `wsl -d hatchling-wsl -u owner -- hatchling-host url` |
+| `hatchling-broker sign-in add https://site name` | `wsl -d hatchling-wsl -u owner -- hatchling-broker sign-in add https://site name` |
 
 Everything still works: this isn't a smaller version of Hatchling.
 

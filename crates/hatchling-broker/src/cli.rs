@@ -97,6 +97,9 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some("schedule") => {
             return crate::schedule_cli::schedule_main(program, args.get(1..).unwrap_or_default());
         }
+        Some("sign-in") => {
+            return crate::sign_in_cli::sign_in_main(program, args.get(1..).unwrap_or_default());
+        }
         Some(_) | None => {}
     }
     // The guided setup adds to the service's settings before they're taken
@@ -192,7 +195,8 @@ fn valid_args(args: &[String]) -> bool {
         | ["vault-audit", "log"]
         | ["tools", "list"]
         | [
-            "reset" | "schedule" | crate::model_switch::USE_HOSTED | crate::model_switch::USE_LOCAL,
+            "reset" | "schedule" | "sign-in" | crate::model_switch::USE_HOSTED
+            | crate::model_switch::USE_LOCAL,
             ..,
         ]
         | ["tools", "add" | "remove", _]

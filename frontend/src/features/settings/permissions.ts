@@ -99,7 +99,7 @@ function signedIn(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
         }
     }
     const empty = h('p', { class: 'settings-note' }, 'No signed-in sites yet. Take control of the agent’s browser, sign in to a site, and choose Keep me signed in.');
-    return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, 'Signed-in sites'), ctx.state.signedInSites.length ? group : empty), h('p', { class: 'settings-note' }, 'Site passwords can’t be added from the app yet. A secret is never typed here: this will open a window of its own.'));
+    return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, 'Signed-in sites'), ctx.state.signedInSites.length ? group : empty), h('p', { class: 'settings-note' }, 'A secret is never typed in the app. To add a site password, run hatchling-broker sign-in add in your own terminal.'));
 }
 function network(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     const group = h('div', { class: 'settings-group reference-list network-permissions' });

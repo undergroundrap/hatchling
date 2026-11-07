@@ -365,7 +365,7 @@ pub fn report(command: &Command, outcome: ScheduleResult) -> Result<Vec<String>,
 }
 
 /// The API socket: `HATCHLING_API_SOCKET`, or the installed broker's.
-fn socket(get: impl Fn(&str) -> Option<String>) -> PathBuf {
+pub(crate) fn socket(get: impl Fn(&str) -> Option<String>) -> PathBuf {
     get("HATCHLING_API_SOCKET").map_or_else(|| PathBuf::from(INSTALLED_API_SOCKET), PathBuf::from)
 }
 
