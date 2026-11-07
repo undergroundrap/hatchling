@@ -87,6 +87,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_note_says_what_isnt_here_at_all() {
+        for told in [note(None), note(Some(&BTreeSet::new()))] {
+            for missing in [
+                "no computer of your own yet",
+                "can't read a file the owner attaches",
+                "can't use other accounts",
+                "how you work or what you can do",
+            ] {
+                assert!(told.contains(missing), "{told}");
+            }
+        }
+    }
+
+    #[test]
     fn the_note_says_what_is_off_and_never_offers_it() {
         let none = BTreeSet::new();
         let off = note(Some(&none));
@@ -95,13 +109,6 @@ mod tests {
         assert!(!off.contains("drive a browser"), "{off}");
         assert!(!off.contains("installed skills"), "{off}");
         assert!(off.contains("can't run programs or commands"), "{off}");
-        assert!(off.contains("no computer of your own yet"), "{off}");
-        assert!(
-            off.contains("can't read a file the owner attaches"),
-            "{off}"
-        );
-        assert!(off.contains("can't use other accounts"), "{off}");
-        assert!(off.contains("how you work or what you can do"), "{off}");
         assert!(
             off.contains("only when a tool told you so in this turn"),
             "{off}"
