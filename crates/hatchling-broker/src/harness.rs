@@ -66,7 +66,10 @@
 //!   ends an agent's run ([`HarnessVault::held_hit`]): the files it was
 //!   given were checked clean, so what comes back is the run's own doing.
 //!   One in a project's file is a mistake in the project, and is only
-//!   refused. An owner invoking a harness themselves is only refused too.
+//!   refused. That's safe because nothing an agent writes lands in a
+//!   project root ([`parse_roots`]): a refusal that ended nothing would
+//!   otherwise answer a guess it had written there. An owner invoking a
+//!   harness themselves is only refused too.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -2013,11 +2016,59 @@ pub(crate) fn key_text(secret: &hatchling_vault::Secret) -> Option<Zeroizing<Str
         .filter(|text| !text.is_empty())
 }
 
-/// The project roots: `name=/absolute/dir`, each a directory outside the
-/// vault and the broker socket's directory.
+/// Each place on this install an agent or a skill can get bytes written,
+/// and what to call it: the workspace, every store, and the broker's state.
+/// Memory, goals and what the workspace is given are there in the clear, and
+/// a sealed store's root is still no place for a project. The output gate's
+/// directory isn't here: it's given tags and sealed texts, none of it an
+/// agent's words in the clear.
+fn written_places(config: &Config) -> Vec<(String, PathBuf)> {
+    let workspace = config
+        .artifacts
+        .workspace
+        .iter()
+        .map(|path| (String::from("the artifact workspace"), path.clone()));
+    let stores = crate::sealed_stores(config, None)
+        .into_iter()
+        .map(|(store, path)| (format!("the {} store", store.label()), path));
+    let state = crate::broker_user::state_dirs(config)
+        .into_iter()
+        .chain(crate::broker_user::state_files(config))
+        .map(|path| (String::from("Hatchling's own state"), path));
+    workspace.chain(stores).chain(state).collect()
+}
+
+/// `path` with every link in the part of it that's there followed, so two
+/// names for one place compare as one. What isn't there yet is kept as it's
+/// written, and a path nothing of which can be looked at comes back whole.
+fn resolved(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(found) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(found, |path, part| path.join(part));
+        }
+        let (Some(parent), Some(part)) = (at.parent(), at.file_name()) else {
+            return path.to_path_buf();
+        };
+        rest.push(part);
+        at = parent;
+    }
+}
+
+/// The project roots: `name=/absolute/dir`, each a directory that doesn't
+/// overlap, either way, the vault, the broker socket's directory, or
+/// anything else an agent or a skill can write ([`written_places`]), and
+/// that doesn't hold the temporary directory a run's trees are made in.
+///
+/// That's what makes a project file's refusal safe. It ends nothing, because
+/// a project's mistake isn't a guess, and a file an agent could write would
+/// be one it could ask a harness about, as often as it liked. It's refused
+/// here, at the start, saying what to change.
 fn parse_roots(raw: Option<&str>, config: &Config) -> Result<BTreeMap<String, PathBuf>, Error> {
     let key = "HATCHLING_HARNESS_ROOTS";
     let mut roots = BTreeMap::new();
+    let written = written_places(config);
     for entry in raw
         .unwrap_or_default()
         .split(',')
@@ -2043,8 +2094,11 @@ fn parse_roots(raw: Option<&str>, config: &Config) -> Result<BTreeMap<String, Pa
                 ),
             ));
         }
+        let real = resolved(&dir);
         let near = |other: &Path| {
-            !other.as_os_str().is_empty() && (dir.starts_with(other) || other.starts_with(&dir))
+            let overlap = |a: &Path, b: &Path| a.starts_with(b) || b.starts_with(a);
+            !other.as_os_str().is_empty()
+                && (overlap(&dir, other) || overlap(&real, &resolved(other)))
         };
         let socket_dir = config
             .socket
@@ -2056,6 +2110,27 @@ fn parse_roots(raw: Option<&str>, config: &Config) -> Result<BTreeMap<String, Pa
             return Err(invalid(
                 key,
                 format!("the root {name:?} overlaps the vault or the broker socket directory"),
+            ));
+        }
+        if let Some((what, path)) = written.iter().find(|(_, path)| near(path)) {
+            return Err(invalid(
+                key,
+                format!(
+                    "the root {name:?} overlaps {what} at {}, where an agent can write: \
+                     move one of them so neither holds the other",
+                    path.display()
+                ),
+            ));
+        }
+        let temporary = resolved(&std::env::temp_dir());
+        if temporary.starts_with(&real) {
+            return Err(invalid(
+                key,
+                format!(
+                    "the root {name:?} holds the temporary directory {}, where a harness run \
+                     writes: name a directory that doesn't",
+                    temporary.display()
+                ),
             ));
         }
         if roots.insert(name.to_owned(), dir).is_some() {
@@ -4133,6 +4208,7 @@ mod tests {
         );
         // An unset vault overlaps nothing; the socket's directory still does.
         config.vault.root = PathBuf::new();
+        config.artifacts.workspace = None;
         config.socket = "/run/hatchling-elsewhere/broker.sock".parse().unwrap();
         assert_eq!(
             parse_roots(Some(&format!("all={around_both}")), &config)
@@ -4140,6 +4216,108 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// A project file holding a secret is only refused, so a file an agent
+    /// could write there would be a guess it could ask about and go on. A
+    /// root that overlaps, either way, anywhere an agent or a skill's words
+    /// land stops the start, saying what to change, by whichever name it's
+    /// reached.
+    #[test]
+    fn a_root_overlapping_what_an_agent_can_write_stops_the_start() {
+        type Setting = fn(&mut Config, PathBuf);
+        let scratch = Scratch::new("harness-roots-written");
+        let refused_for = |config: &Config, root: &Path, what: &str| {
+            let raw = format!("a={}", root.display());
+            let (key, reason) = refusal(parse_roots(Some(&raw), config));
+            assert_eq!(key, "HATCHLING_HARNESS_ROOTS");
+            assert!(reason.contains(what), "{reason}");
+            assert!(reason.contains("move one of them"), "{reason}");
+        };
+        let set: [(&str, Setting); 9] = [
+            ("the artifact workspace", |config, path| {
+                config.artifacts.workspace = Some(path);
+            }),
+            ("the artifacts store", |config, path| {
+                config.artifacts.root = path;
+            }),
+            ("the spaces store", |config, path| config.spaces.root = path),
+            ("the sites store", |config, path| config.web.grants = path),
+            ("the profiles store", |config, path| {
+                config.web.profiles = path;
+            }),
+            ("the credentials store", |config, path| {
+                config.web.credentials = path;
+            }),
+            ("Hatchling's own state", |config, path| {
+                config.memory.root = path;
+            }),
+            ("Hatchling's own state", |config, path| {
+                config.goals.root = path;
+            }),
+            ("the schedules store", |config, path| {
+                config.scheduler.root = path;
+            }),
+        ];
+        for (at, (what, set)) in set.into_iter().enumerate() {
+            let around = scratch.dir(&format!("around-{at}"));
+            let place = scratch.dir(&format!("around-{at}/place"));
+            let inside = scratch.dir(&format!("around-{at}/place/inner"));
+            let mut config = config(&scratch);
+            config.artifacts.workspace = None;
+            set(&mut config, place.clone());
+            for root in [&around, &place, &inside] {
+                refused_for(&config, root, what);
+            }
+            // A root beside it is left alone.
+            let beside = scratch.dir(&format!("around-{at}-beside"));
+            assert_eq!(
+                parse_roots(Some(&format!("a={}", beside.display())), &config)
+                    .map(|roots| roots.len())
+                    .ok(),
+                Some(1),
+                "{what}"
+            );
+        }
+        // The runs' directories and the owner's records sit beside the
+        // schedule store, and a root over one of them is over it.
+        let mut scheduled = config(&scratch);
+        scheduled.artifacts.workspace = None;
+        scheduled.scheduler.root = scratch.join("beside/schedules");
+        for name in ["beside/schedules.runs", "beside/schedules.owner"] {
+            refused_for(&scheduled, &scratch.dir(name), "Hatchling's own state");
+        }
+        // A link to it is the same place, whichever of the two is the link.
+        let mut linked = config(&scratch);
+        let workspace = scratch.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let link = scratch.join("project-link");
+        std::os::unix::fs::symlink(&workspace, &link).unwrap();
+        refused_for(&linked, &link, "the artifact workspace");
+        let project = scratch.dir("linked-project");
+        let out = scratch.join("workspace-link");
+        std::os::unix::fs::symlink(project.join("out"), &out).unwrap();
+        scratch.dir("linked-project/out");
+        linked.artifacts.workspace = Some(out);
+        refused_for(&linked, &project, "the artifact workspace");
+    }
+
+    /// A harness run's trees are made in the temporary directory: a root
+    /// that holds it could name one. One inside it holds no run's.
+    #[test]
+    fn a_root_holding_the_temporary_directory_stops_the_start() {
+        let scratch = Scratch::new("harness-roots-temporary");
+        let mut config = config(&scratch);
+        config.vault.root = PathBuf::new();
+        config.artifacts.workspace = None;
+        config.socket = "/run/hatchling-elsewhere/broker.sock".parse().unwrap();
+        let temporary = std::env::temp_dir();
+        let raw = format!("a={}", temporary.display());
+        let (key, reason) = refusal(parse_roots(Some(&raw), &config));
+        assert_eq!(key, "HATCHLING_HARNESS_ROOTS");
+        assert!(reason.contains("temporary directory"), "{reason}");
+        let inside = format!("a={}", scratch.dir("project").display());
+        assert!(parse_roots(Some(&inside), &config).is_ok());
     }
 
     #[test]

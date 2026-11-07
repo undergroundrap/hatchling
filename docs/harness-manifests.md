@@ -21,7 +21,7 @@ Only you, the operator, define a harness. A harness gets a network and a key tha
 4. Store the vendor key in the vault as the secret `harness-<name>`. No vault grant may name it: the broker refuses to start if one does, since a grant would hand the key to the agent's cell.
 5. Grant the harness to the agent: `HATCHLING_SKILL_GRANTS=<name>:code`. The agent calls it as the skill `<name>@1`.
 
-As for the built-in harnesses, `HATCHLING_HARNESS_ROOTS` names the project roots a task may draw from, and `HATCHLING_ARTIFACT_WORKSPACE` must be set for the patches.
+As for the built-in harnesses, `HATCHLING_HARNESS_ROOTS` names the project roots a task may draw from, and `HATCHLING_ARTIFACT_WORKSPACE` must be set for the patches, outside every root.
 
 The broker reads the manifests when it starts. A change takes effect at its next start.
 
