@@ -14,23 +14,24 @@ What Hatchling really does on a fresh install, one row at a time.
 | 🚧 | Built, but off by default, or part of it is missing |
 | ❌ | Not there |
 
-**Last checked:** Windows setup, 2026-11-06, ahead of 0.8.0. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
+**Last checked:** Windows setup, 2026-11-07, ahead of 0.8.0. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
 
 ## Install and vault
 
 | What | Status | Notes |
 |---|---|---|
 | Install with the Windows setup | ✅ | |
-| Update with the Windows setup | ⬜ | Fresh run due before 0.8.0 |
+| Update with the Windows setup | ✅ | On a key-protected install, with a backup first |
 | Uninstall, keeping or deleting data | ✅ | |
 | Protect the vault with a security key | ✅ | Needs usbipd by hand |
-| Unlock after a restart | ✅ | Number of steps measured at the 0.8.0 run |
+| Unlock after a restart | ✅ | 6 steps on Windows today: the target is one gesture |
 | Secure store: see what's kept, by name | ❌ | From a names-only listing by the keeper |
 | Add a key or a password from the app's Add | ❌ | Terminal commands for now: an interim, not a pass |
 | Make a backup | ✅ | |
 | Restore a backup | ⬜ | |
 | Distro sealed from Windows | ⬜ | Tested by setup run, not yet by a person |
-| A stranger's fresh install, end to end | ⬜ | Due before 0.8.0 |
+| The author's fresh install, end to end | ✅ | Install, protect, update, unlock, chat |
+| A stranger's fresh install, end to end | ⬜ | Someone other than the author |
 | The full vault flow: unlock, add a key and a site password, the agent uses both, lock, unlock, both still work | ❌ | Needs a way to add them and the browser on |
 
 ## Talking to it
@@ -47,7 +48,7 @@ What Hatchling really does on a fresh install, one row at a time.
 
 | What | Status | Notes |
 |---|---|---|
-| Memory, with your approval | ⬜ | No daily notes or import |
+| Memory, with your approval | 🔵 | Kept, then recalled in a new conversation. No daily notes or import |
 | Forget a memory | ⬜ | |
 | Goals: add, edit, close | ⬜ | No progress log, briefings or subgoals |
 | Scheduled work, with your approval | ⬜ | No pause, edit or run now |
