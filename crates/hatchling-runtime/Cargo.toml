@@ -9,7 +9,7 @@ repository.workspace = true
 homepage.workspace = true
 keywords = ["agent", "sandbox", "llm", "self-hosted", "security"]
 categories = ["command-line-utilities", "artificial-intelligence", "security", "virtualization", "os::linux-apis"]
-description = "Personal AI agents you actually own, in kernel-isolated cells that never hold your keys: installs the `hatchling` command"
+description = "Secure infrastructure for always-on AI agents you own, in kernel-isolated cells that never hold your keys: installs the `hatchling` command"
 readme = "README.md"
 
 [lints]

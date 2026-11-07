@@ -4,7 +4,7 @@
 
 <h1 align="center">Hatchling</h1>
 
-<p align="center"><strong>Personal AI agents you actually own.</strong></p>
+<p align="center"><strong>Secure infrastructure for always-on AI agents you own.</strong></p>
 
 <p align="center">By Ocean Bennett</p>
 
