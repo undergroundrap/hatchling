@@ -114,6 +114,37 @@ fn a_socket_left_by_an_earlier_start_is_replaced_and_only_its_being_there_shows(
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The socket is 0600, and only a stale socket is replaced: a file or a
+/// link at its path stops the wait, and is left as it was.
+#[test]
+fn only_a_socket_is_replaced_and_it_is_the_owners_alone() {
+    let dir = scratch("not-a-socket");
+    let path = dir.join("fresh").join("unlock.sock");
+    drop(listen(&path).unwrap());
+    let mode = |path: &Path| {
+        std::fs::symlink_metadata(path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&path), 0o600);
+    std::fs::remove_file(&path).unwrap();
+
+    std::fs::write(&path, b"kept").unwrap();
+    assert!(listen(&path).is_err(), "a file was replaced");
+    assert_eq!(std::fs::read(&path).unwrap(), b"kept");
+    std::fs::remove_file(&path).unwrap();
+
+    let target = dir.join("target");
+    std::fs::write(&target, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(listen(&path).is_err(), "a link was replaced");
+    assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+    assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The waiting socket's directory is opened, not looked up: with a link in
 /// its place, what it points at keeps its mode.
 #[test]

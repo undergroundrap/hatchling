@@ -88,6 +88,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
   - **Breaking for `hatchling-loop`, `hatchling-agent` and `hatchling-core`:** `hatchling_loop::Error::ModelSilent`, `hatchling_agent::Error::ModelIncapable` and `ModelSilent`, and `RunFailure::ModelIncapable` (exit status 66) and `ModelSilent` (65) are new. The workspace is now 0.8.0.
 - **Files made beside the keyring no longer follow links.** `restore`, `vault-keyring setup`, `vault-keyring reminders-off` and the keeper's note of when a key was last seen wrote by path, some as root, in a directory the keeper's user owns, so a link planted there could have had root write through it. Each now makes its file with no link followed, and sets its mode and owner on the file it made. A link in the way is removed, or the command stops, and what it pointed at is left alone.
 - **More of a PIN and a code is wiped.** An unlock answer relayed to the keeper, a code read for an unlock, and a sign-in's username and password on their way to the broker were left in freed memory; the store keys handed to the broker could be too, from a buffer that grew. All are now wiped. What can't be reached is said in the code: stdin's own buffer, and a JSON parser's scratch for an answer with a character JSON escapes.
+- **The unlock socket is never open, even for a moment.** It took its mode after it was bound. It's now bound as every other socket is, owner-only from the start, and a file or a link in its place stops the wait instead of being removed.
 
 ## [0.7.0] - 2026-11-04
 

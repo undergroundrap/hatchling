@@ -49,6 +49,7 @@ use std::process::ExitCode;
 use std::rc::Rc;
 use std::time::Duration;
 
+use hatchling_core::SocketPath;
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::Concealed;
 use hatchling_vault::{Keyring, MasterKey, Tier};
@@ -159,7 +160,10 @@ pub fn master_key_for_start(vault: &VaultConfig) -> Result<MasterKey, Error> {
 }
 
 /// A fresh socket at `path`, its directory made private if it isn't
-/// there, and a socket left by an earlier start replaced.
+/// there, and a socket left by an earlier start replaced. Bound the way
+/// every socket is ([`crate::listener::bind_socket`]): owner-only from the
+/// moment it exists, and anything at `path` but a socket of this user's is
+/// left where it is, and stops the wait.
 fn listen(path: &Path) -> Result<UnixListener, Error> {
     let failed = |why: String| Error::Keeper {
         reason: format!("cannot wait to be unlocked at {}: {why}", path.display()),
@@ -169,14 +173,12 @@ fn listen(path: &Path) -> Result<UnixListener, Error> {
             hatchling_sys::create_private_dir(dir).map_err(|e| failed(e.to_string()))?;
         }
     }
-    match std::fs::remove_file(path) {
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
-            return Err(failed(error.to_string()));
-        }
-        _ => {}
-    }
-    let listener = UnixListener::bind(path).map_err(|e| failed(e.to_string()))?;
-    hatchling_sys::chmod_socket(path, 0o600).map_err(|e| failed(e.to_string()))?;
+    let socket: SocketPath = path
+        .to_str()
+        .and_then(|path| path.parse().ok())
+        .ok_or_else(|| failed(String::from("its path isn't one a socket can have")))?;
+    let listener =
+        crate::listener::bind_socket(&socket, 0o600).map_err(|e| failed(e.to_string()))?;
     // Past this directory, not into it: the app's host may see that the
     // socket is there, so the app can say it's locked. Only root may use it.
     if let Some(dir) = path.parent() {
