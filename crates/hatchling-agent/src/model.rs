@@ -161,7 +161,7 @@ impl Cell<Ready> {
                 reason: error.to_string(),
             })?
             .with_reasoning(self.config().model_reasoning)
-            .with_redactor(redactor.clone());
+            .with_redactor(redactor);
         provider
             .verify_capabilities()
             .map_err(|error| match error {
@@ -183,7 +183,6 @@ impl Cell<Ready> {
             &provider,
             task,
             hatchling_loop::LoopBudget { max_steps },
-            &redactor,
             Some(model_grant),
         )
         .map_err(|error| match error {

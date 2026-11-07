@@ -19,8 +19,12 @@
 //!
 //! Each word of the task is then one probe, run in order:
 //!
-//! - `vault:<name>`: fetch `name` through the session, printing the
-//!   broker's reply.
+//! - `vault:<name>`: ask to fetch `name` through the session, printing
+//!   the broker's reply: a denial, since no cell reads a secret.
+//! - `vault-store:<name>`: store [`HELD`] under `name` through the
+//!   session, printing the broker's reply.
+//! - `vault-leak`: print [`HELD`], as a run handing back a secret it
+//!   holds would.
 //! - `channel:<id>`: receive on `id`.
 //! - `schedule`: try to create a schedule.
 //! - `followup:<secs>`: ask for this run's follow-up, within its grants.
@@ -55,9 +59,13 @@ use std::process::ExitCode;
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::{
     AgentMessage, ArtifactOp, ChannelOp, ChildEnvelope, ChildVerdict, HookOp, HookSource,
-    PROTOCOL_VERSION, ScheduleGrant, ScheduleOp, ScheduleSpec, SessionRequest, SessionResponse,
-    SpaceOp, SpaceResult, SubagentOp, VaultOp, VaultResult,
+    PROTOCOL_VERSION, ScheduleGrant, ScheduleOp, ScheduleSpec, SecretB64, SessionRequest,
+    SessionResponse, SpaceOp, SpaceResult, SubagentOp, VaultOp, VaultResult,
 };
+
+/// What `vault-store:` stores: a secret the run holds because it was told
+/// it, which is the one way a cell can hold a secret.
+const HELD: &str = "the-value-this-run-was-told";
 
 /// A chat turn's view of the conversation (WO-026): what it was given,
 /// as given, without connecting. What the owner said earlier follows,
@@ -216,6 +224,9 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
     if probe == "builders" {
         return std::env::var("HATCHLING_RUN_BUILDERS").unwrap_or_default();
     }
+    if probe == "vault-leak" {
+        return String::from(HELD);
+    }
     if let Some(path) = probe.strip_prefix("connect:") {
         return match UnixStream::connect(path) {
             Ok(_) => String::from("reached"),
@@ -231,6 +242,11 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
     let request = if let Some(name) = probe.strip_prefix("vault:") {
         SessionRequest::Vault(VaultOp::Fetch {
             name: name.to_owned(),
+        })
+    } else if let Some(name) = probe.strip_prefix("vault-store:") {
+        SessionRequest::Vault(VaultOp::Store {
+            name: name.to_owned(),
+            secret_b64: SecretB64::encode(HELD.as_bytes()),
         })
     } else if let Some(channel) = probe.strip_prefix("channel:") {
         SessionRequest::Channel(ChannelOp::Receive {
@@ -265,7 +281,7 @@ fn run_probe(session: Result<&UnixStream, &String>, probe: &str) -> String {
             grants: vec![
                 local_send(),
                 ScheduleGrant::Vault {
-                    action: String::from("fetch"),
+                    action: String::from("store"),
                     name: String::from("app-token"),
                 },
             ],
@@ -415,7 +431,7 @@ mod tests {
         let answering = std::thread::spawn(move || {
             let _asked = read_frame(&peer).unwrap();
             let reply = SessionResponse::Vault(VaultResult::Fetched {
-                secret_b64: hatchling_core::SecretB64::encode(b"s3cret"),
+                secret_b64: SecretB64::encode(b"s3cret"),
             });
             write_frame(&peer, &serde_json::to_vec(&reply).unwrap()).unwrap();
         });

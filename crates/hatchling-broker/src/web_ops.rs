@@ -1279,7 +1279,7 @@ pub(crate) mod tests {
         config.vault.root = root.clone();
         let master = MasterKey::generate().unwrap();
         config.vault.grants = vec![crate::VaultGrant {
-            action: VaultAction::Fetch,
+            action: VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         SealedVault::open(&config.vault.root, &master)

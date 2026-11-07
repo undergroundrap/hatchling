@@ -329,8 +329,8 @@ def run(repo, artifacts, work, mode, fixtures):
                HATCHLING_CHANNEL_INGRESS=str(state / 'ingress.sock'), HATCHLING_API_SOCKET=str(state / 'api.sock'),
                HATCHLING_SCHEDULER_MODEL_ENDPOINT=endpoint, HATCHLING_SCHEDULER_MODEL_NAME=model,
                HATCHLING_EGRESS_ALLOWLIST=('local:' if mode == 'local' else 'internal:') + destination,
-               HATCHLING_EGRESS_GRANTS=destination, HATCHLING_VAULT_GRANTS='fetch:app-canary',
-               HATCHLING_API_GRANTS='egress:' + destination + ',channel-send:local,vault:fetch:app-canary',
+               HATCHLING_EGRESS_GRANTS=destination,
+               HATCHLING_API_GRANTS='egress:' + destination + ',channel-send:local',
                NO_COLOR='1', PYTHONDONTWRITEBYTECODE='1', PYTHONUNBUFFERED='1',
                # The smoke's client runs as root in its own namespaces: the
                # broker's owner is root here, not the user who ran sudo.
@@ -346,7 +346,7 @@ def run(repo, artifacts, work, mode, fixtures):
                    '--key-file', str(key_file), '--cert-file', str(work / 'server.crt'),
                    '--private-key-file', str(work / 'server.key'), '--port', '18090',
                    '--armed', str(work / 'armed'), '--release', str(work / 'release'),
-                   '--vault-canary', 'app-canary', '--canary-file', str(work / 'canary'),
+                   '--canary-file', str(work / 'canary'),
                    '--canary-seen', str(work / 'canary-seen')]
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                     urllib.request.HTTPSHandler(context=ssl.create_default_context(cafile=work / 'ca.crt')))
@@ -465,10 +465,10 @@ def run(repo, artifacts, work, mode, fixtures):
         # the keeper releases it to the egress authority alone. Nor can its
         # user read the vault the keeper keeps it in.
         if mode == 'https':
-            seen = (work / 'canary-seen').read_text() if (work / 'canary-seen').exists() else 'no fetch'
-            require(seen == 'fetched-redacted', 'The run did not fetch the canary, redacted: ' + seen)
+            seen = (work / 'canary-seen').read_text() if (work / 'canary-seen').exists() else 'no request'
+            require(seen == 'absent', 'A model request offered a way to read a secret, or held one: ' + seen)
         canary_held, _ = memory_holds(broker.pid, canary)
-        require(not canary_held, 'The broker held the vault canary a cell fetched')
+        require(not canary_held, 'The broker held a vault secret no run needed')
         held, scanned = memory_holds(broker.pid, key)
         require(scanned > 0 and not held, 'The broker\'s memory was unread or held the test credential')
         broker_user = pwd.getpwnam('hatchling-broker')

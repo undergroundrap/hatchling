@@ -21,9 +21,7 @@ use std::sync::{Arc, Mutex};
 use common::{BrokerBehavior, FixtureBroker};
 use hatchling_agent::{Cell, Config, Error, LogLevel, PeerUid, Ready, VaultAction};
 use hatchling_loop::LoopBudget;
-use hatchling_model::{
-    ChatCompletionsProvider, ProviderConfig, Redactor, Transport, TransportError,
-};
+use hatchling_model::{ChatCompletionsProvider, ProviderConfig, Transport, TransportError};
 use serde_json::{Value, json};
 
 /// A `Ready` cell against the fixture broker's socket.
@@ -160,21 +158,20 @@ fn text_reply(text: &str) -> String {
 fn provider_drives_loop_with_real_tool_through_broker() {
     let broker = FixtureBroker::spawn(
         "model-loop",
-        BrokerBehavior::Vault(vec![
-            grant(VaultAction::Store, "api-key").unwrap(),
-            grant(VaultAction::Fetch, "api-key").unwrap(),
-        ]),
+        BrokerBehavior::Vault(vec![grant(VaultAction::Store, "api-key").unwrap()]),
     )
     .unwrap();
     let cell = ready_cell(&broker).unwrap();
     cell.vault_store("api-key", b"super-secret").unwrap();
 
     let transport = Scripted::new(vec![
-        &tool_call_reply("vault_fetch", &json!({ "name": "api-key" })),
-        &text_reply("fetched it"),
+        &tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ),
+        &text_reply("refused"),
     ]);
     let probe = transport.clone();
-    let redactor = Redactor::default();
     let provider = ChatCompletionsProvider::new(
         ProviderConfig {
             endpoint: String::from("https://models.example.com/v1"),
@@ -184,24 +181,21 @@ fn provider_drives_loop_with_real_tool_through_broker() {
         },
         transport,
     )
-    .unwrap()
-    .with_redactor(redactor.clone());
+    .unwrap();
     let result = cell
-        .run_loop_redacted(
+        .run_loop(
             hatchling_agent::PromptKind::Chat,
             &provider,
-            String::from("fetch the api key"),
+            String::from("call out"),
             LoopBudget { max_steps: 5 },
-            &redactor,
         )
         .unwrap();
-    assert_eq!(result.answer, "fetched it");
+    assert_eq!(result.answer, "refused");
     assert_eq!(result.steps, 2);
 
-    // The tool result the loop fed back on turn 2 is the fetch's success
-    // from the fixture broker's vault (proving the provider's tool call
-    // executed through the broker session, not a stub), with the secret
-    // itself redacted before the request left.
+    // The tool result the loop fed back on turn 2 is the broker's refusal
+    // (proving the provider's tool call executed through the broker
+    // session, not a stub).
     let requests = probe.requests();
     assert_eq!(requests.len(), 2);
     let turn_two = requests.get(1).expect("expected a second request");
@@ -217,16 +211,10 @@ fn provider_drives_loop_with_real_tool_through_broker() {
         .get("content")
         .and_then(Value::as_str)
         .expect("tool result must have string content");
-    assert_eq!(content, redacted_fetch());
     assert!(
-        requests
-            .iter()
-            .all(|request| !request.to_string().contains("super-secret")),
-        "the secret must never reach the model"
+        content.starts_with("<tool_result tool=\"egress_request\" status=\"error\">"),
+        "{content}"
     );
-    // The loop itself, inside the cell, did see it.
-    let history = format!("{:?}", result.history);
-    assert!(history.contains("super-secret"));
 }
 
 #[test]
@@ -333,16 +321,6 @@ fn run_task_rejects_bad_provider_config_before_minting() {
     );
 }
 
-/// The fetch's result as the model must see it: the fetch succeeded,
-/// and the secret is redacted.
-fn redacted_fetch() -> String {
-    hatchling_prompt::wrap_tool_result(
-        "vault_fetch",
-        true,
-        &json!({"name": "api-key", "secret": hatchling_model::REDACTED}),
-    )
-}
-
 /// One scenario, run through a provider at `endpoint`: what the model
 /// was sent, and what the loop made of its answers.
 struct Run {
@@ -351,22 +329,17 @@ struct Run {
 }
 
 /// Runs `script` through a fresh cell and broker against a provider at
-/// `endpoint`, wired as `run_task` wires it, with `api-key` granted and
-/// stored and `other` not granted.
+/// `endpoint`, wired as `run_task` wires it.
 fn run_scenario(name: &str, endpoint: &str, script: &[String]) -> Run {
     let broker = FixtureBroker::spawn(
         name,
-        BrokerBehavior::Vault(vec![
-            grant(VaultAction::Store, "api-key").unwrap(),
-            grant(VaultAction::Fetch, "api-key").unwrap(),
-        ]),
+        BrokerBehavior::Vault(vec![grant(VaultAction::Store, "api-key").unwrap()]),
     )
     .unwrap();
     let cell = ready_cell(&broker).unwrap();
     cell.vault_store("api-key", b"super-secret").unwrap();
     let transport = Scripted::new(script.iter().map(String::as_str).collect());
     let probe = transport.clone();
-    let redactor = Redactor::default();
     let provider = ChatCompletionsProvider::new(
         ProviderConfig {
             endpoint: endpoint.to_owned(),
@@ -376,14 +349,12 @@ fn run_scenario(name: &str, endpoint: &str, script: &[String]) -> Run {
         },
         transport,
     )
-    .unwrap()
-    .with_redactor(redactor.clone());
-    let outcome = cell.run_loop_redacted(
+    .unwrap();
+    let outcome = cell.run_loop(
         hatchling_agent::PromptKind::Chat,
         &provider,
-        String::from("use the api key"),
+        String::from("call out"),
         LoopBudget { max_steps: 5 },
-        &redactor,
     );
     Run {
         requests: probe.requests().into_iter().map(sorted_tools).collect(),
@@ -408,50 +379,30 @@ const CLOUD: &str = "https://models.example.com/v1";
 const LOCAL: &str = "http://localhost:11434/v1";
 
 #[test]
-fn cloud_and_local_providers_redact_and_rail_identically() {
-    // A granted fetch (redacted on the way to the model), an ungranted
-    // one (refused by the broker's grant rail and fed back as an
-    // error), then an answer.
+fn cloud_and_local_providers_rail_identically() {
+    // A call the broker refuses, fed back as an error, then an answer.
     let script = [
-        tool_call_reply("vault_fetch", &json!({ "name": "api-key" })),
-        tool_call_reply("vault_fetch", &json!({ "name": "other" })),
+        tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ),
         text_reply("done"),
     ];
     let cloud = run_scenario("parity-cloud", CLOUD, &script);
     let local = run_scenario("parity-local", LOCAL, &script);
     assert_eq!(cloud.requests, local.requests);
     assert_eq!(cloud.outcome, local.outcome);
-    assert_eq!(cloud.outcome, "answer \"done\" after 3 steps");
-    assert_eq!(cloud.requests.len(), 3);
+    assert_eq!(cloud.outcome, "answer \"done\" after 2 steps");
+    assert_eq!(cloud.requests.len(), 2);
     let wire = local
         .requests
         .iter()
         .map(Value::to_string)
         .collect::<String>();
+    assert!(!wire.contains("super-secret"), "a secret reached the model");
     assert!(
-        !wire.contains("super-secret"),
-        "the secret reached the model"
-    );
-    let results = local
-        .requests
-        .last()
-        .and_then(|request| request.get("messages"))
-        .and_then(Value::as_array)
-        .map(|messages| {
-            messages
-                .iter()
-                .filter(|message| message.get("role") == Some(&json!("tool")))
-                .filter_map(|message| message.get("content").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    assert_eq!(results.first().copied(), Some(redacted_fetch().as_str()));
-    assert!(
-        results
-            .get(1)
-            .is_some_and(|refusal| refusal
-                .starts_with("<tool_result tool=\"vault_fetch\" status=\"error\">")),
-        "the refusal must reach the model: {results:?}"
+        !wire.contains("vault_fetch"),
+        "a model was offered a secret"
     );
 
     // A tool the loop does not have runs nothing, and, asked for once

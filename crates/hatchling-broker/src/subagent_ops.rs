@@ -599,7 +599,7 @@ mod tests {
                 key_file: VaultConfig::default_key_file(&root),
                 root,
                 grants: vec![VaultGrant {
-                    action: VaultAction::Fetch,
+                    action: VaultAction::Store,
                     name: "app-token".parse().unwrap(),
                 }],
             },
@@ -624,7 +624,7 @@ mod tests {
 
     fn vault(name: &str) -> ScheduleGrant {
         ScheduleGrant::Vault {
-            action: String::from("fetch"),
+            action: String::from("store"),
             name: name.to_owned(),
         }
     }

@@ -280,7 +280,7 @@ fn a_reply_carrying_a_held_secret_reaches_the_user_as_the_notice_only() {
     let broker_path = socket("gated-broker");
     let mut config = broker_config("gated");
     config.vault.grants = vec![hatchling_broker::VaultGrant {
-        action: hatchling_core::VaultAction::Fetch,
+        action: hatchling_core::VaultAction::Store,
         name: "app-token".parse().unwrap(),
     }];
     let deployment = Deployment(config.vault.root.with_extension("gated-redactions"));

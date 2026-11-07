@@ -742,7 +742,7 @@ mod tests {
                 )
                 .unwrap();
             config.vault.grants.push(VaultGrant {
-                action: VaultAction::Fetch,
+                action: VaultAction::Store,
                 name: name.parse().unwrap(),
             });
         }

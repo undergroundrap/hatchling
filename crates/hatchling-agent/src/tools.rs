@@ -17,73 +17,9 @@ use hatchling_core::{
     grant_label, parse_grant_label,
 };
 use hatchling_loop::{Error as LoopError, StepLedger, Tool, ToolOutput};
-use hatchling_model::Redactor;
 use serde_json::{Value, json};
 
 use crate::subagent::Children;
-
-/// Fetches a named secret through the grant-checked vault path.
-///
-/// Every secret it fetches is registered with the run's [`Redactor`]
-/// the loop may use it, but no model request carries it.
-pub struct VaultFetchTool<'s> {
-    stream: &'s UnixStream,
-    redactor: &'s Redactor,
-}
-
-impl<'s> VaultFetchTool<'s> {
-    /// Build over the broker session, registering fetched secrets with
-    /// `redactor`.
-    #[must_use]
-    pub const fn new(stream: &'s UnixStream, redactor: &'s Redactor) -> Self {
-        Self { stream, redactor }
-    }
-}
-
-impl Tool for VaultFetchTool<'_> {
-    fn name(&self) -> &'static str {
-        "vault_fetch"
-    }
-
-    fn description(&self) -> &'static str {
-        "Fetch a secret from the vault by name. The broker checks the caller's grant; ungranted names are denied."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "The secret name to fetch."
-                }
-            },
-            "required": ["name"],
-            "additionalProperties": false
-        })
-    }
-
-    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
-        let name = arguments
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| LoopError::ToolFailed {
-                tool: self.name().to_owned(),
-                reason: String::from("missing or invalid 'name' argument"),
-            })?;
-        match crate::vault::fetch(self.stream, name) {
-            Ok(Some(secret)) => {
-                let secret_str = String::from_utf8_lossy(&secret).into_owned();
-                self.redactor.register(&secret_str);
-                Ok(ToolOutput::Ok(
-                    json!({ "name": name, "secret": secret_str }),
-                ))
-            }
-            Ok(None) => Ok(ToolOutput::Err(format!("secret '{name}' not found"))),
-            Err(e) => Ok(ToolOutput::Err(e.to_string())),
-        }
-    }
-}
 
 /// Performs an outbound request through the allowlist-checked egress
 /// path. The caller must supply a surrogate minted for the
@@ -1870,32 +1806,6 @@ mod tests {
         UnixStream::pair().expect("test socket pair")
     }
 
-    #[test]
-    fn vault_fetch_tool_metadata_is_stable() {
-        // The registry keys tools by name and shows the description
-        // and schema to the model; pin all three so a mutant that
-        // blanks or swaps them cannot survive.
-        let (a, _b) = socket_pair();
-        let redactor = Redactor::default();
-        let tool = VaultFetchTool::new(&a, &redactor);
-        assert_eq!(tool.name(), "vault_fetch");
-        assert_eq!(
-            tool.description(),
-            "Fetch a secret from the vault by name. The broker checks the caller's grant; ungranted names are denied."
-        );
-        let schema = tool.parameters_schema();
-        assert_eq!(schema.get("type"), Some(&json!("object")));
-        assert_eq!(schema.get("required"), Some(&json!(["name"])));
-        assert_eq!(
-            schema
-                .get("properties")
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.get("type")),
-            Some(&json!("string"))
-        );
-        assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
-    }
-
     /// A broker stand-in: answers one request with `reply`.
     fn answer_once(reply: hatchling_core::SkillResult) -> UnixStream {
         use hatchling_core::framing::{read_frame, write_frame};
@@ -2177,7 +2087,7 @@ mod tests {
 
     #[test]
     fn a_spawn_spends_from_the_runs_own_ledger_and_hands_the_child_its_model() {
-        let (agent, broker) = scripted(vec![spawned(3, &["vault:fetch:k", "egress:m:443"])]);
+        let (agent, broker) = scripted(vec![spawned(3, &["vault:store:k", "egress:m:443"])]);
         let ledger = Arc::new(StepLedger::new(10));
         let children = Children::default();
         let tool = SpawnSubagentTool::new(
@@ -2187,13 +2097,13 @@ mod tests {
             Some(grant("egress:m:443")),
         );
         let output = tool
-            .execute(json!({"task": "summarize", "budget": 3, "capabilities": ["vault:fetch:k"]}))
+            .execute(json!({"task": "summarize", "budget": 3, "capabilities": ["vault:store:k"]}))
             .unwrap();
         assert!(
             matches!(&output, ToolOutput::Ok(value) if *value == json!({
                 "child": "run-1",
                 "budget": 3,
-                "capabilities": ["vault:fetch:k", "egress:m:443"],
+                "capabilities": ["vault:store:k", "egress:m:443"],
                 "brief_hash": "h",
             })),
             "{output:?}"
@@ -2203,7 +2113,7 @@ mod tests {
         drop(agent);
         assert_eq!(
             broker.join().unwrap(),
-            [spawn_request(3, &["vault:fetch:k", "egress:m:443"])]
+            [spawn_request(3, &["vault:store:k", "egress:m:443"])]
         );
         // The model grant is not added twice.
         let (agent, broker) = scripted(vec![spawned(1, &["egress:m:443"])]);

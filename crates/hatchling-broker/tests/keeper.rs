@@ -298,11 +298,11 @@ fn the_keeper_runs_only_as_the_broker_starts_it() {
 /// refused. A cell's vault op, on the cell's own channel the spawner hands
 /// over, is answered under the grants both the configuration and the
 /// cell's session hold: a run's session, holding fewer than the agent, is
-/// refused the rest.
+/// refused the rest. What a cell stores is held, and gates scan for it.
 #[test]
 fn the_brokers_end_reads_through_the_keeper() {
     use hatchling_broker::keeper::Keeper;
-    use hatchling_core::{SessionRequest, SessionResponse, VaultOp, VaultResult};
+    use hatchling_core::{SecretB64, SessionRequest, SessionResponse, VaultOp, VaultResult};
     let dir = scratch("client").unwrap();
     sealed_vault(
         &dir,
@@ -312,7 +312,7 @@ fn the_brokers_end_reads_through_the_keeper() {
     let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     program
         .envs(environment(&dir))
-        .env("HATCHLING_VAULT_GRANTS", "fetch:token")
+        .env("HATCHLING_VAULT_GRANTS", "store:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
     let (keeper, keys, authoritys, spawners) = Keeper::start_with(program).unwrap();
@@ -348,40 +348,43 @@ fn the_brokers_end_reads_through_the_keeper() {
         write_frame(&spawners, named.to_string().as_bytes()).unwrap();
         hatchling_sys::net::send_fd(spawners.as_fd(), theirs.as_fd()).unwrap();
         drop(theirs);
-        let fetch = SessionRequest::Vault(VaultOp::Fetch {
+        let store = SessionRequest::Vault(VaultOp::Store {
             name: secret.to_owned(),
+            secret_b64: SecretB64::encode(b"st0red"),
         });
-        write_frame(&ours, &serde_json::to_vec(&fetch).unwrap()).unwrap();
+        write_frame(&ours, &serde_json::to_vec(&store).unwrap()).unwrap();
         let reply = read_frame(&ours).unwrap();
         let Ok(SessionResponse::Vault(result)) = serde_json::from_slice(&reply) else {
             unreachable!("not a vault reply");
         };
         result
     };
-    assert!(matches!(
-        ask(&["fetch:token"], "token"),
-        VaultResult::Fetched { .. }
-    ));
+    assert_eq!(ask(&["store:token"], "token"), VaultResult::Stored);
     // A run whose schedule granted no secret, or another one, is refused
     // the agent's.
-    for held in [&[][..], &["fetch:other"][..]] {
+    for held in [&[][..], &["store:other"][..]] {
         assert_eq!(
             ask(held, "token"),
             VaultResult::Denied,
-            "a run fetched a secret its session wasn't granted"
+            "a run stored a secret its session wasn't granted"
         );
     }
     // A session's grant the configuration doesn't make is no grant.
     assert_eq!(
-        ask(&["fetch:egress-localhost-18089"], "egress-localhost-18089"),
+        ask(&["store:egress-localhost-18089"], "egress-localhost-18089"),
         VaultResult::Denied
     );
+    let mut read = authority
+        .read("egress", &[name("egress-localhost-18089")])
+        .unwrap()
+        .into_iter();
+    assert_eq!(read.next().flatten().unwrap().as_bytes(), b"credential");
     drop(keeper);
-    // The cell's fetch was recorded: a new keeper's gates scan for it.
+    // The cell's store was recorded: a new keeper's gates scan for it.
     let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     program
         .envs(environment(&dir))
-        .env("HATCHLING_VAULT_GRANTS", "fetch:token")
+        .env("HATCHLING_VAULT_GRANTS", "store:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
     let (keeper, _, _, _) = Keeper::start_with(program).unwrap();
@@ -391,7 +394,11 @@ fn the_brokers_end_reads_through_the_keeper() {
         .iter()
         .map(|secret| secret.as_bytes().to_vec())
         .collect();
-    assert!(scanned.contains(&b"t".to_vec()), "{} values", scanned.len());
+    assert!(
+        scanned.contains(&b"st0red".to_vec()),
+        "{} values",
+        scanned.len()
+    );
     assert!(
         !scanned.contains(&b"credential".to_vec()),
         "a scan handed the broker an egress credential"
@@ -409,7 +416,7 @@ fn a_gate_scans_only_for_what_a_cell_has_had() {
     let mut program = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     program
         .envs(environment(&dir))
-        .env("HATCHLING_VAULT_GRANTS", "fetch:token")
+        .env("HATCHLING_VAULT_GRANTS", "store:token")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
     let (keeper, _, _, _) = Keeper::start_with(program).unwrap();
@@ -420,10 +427,11 @@ fn a_gate_scans_only_for_what_a_cell_has_had() {
 }
 
 /// A cell's vault channel is its own (WO-031): the real keeper answers a
-/// cell's store and fetch on the channel the spawner handed it, under the
-/// grants it was named with, and another cell's channel, named with none,
-/// is denied the same ops, before the store and after it. An op names no
-/// cell: a channel can't speak for another.
+/// cell's store and removal on the channel the spawner handed it, under
+/// the grants it was named with, and another cell's channel, named with
+/// none, is denied the same ops, before the store and after it. An op
+/// names no cell: a channel can't speak for another. No channel reads a
+/// secret, not even the one that stored it.
 #[test]
 fn a_cells_vault_channel_is_answered_under_its_own_grants_alone() {
     use hatchling_broker::keeper::Keeper;
@@ -433,10 +441,7 @@ fn a_cells_vault_channel_is_answered_under_its_own_grants_alone() {
     sealed_vault(&dir, &[("token", "t0ken-value")]).unwrap();
     let (keeper, _, _, spawner) = Keeper::start_with(program(
         &dir,
-        &[(
-            "HATCHLING_VAULT_GRANTS",
-            "fetch:token,store:kept,fetch:kept",
-        )],
+        &[("HATCHLING_VAULT_GRANTS", "store:kept,remove:kept")],
     ))
     .unwrap();
     let hand = |cell: &str, grants: &[&str]| {
@@ -465,27 +470,34 @@ fn a_cells_vault_channel_is_answered_under_its_own_grants_alone() {
         name: String::from("kept"),
         secret_b64: SecretB64::encode(b"st0red-value"),
     };
-    let fetched = |result: VaultResult| {
-        let VaultResult::Fetched { secret_b64 } = result else {
-            unreachable!("not fetched");
-        };
-        secret_b64.decode().unwrap().to_vec()
+    let remove = || VaultOp::Remove {
+        name: String::from("kept"),
     };
-    let granted = hand("run-a", &["fetch:token", "store:kept", "fetch:kept"]);
+    let granted = hand("run-a", &["store:kept", "remove:kept"]);
     let other = hand("run-b", &[]);
     assert!(
         matches!(ask(&other, store()), VaultResult::Denied),
         "another cell's store"
     );
     assert!(matches!(ask(&granted, store()), VaultResult::Stored));
-    assert_eq!(fetched(ask(&granted, fetch("kept"))), b"st0red-value");
-    assert_eq!(fetched(ask(&granted, fetch("token"))), b"t0ken-value");
-    for name in ["kept", "token"] {
+    for op in [store(), remove()] {
         assert!(
-            matches!(ask(&other, fetch(name)), VaultResult::Denied),
-            "another cell's fetch of {name}"
+            matches!(ask(&other, op), VaultResult::Denied),
+            "another cell's op, after the store"
         );
     }
+    for name in ["kept", "token"] {
+        for channel in [&granted, &other] {
+            assert!(
+                matches!(ask(channel, fetch(name)), VaultResult::Denied),
+                "a cell's fetch of {name}"
+            );
+        }
+    }
+    assert!(
+        matches!(ask(&granted, remove()), VaultResult::Removed),
+        "the denied ops took what it stored"
+    );
     let log = std::fs::read_to_string(dir.join("vault/.access.log")).unwrap();
     assert!(log.contains("run-a") && log.contains("run-b"), "{log}");
     drop(keeper);

@@ -81,7 +81,7 @@ fn config(base: &Base, ingress: bool) -> Config {
             key_file: VaultConfig::default_key_file(&vault_root),
             root: vault_root,
             grants: vec![VaultGrant {
-                action: VaultAction::Fetch,
+                action: VaultAction::Store,
                 name: "app-token".parse().unwrap(),
             }],
         },
@@ -122,7 +122,7 @@ fn egress() -> ScheduleGrant {
 
 fn vault() -> ScheduleGrant {
     ScheduleGrant::Vault {
-        action: String::from("fetch"),
+        action: String::from("store"),
         name: String::from("app-token"),
     }
 }

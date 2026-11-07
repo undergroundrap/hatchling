@@ -1394,7 +1394,7 @@ mod tests {
         let dir = crate::api_auth::tests::scratch("held-read");
         config.vault.root = dir.0.join("vault");
         config.vault.grants = vec![crate::VaultGrant {
-            action: hatchling_core::VaultAction::Fetch,
+            action: hatchling_core::VaultAction::Store,
             name: "token".parse().unwrap(),
         }];
         config.egress.grants = vec![String::from("api.example.com:443")];

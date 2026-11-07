@@ -70,7 +70,7 @@ fn config(name: &str) -> (Base, Config) {
             key_file: VaultConfig::default_key_file(&vault_root),
             root: vault_root,
             grants: vec![VaultGrant {
-                action: VaultAction::Fetch,
+                action: VaultAction::Store,
                 name: "app-token".parse().unwrap(),
             }],
         },
@@ -106,7 +106,7 @@ fn send() -> ScheduleGrant {
 
 fn vault() -> ScheduleGrant {
     ScheduleGrant::Vault {
-        action: String::from("fetch"),
+        action: String::from("store"),
         name: String::from("app-token"),
     }
 }
@@ -601,7 +601,7 @@ fn bounds_and_bad_input_are_refused_and_nothing_enumerates() {
             SpaceOp::Create {
                 name: String::from("x"),
                 grants: vec![ScheduleGrant::Vault {
-                    action: String::from("fetch"),
+                    action: String::from("store"),
                     name: String::from("not-granted"),
                 }],
             }

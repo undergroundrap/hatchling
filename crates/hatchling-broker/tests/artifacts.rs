@@ -114,7 +114,7 @@ impl World {
                 key_file: VaultConfig::default_key_file(&vault_root),
                 root: vault_root,
                 grants: vec![VaultGrant {
-                    action: VaultAction::Fetch,
+                    action: VaultAction::Store,
                     name: "app-token".parse().unwrap(),
                 }],
             },

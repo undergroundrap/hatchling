@@ -5065,11 +5065,10 @@ export type VaultProtection = {
 /**
  * The broker's reply to one [`VaultOp`].
  *
- * Replies are per-operation and carry no more than the op asked for: a
- * fetch returns one secret, never the store. Failures that would leak
- * internals (filesystem errors, oversize values) collapse to the opaque
- * [`VaultError`](VaultResult::VaultError): the agent learns that the op
- * failed, not why.
+ * Replies are per-operation and carry no more than the op asked for.
+ * Failures that would leak internals (filesystem errors, oversize
+ * values) collapse to the opaque [`VaultError`](VaultResult::VaultError):
+ * the agent learns that the op failed, not why.
  */
 export type VaultResult = {
     readonly r: 'stored';

@@ -1154,7 +1154,7 @@ mod tests {
                 root,
                 grants: vec![
                     VaultGrant {
-                        action: VaultAction::Fetch,
+                        action: VaultAction::Store,
                         name: "app-token".parse().unwrap(),
                     },
                     VaultGrant {
@@ -1399,7 +1399,7 @@ mod tests {
         config.scheduler.model_name = Some(String::from("m"));
         let grants = vec![
             ScheduleGrant::Vault {
-                action: String::from("fetch"),
+                action: String::from("store"),
                 name: String::from("app-token"),
             },
             ScheduleGrant::Egress {
@@ -1617,7 +1617,7 @@ mod tests {
                 name: String::from("app-token"),
             },
             ScheduleGrant::Vault {
-                action: String::from("fetch"),
+                action: String::from("store"),
                 name: String::from("../etc"),
             },
             ScheduleGrant::Memory {

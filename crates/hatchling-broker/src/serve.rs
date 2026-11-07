@@ -1016,8 +1016,8 @@ fn request_of(frame: &Zeroizing<Vec<u8>>) -> Result<SessionRequest, Error> {
 ///
 /// # Errors
 ///
-/// The reply is made at its final size and wiped when dropped: a fetched
-/// secret leaves no copy behind in a freed buffer.
+/// The reply is made at its final size and wiped when dropped: what it
+/// carries leaves no copy behind in a freed buffer.
 ///
 /// # Errors
 ///
@@ -1983,7 +1983,7 @@ mod tests {
 
     /// every vault op is recorded against the session's uid and
     /// cell, whatever its outcome; an allowed op that cannot be recorded is
-    /// answered as failed, so no secret leaves unlogged; a denial never
+    /// answered as failed, so nothing changes unlogged; a denial never
     /// creates the vault root to record itself.
     #[test]
     fn every_vault_op_is_recorded_and_an_unrecorded_one_fails_closed() {
@@ -2029,10 +2029,11 @@ mod tests {
             handle_vault_op(&vault, &key, &store, &cell, 7).unwrap(),
             VaultResult::Stored
         );
-        assert!(matches!(
+        // Granted here by hand, and still refused: no cell reads a secret.
+        assert_eq!(
             handle_vault_op(&vault, &key, &fetch("token"), &cell, 7).unwrap(),
-            VaultResult::Fetched { .. }
-        ));
+            VaultResult::Denied
+        );
         assert_eq!(
             handle_vault_op(&vault, &key, &remove, &cell, 7).unwrap(),
             VaultResult::Denied
@@ -2057,7 +2058,7 @@ mod tests {
             seen,
             [
                 ("store", "token", Outcome::Allowed),
-                ("fetch", "token", Outcome::Allowed),
+                ("fetch", "token", Outcome::Denied),
                 ("remove", "token", Outcome::Denied),
                 ("fetch", "(not a secret name)", Outcome::Denied),
             ]
@@ -2069,11 +2070,11 @@ mod tests {
             }));
         let text = std::fs::read_to_string(dir.join(crate::vault_access::ACCESS_LOG)).unwrap();
         assert!(!text.contains("s3cret"), "names only, never a value");
-        // The log cannot be written: the fetch is answered as failed.
+        // The log cannot be written: the store is answered as failed.
         std::fs::remove_file(dir.join(crate::vault_access::ACCESS_LOG)).unwrap();
         std::fs::create_dir(dir.join(crate::vault_access::ACCESS_LOG)).unwrap();
         assert_eq!(
-            handle_vault_op(&vault, &key, &fetch("token"), &cell, 7).unwrap(),
+            handle_vault_op(&vault, &key, &store, &cell, 7).unwrap(),
             VaultResult::VaultError
         );
         // An op that did not go ahead is still answered as it was.
@@ -2081,10 +2082,10 @@ mod tests {
             handle_vault_op(&vault, &key, &remove, &cell, 7).unwrap(),
             VaultResult::Denied
         );
-        assert!(matches!(
-            vault_op_result(&vault, &key, &fetch("token"), &cell).unwrap(),
-            VaultResult::Fetched { .. }
-        ));
+        assert_eq!(
+            vault_op_result(&vault, &key, &store, &cell).unwrap(),
+            VaultResult::Stored
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

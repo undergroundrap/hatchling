@@ -54,9 +54,6 @@ fn join_within(handle: JoinHandle<()>) {
     handle.join().unwrap();
 }
 
-/// The secret the vault holds for `app-token`.
-const SECRET: &str = "sk-live-0123456789abcdef";
-
 /// A test's base under `/tmp` (child sockets must fit `sun_path`),
 /// removed when the test ends.
 fn base(name: &str) -> common::TestDir {
@@ -86,7 +83,7 @@ fn config(base: &Path) -> Config {
             grants: ["app-token", "old-token"]
                 .iter()
                 .map(|name| VaultGrant {
-                    action: VaultAction::Fetch,
+                    action: VaultAction::Store,
                     name: name.parse().unwrap(),
                 })
                 .collect(),
@@ -110,18 +107,13 @@ fn config(base: &Path) -> Config {
     }
 }
 
-/// The vault, with `app-token` stored when `with_secret`.
-fn seed(config: &Config, key: &MasterKey, with_secret: bool) {
-    let vault = SealedVault::open(&config.vault.root, key).unwrap();
-    let (name, value) = if with_secret {
-        ("app-token", SECRET)
-    } else {
-        ("unrelated", "x")
-    };
-    vault
+/// The vault, holding nothing a test's cells are granted.
+fn seed(config: &Config, key: &MasterKey) {
+    SealedVault::open(&config.vault.root, key)
+        .unwrap()
         .store(
-            &name.parse().unwrap(),
-            &Secret::new(value.as_bytes().to_vec()).unwrap(),
+            &"unrelated".parse().unwrap(),
+            &Secret::new(b"x".to_vec()).unwrap(),
         )
         .unwrap();
 }
@@ -137,7 +129,7 @@ fn env(config: &Config, timeout: Duration) -> RunEnv {
 
 fn vault(name: &str) -> ScheduleGrant {
     ScheduleGrant::Vault {
-        action: String::from("fetch"),
+        action: String::from("store"),
         name: name.to_owned(),
     }
 }
@@ -335,9 +327,9 @@ fn a_child_runs_in_its_own_cell_with_only_what_it_was_given() {
     let mut config = config(&base);
     config.scheduler.model_reasoning = hatchling_core::ModelReasoning::Disabled;
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
-    let task = "vault:app-token vault:old-token subagent model-reasoning";
+    let task = "vault-store:app-token vault-store:old-token subagent model-reasoning";
     let spawned = parent.spawn(task, 4, vec![vault("app-token")]);
     let SubagentResult::Spawned {
         child,
@@ -368,8 +360,8 @@ fn a_child_runs_in_its_own_cell_with_only_what_it_was_given() {
         String::from("stdin=not-socket"),
         String::from("model-reasoning=disabled"),
         // Narrowed: what it was given, and nothing the parent kept back.
-        String::from("vault:app-token=Vault(NotFound)"),
-        String::from("vault:old-token=Vault(Denied)"),
+        String::from("vault-store:app-token=Vault(Stored)"),
+        String::from("vault-store:old-token=Vault(Denied)"),
         // The depth bound holds from inside the child.
         String::from("subagent=Subagent(Refused { reason: TooDeep })"),
     ] {
@@ -397,7 +389,7 @@ fn siblings_cannot_reach_each_other_and_a_kill_keeps_the_childs_last_words() {
     let base = base("siblings");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
     let first = parent.spawned("hang", 2, Vec::new());
     // Where a socket would be, if children had them: they have only their
@@ -457,7 +449,7 @@ fn widening_is_refused_before_anything_is_spent_and_budgets_are_never_refunded()
     let base = base("ledger");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
     // A capability the parent does not hold: refused, no cell started.
     assert_eq!(
@@ -496,7 +488,7 @@ fn a_child_that_times_out_or_fails_is_a_typed_failure_and_the_parent_carries_on(
     let base = base("failures");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let parent = Parent::open(&config, key, Duration::from_secs(3));
     let hung = parent.spawned("hang", 3, Vec::new());
     let report = parent.wait(&hung);
@@ -541,9 +533,23 @@ fn an_answer_that_would_expose_a_secret_never_reaches_the_parent() {
     let base = base("withheld");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, true);
+    seed(&config, &key);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
-    let child = parent.spawned("vault:app-token", 2, vec![vault("app-token")]);
+    // While the vault holds no such secret, the same words reach the
+    // parent: the gate withholds for the secret, not for their shape.
+    let told = parent.spawned("vault-leak", 2, vec![vault("app-token")]);
+    let report = parent.wait(&told);
+    assert!(answer(&report).contains("vault-leak="), "{report:?}");
+    // No child can read a secret, but one can be told what another stored
+    // under a name its grants reach. The gate reads what they reach when
+    // the child is spawned, so the secret is stored first.
+    let storing = parent.spawned("vault-store:app-token", 2, vec![vault("app-token")]);
+    let report = parent.wait(&storing);
+    assert!(
+        answer(&report).contains("vault-store:app-token=Vault(Stored)"),
+        "{report:?}"
+    );
+    let child = parent.spawned("vault-leak", 2, vec![vault("app-token")]);
     let report = parent.wait(&child);
     assert_eq!(answer(&report), hatchling_broker::WITHHELD);
     // The hash of what it really returned is still on the record.
@@ -565,7 +571,7 @@ fn when_the_parent_goes_away_its_children_are_reaped_and_recorded() {
     let base = base("orphans");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
     let first = parent.spawned("hang", 2, Vec::new());
     let second = parent.spawned("hang", 2, Vec::new());
@@ -592,7 +598,7 @@ fn every_lifecycle_event_matches_the_contract() {
     let base = base("events");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let parent = Parent::open(&config, key, RUN_DEADLINE);
     let task = "envelope:done";
     let child = parent.spawned(task, 3, vec![vault("app-token")]);
@@ -620,7 +626,7 @@ fn every_lifecycle_event_matches_the_contract() {
                 parent_run_id: run_id,
                 task_brief_hash: sha(task.as_bytes()),
                 budget_steps: 3,
-                capabilities: vec![String::from("vault:fetch:app-token")],
+                capabilities: vec![String::from("vault:store:app-token")],
                 depth: 1,
             },
             SubagentEvent::Finished {
@@ -791,7 +797,7 @@ fn a_parent_agent_delegates_through_its_tools_and_gets_the_childs_answer() {
     let base = base("agent");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let (cell, server) = agent_parent(&config, key, &base);
     let model = Delegating {
         task: String::from("envelope:the build is green"),
@@ -836,7 +842,7 @@ fn a_parent_that_spends_its_budget_on_a_child_ends_and_its_child_is_reaped() {
     let base = base("exhaust");
     let config = config(&base);
     let key = MasterKey::generate().unwrap();
-    seed(&config, &key, false);
+    seed(&config, &key);
     let (cell, server) = agent_parent(&config, key, &base);
     // Four steps: one turn to spawn, three to the child. Nothing is left
     // for a second turn, so the parent ends there, and its child with it.
