@@ -910,7 +910,7 @@ fn serve_session(
                     )?)
                 }
                 SessionRequest::Skill(op) => {
-                    let keys = crate::harness::vault_keys(&config.vault.root, key);
+                    let keys = crate::harness::vault_keys(config, key);
                     SessionResponse::Skill(crate::skill_ops::handle_skill_op(
                         skills, &op, cell_id, &keys,
                     ))

@@ -267,7 +267,7 @@ impl<'a> Ops<'a> {
                 let Ok(cell) = API_CELL.parse::<CellId>() else {
                     return refused(ActionRefusal::Unavailable);
                 };
-                let keys = crate::harness::vault_keys(&self.config.vault.root, self.key);
+                let keys = crate::harness::vault_keys(self.config, self.key);
                 (
                     UiActionResult::Skill {
                         outcome: handle_skill_op(self.skills, op, &cell, &keys),
