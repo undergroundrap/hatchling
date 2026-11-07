@@ -230,12 +230,13 @@ fn stored_secret_is_sealed_on_disk_and_the_vault_decrypts_it() {
     // plaintext. Store through the real session pipeline, inspect the
     // raw file bytes, then prove the vault still decrypts them.
     let grants = vec![grant(VaultAction::Store, "app-token").unwrap()];
-    let mut master = [0u8; 32];
-    std::io::Read::read_exact(
-        &mut std::fs::File::open("/dev/urandom").unwrap(),
-        &mut master,
-    )
-    .unwrap();
+    let mut random = Vec::new();
+    std::fs::File::open("/dev/urandom")
+        .unwrap()
+        .take(32)
+        .read_to_end(&mut random)
+        .unwrap();
+    let master: [u8; 32] = random.try_into().unwrap();
     let key = MasterKey::from_bytes(master);
     let (client, root) = spawn_session_keyed("sealed", real_uid(), grants, key).unwrap();
     handshake(&client).unwrap();
