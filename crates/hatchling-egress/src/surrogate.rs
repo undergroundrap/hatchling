@@ -44,9 +44,15 @@ const MAX_DESTINATION_LEN: usize = 253 + 1 + 5; // max hostname + ':' + max port
 /// be a valid surrogate.
 const MIN_PAYLOAD_LEN: usize = 1 + 4 + 8 + 2 + HMAC_LEN;
 
-/// The HMAC key. Generated once per proxy instance, zeroized on drop.
-#[derive(Debug)]
+/// The HMAC key. Generated once per proxy instance, zeroized on drop. Its
+/// `Debug` doesn't show it: [`Zeroizing`]'s own prints what it holds.
 pub struct SurrogateKey(Zeroizing<[u8; 32]>);
+
+impl std::fmt::Debug for SurrogateKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SurrogateKey([redacted])")
+    }
+}
 
 impl SurrogateKey {
     /// Generates a fresh random key from the OS CSPRNG, filled in place
@@ -300,6 +306,15 @@ fn is_numeric_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The HMAC key never shows in `Debug`, as [`Zeroizing`]'s would.
+    #[test]
+    fn a_surrogate_keys_debug_does_not_show_it() {
+        let key = SurrogateKey(Zeroizing::new([0xab; 32]));
+        let shown = format!("{key:?}");
+        assert_eq!(shown, "SurrogateKey([redacted])");
+        assert!(!shown.contains("171"), "the key's bytes showed");
+    }
 
     /// `MIN_PAYLOAD_LEN` is 1 + 4 + 8 + 2 + 32 = 47 bytes. Pins the
     /// constant against arithmetic mutants (`+` → `-`/`*`).

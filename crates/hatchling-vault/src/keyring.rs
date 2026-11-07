@@ -93,7 +93,7 @@ impl Kek {
     }
 
     pub(crate) fn cipher(&self) -> XChaCha20Poly1305 {
-        XChaCha20Poly1305::new(&self.0.into())
+        XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&self.0))
     }
 }
 

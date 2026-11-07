@@ -235,8 +235,7 @@ impl MasterKey {
 
     /// The AEAD cipher keyed by this master key.
     pub(crate) fn cipher(&self) -> XChaCha20Poly1305 {
-        let key: chacha20poly1305::Key = self.0.into();
-        XChaCha20Poly1305::new(&key)
+        XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&self.0))
     }
 }
 
@@ -491,8 +490,7 @@ impl StoreKey {
 
 impl Keyed for StoreKey {
     fn cipher(&self) -> XChaCha20Poly1305 {
-        let key: chacha20poly1305::Key = self.0.into();
-        XChaCha20Poly1305::new(&key)
+        XChaCha20Poly1305::new(chacha20poly1305::Key::from_slice(&self.0))
     }
 }
 

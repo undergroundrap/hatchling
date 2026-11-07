@@ -32,6 +32,7 @@ use hatchling_isolation::CellIdentity;
 use hatchling_sys::{FileKind, Removed, remove_dir_tree, remove_dir_tree_of, remove_file_of};
 use hatchling_vault::archive::{ArchiveReader, ArchiveWriter, Entry, archive_keyring, safe_path};
 use hatchling_vault::{FileKey, KeySource as _, Keyring, MasterKey};
+use zeroize::Zeroizing;
 
 use crate::Error;
 use crate::cell::{agent_identity, env_value};
@@ -218,7 +219,11 @@ fn write_backup(
                     & 0o777;
                 let bytes = fs::read(&on_disk).map_err(ring::io_error)?;
                 writer
-                    .add(&Entry { path, mode, bytes })
+                    .add(&Entry {
+                        path,
+                        mode,
+                        bytes: Zeroizing::new(bytes),
+                    })
                     .map_err(ring::vault_error)?;
                 count += 1;
             }
@@ -989,7 +994,7 @@ mod tests {
         fs::write(&target, b"untouched").unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
         let staged = dir.join("keyring.restoring");
-        let mut ask = |_: &str| Ok(zeroize::Zeroizing::default());
+        let mut ask = |_: &str| Ok(Zeroizing::default());
         let open = |ask: Ask<'_>| {
             open_for_restore(&config, &keyring, &ring_bytes, ask, &mut ring::NoKeys).unwrap()
         };

@@ -241,8 +241,8 @@ impl Drop for Relay {
     }
 }
 
-/// What every connection of one run shares.
-#[derive(Debug)]
+/// What every connection of one run shares. Its `Debug` shows neither key:
+/// [`Zeroizing`]'s own prints what it holds.
 struct Context {
     vendor: Vendor,
     surrogate: Zeroizing<String>,
@@ -251,6 +251,19 @@ struct Context {
     live: AtomicU32,
     /// Request-body bytes the run's connections hold now (see [`Share`]).
     held: AtomicUsize,
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("vendor", &self.vendor)
+            .field("surrogate", &"[redacted]")
+            .field("key", &"[redacted]")
+            .field("counts", &self.counts)
+            .field("live", &self.live)
+            .field("held", &self.held)
+            .finish()
+    }
 }
 
 /// A connection's place among its run's [`MAX_LIVE`], given back when its
@@ -944,6 +957,17 @@ mod tests {
             destination,
             tls: TlsClient::bundled().unwrap(),
         }
+    }
+
+    /// A run's keys never show in its `Debug`, as [`Zeroizing`]'s would.
+    #[test]
+    fn a_runs_debug_shows_neither_key() {
+        let context = context(vendor(Wire::Anthropic, 1));
+        let shown = format!("{context:?}");
+        for (what, key) in [("surrogate", &*context.surrogate), ("key", &*context.key)] {
+            assert!(!shown.contains(key.as_str()), "the {what} showed");
+        }
+        assert!(shown.contains("[redacted]"));
     }
 
     fn context(vendor: Vendor) -> Context {
