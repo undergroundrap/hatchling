@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use hatchling_isolation::CellIdentity;
 use hatchling_sys::{FileKind, Removed, remove_dir_tree, remove_dir_tree_of, remove_file_of};
 use hatchling_vault::archive::{ArchiveReader, ArchiveWriter, Entry, archive_keyring, safe_path};
 use hatchling_vault::{FileKey, KeySource as _, Keyring, MasterKey};
@@ -246,16 +247,38 @@ fn drop_partial(partial: &Path) {
     let _ = remove_file_of(partial, FileKind::Regular, &[hatchling_sys::euid()]);
 }
 
-/// Clears `place`, of what Hatchling's own users own
-/// ([`crate::broker_user::own_users`]). A sealed store's dotfiles, its
-/// wrapped key among them, stay unless `all`: a store with no key can't
-/// take new secrets.
-fn clear(place: &Place, all: bool) -> Result<(), Error> {
-    clear_of(place, all, &crate::broker_user::own_users())
+/// The most of a cell's uid range a clear takes as Hatchling's. Past it,
+/// what a cell left stops the clear and is named: the safe way to be wrong.
+const MAX_CELL_UIDS: usize = 65_536;
+
+/// Whose a reset or a restore clears under `config`: Hatchling's own users
+/// ([`crate::broker_user::own_users`]) and its cells', whose run trees a
+/// crash can leave behind.
+fn owners(config: &Config) -> Vec<u32> {
+    let get = |key: &str| crate::cell::env_value(std::env::var(key));
+    with_cells(
+        crate::broker_user::own_users(),
+        config.agent_uid.as_u32(),
+        crate::cell::agent_identity(&get).ok().map(|(cell, _)| cell),
+    )
 }
 
-/// [`clear`], of what `owners` own. Anything else in `place` stops it,
-/// and stays: root clearing a store goes no further than its owner could.
+/// `own`, with the agent's uid and each of `cell`'s, if it can be told. One
+/// that can't be is a setting the broker wouldn't start with, and adds
+/// nothing.
+fn with_cells(mut own: Vec<u32>, agent: u32, cell: Option<CellIdentity>) -> Vec<u32> {
+    own.push(agent);
+    if let Some(cell) = cell {
+        let last = cell.principal.saturating_add(cell.count);
+        own.extend((cell.principal..last).take(MAX_CELL_UIDS));
+    }
+    own
+}
+
+/// Clears `place`, of what `owners` own. A sealed store's dotfiles, its
+/// wrapped key among them, stay unless `all`: a store with no key can't
+/// take new secrets. Anything else in `place` stops it, and stays: root
+/// clearing a store goes no further than its owner could.
 fn clear_of(place: &Place, all: bool, owners: &[u32]) -> Result<(), Error> {
     let Ok(kind) = fs::symlink_metadata(&place.path) else {
         return Ok(());
@@ -263,7 +286,7 @@ fn clear_of(place: &Place, all: bool, owners: &[u32]) -> Result<(), Error> {
     if !kind.is_dir() {
         return remove_file_of(&place.path, FileKind::Regular, owners)
             .map(drop)
-            .map_err(sys_error);
+            .map_err(|error| left_at(&place.path, &error));
     }
     for entry in fs::read_dir(&place.path).map_err(ring::io_error)? {
         let entry = entry.map_err(ring::io_error)?;
@@ -275,10 +298,18 @@ fn clear_of(place: &Place, all: bool, owners: &[u32]) -> Result<(), Error> {
         if inner.is_dir() {
             clear_tree(&path, inner.uid(), owners)?;
         } else {
-            remove_file_of(&path, FileKind::NotDirectory, owners).map_err(sys_error)?;
+            remove_file_of(&path, FileKind::NotDirectory, owners)
+                .map_err(|error| left_at(&path, &error))?;
         }
     }
     Ok(())
+}
+
+/// What stopped a clear at `path`, by name: the owner has to look at it.
+fn left_at(path: &Path, why: &dyn std::fmt::Display) -> Error {
+    Error::Usage {
+        reason: format!("{} wasn't removed: {why}", path.display()),
+    }
 }
 
 /// Removes the tree at `path`, `owner`'s when looked at, if that's one of
@@ -287,24 +318,24 @@ fn clear_of(place: &Place, all: bool, owners: &[u32]) -> Result<(), Error> {
 /// Not [`remove_dir_tree`], which keeps to this process's user: run as
 /// root, as a reset is, every store here is a service user's.
 fn clear_tree(path: &Path, owner: u32, owners: &[u32]) -> Result<(), Error> {
-    let left = |why: &str| Error::Usage {
-        reason: format!("{} wasn't removed: {why}", path.display()),
-    };
     if !owners.contains(&owner) {
-        return Err(left("it isn't Hatchling's"));
+        return Err(left_at(path, &"it isn't Hatchling's"));
     }
     match remove_dir_tree_of(path, owner).map_err(sys_error)? {
         Removed::Whole => Ok(()),
-        Removed::Partly => Err(left("some of it isn't Hatchling's, or can't be removed")),
+        Removed::Partly => Err(left_at(
+            path,
+            &"some of it isn't Hatchling's, or can't be removed",
+        )),
     }
 }
 
-/// Clears what `level` clears of `places`.
-fn clear_level(places: &[Place], level: Level) -> Result<(), Error> {
+/// Clears what `level` clears of `places`, of what `owners` own.
+fn clear_level(places: &[Place], level: Level, owners: &[u32]) -> Result<(), Error> {
     places
         .iter()
         .filter(|place| place.part.cleared_by(level))
-        .try_for_each(|place| clear(place, level == Level::Everything))
+        .try_for_each(|place| clear_of(place, level == Level::Everything, owners))
 }
 
 /// The opened backup's files, each under `staging`, ready to swap in:
@@ -340,10 +371,11 @@ fn stage(
     Ok(count)
 }
 
-/// Puts `staging`'s files in `places`, clearing each first.
-fn swap_in(places: &[Place], staging: &Path) -> Result<(), Error> {
+/// Puts `staging`'s files in `places`, clearing each first of what
+/// `owners` own.
+fn swap_in(places: &[Place], staging: &Path, owners: &[u32]) -> Result<(), Error> {
     for place in places {
-        clear(place, true)?;
+        clear_of(place, true, owners)?;
         let staged = staging.join(&place.name);
         if !staged.exists() {
             continue;
@@ -599,7 +631,7 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         fresh_staging(&staging)?;
         let mut reader = ArchiveReader::new(file, &key, &ring_bytes).map_err(ring::vault_error)?;
         let count = stage(&mut reader, &by_name, &staging)?;
-        swap_in(&places, &staging)?;
+        swap_in(&places, &staging, &owners(config))?;
         if let (Some(path), false) = (keyring_config.keyring.as_deref(), ring_bytes.is_empty()) {
             fs::rename(&staged_ring, path).map_err(ring::io_error)?;
         }
@@ -714,7 +746,7 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
                 made.display()
             );
         }
-        clear_level(&places(config)?, level)?;
+        clear_level(&places(config)?, level, &owners(config))?;
         if level == Level::Everything {
             erase_keys(config, &keyring)?;
         }
@@ -805,6 +837,11 @@ mod tests {
 
     struct Scratch(PathBuf);
 
+    /// Clears `place` as this process's user.
+    fn clear(place: &Place, all: bool) -> Result<(), Error> {
+        clear_of(place, all, &[hatchling_sys::euid()])
+    }
+
     impl Scratch {
         fn new(name: &str) -> Self {
             let root = std::env::temp_dir()
@@ -857,18 +894,18 @@ mod tests {
     fn each_level_clears_what_it_says() {
         let scratch = Scratch::new("levels");
         let places = three(&scratch);
-        clear_level(&places, Level::Conversation).unwrap();
+        clear_level(&places, Level::Conversation, &[hatchling_sys::euid()]).unwrap();
         assert_eq!(scratch.read("conversation/chat"), None);
         assert_eq!(scratch.read("conversation/.key").unwrap(), b"wrapped");
         assert_eq!(scratch.read("memory/deep/note").unwrap(), b"remember");
         let scratch = Scratch::new("levels-agent");
         let places = three(&scratch);
-        clear_level(&places, Level::Agent).unwrap();
+        clear_level(&places, Level::Agent, &[hatchling_sys::euid()]).unwrap();
         assert_eq!(scratch.read("memory/deep/note"), None);
         assert_eq!(scratch.read("secrets/token").unwrap(), b"sealed");
         let scratch = Scratch::new("levels-all");
         let places = three(&scratch);
-        clear_level(&places, Level::Everything).unwrap();
+        clear_level(&places, Level::Everything, &[hatchling_sys::euid()]).unwrap();
         assert_eq!(scratch.read("secrets/token"), None);
         assert_eq!(scratch.read("conversation/.key"), None);
     }
@@ -1021,7 +1058,7 @@ mod tests {
             fs::metadata(&file).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        clear_level(&places, Level::Agent).unwrap();
+        clear_level(&places, Level::Agent, &[hatchling_sys::euid()]).unwrap();
         scratch.write("memory/newer", b"added since");
 
         let mut opened = fs::File::open(&file).unwrap();
@@ -1034,7 +1071,7 @@ mod tests {
         let staging = scratch.0.join("staging");
         fresh_staging(&staging).unwrap();
         assert_eq!(stage(&mut reader, &by_name, &staging).unwrap(), 4);
-        swap_in(&places, &staging).unwrap();
+        swap_in(&places, &staging, &[hatchling_sys::euid()]).unwrap();
         assert_eq!(scratch.read("conversation/chat").unwrap(), b"hello");
         assert_eq!(scratch.read("conversation/.key").unwrap(), b"wrapped");
         assert_eq!(scratch.read("memory/deep/note").unwrap(), b"remember");
@@ -1186,6 +1223,78 @@ mod tests {
         assert_eq!(scratch.read("files/deep/note"), None);
         assert_eq!(scratch.read("memory/note"), None);
         assert_eq!(scratch.read("activity"), None);
+    }
+
+    /// A crash leaves a run's tree owned by the cell's user. Taken as this
+    /// process's uid, a stranger standing for Hatchling's own users: a clear
+    /// takes it for the agent's uid, or anywhere in the cell's range, first
+    /// and last. Anything else stops the clear, names what stopped it, and
+    /// leaves it, a uid either side of the range included. A cell that can't
+    /// be told adds nothing, and an empty range nothing.
+    #[test]
+    fn a_clear_takes_the_cells_leftovers_and_nothing_else() {
+        let me = hatchling_sys::euid();
+        let own = vec![me.wrapping_add(1)];
+        let other = me.wrapping_add(2);
+        let cell = |first: u32, count: u32| Some(CellIdentity::direct(first, count));
+        let scratch = Scratch::new("clear-cell");
+        let left = |scratch: &Scratch| {
+            scratch.write("memory/run-1/spec", b"left by a crash");
+            scratch.write("files/note", b"left by a crash");
+            [
+                scratch.place("memory", Part::Mind),
+                scratch.place("files", Part::Mind),
+            ]
+        };
+        let places = left(&scratch);
+        for stops in [
+            with_cells(own.clone(), other, None),
+            with_cells(own.clone(), other, cell(me.wrapping_add(1), 3)),
+            with_cells(own.clone(), other, cell(me.wrapping_sub(3), 3)),
+            with_cells(own.clone(), other, cell(me, 0)),
+        ] {
+            for (place, named) in places.iter().zip(["memory/run-1", "files/note"]) {
+                let refused = clear_of(place, true, &stops).unwrap_err().to_string();
+                assert!(refused.contains(named), "not named: {refused}");
+            }
+            assert_eq!(
+                scratch.read("memory/run-1/spec").unwrap(),
+                b"left by a crash"
+            );
+            assert_eq!(scratch.read("files/note").unwrap(), b"left by a crash");
+        }
+        let takes = [
+            with_cells(own.clone(), me, None),
+            with_cells(own.clone(), other, cell(me, 1)),
+            with_cells(own, other, cell(me.wrapping_sub(2), 3)),
+        ];
+        for owners in takes {
+            for place in left(&scratch) {
+                clear_of(&place, true, &owners).unwrap();
+            }
+            assert_eq!(scratch.read("memory/run-1/spec"), None);
+            assert_eq!(scratch.read("files/note"), None);
+        }
+    }
+
+    /// Who's cleared for: Hatchling's own, the agent's uid, and the cell's
+    /// range, held to its bound.
+    #[test]
+    fn a_clear_is_for_hatchlings_own_and_its_cells() {
+        assert_eq!(with_cells(vec![1], 5, None), [1, 5]);
+        assert_eq!(
+            with_cells(vec![1], 5, Some(CellIdentity::direct(10, 3))),
+            [1, 5, 10, 11, 12]
+        );
+        let wide = with_cells(Vec::new(), 5, Some(CellIdentity::direct(10, u32::MAX)));
+        assert_eq!(wide.len(), 1 + MAX_CELL_UIDS);
+        assert_eq!(wide.last(), Some(&(9 + 65_536)));
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let agent = hatchling_sys::euid().wrapping_add(7);
+        config.agent_uid = hatchling_core::PeerUid::from_kernel(agent);
+        let owners = owners(&config);
+        assert!(owners.contains(&agent), "{owners:?}");
+        assert!(owners.contains(&hatchling_sys::euid()), "{owners:?}");
     }
 
     /// What a tree too deep to clear whole leaves is said, not passed over.
