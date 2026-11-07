@@ -34,6 +34,7 @@ use hatchling_vault::archive::{ArchiveReader, ArchiveWriter, Entry, archive_keyr
 use hatchling_vault::{FileKey, KeySource as _, Keyring, MasterKey};
 
 use crate::Error;
+use crate::cell::{agent_identity, env_value};
 use crate::config::Config;
 use crate::vault_keyring::{self as ring, Ask, Devices, KeyringConfig};
 
@@ -255,11 +256,12 @@ const MAX_CELL_UIDS: usize = 65_536;
 /// ([`crate::broker_user::own_users`]) and its cells', whose run trees a
 /// crash can leave behind.
 fn owners(config: &Config) -> Vec<u32> {
-    let get = |key: &str| crate::cell::env_value(std::env::var(key));
     with_cells(
         crate::broker_user::own_users(),
         config.agent_uid.as_u32(),
-        crate::cell::agent_identity(&get).ok().map(|(cell, _)| cell),
+        agent_identity(&|key| env_value(std::env::var(key)))
+            .ok()
+            .map(|(cell, _)| cell),
     )
 }
 
