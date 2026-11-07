@@ -142,6 +142,9 @@ pub fn run(setup: &mut Setup<'_>) -> Result<Done, Error> {
     finish_interrupted(setup, &path)?;
     let keyring = Keyring::load(&path).map_err(ring::vault_error)?;
     if keyring.tier() == Tier::HardwareKey {
+        // A setup that died just after the keyring was made never got to
+        // this: the plain key file opens nothing now, and shouldn't stay.
+        ring::remove_key_file(&setup.vault.key_file)?;
         carry_on(setup, keyring, &path)
     } else {
         protect(setup, keyring, &path)

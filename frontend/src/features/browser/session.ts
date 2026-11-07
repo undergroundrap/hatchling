@@ -137,9 +137,9 @@ export function openBrowserSession(ctx: AppContext, id: string): void {
                 actions.append(button('Start sample task', () => { void ctx.run({ type: 'browser.start', id }, true); }, { variant: 'primary' }));
             else {
                 actions.append(button('Stop', () => { void ctx.run({ type: 'browser.cancel', id }, true); }, { icon: 'stop', className: 'browser-stop', variant: 'ghost' }), task.controller === 'switching' ? switchingControl() : task.controller === 'agent' ? button('Take control of the browser', () => { void ctx.run({ type: 'browser.takeover', id }, true); }, { variant: 'primary' }) : button('Return control to agent', () => { void ctx.run({ type: 'browser.resume', id }, true); }, { variant: 'primary', disabled: task.challenge === 'waiting' || task.challenge === 'persistent' }));
-                // Live only: a sign-in kept is the user's own session, reused by the agent without asking.
+                // Live only: a sign-in kept is the user's own session, reused by the agent once they say yes in a chat.
                 if (task.controller === 'user' && ctx.state.mode !== 'scripted')
-                    actions.append(button('Keep me signed in', () => ctx.dialogs.confirm('Keep this sign-in for the agent?', `From now on the agent opens ${task.site} signed in as you, in a browser of its own, without asking you first. Sign out or delete it any time in Settings, under Signed-in sites.`, () => { void ctx.run({ type: 'browser.keep-signed-in', id }); }, { label: 'Keep me signed in' }), { className: 'browser-keep-signed-in', variant: 'ghost' }));
+                    actions.append(button('Keep me signed in', () => ctx.dialogs.confirm('Keep this sign-in for the agent?', `From now on, in a chat, the agent can open ${task.site} signed in as you, in a browser of its own, after you say yes for that answer. Sign out or delete it any time in Settings, under Signed-in sites.`, () => { void ctx.run({ type: 'browser.keep-signed-in', id }); }, { label: 'Keep me signed in' }), { className: 'browser-keep-signed-in', variant: 'ghost' }));
             }
         }
         const close = iconButton('close', 'Close browser session', ref.close);

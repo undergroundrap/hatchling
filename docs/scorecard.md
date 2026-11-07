@@ -115,6 +115,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
 | Memory, goals, feed posts, decisions, ideas, run specs, harness temp files, and the usage and activity logs aren't sealed at rest | Open. Continuity doesn't ship onto these |
 | A default install's vault opens from a key file on the same disk | Open, for the front-door release |
+| A disk can keep what was on it: old sealed files and older copies of a key file aren't erased, and memory in use can reach swap | Open. Protecting a vault overwrites the old key file, and that's as far as it goes |
 | Authenticator codes don't protect a stolen disk, and there's no passphrase option | Open, for the front-door release |
 | A saved sign-in password enters the browser's cell at fill time, for the origin the cell reports | Accepted for now, with a design-out question in Phase 4 |
 

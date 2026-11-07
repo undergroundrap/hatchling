@@ -458,6 +458,70 @@ pub fn remove_file_of(path: &Path, kind: FileKind, owners: &[u32]) -> Result<boo
     Ok(true)
 }
 
+/// Overwrites the regular file at `path` with zeros, in place and to the
+/// disk, then removes it: for a key that's being retired, so the bytes it
+/// held aren't left in a free block for whoever has the disk next.
+///
+/// Stands behind the same guards as [`remove_file_of`], and they're asked of
+/// what's opened as well as what's looked at, so a file swapped in between
+/// is never written. That nothing is there isn't an error.
+///
+/// A file system or a disk can keep older copies of its own: this removes
+/// the copy Hatchling can reach, and doesn't promise more.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] if `path` has no directory and name, the directory
+/// is a link or can't be opened, what's there isn't a regular file of one
+/// of `owners`, or it can't be written or removed. It's not removed then.
+pub fn wipe_file_of(path: &Path, owners: &[u32]) -> Result<bool, Error> {
+    use std::io::Write as _;
+
+    use rustix::fs::{AtFlags, FileType, Mode, OFlags};
+    use rustix::io::Errno;
+    /// Never through a link, or held on a pipe.
+    const FLAGS: OFlags = OFlags::WRONLY
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::CLOEXEC);
+    let wrote = |source| Error::Ownership {
+        operation: "overwrite the file",
+        source,
+    };
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(refused("wipe a file", "not a file in a directory"));
+    };
+    let handle = match open_dir_nofollow(dir) {
+        Ok(handle) => handle,
+        Err(Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(failed("open the directory")(error)),
+    };
+    let file = match rustix::fs::openat(&handle, name, FLAGS, Mode::empty()) {
+        Ok(file) => file,
+        Err(Errno::NOENT) => return Ok(false),
+        Err(error) => return Err(failed("open the file")(error)),
+    };
+    let stat = rustix::fs::fstat(&file).map_err(failed("look at the file"))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(refused("wipe a file", "it isn't a regular file"));
+    }
+    if !owners.contains(&stat.st_uid) {
+        return Err(refused("wipe a file", "it isn't one of ours"));
+    }
+    let zeros = [0u8; 4096];
+    let mut left = u64::try_from(stat.st_size).unwrap_or(0);
+    let mut file = std::fs::File::from(file);
+    while left > 0 {
+        let part = usize::try_from(left).map_or(zeros.len(), |left| left.min(zeros.len()));
+        file.write_all(zeros.get(..part).unwrap_or_default())
+            .map_err(wrote)?;
+        left -= u64::try_from(part).unwrap_or(left);
+    }
+    file.sync_all().map_err(wrote)?;
+    rustix::fs::unlinkat(&handle, name, AtFlags::empty()).map_err(failed("remove the file"))?;
+    Ok(true)
+}
+
 /// Writes `bytes` to the file at `path`, replacing what it holds, made
 /// 0600 if absent. It's opened without following a link, and must be a
 /// regular file: nothing it doesn't name itself is touched.
@@ -539,6 +603,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
         dir
+    }
+
+    /// A file wiped is zeros on the disk before it goes: a hard link to it,
+    /// which outlives the name, shows what was written. Anything else stays
+    /// exactly as it was: a link and what it points at, another owner's
+    /// file, a directory. Nothing there is fine, and so is an empty file.
+    #[test]
+    fn a_wipe_zeros_the_file_it_removes_and_touches_nothing_else() {
+        let dir = scratch("wipe");
+        let me = [crate::euid()];
+        let (file, kept) = (dir.join("key"), dir.join("seen"));
+        let held = vec![7u8; 10_000];
+        std::fs::write(&file, &held).unwrap();
+        std::fs::hard_link(&file, &kept).unwrap();
+        assert!(wipe_file_of(&file, &me).unwrap());
+        assert!(!file.exists());
+        assert_eq!(std::fs::read(&kept).unwrap(), vec![0u8; held.len()]);
+        assert!(!wipe_file_of(&file, &me).unwrap(), "nothing there");
+        assert!(!wipe_file_of(&dir.join("none/key"), &me).unwrap());
+
+        let target = dir.join("target");
+        std::fs::write(&target, b"kept").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(wipe_file_of(&link, &me).is_err(), "a link isn't followed");
+        assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+        assert!(link.is_symlink());
+        let through = dir.join("through");
+        std::os::unix::fs::symlink(&dir, &through).unwrap();
+        assert!(wipe_file_of(&through.join("target"), &me).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+
+        let stranger = [crate::euid().wrapping_add(1)];
+        assert!(wipe_file_of(&target, &stranger).is_err(), "not ours");
+        assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+        assert!(wipe_file_of(&dir, &me).is_err(), "a directory");
+
+        let empty = dir.join("empty");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(wipe_file_of(&empty, &me).unwrap());
+        assert!(!empty.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Each kind removes what it names, and no other. A link is left, or

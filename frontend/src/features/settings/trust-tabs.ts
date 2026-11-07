@@ -94,4 +94,4 @@ function deviceDetail(ctx: AppContext, device: DeepReadonly<Device>, refresh: ()
     if (!device.origin)
         body.append(button('Remove device', () => ctx.dialogs.confirm(`Remove ${device.name}?`, 'Its advertised capabilities will no longer be available for routing.', () => { void ctx.run({ type: 'device.remove', id: device.id }).then(() => { ref.close(); refresh(); }); }, { danger: true, label: 'Remove device' }), { icon: 'trash', variant: 'danger' }));
 }
-export const settingIcons: Record<string, IconName> = { general: 'settings', connectors: 'grid', wallet: 'wallet', secure: 'key', permissions: 'hand', channels: 'chat', devices: 'device', data: 'lock', help: 'help', legal: 'shield' };
+export const settingIcons: Record<string, IconName> = { general: 'settings', security: 'shieldLock', connectors: 'grid', wallet: 'wallet', secure: 'key', permissions: 'hand', channels: 'chat', devices: 'device', data: 'lock', help: 'help', legal: 'shield' };

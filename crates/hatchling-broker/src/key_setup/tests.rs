@@ -474,6 +474,21 @@ fn a_crash_before_the_codes_are_shown_is_picked_up() {
     assert!(!codes_unconfirmed(&path));
 }
 
+/// Lost just after the keyring was made: the plain key file is left, on a
+/// vault that no longer needs it, and the next run takes it away.
+#[test]
+fn a_key_file_a_crash_left_goes_on_the_next_run() {
+    let (_scratch, vault, config) = vault("setup-left");
+    let mut bench = Bench::new_keys(2, &[0, 1]);
+    run_with(&vault, &config, &mut bench, &["", "", "<code>"], &[])
+        .done
+        .unwrap();
+    std::fs::write(&vault.key_file, [7u8; 32]).unwrap();
+    let run = run_with(&vault, &config, &mut bench, &[], &[]);
+    assert_eq!(run.done.unwrap(), Done::AlreadySetUp);
+    assert!(!vault.key_file.exists(), "it stays on the disk");
+}
+
 /// A power cut mid-way: the keys committed, the stores not yet moved. The
 /// vault won't serve like that; the next run finishes it, and makes the
 /// codes nobody saw.

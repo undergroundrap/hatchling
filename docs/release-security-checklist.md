@@ -134,3 +134,5 @@ Web fetch and the browser proxy run in the broker, not the egress authority, so 
 ## 9. The known limitations are current
 
 The trust boundary's [known limitations](arch/trust-boundary.md#known-limitations) match what this release still lets through: a closed one is removed, and anything new this checklist found and didn't fix is added, with its work order.
+
+[Your security](your-security.md) stays true with them: each sentence checked against the code, each condition in its sentence, and a limit of any weight on the page at the same size as the claims. The app shows that page word for word, and a test holds them together.
