@@ -4,6 +4,7 @@ import type { AppContext } from '../../app/context.js';
 import { h } from '../../components/dom.js';
 import { button } from '../../components/ui.js';
 import { KEEP_COMMANDS, KEY_COMMANDS, MODEL_COMMANDS, RESET_COMMANDS } from '../../session/data-commands.js';
+import { onWindows } from '../../session/data-commands.js';
 import type { DataCommand } from '../../session/data-commands.js';
 function copyButton(ctx: AppContext, command: string): HTMLElement {
     const copy = (): void => {
@@ -11,12 +12,19 @@ function copyButton(ctx: AppContext, command: string): HTMLElement {
     };
     return button('Copy', copy, { variant: 'ghost' });
 }
+/** `item` as it's typed on this install. */
+function forHere(ctx: AppContext, item: DataCommand): DataCommand {
+    const setup = ctx.setup?.current();
+    return setup?.kind === 'read' && setup.setup.windowsSetup ? onWindows(item) : item;
+}
 /** One command to copy, and what it does. */
-export function commandRow(ctx: AppContext, item: DataCommand): HTMLElement {
+export function commandRow(ctx: AppContext, given: DataCommand): HTMLElement {
+    const item = forHere(ctx, given);
     return h('div', { class: 'data-command' }, h('div', {}, h('strong', {}, item.title), h('p', { class: 'data-description' }, item.note), h('code', {}, item.command)), copyButton(ctx, item.command));
 }
 /** One command to copy, where what's around it says what it does. */
-export function commandLine(ctx: AppContext, item: DataCommand): HTMLElement {
+export function commandLine(ctx: AppContext, given: DataCommand): HTMLElement {
+    const item = forHere(ctx, given);
     return h('div', { class: 'data-command' }, h('code', {}, item.command), copyButton(ctx, item.command));
 }
 function commandGroup(ctx: AppContext, title: string, items: readonly DataCommand[]): HTMLElement {

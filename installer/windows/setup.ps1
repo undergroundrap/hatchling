@@ -53,6 +53,9 @@ if ((Get-FromWsl $Distro @('cat', '/proc/1/comm')) -ne 'systemd') {
 }
 
 $updating = (Get-FromWsl $Distro @('sh', '-c', 'test -f /etc/hatchling/hatchling.env && echo yes')) -eq 'yes'
+if (-not $updating -and (Get-FromWsl $Distro @('sh', '-c', 'test -d /sys/fs/cgroup/system.slice/hatchling.service && echo yes')) -eq 'yes') {
+    Stop-Setup 'Another copy of Hatchling is running in a different WSL distro, and two can''t run at once. Stop that one first, then run this setup again. Nothing was installed.'
+}
 if ($updating -and $Version) {
     $had = Get-FromWsl $Distro @('sh', '-c', 'cat /etc/hatchling/windows-setup-version 2>/dev/null')
     if ($had -and ([version] $had -gt [version] $Version)) {

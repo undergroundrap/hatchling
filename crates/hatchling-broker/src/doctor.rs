@@ -1018,6 +1018,7 @@ pub fn model_ids(answer: Option<&[u8]>) -> Option<Vec<String>> {
 /// problem.
 fn report(source: &str, checks: &[(&str, Finding)]) -> ExitCode {
     let (text, problems) = rendered(source, checks);
+    let text = crate::windows_setup::here(&text);
     let _ = write!(std::io::stdout().lock(), "{text}");
     if problems == 0 {
         ExitCode::SUCCESS

@@ -36,6 +36,7 @@ DefaultGroupName=Hatchling
 DisableProgramGroupPage=yes
 SetupIconFile=..\..\frontend\public\favicon.ico
 WizardSmallImageFile=wizard-small.bmp
+WizardImageFile=wizard-large.bmp
 UninstallDisplayIcon={app}\hatchling.ico
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
@@ -75,6 +76,7 @@ Name: "backupfirst"; Description: "Make a backup before updating (recommended). 
 
 [Run]
 Filename: "{#Script}"; Parameters: "{#Run} ""{app}\setup.ps1"" -Distro {#Distro} -Version {#AppVersion} {code:SetupArguments}"; StatusMsg: "Setting Hatchling up in WSL. Follow the console window."; Flags: waituntilterminated
+Filename: "{#Script}"; Parameters: "{#Run} ""{app}\open.ps1"" -Distro {#Distro}"; Description: "Open Hatchling"; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 Filename: "wsl.exe"; Parameters: "--terminate {#Distro}"; Flags: runhidden; RunOnceId: "StopDistro"

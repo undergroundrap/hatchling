@@ -9064,6 +9064,10 @@
         "vault": {
           "$ref": "#/$defs/VaultProtection",
           "description": "Who can open the vault."
+        },
+        "windows_setup": {
+          "description": "Whether the Windows setup made this install, so the checklist points\nto the Start menu rather than to a Linux shell.",
+          "type": "boolean"
         }
       },
       "required": [

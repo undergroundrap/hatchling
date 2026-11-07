@@ -2,7 +2,7 @@
 // and what's left. Everything here is a step to take in a terminal the owner
 // opened: a PIN, a key or a backup code never passes through this app, so an
 // agent or a stolen app address can't reach one.
-import { MODEL_COMMANDS, BACKUP_COMMAND, PROTECT_COMMAND } from './data-commands.js';
+import { MODEL_COMMANDS, BACKUP_COMMAND, onWindows, PROTECT_COMMAND } from './data-commands.js';
 import type { DataCommand } from './data-commands.js';
 import { whereShort } from './model.js';
 import type { ModelView } from './model.js';
@@ -16,6 +16,8 @@ export interface SetupView {
     readonly codesUnconfirmed: boolean;
     /** When the last backup was made, in Unix seconds. */
     readonly lastBackup: number | null;
+    /** Whether the Windows setup made this install. */
+    readonly windowsSetup: boolean;
 }
 /** What's set up, as last read. */
 export type SetupState = {
@@ -95,9 +97,21 @@ function backupStep(setup: SetupView, now: number): SetupStep {
         return { ...base, status: 'next', said: 'One sealed file with everything Hatchling knows. It opens with what opens your vault.', commands: [BACKUP_COMMAND] };
     return { ...base, status: 'done', said: `Your last backup was made ${ago(setup.lastBackup, now)}.`, commands: NONE };
 }
+/** Where each step is on a Windows install: the Start menu, with no command to type. */
+const START_MENU: Readonly<Partial<Record<SetupStep['id'], string>>> = {
+    vault: 'Open the Start menu, then Hatchling Tools, then Protect your vault.',
+    backup: 'Open the Start menu, then Hatchling Tools, then Make a backup.',
+};
+function onWindowsStep(step: SetupStep): SetupStep {
+    const place = START_MENU[step.id];
+    if (step.commands.length === 0)
+        return step;
+    return place === undefined ? { ...step, commands: step.commands.map(onWindows) } : { ...step, commands: NONE, said: `${step.said} ${place}` };
+}
 /** The steps, in order, with `noKey` when the owner chose to go without a key. */
 export function setupSteps(model: ModelView, setup: SetupView, noKey: boolean, now: number): readonly SetupStep[] {
-    return [modelStep(model), vaultStep(setup, noKey), backupStep(setup, now)];
+    const steps = [modelStep(model), vaultStep(setup, noKey), backupStep(setup, now)];
+    return setup.windowsSetup ? steps.map(onWindowsStep) : steps;
 }
 /** Whether nothing's left to do. */
 export function setupFinished(steps: readonly SetupStep[]): boolean {

@@ -336,6 +336,36 @@ fn the_operators_side_stops_on_what_it_doesnt_read_or_a_keeper_gone() {
 }
 
 #[test]
+fn a_keeper_gone_after_a_question_says_it_gave_up_waiting() {
+    let (keeper, operator_end) = pair();
+    let asking = std::thread::spawn(move || {
+        tell(
+            &keeper,
+            &ToOperator::Ask {
+                prompt: String::from("PIN"),
+                secret: true,
+            },
+        )
+        .unwrap();
+        // Takes the answer, and goes, as a wait that ran out does.
+        let keys = read_frame(&keeper).unwrap();
+        assert!(!keys.is_empty());
+        let answer = read_frame(&keeper).unwrap();
+        assert!(!answer.is_empty());
+    });
+    let said = operate(&operator_end, &[], &mut |_, _| {
+        Ok(Zeroizing::new(String::from("1234")))
+    });
+    asking.join().unwrap();
+    assert_eq!(
+        said,
+        Err(String::from(
+            "Hatchling stopped waiting: it gives each question 5 minutes. Nothing has changed"
+        ))
+    );
+}
+
+#[test]
 fn a_vault_with_no_keyring_needs_nobody() {
     assert!(!needs_a_person(&KeyringConfig::default()));
     let missing = KeyringConfig {

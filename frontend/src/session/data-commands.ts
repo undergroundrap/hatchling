@@ -6,6 +6,10 @@ export interface DataCommand {
     readonly note: string;
     readonly command: string;
 }
+/** `item` as it's typed on a Windows install, in PowerShell: its account has no `sudo`. */
+export function onWindows(item: DataCommand): DataCommand {
+    return { ...item, command: item.command.replace('sudo hatchling-broker', 'wsl -d hatchling-wsl -u root -- hatchling-broker') };
+}
 /** Where the model runs. Both can be set up, and switched between in the app. */
 export const MODEL_COMMANDS: readonly DataCommand[] = [
     {

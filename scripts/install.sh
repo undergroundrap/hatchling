@@ -245,6 +245,7 @@ else
   say "systemd $SYSTEMD has no DelegateSubgroup: cells run without a cgroup of their own (README, Cell limits)"
 fi
 install -D -m 644 "$PACKAGING/systemd/hatchling-host@.service" /etc/systemd/system/hatchling-host@.service
+systemctl daemon-reload
 
 if [ -z "$(ls -A /var/lib/hatchling/vault)" ]; then
   say "sealing the vault"

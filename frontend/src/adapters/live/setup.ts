@@ -17,6 +17,7 @@ export function setupOf(setup: WireSetup): SetupView {
         codes: setup.vault.codes,
         codesUnconfirmed: setup.vault.codes_unconfirmed ?? false,
         lastBackup: setup.last_backup ?? null,
+        windowsSetup: setup.windows_setup ?? false,
     };
 }
 export class LiveSetup implements SetupPort {

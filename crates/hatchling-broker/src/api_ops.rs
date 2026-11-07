@@ -130,7 +130,11 @@ fn setup_answer(
     match asked {
         Some(Ok(vault)) => (
             UiActionResult::Setup {
-                setup: SetupState { vault, last_backup },
+                setup: SetupState {
+                    vault,
+                    last_backup,
+                    windows_setup: crate::windows_setup::installed(),
+                },
             },
             ApiOutcome::Served,
         ),
@@ -2275,7 +2279,8 @@ mod tests {
                 UiActionResult::Setup {
                     setup: SetupState {
                         vault,
-                        last_backup: Some(7)
+                        last_backup: Some(7),
+                        windows_setup: crate::windows_setup::installed(),
                     }
                 },
                 ApiOutcome::Served

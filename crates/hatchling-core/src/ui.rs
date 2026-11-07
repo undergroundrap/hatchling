@@ -799,6 +799,10 @@ pub struct SetupState {
     /// the broker: making one restarts it. None when there's been none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_backup: Option<u64>,
+    /// Whether the Windows setup made this install, so the checklist points
+    /// to the Start menu rather than to a Linux shell.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub windows_setup: bool,
 }
 
 /// The tokens counted toward the owner's limits, read and written
