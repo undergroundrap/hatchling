@@ -365,7 +365,7 @@ Everyone here follows the **[code of conduct](CODE_OF_CONDUCT.md)**. Found a sec
 
 ## Security
 
-Report a vulnerability privately: [SECURITY.md](SECURITY.md). Reviewing Hatchling for your organization: [Hatchling for security reviewers](docs/security/README.md) says what leaves the machine, what's kept and how, the logs, a hardening checklist and what to do after a compromise. The full threat model is [the trust boundary](docs/arch/trust-boundary.md).
+**[Your security](docs/your-security.md)** says in plain words who does what, and what none of them can do. Report a vulnerability privately: [SECURITY.md](SECURITY.md). Reviewing Hatchling for your organization: [Hatchling for security reviewers](docs/security/README.md) says what leaves the machine, what's kept and how, the logs, a hardening checklist and what to do after a compromise. The full threat model is [the trust boundary](docs/arch/trust-boundary.md).
 
 ## License
 

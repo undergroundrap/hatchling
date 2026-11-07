@@ -19,6 +19,7 @@
     return style.visibility !== "hidden" && style.display !== "none";
   };
   const INPUT_ROLES = ["checkbox", "radio", "file", "range", "color", "date"];
+  const ARIA_ROLES = ["button", "link", "checkbox", "radio", "switch", "tab", "menuitem", "option", "combobox", "listbox", "textbox", "searchbox", "slider"];
   const roleOf = (element) => {
     const tag = element.tagName.toLowerCase();
     if (tag === "input") {
@@ -31,9 +32,11 @@
       }
       return INPUT_ROLES.includes(type) ? type : "textbox";
     }
-    const role = element.getAttribute("role");
+    // A page writes its own role, so only a word from this list passes:
+    // anything else, a secret it read included, is just an element.
+    const role = (element.getAttribute("role") || "").trim().toLowerCase();
     if (role) {
-      return clip(role, 30);
+      return ARIA_ROLES.includes(role) ? role : "element";
     }
     if (tag === "a") {
       return "link";

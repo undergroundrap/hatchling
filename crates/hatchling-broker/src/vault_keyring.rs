@@ -623,17 +623,14 @@ pub fn init(vault: &VaultConfig, config: &KeyringConfig) -> Result<(), Error> {
     remove_key_file(&vault.key_file)
 }
 
-/// Removes the key file at `path`, and only that: a regular file of one of
-/// Hatchling's own users. Nothing there is fine, as a step that's repeated
-/// finds it.
-fn remove_key_file(path: &Path) -> Result<(), Error> {
-    hatchling_sys::remove_file_of(
-        path,
-        hatchling_sys::FileKind::Regular,
-        &crate::broker_user::own_users(),
-    )
-    .map(|_| ())
-    .map_err(|error| io_error(std::io::Error::other(error)))
+/// Overwrites and removes the key file at `path`, and only that: a regular
+/// file of one of Hatchling's own users. A vault that's been protected
+/// shouldn't leave the key that opened it in a free block of the same disk.
+/// Nothing there is fine, as a step that's repeated finds it.
+pub(crate) fn remove_key_file(path: &Path) -> Result<(), Error> {
+    hatchling_sys::wipe_file_of(path, &crate::broker_user::own_users())
+        .map(|_| ())
+        .map_err(|error| io_error(std::io::Error::other(error)))
 }
 
 /// How many codes `enroll-totp` takes before it gives up.

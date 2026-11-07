@@ -9,11 +9,12 @@ import { button, field, markdown, selectField, textareaField, toggle } from '../
 import { channelsTab, devicesTab, settingIcons } from './trust-tabs.js';
 import { connectorsTab, walletTab } from './connections.js';
 import { secureStoreTab } from './credentials.js';
+import { securityTab } from './security.js';
 import { permissionsTab } from './permissions.js';
 import type { SettingsNavigation } from './settings-navigation.js';
 import { iconButton } from '../../components/ui.js';
 import { openShortcuts, openDownloads, openIssueReport } from '../../app/support.js';
-const allSections = [{ id: 'general', title: 'General' }, { id: 'connectors', title: 'Connectors' }, { id: 'wallet', title: 'Wallet' }, { id: 'secure', title: 'Secure store' }, { id: 'permissions', title: 'Permissions' }, { id: 'channels', title: 'Messaging channels' }, { id: 'devices', title: 'Devices' }, { id: 'data', title: 'Data controls' }, { id: 'help', title: 'Help & support' }, { id: 'legal', title: 'Legal info' }];
+const allSections = [{ id: 'general', title: 'General' }, { id: 'security', title: 'Your security' }, { id: 'connectors', title: 'Connectors' }, { id: 'wallet', title: 'Wallet' }, { id: 'secure', title: 'Secure store' }, { id: 'permissions', title: 'Permissions' }, { id: 'channels', title: 'Messaging channels' }, { id: 'devices', title: 'Devices' }, { id: 'data', title: 'Data controls' }, { id: 'help', title: 'Help & support' }, { id: 'legal', title: 'Legal info' }];
 /** What a real install has no use for yet, so it isn't offered. */
 const NOT_LIVE = new Set(['secure', 'channels', 'devices']);
 export function openSettings(ctx: AppContext, initial = 'general'): void {
@@ -102,6 +103,9 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
                 break;
             case 'data':
                 pane.append(dataTab(ctx, () => refresh()));
+                break;
+            case 'security':
+                pane.append(securityTab(ctx));
                 break;
             case 'help':
                 pane.append(ctx.state.mode === 'live' ? liveHelpTab(ctx) : helpTab(ctx));

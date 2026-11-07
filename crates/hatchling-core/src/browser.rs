@@ -466,11 +466,12 @@ pub fn hiding_in_names(names: Vec<String>, secrets: &[crate::ui::Concealed]) -> 
         .into_iter()
         .map(|name| {
             to_hide(secrets).fold(name, |name, secret| {
-                let (lower, secret) = (name.to_ascii_lowercase(), secret.to_ascii_lowercase());
+                let lower = name.to_ascii_lowercase();
+                let secret = zeroize::Zeroizing::new(secret.to_ascii_lowercase());
                 // Lowering keeps every byte's place.
                 let mut hidden = String::with_capacity(name.len());
                 let mut from = 0;
-                for (at, found) in lower.match_indices(&secret) {
+                for (at, found) in lower.match_indices(secret.as_str()) {
                     hidden.push_str(name.get(from..at).unwrap_or_default());
                     hidden.push_str(HIDDEN);
                     from = at + found.len();
@@ -490,15 +491,22 @@ impl PageSnapshot {
     /// left ([`hide_in`]), when at least [`MIN_HIDDEN_CHARS`] of it are.
     #[must_use]
     pub fn hiding(mut self, secrets: &[crate::ui::Concealed]) -> Self {
+        // Whether each field was cut, read once: hiding one value shortens
+        // a field, and a later value cut at its end would look whole.
         let text_cut = self.truncated;
+        let (url_cut, title_cut) = (at_label_bound(&self.url), at_label_bound(&self.title));
+        let cuts: Vec<(bool, bool)> = self
+            .elements
+            .iter()
+            .map(|element| (at_label_bound(&element.name), at_label_bound(&element.role)))
+            .collect();
         for secret in to_hide(secrets) {
-            let (url_cut, title_cut) = (at_label_bound(&self.url), at_label_bound(&self.title));
             hide_in(&mut self.url, secret, url_cut);
             hide_in(&mut self.title, secret, title_cut);
             hide_in(&mut self.text, secret, text_cut);
-            for element in &mut self.elements {
-                let cut = at_label_bound(&element.name);
-                hide_in(&mut element.name, secret, cut);
+            for (element, (name_cut, role_cut)) in self.elements.iter_mut().zip(&cuts) {
+                hide_in(&mut element.name, secret, *name_cut);
+                hide_in(&mut element.role, secret, *role_cut);
             }
         }
         self
@@ -599,6 +607,41 @@ mod tests {
     /// clip fell in it, in each kind of field, so a page can't show all but
     /// its tail by putting it across the cut. A field that wasn't cut keeps
     /// what merely looks like the value's start.
+    /// Two values in one clipped field: hiding the first shortens it, and
+    /// the second, cut at its end, is still hidden. A page's role is hidden
+    /// in like a name.
+    #[test]
+    fn values_in_one_cut_field_are_all_hidden_and_so_is_a_role() {
+        let tail = VALUE.chars().take(VALUE.len() - 1).collect::<String>();
+        let other = "zoe-the-user";
+        let label = format!("{other} {tail}");
+        let pad = MAX_LABEL_CHARS - label.chars().count();
+        let title = format!("{}{label}", "x".repeat(pad));
+        let mut secrets = vec![Concealed::new(other.to_owned())];
+        secrets.extend(the_value());
+        let snapshot = PageSnapshot {
+            title,
+            elements: vec![PageElement {
+                id: 1,
+                role: VALUE.to_owned(),
+                name: String::from("go"),
+                link: false,
+            }],
+            ..PageSnapshot::default()
+        }
+        .hiding(&secrets);
+        assert!(
+            snapshot.title.ends_with(HIDDEN),
+            "the second value's start shows"
+        );
+        assert!(!snapshot.title.contains(other), "the first value shows");
+        let role = snapshot
+            .elements
+            .first()
+            .map(|element| element.role.clone());
+        assert_eq!(role.as_deref(), Some(HIDDEN), "a role shows a value");
+    }
+
     #[test]
     fn a_value_a_clip_cut_through_is_hidden_from_what_is_left() {
         let start = |chars: usize| VALUE.chars().take(chars).collect::<String>();
