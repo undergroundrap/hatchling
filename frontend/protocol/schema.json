@@ -5521,12 +5521,16 @@
           "minimum": 0,
           "type": "integer"
         },
+        "link": {
+          "description": "Whether it's really a link: an `<a>` with an `http` or `https`\naddress, as the controller found the element, whatever `role` says.",
+          "type": "boolean"
+        },
         "name": {
           "description": "What it says, at most [`MAX_LABEL_CHARS`]. A password field's\nvalue is never here.",
           "type": "string"
         },
         "role": {
-          "description": "What it is: `link`, `button`, `textbox`, `password`, `checkbox`,\n`list` and so on.",
+          "description": "What it says it is: `link`, `button`, `textbox`, `password`,\n`checkbox`, `list` and so on, or whatever a page's `role` says.",
           "type": "string"
         }
       },

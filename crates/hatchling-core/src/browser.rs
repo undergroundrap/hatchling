@@ -387,12 +387,16 @@ pub struct PageSnapshot {
 pub struct PageElement {
     /// Its id, for an action: valid until the next snapshot.
     pub id: u32,
-    /// What it is: `link`, `button`, `textbox`, `password`, `checkbox`,
-    /// `list` and so on.
+    /// What it says it is: `link`, `button`, `textbox`, `password`,
+    /// `checkbox`, `list` and so on, or whatever a page's `role` says.
     pub role: String,
     /// What it says, at most [`MAX_LABEL_CHARS`]. A password field's
     /// value is never here.
     pub name: String,
+    /// Whether it's really a link: an `<a>` with an `http` or `https`
+    /// address, as the controller found the element, whatever `role` says.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub link: bool,
 }
 
 /// What stands in a snapshot for a secret the browser was given (WO-030).
@@ -451,6 +455,7 @@ impl PageSnapshot {
                 id: element.id,
                 role: clip(element.role, MAX_LABEL_CHARS),
                 name: clip(element.name, MAX_LABEL_CHARS),
+                link: element.link,
             })
             .collect();
         Self {
@@ -516,6 +521,7 @@ mod tests {
                 id: 1,
                 role: String::from("textbox"),
                 name: String::from("ada@x"),
+                link: false,
             }],
             truncated: false,
         };
@@ -547,6 +553,7 @@ mod tests {
                     id,
                     role: String::from("link"),
                     name: format!("link {id}"),
+                    link: false,
                 })
                 .collect(),
             truncated: false,
@@ -701,6 +708,7 @@ mod tests {
             id,
             role: String::from("button"),
             name: "é".repeat(MAX_LABEL_CHARS + 5),
+            link: false,
         };
         let snapshot = PageSnapshot {
             url: String::from("https://example.com/"),
@@ -757,6 +765,7 @@ mod tests {
                         id,
                         role: String::from("link"),
                         name: String::from("a"),
+                        link: false,
                     })
                     .collect(),
                 ..small.clone()
@@ -772,6 +781,7 @@ mod tests {
                     id,
                     role: "\u{2}".repeat(MAX_LABEL_CHARS),
                     name: "\u{3}".repeat(MAX_LABEL_CHARS),
+                    link: false,
                 })
                 .collect(),
             ..small.clone()

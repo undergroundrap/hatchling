@@ -46,6 +46,13 @@
     }
     return "button";
   };
+  // Whether it's really a link, from the element and not from anything the
+  // page says of it: a page can give anything a role, but only an <a> has
+  // these. They're read here, in the isolated world, where the page's own
+  // scripts can't stand in for them.
+  const realLink = (element) =>
+    element instanceof HTMLAnchorElement &&
+    (element.protocol === "http:" || element.protocol === "https:");
   const labelOf = (element) =>
     element.labels && element.labels.length > 0 ? element.labels[0].innerText : "";
   const nameOf = (element, role) => {
@@ -88,7 +95,7 @@
     text: text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) : text,
     elements: kept.map((element, id) => {
       const role = roleOf(element);
-      return { id, role, name: nameOf(element, role) };
+      return { id, role, name: nameOf(element, role), link: realLink(element) };
     }),
     truncated: found.length > MAX_ELEMENTS || text.length > MAX_TEXT,
   };

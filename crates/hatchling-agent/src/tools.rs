@@ -2624,6 +2624,7 @@ mod tests {
                     id: 4,
                     role: String::from("button"),
                     name: String::from("Go"),
+                    link: false,
                 }],
                 truncated: false,
             },
