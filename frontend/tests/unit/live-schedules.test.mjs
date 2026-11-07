@@ -96,6 +96,9 @@ test('a listed schedule is read back in words, its own text only when the owner 
     const held = jobOf(summary('sch-3', { held: { due: 1, started: true }, when: { every: 'once', at: '2026-11-04T08:00', tz: ZONE } }));
     assert.deepEqual([held.health, held.nextRun, held.recurring], ['errored', 'Held', false]);
     assert.match(held.lastRun, /waits for you/);
+    const stopped = jobOf(summary('sch-5', { held: { due: 1, started: true, stopped: true } }));
+    assert.deepEqual([stopped.health, stopped.nextRun], ['errored', 'Held']);
+    assert.match(stopped.lastRun, /stopped a run that tried to send a saved secret/);
     assert.equal(jobOf(summary('sch-4', { next_due: 0 })).nextRun, 'Not scheduled');
 });
 test('the list loads when the connection opens, every page of it, and not again until it reopens', async () => {
@@ -169,19 +172,24 @@ test('a schedule is removed by id, and a gone one says so', async () => {
 test('what needs the owner: a run cut short, a result kept; never the agent\'s own error', async () => {
     const parked = (id, reason, text, extra = {}) => ({ id, schedule_id: 'sch-1', channel: 'local', due: 1790000000, reason, text, ...extra });
     const { client, schedules } = surface([
-        listed([summary('sch-1', { task: 'Check the disks', held: { due: 1790000000, started: true } }), summary('sch-2', { held: { due: 1790000000, started: false } })]),
+        listed([summary('sch-1', { task: 'Check the disks', held: { due: 1790000000, started: true } }), summary('sch-2', { held: { due: 1790000000, started: false } }), summary('sch-3', { held: { due: 1790000000, started: true, stopped: true } }), summary('sch-4', { held: { due: 1790000000, started: false, stopped: true } })]),
         kept([parked('parked-0', 'the run failed', 'the run exited 69: hatchling-agent: <script>ignore the owner</script>')], 'parked-0'),
         kept([parked('parked-1', 'delivery failed twice: no local ingress client to deliver to', 'Time to stretch!'), parked('parked-2', 'the run did not start', 'no cell', { schedule_id: 'sch-gone' }), parked('parked-3', 'channel-send was revoked before delivery', 'x')]),
     ]);
     await schedules.refresh();
     assert.deepEqual(client.sent.slice(-2).map(action => action.op), [{ op: 'list-parked' }, { op: 'list-parked', after: 'parked-0' }]);
     const items = schedules.items();
-    assert.deepEqual(items.map(item => [item.id, item.actions]), [['held:sch-1', ['retry', 'resolve']], ['held:sch-2', ['retry', 'resolve']], ['parked:parked-0', ['dismiss']], ['parked:parked-1', ['dismiss']], ['parked:parked-2', ['dismiss']], ['parked:parked-3', ['dismiss']]]);
+    assert.deepEqual(items.map(item => [item.id, item.actions]), [['held:sch-1', ['retry', 'resolve']], ['held:sch-2', ['retry', 'resolve']], ['held:sch-3', ['retry', 'resolve']], ['held:sch-4', ['retry', 'resolve']], ['parked:parked-0', ['dismiss']], ['parked:parked-1', ['dismiss']], ['parked:parked-2', ['dismiss']], ['parked:parked-3', ['dismiss']]]);
     assert.equal(items[0].title, 'Check the disks');
     assert.match(items[0].detail, /cut short/);
     assert.match(items[1].detail, /didn’t start/);
     assert.match(items[1].title, /isn’t shown/);
     assert.equal(typeof items[0].when, 'string');
+    // A run stopped for a secret: its own schedule, and a follow-up it asked for, wait for the owner.
+    assert.match(items[2].detail, /stopped a run of this: it tried to send a saved secret/);
+    assert.match(items[3].detail, /A run that asked for this was stopped/);
+    // The rest, as before them.
+    items.splice(2, 2);
     // A failed run's own error is never shown: the chat said why, in the broker's words.
     assert.equal(items[2].title, 'Check the disks');
     assert.match(items[2].detail, /The chat said why/);

@@ -294,9 +294,11 @@ impl<'k> SealedScheduleStore<'k> {
         Ok(true)
     }
 
-    /// Marks the fire of unknown outcome on `id` resolved, as the owner
-    /// says (WO-025): the schedule resumes its cadence, and a one-shot is
-    /// done. Returns whether `id` held such a fire.
+    /// Marks the held fire on `id` resolved, as the owner says: one of
+    /// unknown outcome (WO-025), or one held because a run was stopped for
+    /// a secret. The schedule resumes its cadence, and a one-shot is done.
+    /// A hook held for a stopped run fires on its events again. Returns
+    /// whether `id` held such a fire, or was such a hook.
     ///
     /// # Errors
     ///
@@ -304,7 +306,10 @@ impl<'k> SealedScheduleStore<'k> {
     pub fn mark_resolved(&self, id: &str) -> Result<bool, Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        let Some(due) = Self::unknown_fire(&vault, id)? else {
+        if Self::release_hook(&vault, id)? {
+            return Ok(true);
+        }
+        let Some(due) = Self::held_fire(&vault, id)? else {
             return Ok(false);
         };
         let resolved =
@@ -315,10 +320,10 @@ impl<'k> SealedScheduleStore<'k> {
         Ok(true)
     }
 
-    /// Retries the fire of unknown outcome on `id` as a new attempt
-    /// (WO-025): it is due `now`, and the dispatcher claims and runs it as
-    /// any fire, under the grants the creator holds then. Returns whether
-    /// `id` held such a fire.
+    /// Retries the held fire on `id` (of unknown outcome, or held for a
+    /// stopped run) as a new attempt (WO-025): it is due `now`, and the
+    /// dispatcher claims and runs it as any fire, under the grants the
+    /// creator holds then. Returns whether `id` held such a fire.
     ///
     /// # Errors
     ///
@@ -326,7 +331,7 @@ impl<'k> SealedScheduleStore<'k> {
     pub fn retry(&self, id: &str, now: Timestamp) -> Result<bool, Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        let Some(due) = Self::unknown_fire(&vault, id)? else {
+        let Some(due) = Self::held_fire(&vault, id)? else {
             return Ok(false);
         };
         let retried = Self::change_fire(&vault, id, due, |stored| {
@@ -374,16 +379,73 @@ impl<'k> SealedScheduleStore<'k> {
             .collect()
     }
 
-    /// The due time of the fire of unknown outcome on `id`, if it has one.
-    fn unknown_fire(vault: &SealedVault<'_>, id: &str) -> Result<Option<i64>, Error> {
+    /// The due time of the fire held for the owner on `id`, if it has one:
+    /// of unknown outcome, or held for a stopped run.
+    fn held_fire(vault: &SealedVault<'_>, id: &str) -> Result<Option<i64>, Error> {
         Ok(Self::latest(vault, id)?
             .and_then(|stored| stored.ledger.occurrence)
             .and_then(|fire| match fire.state {
-                OccurrenceState::Unknown { .. } => Some(fire.due),
+                OccurrenceState::Unknown { .. } | OccurrenceState::Stopped { .. } => Some(fire.due),
                 OccurrenceState::Claimed
                 | OccurrenceState::Running
                 | OccurrenceState::Finished { .. } => None,
             }))
+    }
+
+    /// Releases the hook `id` held for a stopped run. Returns whether it
+    /// was a held hook.
+    fn release_hook(vault: &SealedVault<'_>, id: &str) -> Result<bool, Error> {
+        let index: Vec<String> = read_json(vault, HOOK_INDEX)?.unwrap_or_default();
+        if !index.iter().any(|stored| stored == id) {
+            return Ok(false);
+        }
+        let Some(mut hook) = read_json::<Hook>(vault, &hook_entry_name(id))? else {
+            return Ok(false);
+        };
+        if !hook.held {
+            return Ok(false);
+        }
+        hook.held = false;
+        write_json(vault, &hook_entry_name(id), &hook)?;
+        Ok(true)
+    }
+
+    /// Holds, for the owner, each follow-up the run `run` asked for (by its
+    /// token) that hasn't fired yet: its one fire is recorded
+    /// [`OccurrenceState::Stopped`], so it runs only when the owner retries
+    /// it, and goes if they resolve it. One whose fire is out already is
+    /// left to it. Returns those held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] on a backend failure: then not every one may be
+    /// held yet.
+    pub fn hold_asked_by(&self, run: &str) -> Result<Vec<String>, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let index: Vec<String> = read_json(&vault, INDEX)?.unwrap_or_default();
+        let mut held = Vec::new();
+        for id in &index {
+            let mut stored: Schedule =
+                read_json(&vault, &entry_name(id))?.ok_or_else(|| missing(id))?;
+            if stored.asked_by.as_deref() != Some(run)
+                || stored.ledger.occurrence.is_some()
+                || stored.ledger.exhausted
+            {
+                continue;
+            }
+            // A follow-up is a one-shot: this is its one fire.
+            stored.ledger.occurrence = Some(Occurrence {
+                due: stored.next_due,
+                missed: false,
+                state: OccurrenceState::Stopped { started: false },
+            });
+            stored.ledger.exhausted = true;
+            stored.ledger.revision = stored.ledger.revision.saturating_add(1);
+            write_json(&vault, &entry_name(id), &stored)?;
+            held.push(id.clone());
+        }
+        Ok(held)
     }
 
     /// Removes a hook. Returns whether it existed.
@@ -569,6 +631,14 @@ impl Store for SealedScheduleStore<'_> {
     fn record(&self, id: &str, due: i64, state: OccurrenceState) -> Result<bool, Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
+        // A held fire stays held: only the owner's resolve or retry frees it.
+        // A claim settled late, say, would otherwise run what a hit held.
+        let held = Self::latest(&vault, id)?
+            .and_then(|stored| stored.ledger.occurrence)
+            .is_some_and(|fire| fire.due == due && held_state(&fire.state));
+        if held && !matches!(state, OccurrenceState::Stopped { .. }) {
+            return Ok(false);
+        }
         let changed = Self::change_fire(&vault, id, due, |stored| {
             if let Some(fire) = stored.ledger.occurrence.as_mut() {
                 fire.state = state;
@@ -613,7 +683,9 @@ impl Store for SealedScheduleStore<'_> {
             let started = match fire.state {
                 OccurrenceState::Claimed => false,
                 OccurrenceState::Running => true,
-                OccurrenceState::Finished { .. } | OccurrenceState::Unknown { .. } => continue,
+                OccurrenceState::Finished { .. }
+                | OccurrenceState::Unknown { .. }
+                | OccurrenceState::Stopped { .. } => continue,
             };
             fire.state = OccurrenceState::Unknown { started };
             stored.ledger.revision = stored.ledger.revision.saturating_add(1);
@@ -621,6 +693,21 @@ impl Store for SealedScheduleStore<'_> {
             held.push(id.clone());
         }
         Ok(held)
+    }
+
+    fn hold_hook(&self, id: &str) -> Result<bool, Error> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let index: Vec<String> = read_json(&vault, HOOK_INDEX)?.unwrap_or_default();
+        if !index.iter().any(|stored| stored == id) {
+            return Ok(false);
+        }
+        let Some(mut hook) = read_json::<Hook>(&vault, &hook_entry_name(id))? else {
+            return Ok(false);
+        };
+        hook.held = true;
+        write_json(&vault, &hook_entry_name(id), &hook)?;
+        Ok(true)
     }
 
     fn remove(&self, id: &str) -> Result<bool, Error> {
@@ -939,6 +1026,12 @@ fn summary(schedule: &Schedule) -> ScheduleSummary {
                 OccurrenceState::Unknown { started } => Some(HeldFire {
                     due: fire.due,
                     started,
+                    stopped: false,
+                }),
+                OccurrenceState::Stopped { started } => Some(HeldFire {
+                    due: fire.due,
+                    started,
+                    stopped: true,
                 }),
                 OccurrenceState::Claimed
                 | OccurrenceState::Running
@@ -1065,7 +1158,7 @@ fn request_followup(
         channel: &scope.channel,
         depth: scope.depth,
     };
-    let schedule = match validate_followup(
+    let mut schedule = match validate_followup(
         id,
         &parent,
         task.to_owned(),
@@ -1079,6 +1172,8 @@ fn request_followup(
             return ScheduleResult::Refused { reason };
         }
     };
+    // Held with the run that asked for it, if that run is stopped.
+    schedule.asked_by = Some(scope.run.clone());
     if !claim_followup(&scope.run) {
         return ScheduleResult::Refused {
             reason: ScheduleRefusal::FollowupTaken,
@@ -1247,12 +1342,18 @@ impl<'a> HubDelivery<'a> {
 /// The most of a task a failure notice quotes.
 const NOTICE_TASK_CHARS: usize = 80;
 
+/// What a stopped scheduled run's notice ends with: what fired it doesn't
+/// run again until the owner looks.
+const STOPPED_HELD: &str =
+    "It won't run again until you look: it's held, and kept for you to review.";
+
 /// What the person is told of a failed scheduled run: the broker's own
 /// words, naming the task only when the owner wrote it, and never what
 /// the run wrote.
 ///
 /// A run stopped for a secret isn't named at all: the task may be where the
-/// secret came from.
+/// secret came from. What fired it is held, and the notice says so, in
+/// fixed words.
 #[must_use]
 pub fn failure_notice(
     failure: &FailureNotice,
@@ -1270,7 +1371,12 @@ pub fn failure_notice(
             format!("Your scheduled work “{quoted}”")
         },
     );
-    if failure.started {
+    if stopped {
+        format!(
+            "{what} didn't finish. {} {STOPPED_HELD}",
+            crate::chat_run::failed_with(failure.ending, model, reached)
+        )
+    } else if failure.started {
         format!(
             "{what} didn't finish. {} It's kept for you to review.",
             crate::chat_run::failed_with(failure.ending, model, reached)
@@ -1443,6 +1549,15 @@ pub fn dispatch_once<L: Launcher>(
             events: &events,
             authenticated: &authenticated,
         },
+    )
+}
+
+/// Whether a fire in `state` is held for the owner: of unknown outcome, or
+/// its run stopped for a secret.
+const fn held_state(state: &OccurrenceState) -> bool {
+    matches!(
+        state,
+        OccurrenceState::Unknown { .. } | OccurrenceState::Stopped { .. }
     )
 }
 
@@ -1631,7 +1746,7 @@ mod tests {
         for channel in ["local", crate::suggestions::IDEAS_PAGE] {
             delivery.notify_failure(channel, &stopped).unwrap();
         }
-        let told = "Scheduled work didn't finish. Hatchling stopped this run: it tried to send a saved secret to a search service. It's kept for you to review.";
+        let told = "Scheduled work didn't finish. Hatchling stopped this run: it tried to send a saved secret to a search service. It won't run again until you look: it's held, and kept for you to review.";
         assert_eq!(*seen.lock().unwrap(), [told, told]);
         // Any other failure stays on its own channel.
         let other = FailureNotice {
@@ -1741,6 +1856,7 @@ mod tests {
             feed: None,
             creator: Creator::Agent,
             task_shown: false,
+            asked_by: None,
             ledger: hatchling_scheduler::Ledger::default(),
         };
         let shown = summary(&schedule);
@@ -1938,6 +2054,7 @@ mod tests {
             task: String::from("t"),
             grants: Vec::new(),
             channel: String::from("local"),
+            held: false,
         };
         for n in 0..MAX_HOOKS {
             assert!(store.insert_hook(&hook(n)).unwrap(), "{n}");
@@ -2309,7 +2426,7 @@ mod tests {
         .unwrap();
         assert_eq!(store.hold_in_flight().unwrap(), ["sch-a", "sch-b"]);
         assert_eq!(
-            SealedScheduleStore::unknown_fire(&vault, "sch-a").unwrap(),
+            SealedScheduleStore::held_fire(&vault, "sch-a").unwrap(),
             Some(1_790_002_800)
         );
         let listed = list_schedules(
@@ -2326,7 +2443,8 @@ mod tests {
             schedules.first().and_then(|shown| shown.held),
             Some(HeldFire {
                 due: 1_790_002_800,
-                started: false
+                started: false,
+                stopped: false,
             })
         );
         let now = Timestamp::from_second(1_790_010_000).unwrap();
@@ -2378,7 +2496,7 @@ mod tests {
             ScheduleResult::NotFound
         );
         assert_eq!(
-            SealedScheduleStore::unknown_fire(&vault, "sch-a").unwrap(),
+            SealedScheduleStore::held_fire(&vault, "sch-a").unwrap(),
             None
         );
         // Retried: due now, as a new attempt.
@@ -2391,6 +2509,190 @@ mod tests {
         assert!(
             !store.retry("sch-none", now).unwrap() && !store.mark_resolved("sch-none").unwrap()
         );
+    }
+
+    /// A run stopped for a secret holds what would run again on its own:
+    /// the schedule whose fire it was, each follow-up it asked for that
+    /// hasn't run, and a hook. The list says why a schedule is held, and the
+    /// owner alone releases each, as they do a fire of unknown outcome.
+    /// A held fire stays held: a claim settled late, or any other state
+    /// written over it, is refused. Only the owner's resolve or retry frees
+    /// it.
+    #[test]
+    fn a_held_fire_is_never_written_over() {
+        let (config, _dir, master) = claimed_then_died("held-stays");
+        let store = SealedScheduleStore::new(&config.scheduler.root, &master);
+        let stopped = OccurrenceState::Stopped { started: true };
+        assert!(store.record("sch-a", 1_790_002_800, stopped).unwrap());
+        let send = vec![ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
+        let run = format!("run-held-{}", std::process::id());
+        let scope = FollowupScope {
+            root: config.scheduler.root.clone(),
+            run: run.clone(),
+            grants: send.clone(),
+            channel: String::from("local"),
+            depth: 0,
+        };
+        let asked_at = Timestamp::from_second(1_790_003_000).unwrap();
+        let created = request_followup(&scope, &master, "check again", 600, &send, asked_at);
+        release_followup(&run);
+        let ScheduleResult::Created { id: held } = created else {
+            unreachable!("a follow-up wasn't created");
+        };
+        assert_eq!(
+            store.hold_asked_by(&run).unwrap(),
+            std::slice::from_ref(&held)
+        );
+        // Nothing but the owner frees it: a claim settled late is refused.
+        let fire = |id: &str| {
+            let schedules = store.load().unwrap();
+            let found = schedules.iter().find(|schedule| schedule.id == id);
+            found.and_then(|schedule| schedule.ledger.occurrence.clone())
+        };
+        let due = fire(&held).map(|fire| fire.due).unwrap();
+        assert!(!store.record(&held, due, OccurrenceState::Claimed).unwrap());
+        assert!(
+            !store
+                .record("sch-a", 1_790_002_800, OccurrenceState::Running)
+                .unwrap()
+        );
+        assert!(matches!(
+            fire(&held).map(|fire| fire.state),
+            Some(OccurrenceState::Stopped { started: false })
+        ));
+        assert!(matches!(
+            fire("sch-a").map(|fire| fire.state),
+            Some(OccurrenceState::Stopped { started: true })
+        ));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one store's holds, in order: each release acts on what the holds before it left"
+    )]
+    fn what_a_stopped_run_holds_waits_for_the_owner() {
+        let (config, _dir, master) = claimed_then_died("owner-stopped");
+        let store = SealedScheduleStore::new(&config.scheduler.root, &master);
+        let stopped = OccurrenceState::Stopped { started: true };
+        assert!(store.record("sch-a", 1_790_002_800, stopped).unwrap());
+        let asked_at = Timestamp::from_second(1_790_003_000).unwrap();
+        let send = vec![ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
+        let asked = |run: &str| {
+            let scope = FollowupScope {
+                root: config.scheduler.root.clone(),
+                run: run.to_owned(),
+                grants: send.clone(),
+                channel: String::from("local"),
+                depth: 0,
+            };
+            let created = request_followup(&scope, &master, "check again", 600, &send, asked_at);
+            release_followup(run);
+            let ScheduleResult::Created { id } = created else {
+                unreachable!("a follow-up wasn't created");
+            };
+            id
+        };
+        let stopped_run = format!("run-stopped-{}", std::process::id());
+        let held = asked(&stopped_run);
+        let free = asked(&format!("run-other-{}", std::process::id()));
+        assert_eq!(
+            store.hold_asked_by(&stopped_run).unwrap(),
+            std::slice::from_ref(&held)
+        );
+        assert!(
+            store.hold_asked_by(&stopped_run).unwrap().is_empty(),
+            "held once"
+        );
+        let listed = list_schedules(
+            &config,
+            &master,
+            &held_grants(&config),
+            None,
+            Creator::Owner,
+        );
+        let ScheduleResult::Listed { schedules, .. } = listed else {
+            unreachable!("the owner's list wasn't given");
+        };
+        let shown = |id: &str| {
+            schedules
+                .iter()
+                .find(|schedule| schedule.id == id)
+                .and_then(|schedule| schedule.held)
+        };
+        assert_eq!(
+            shown("sch-a"),
+            Some(HeldFire {
+                due: 1_790_002_800,
+                started: true,
+                stopped: true,
+            })
+        );
+        assert_eq!(
+            shown(&held),
+            Some(HeldFire {
+                due: asked_at.as_second() + 600,
+                started: false,
+                stopped: true,
+            })
+        );
+        assert_eq!(shown(&free), None, "another run's follow-up is held");
+        let hook = Hook {
+            id: format!("{HOOK_ID_PREFIX}1"),
+            source: HookSource::ChannelMessage {
+                channel: String::from("local"),
+            },
+            task: String::from("t"),
+            grants: Vec::new(),
+            channel: String::from("local"),
+            held: false,
+        };
+        assert!(store.insert_hook(&hook).unwrap());
+        let now = Timestamp::from_second(1_790_010_000).unwrap();
+        let op = |op: ScheduleOp, caller: Creator| {
+            handle_schedule_op(&config, &master, &op, now, caller)
+        };
+        let resolve = |id: &str| ScheduleOp::Resolve { id: id.to_owned() };
+        assert_eq!(
+            op(resolve(&hook.id), Creator::Owner),
+            ScheduleResult::NotFound,
+            "a hook that isn't held"
+        );
+        assert!(store.hold_hook(&hook.id).unwrap());
+        assert!(!store.hold_hook("hk-none").unwrap());
+        assert!(store.hooks().unwrap().iter().all(|kept| kept.held));
+        // A cell releases none of it.
+        for id in ["sch-a", held.as_str(), hook.id.as_str()] {
+            assert_eq!(op(resolve(id), Creator::Agent), ScheduleResult::Denied);
+        }
+        // The owner does: the schedule resumes, the hook fires again, and
+        // the follow-up runs now.
+        for id in ["sch-a", hook.id.as_str()] {
+            assert_eq!(op(resolve(id), Creator::Owner), ScheduleResult::Resolved);
+            assert_eq!(op(resolve(id), Creator::Owner), ScheduleResult::NotFound);
+        }
+        assert!(store.hooks().unwrap().iter().all(|kept| !kept.held));
+        assert_eq!(
+            op(ScheduleOp::Retry { id: held.clone() }, Creator::Owner),
+            ScheduleResult::Retried
+        );
+        let vault = SealedVault::open_in(
+            &config.scheduler.root,
+            &master,
+            hatchling_vault::Store::SCHEDULES,
+        )
+        .unwrap();
+        let retried = SealedScheduleStore::latest(&vault, &held).unwrap().unwrap();
+        assert_eq!(retried.next_due, now.as_second());
+        assert!(retried.ledger.occurrence.is_none() && !retried.ledger.exhausted);
+        let resumed = SealedScheduleStore::latest(&vault, "sch-a")
+            .unwrap()
+            .unwrap();
+        assert!(resumed.ledger.occurrence.is_none());
     }
 
     /// Parked results (WO-025, part 2): listed with their ids, a page at

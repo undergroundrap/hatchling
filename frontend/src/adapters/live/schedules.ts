@@ -8,7 +8,7 @@
 import type { CommandResult, ScheduledJob } from '../../protocol/models.js';
 import type { AttentionAction, AttentionItem, AttentionPort } from '../../session/attention.js';
 import type { LiveClient } from './client.js';
-import type { ParkedSummary, ScheduleGrant, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary } from './protocol/generated.js';
+import type { HeldFire, ParkedSummary, ScheduleGrant, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary } from './protocol/generated.js';
 const CREATED = 'Scheduled. Its results arrive in this chat.';
 const CANCELLED = 'Removed. It won’t run again.';
 const GONE = 'This schedule was already gone.';
@@ -173,6 +173,16 @@ function localTime(seconds: number): string {
         return 'Not scheduled';
     return new Date(seconds * 1000).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+/** Why a held schedule waits for the owner, and what they can do, in words. */
+function heldDetail(held: HeldFire): string {
+    if (held.stopped === true)
+        return held.started
+            ? 'Hatchling stopped a run of this: it tried to send a saved secret. It won’t run again until you look. Run it again, or mark it resolved to let its schedule go on.'
+            : 'A run that asked for this was stopped: it tried to send a saved secret. This waits for you. Run it now, or mark it resolved to skip it.';
+    return held.started
+        ? 'A run was cut short when Hatchling stopped: what it did isn’t known. Look, then mark it resolved, or run it again.'
+        : 'A run was due when Hatchling stopped, and didn’t start. Run it now, or mark it resolved to skip it.';
+}
 /** A listed schedule as the app's card shows it. */
 export function jobOf(summary: ScheduleSummary): ScheduledJob {
     return {
@@ -186,7 +196,7 @@ export function jobOf(summary: ScheduleSummary): ScheduledJob {
         event: '',
         goalId: null,
         health: summary.held ? 'errored' : 'ok',
-        lastRun: summary.held ? 'A run was cut short when Hatchling stopped: it waits for you' : '—',
+        lastRun: summary.held ? (summary.held.stopped === true ? 'Hatchling stopped a run that tried to send a saved secret: it waits for you' : 'A run was cut short when Hatchling stopped: it waits for you') : '—',
         nextRun: summary.held ? 'Held' : localTime(summary.next_due),
     };
 }
@@ -259,11 +269,11 @@ export class LiveSchedules implements AttentionPort {
         this.#parked = parked;
         this.#changed();
     }
-    /** Runs cut short by a stop, then results kept: each with what the owner can do. */
+    /** Runs held for the owner, cut short by a stop or stopped for a secret, then results kept: each with what the owner can do. */
     items(): readonly AttentionItem[] {
         const title = (scheduleId: string): string => this.#jobs.find(job => job.id === scheduleId)?.title ?? 'Scheduled work';
         const held = this.#summaries.flatMap(summary => summary.held
-            ? [{ id: `held:${summary.id}`, title: jobOf(summary).title, detail: summary.held.started ? 'A run was cut short when Hatchling stopped: what it did isn’t known. Look, then mark it resolved, or run it again.' : 'A run was due when Hatchling stopped, and didn’t start. Run it now, or mark it resolved to skip it.', when: localTime(summary.held.due), result: null, actions: ['retry', 'resolve'] } satisfies AttentionItem]
+            ? [{ id: `held:${summary.id}`, title: jobOf(summary).title, detail: heldDetail(summary.held), when: localTime(summary.held.due), result: null, actions: ['retry', 'resolve'] } satisfies AttentionItem]
             : []);
         const kept = this.#parked.map(parked => ({ id: `parked:${parked.id}`, title: title(parked.schedule_id), ...parkedDetail(parked), when: localTime(parked.due), actions: ['dismiss'] } satisfies AttentionItem));
         return [...held, ...kept];

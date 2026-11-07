@@ -390,7 +390,7 @@ pub struct PageSnapshot {
     pub text: String,
     /// What can be acted on, at most [`MAX_ELEMENTS`].
     pub elements: Vec<PageElement>,
-    /// Whether the text or the elements were cut to fit.
+    /// Whether anything was cut to fit: the text, the elements, or a label.
     pub truncated: bool,
 }
 
@@ -489,16 +489,25 @@ impl PageSnapshot {
     /// page can read a field it was given and show it; the agent never
     /// sees it. One a clip cut through is hidden from the end of what's
     /// left ([`hide_in`]), when at least [`MIN_HIDDEN_CHARS`] of it are.
+    ///
+    /// A field counts as cut when it's at its bound, or when `truncated`
+    /// says something was cut: the controller's script sets it for any
+    /// label it clips, and [`bounded`](Self::bounded) for any it cuts. So a
+    /// cut is carried from one pass to the next. Hiding runs in the
+    /// controller and again in the broker, and a value an earlier pass
+    /// hid shortens a clipped field below its bound.
     #[must_use]
     pub fn hiding(mut self, secrets: &[crate::ui::Concealed]) -> Self {
         // Whether each field was cut, read once: hiding one value shortens
         // a field, and a later value cut at its end would look whole.
-        let text_cut = self.truncated;
-        let (url_cut, title_cut) = (at_label_bound(&self.url), at_label_bound(&self.title));
+        let any_cut = self.truncated;
+        let cut = |label: &str| any_cut || at_label_bound(label);
+        let text_cut = any_cut;
+        let (url_cut, title_cut) = (cut(&self.url), cut(&self.title));
         let cuts: Vec<(bool, bool)> = self
             .elements
             .iter()
-            .map(|element| (at_label_bound(&element.name), at_label_bound(&element.role)))
+            .map(|element| (cut(&element.name), cut(&element.role)))
             .collect();
         for secret in to_hide(secrets) {
             hide_in(&mut self.url, secret, url_cut);
@@ -704,6 +713,62 @@ mod tests {
         let name = whole.elements.first().map(|element| element.name.clone());
         assert_eq!(name, Some(start(6)));
         assert!(whole.text.ends_with(&start(6)) && whole.url.ends_with(&start(6)));
+    }
+
+    /// Hiding runs in the controller, then in the broker, each with its own
+    /// values. A clipped label holding a filled value and, at its cut, the
+    /// start of a cookie's: the first pass hides the filled one, and so
+    /// shortens the label below its bound; the second still finds the
+    /// cookie's start, as the cut is carried in `truncated`, which the
+    /// controller's script sets for any label it clips.
+    #[test]
+    fn a_cut_is_carried_from_one_pass_to_the_next() {
+        let filled = "zoe-filled-in-here";
+        let start: String = VALUE.chars().take(VALUE.len() - 1).collect();
+        let label = format!("{filled} {start}");
+        let clipped = format!(
+            "{}{label}",
+            "x".repeat(MAX_LABEL_CHARS - label.chars().count())
+        );
+        let page = PageSnapshot {
+            title: clipped.clone(),
+            elements: vec![PageElement {
+                id: 1,
+                role: String::from("button"),
+                name: clipped,
+                link: false,
+            }],
+            truncated: true,
+            ..PageSnapshot::default()
+        };
+        let controller = page.hiding(&[Concealed::new(filled.to_owned())]);
+        assert!(
+            !at_label_bound(&controller.title),
+            "the first pass didn't shorten the label"
+        );
+        let broker = controller.clone().hiding(&the_value());
+        let name = broker.elements.first().map(|element| element.name.clone());
+        for field in [Some(broker.title), name] {
+            let field = field.unwrap_or_default();
+            assert!(
+                field.ends_with(HIDDEN),
+                "a cut value's start shows after two passes"
+            );
+            assert!(!field.contains(filled), "the filled value shows");
+            let first: String = start.chars().take(MIN_HIDDEN_CHARS).collect();
+            assert!(!field.contains(&first), "a cut value's start is shown");
+        }
+        // What carries it: without it, the second pass takes the shortened
+        // label for whole.
+        let uncarried = PageSnapshot {
+            truncated: false,
+            ..controller
+        }
+        .hiding(&the_value());
+        assert!(
+            uncarried.title.ends_with(&start),
+            "the test's label wasn't one a pass could miss"
+        );
     }
 
     /// A field near its bound is measured as the controller's script

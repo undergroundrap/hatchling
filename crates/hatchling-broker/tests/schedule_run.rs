@@ -322,7 +322,7 @@ fn a_scheduled_run_that_sends_a_held_secret_is_stopped_and_told_once() {
     };
     assert_eq!(
         message.text,
-        "Scheduled work didn't finish. Hatchling stopped this run: it tried to send a saved secret to a website. It's kept for you to review."
+        "Scheduled work didn't finish. Hatchling stopped this run: it tried to send a saved secret to a website. It won't run again until you look: it's held, and kept for you to review."
     );
     assert_eq!(message.sender.0, "broker:scheduler");
     assert!(run_dirs(&config.scheduler.run_root()).is_empty());

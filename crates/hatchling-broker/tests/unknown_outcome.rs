@@ -335,7 +335,8 @@ fn a_fire_in_flight_when_the_broker_is_killed_is_held_as_unknown() {
         schedules.first().and_then(|shown| shown.held),
         Some(HeldFire {
             due: FIRST,
-            started: true
+            started: true,
+            stopped: false,
         })
     );
 
