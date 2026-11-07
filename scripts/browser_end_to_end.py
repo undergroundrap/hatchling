@@ -141,9 +141,8 @@ def signed_in(page):
     screenshot(page, "browser-5-signed-in-sites.png")
     # A sign-in, typed at the owner's own terminal: never in the app.
     kept = subprocess.run(["hatchling-broker", "sign-in", "add", BROWSER_URL.rstrip("/"), "Work"],
-                          input=f"{SIGN_IN_USER}
-{SIGN_IN_PASSWORD}
-", text=True, capture_output=True)
+                          input=os.linesep.join([SIGN_IN_USER, SIGN_IN_PASSWORD, ""]),
+                          text=True, capture_output=True)
     if kept.returncode != 0:
         raise ValueError(f"The sign-in wasn't kept: {kept.stderr}")
     if SIGN_IN_PASSWORD in kept.stdout + kept.stderr or SIGN_IN_USER in kept.stdout + kept.stderr:
