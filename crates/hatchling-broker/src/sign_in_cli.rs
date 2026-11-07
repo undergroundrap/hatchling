@@ -247,7 +247,9 @@ fn read_username() -> Result<Concealed, String> {
         .lock()
         .read_line(&mut line)
         .map_err(|error| format!("can't read the username: {error}"))?;
-    Ok(Concealed::new(line.trim_end_matches(['\r', '\n'])))
+    Ok(Concealed::new(
+        line.trim_end_matches(['\r', '\n']).to_owned(),
+    ))
 }
 
 /// The password, at a prompt that doesn't show it.
