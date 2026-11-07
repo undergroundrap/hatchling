@@ -323,10 +323,11 @@ pub enum FetchError {
     #[error("the site's name doesn't resolve")]
     Unresolved,
     /// The host resolves to an internal address: refused before any
-    /// connection.
-    #[error("the site's name resolves to an internal address ({addr})")]
+    /// connection. The words don't say which: they reach the agent, who
+    /// would learn what a name inside the network resolves to.
+    #[error("the site's name resolves to an internal address")]
     Internal {
-        /// The first internal address it resolved to.
+        /// The first internal address it resolved to: for the broker's log.
         addr: IpAddr,
     },
     /// No connection, a failed handshake or certificate check, or a
@@ -336,10 +337,12 @@ pub enum FetchError {
     /// The answer is past the proxy's 1 MiB bound.
     #[error("the page is larger than 1 MiB")]
     TooLarge,
-    /// The answer isn't text.
-    #[error("a {content_type} answer isn't readable text")]
+    /// The answer isn't text. The words are fixed: they reach the agent as
+    /// the broker's, so they can't carry what a site chose to say.
+    #[error("the site's answer isn't readable text")]
     NotText {
-        /// Its content type, as the site gave it, or `none`.
+        /// Its content type, as the site gave it, or `none`: for the
+        /// broker's log.
         content_type: String,
     },
     /// A redirect with no location.
@@ -687,6 +690,23 @@ mod tests {
 
     /// A URL is read strictly: its origin lowercased with the default
     /// port left out of its name, its fragment dropped.
+    /// What a refused read says reaches the agent, so it holds nothing the
+    /// fetch found out: not the address a name resolves to, nor what a site
+    /// chose to call its answer. Both stay in the error, for the log.
+    #[test]
+    fn a_refused_reads_words_hold_nothing_it_found() {
+        let internal = FetchError::Internal {
+            addr: IpAddr::from([10, 1, 2, 3]),
+        };
+        assert!(!internal.to_string().contains("10.1.2.3"));
+        let not_text = FetchError::NotText {
+            content_type: String::from("site-chosen/words"),
+        };
+        assert!(!not_text.to_string().contains("site-chosen"));
+        let logged = format!("{internal:?} {not_text:?}");
+        assert!(logged.contains("site-chosen"), "the log keeps it");
+    }
+
     #[test]
     fn a_url_names_its_origin_and_target() {
         let page = url("HTTPS://Docs.Example.COM/a/b?q=1#part");

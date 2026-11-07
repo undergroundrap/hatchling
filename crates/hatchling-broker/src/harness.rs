@@ -2082,8 +2082,12 @@ struct Brief {
 impl Brief {
     /// The brief `input` carries, checked.
     fn parse(input: &str) -> Result<Self, String> {
-        let brief: Self = serde_json::from_str(input)
-            .map_err(|err| format!("the brief is not a harness brief: {err}"))?;
+        let brief: Self = serde_json::from_str(input).map_err(|error| {
+            // The parser's words name this type and quote the brief: they
+            // stay in the log, escaped.
+            tracing::warn!(?error, "a harness brief that doesn't parse");
+            String::from("the brief is not a harness brief")
+        })?;
         if brief.task.trim().is_empty() || brief.task.len() > MAX_TASK_BYTES {
             return Err(format!("the task must be 1 to {MAX_TASK_BYTES} bytes"));
         }
@@ -4653,15 +4657,12 @@ mod tests {
             }
         );
         assert!(
-            Brief::parse("[]")
-                .unwrap_err()
-                .starts_with("the brief is not a harness brief: ")
+            Brief::parse("[]").unwrap_err() == "the brief is not a harness brief",
+            "fixed words: serde's would name a Rust type"
         );
         let extra = parse(json!({ "task": "t", "root": "r", "paths": ["a"], "run": "x" }));
         assert!(
-            extra
-                .unwrap_err()
-                .starts_with("the brief is not a harness brief: "),
+            extra.unwrap_err() == "the brief is not a harness brief",
             "unknown fields are refused"
         );
         let task = |task: &str| parse(json!({ "task": task, "root": "r", "paths": ["a"] }));

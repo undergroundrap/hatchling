@@ -83,6 +83,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 - **A run that exits as it's caught is still stopped.** A cell that sent one last request and exited at once could be taken for one that finished, its output delivered and you never told.
 - **A frame can't forge a log line.** A cell, a device or a client that put a newline in a frame could start a line of its own in the broker's log. Those lines are escaped now, and so is a refused cell spec's reason.
 - **Keys stay out of debug output.** The harness relay's keys, the surrogate key and an approval token could have shown in a `Debug` line, and so could a backup's file contents. They don't now, and a backup's contents are wiped from memory as it's read.
+- **The agent is told less.** A harness brief that doesn't parse no longer names a Rust type, a refused web read no longer says what an internal name resolves to, and a site's content type is no longer passed off as the broker's words. The detail is in the broker's log.
 - **The browser starts under a strict umask.** Its snapshot's permissions came from the umask, which could shut a cell out of it.
 - **A locked Hatchling says it's locked.** The app used to look broken after a restart. It now says the vault is locked, and how to unlock it.
 - **Settings tells the truth about your data.** On a real install, the Data section no longer shows the demo's reset and export: it shows the real commands for backing up, restoring and starting over, to copy into a terminal.
