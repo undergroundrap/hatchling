@@ -1430,7 +1430,10 @@ impl Harnesses {
                 if !found.is_empty() {
                     let patch = patch(&found);
                     if held.exposed_in(patch.as_bytes()) {
-                        tracing::warn!(harness = harness.name(), "a harness patch held a secret: not delivered");
+                        tracing::warn!(
+                            harness = harness.name(),
+                            "a harness patch held a secret: not delivered"
+                        );
                         report.patch_withheld = true;
                     } else {
                         report.patch = self.deliver_patch(&patch);
@@ -1879,11 +1882,7 @@ impl HarnessVault for VaultKeys<'_> {
 }
 
 /// The vendor key `secret`, as the broker's own logged vault read.
-fn vendor_key(
-    vault_root: &Path,
-    key: &dyn OpensStores,
-    secret: &str,
-) -> Option<Zeroizing<String>> {
+fn vendor_key(vault_root: &Path, key: &dyn OpensStores, secret: &str) -> Option<Zeroizing<String>> {
     let name = secret.parse::<hatchling_core::SecretName>().ok()?;
     let secret = crate::secrets::Secrets::new(vault_root, key)
         .broker_read("harness", std::slice::from_ref(&name))
@@ -4470,7 +4469,8 @@ mod tests {
         let harnesses = parsed(&config, &vars).unwrap();
         let runtime = SkillRuntime::new(PathBuf::from("/nonexistent/hatchling-spawner"));
         let input = r#"{"task":"Go.","root":"project","paths":["a"]}"#;
-        let report = harnesses.run(&CLAUDE, &binary, input, &runtime, &no_keys);
+        let held = SecretSet::new(Vec::<Vec<u8>>::new());
+        let report = harnesses.run(&CLAUDE, &binary, input, &runtime, &no_keys, &held);
         assert_eq!(report.outcome, HarnessOutcome::Failed);
         assert_eq!(report.reason.as_deref(), Some("the harness could not run"));
         assert_eq!((report.change_count(), report.patch.as_ref()), (0, None));
