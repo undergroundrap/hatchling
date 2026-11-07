@@ -2541,7 +2541,10 @@ mod tests {
         let ScheduleResult::Created { id: held } = created else {
             unreachable!("a follow-up wasn't created");
         };
-        assert_eq!(store.hold_asked_by(&run).unwrap(), std::slice::from_ref(&held));
+        assert_eq!(
+            store.hold_asked_by(&run).unwrap(),
+            std::slice::from_ref(&held)
+        );
         // Nothing but the owner frees it: a claim settled late is refused.
         let fire = |id: &str| {
             let schedules = store.load().unwrap();
