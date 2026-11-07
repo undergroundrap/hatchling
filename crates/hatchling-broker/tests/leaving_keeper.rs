@@ -696,7 +696,7 @@ fn a_hit_ends_the_session_and_the_owner_is_told_once() -> Result<(), String> {
         let clean = ask(&agent, &reading("https://a.example/?k=nothing-held"))?;
         assert!(
             matches!(clean, SessionResponse::Web(WebResult::Waiting { .. })),
-            "{clean:?}"
+            "a clean text is not refused for a secret"
         );
         install.last_check_found(false)?;
         let guess = format!("https://a.example/?k={API_KEY}");
@@ -821,7 +821,7 @@ fn a_hit_elsewhere_in_the_tree_refuses_the_next_op() -> Result<(), String> {
         let clean = ask(&agent, &reading("https://a.example/?k=nothing-held"))?;
         assert!(
             matches!(clean, SessionResponse::Web(WebResult::Waiting { .. })),
-            "{clean:?}"
+            "a clean text is not refused for a secret"
         );
         hit.record(SentTo::Search);
         let checks = install.checks()?.len();
