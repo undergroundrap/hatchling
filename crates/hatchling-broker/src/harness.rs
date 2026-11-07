@@ -57,8 +57,9 @@
 //!   to its vendor. So the task, the answer, the names and every byte of
 //!   each file are checked before a cell starts, as parsed text, not the
 //!   JSON they arrived in, and the patch and everything in the report
-//!   after: [`HarnessVault::contains`], which covers every secret held,
-//!   whether or not a cell has had it. With a keeper running, the keeper
+//!   after: [`HarnessVault::contains`], which covers the vault and every
+//!   sign-in's password, whether or not a cell has had it, by the rules of
+//!   [`crate::held_check`]. With a keeper running, the keeper
 //!   answers, and the broker never sees one ([`crate::held_check`]). A
 //!   check that can't be answered stops the run, or the delivery. A secret
 //!   in the brief is the agent's own text, and a brief can ask the harness

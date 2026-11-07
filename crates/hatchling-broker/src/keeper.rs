@@ -11,10 +11,13 @@
 //! broker's own stores: every one but the secrets and the sign-ins. Then
 //! it drops the master key and answers the broker until the broker goes:
 //!
-//! - **a read for one of the broker's purposes**, when every name is one
-//!   the configuration gives that purpose (an egress destination's
-//!   credential, a configured harness vendor's key, a channel account's
-//!   credential, the gates' held secrets);
+//! - **a read for a purpose the asker's channel may read**, when every name
+//!   is one the configuration gives that purpose: for the broker, a channel
+//!   account's credential; for the egress authority, on its own channel, an
+//!   egress destination's credential, search's key or a configured harness
+//!   vendor's key;
+//! - **a gate's scan**, for the broker: the values the keeper chooses
+//!   (`Releases::scan_set`);
 //! - **a cell's vault op**, checked against the configuration's grants;
 //! - **the sign-ins** ([`crate::browser_credentials`]): the owner's keep,
 //!   list and delete, and a fill;
@@ -22,8 +25,11 @@
 //!   secret the keeper holds ([`crate::held_check`]), for the broker alone.
 //!
 //! A read, a cell's op, a fill and a check are each recorded in the
-//! vault's access log before the keeper answers, and one that can't be
-//! recorded is answered with nothing ([`crate::secrets`]). A read the
+//! vault's access log before the keeper answers. One that released or
+//! changed something and can't be recorded is answered with nothing, or as
+//! failed; one that did neither, a denial or a failure, still gets its
+//! answer, and that it wasn't recorded goes to the keeper's log
+//! ([`crate::secrets`]). A read the
 //! configuration doesn't give its purpose is refused and recorded as
 //! denied. Keeping, listing and deleting a sign-in release no secret, and
 //! aren't recorded there.

@@ -9,9 +9,10 @@
 //! come here too ([`handle_vault_op`]), checked against the cell's grants
 //! and recorded the same way.
 //!
-//! This is the seam the keeper takes over. Today it runs in the broker,
-//! over the keys it was handed; the keeper will hold the secrets store's
-//! key in a process of its own and answer these calls there.
+//! This is the seam the keeper runs behind. With one running, as on every
+//! install, it holds the secrets store's key in a process of its own, and
+//! these reads and a cell's ops are answered there. A broker with no keeper,
+//! as in a test, runs them here over the keys it was handed.
 
 use std::path::Path;
 

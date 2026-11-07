@@ -4,10 +4,11 @@
 //! agent sends off the machine: a web read's address, a search, a page's
 //! address, and text typed into a page.
 //!
-//! All of that goes to someone else, so the check covers every secret held,
-//! whether or not a cell has ever had it: API keys, vendor keys, the search
-//! key, channel accounts and sign-in passwords. The broker never holds most
-//! of those, so with a keeper running the keeper answers
+//! All of that goes to someone else, so the check covers everything in the
+//! vault and every sign-in's password, whether or not a cell has ever had
+//! it: API keys, vendor keys, the search key, channel accounts and sign-in
+//! passwords. A kept browser session's cookies aren't looked for. The broker
+//! never holds most of those, so with a keeper running the keeper answers
 //! ([`crate::keeper::Keeper::contains`]): the text goes in, one boolean
 //! comes out, and no value, name or position ever leaves it. A broker with
 //! no keeper reads them itself ([`check_here`]), as it reads everything.
@@ -31,7 +32,7 @@
 //! **A hit ends the run** ([`HeldHit`]). A refusal tells the agent that what
 //! it sent matched, so a tricked agent could find a weak password by trying
 //! it, one refusal at a time. So when the agent's own text is found to hold
-//! one, its run is over: every cell in its tree is killed there and then,
+//! one, its run is over: every cell its tree holds is killed there and then,
 //! which takes each cell's channel to the keeper with it, the broker ends
 //! the session and refuses everything after it, however the cell behaves,
 //! and the owner is told once, in Hatchling's own words: what kind of thing
@@ -191,8 +192,9 @@ impl HeldHit {
     }
 }
 
-/// Every secret held under `config`: each one in the vault, whoever it's
-/// for, and each sign-in's password. A username isn't one. `keys` must
+/// What a check looks for under `config`: each secret in the vault, whoever
+/// it's for, and each sign-in's password. A username isn't one, and nor is a
+/// kept browser session's cookie. `keys` must
 /// open the secrets and the sign-ins: the keeper's own, or those of a
 /// broker with no keeper.
 ///
