@@ -173,7 +173,7 @@ The API's caller grants (`HATCHLING_API_GRANTS`) are written as labels: `kind:fi
 <!-- grant-labels:begin -->
 | Label | JSON grant |
 | --- | --- |
-| `vault:fetch:app-token` | `{"grant":"vault","action":"fetch","name":"app-token"}` |
+| `vault:store:app-token` | `{"grant":"vault","action":"store","name":"app-token"}` |
 | `egress:api.example.com:443` | `{"grant":"egress","destination":"api.example.com:443"}` |
 | `memory:user:recall` | `{"grant":"memory","scope":"user","action":"recall"}` |
 | `goals:query-goals` | `{"grant":"goals","action":"query-goals"}` |

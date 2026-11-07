@@ -217,6 +217,16 @@ pub(crate) fn vault_op_result(
         );
         return Ok(VaultResult::Denied);
     };
+    // Whatever a grant says: a secret's plaintext reaches no cell. A
+    // config can't grant this, and this holds if one ever gets through.
+    if matches!(op, VaultOp::Fetch { .. }) {
+        tracing::warn!(
+            cell_id = %cell_id,
+            secret_name = name.as_str(),
+            "denied vault op: no cell may read a secret"
+        );
+        return Ok(VaultResult::Denied);
+    }
     let granted = vault_config
         .grants
         .iter()
@@ -267,21 +277,7 @@ pub(crate) fn vault_op_result(
                 }
             }
         }
-        VaultOp::Fetch { .. } => match vault.fetch(&name) {
-            Ok(secret) => VaultResult::Fetched {
-                secret_b64: SecretB64::encode(secret.as_bytes()),
-            },
-            Err(hatchling_vault::Error::NotFound { .. }) => VaultResult::NotFound,
-            Err(source) => {
-                tracing::error!(
-                    cell_id = %cell_id,
-                    secret_name = name.as_str(),
-                    %source,
-                    "vault fetch failed"
-                );
-                VaultResult::VaultError
-            }
-        },
+        VaultOp::Fetch { .. } => VaultResult::Denied,
         VaultOp::Remove { .. } => match vault.remove(&name) {
             Ok(()) => {
                 tracing::info!(

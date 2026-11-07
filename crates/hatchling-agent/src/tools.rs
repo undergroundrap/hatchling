@@ -22,69 +22,6 @@ use serde_json::{Value, json};
 
 use crate::subagent::Children;
 
-/// Fetches a named secret through the grant-checked vault path.
-///
-/// Every secret it fetches is registered with the run's [`Redactor`]
-/// the loop may use it, but no model request carries it.
-pub struct VaultFetchTool<'s> {
-    stream: &'s UnixStream,
-    redactor: &'s Redactor,
-}
-
-impl<'s> VaultFetchTool<'s> {
-    /// Build over the broker session, registering fetched secrets with
-    /// `redactor`.
-    #[must_use]
-    pub const fn new(stream: &'s UnixStream, redactor: &'s Redactor) -> Self {
-        Self { stream, redactor }
-    }
-}
-
-impl Tool for VaultFetchTool<'_> {
-    fn name(&self) -> &'static str {
-        "vault_fetch"
-    }
-
-    fn description(&self) -> &'static str {
-        "Fetch a secret from the vault by name. The broker checks the caller's grant; ungranted names are denied."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "The secret name to fetch."
-                }
-            },
-            "required": ["name"],
-            "additionalProperties": false
-        })
-    }
-
-    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
-        let name = arguments
-            .get("name")
-            .and_then(Value::as_str)
-            .ok_or_else(|| LoopError::ToolFailed {
-                tool: self.name().to_owned(),
-                reason: String::from("missing or invalid 'name' argument"),
-            })?;
-        match crate::vault::fetch(self.stream, name) {
-            Ok(Some(secret)) => {
-                let secret_str = String::from_utf8_lossy(&secret).into_owned();
-                self.redactor.register(&secret_str);
-                Ok(ToolOutput::Ok(
-                    json!({ "name": name, "secret": secret_str }),
-                ))
-            }
-            Ok(None) => Ok(ToolOutput::Err(format!("secret '{name}' not found"))),
-            Err(e) => Ok(ToolOutput::Err(e.to_string())),
-        }
-    }
-}
-
 /// Performs an outbound request through the allowlist-checked egress
 /// path. The caller must supply a surrogate minted for the
 /// destination.
@@ -1868,61 +1805,6 @@ mod tests {
 
     fn socket_pair() -> (UnixStream, UnixStream) {
         UnixStream::pair().expect("test socket pair")
-    }
-
-    #[test]
-    fn vault_fetch_tool_metadata_is_stable() {
-        // The registry keys tools by name and shows the description
-        // and schema to the model; pin all three so a mutant that
-        // blanks or swaps them cannot survive.
-        let (a, _b) = socket_pair();
-        let redactor = Redactor::default();
-        let tool = VaultFetchTool::new(&a, &redactor);
-        assert_eq!(tool.name(), "vault_fetch");
-        assert_eq!(
-            tool.description(),
-            "Fetch a secret from the vault by name. The broker checks the caller's grant; ungranted names are denied."
-        );
-        let schema = tool.parameters_schema();
-        assert_eq!(schema.get("type"), Some(&json!("object")));
-        assert_eq!(schema.get("required"), Some(&json!(["name"])));
-        assert_eq!(
-            schema
-                .get("properties")
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.get("type")),
-            Some(&json!("string"))
-        );
-        assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
-    }
-
-    /// A broker stand-in: answers one request with `reply`.
-    fn answer_once(reply: hatchling_core::SkillResult) -> UnixStream {
-        use hatchling_core::framing::{read_frame, write_frame};
-        let (agent, broker) = socket_pair();
-        // Bounded both ways: a broken client (one that never sends, or
-        // waits for a reply that never comes) fails instead of hanging.
-        bounded(&agent);
-        bounded(&broker);
-        std::thread::spawn(move || {
-            if read_frame(&broker).is_ok() {
-                let response = hatchling_core::SessionResponse::Skill(reply);
-                if let Ok(bytes) = serde_json::to_vec(&response) {
-                    let _ = write_frame(&broker, &bytes);
-                }
-            }
-        });
-        agent
-    }
-
-    fn bounded(stream: &UnixStream) {
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .expect("read timeout");
-    }
-
-    fn skill_args(capability: &str) -> Value {
-        json!({ "skill": "web@1.0.0", "capability": capability, "input": "in" })
     }
 
     #[test]

@@ -542,10 +542,6 @@ impl Cell<Ready> {
         let ledger = std::sync::Arc::new(hatchling_loop::StepLedger::new(budget.max_steps));
         let children = crate::subagent::Children::default();
         let mut registry = hatchling_loop::ToolRegistry::new();
-        registry.register(Box::new(crate::tools::VaultFetchTool::new(
-            self.vault_channel(),
-            redactor,
-        )));
         registry.register(Box::new(crate::tools::EgressRequestTool::new(
             self.connection(),
         )));

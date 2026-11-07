@@ -1796,6 +1796,11 @@ fn parse_grants(raw: Option<String>) -> Result<Vec<VaultGrant>, Error> {
             // key via the `From` impl: grant parsing is the only place
             // these variants can arise in the broker.
             let action: VaultAction = action.trim().parse()?;
+            if action == VaultAction::Fetch {
+                return Err(invalid(String::from(
+                    "a cell can no longer read a secret. Remove this grant: a key an agent uses goes through HATCHLING_EGRESS_GRANTS, where the broker adds it on the way out and the agent never holds it",
+                )));
+            }
             let name: SecretName = name.trim().parse()?;
             Ok(VaultGrant { action, name })
         })

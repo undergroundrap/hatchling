@@ -1092,11 +1092,11 @@ fn held_by(vault: &VaultConfig, held: &[String]) -> VaultConfig {
     vault
 }
 
-/// The name a cell's op would release, when `vault` grants it: a fetch's
-/// or a store's. A removal releases nothing.
+/// The name a cell's op would release, when `vault` grants it: a store's.
+/// A fetch is refused and a removal releases nothing.
 fn releases_to_cell(vault: &VaultConfig, op: &VaultOp) -> Option<String> {
     let action = op.action();
-    if !matches!(op, VaultOp::Fetch { .. } | VaultOp::Store { .. }) {
+    if !matches!(op, VaultOp::Store { .. }) {
         return None;
     }
     let name = op.name();

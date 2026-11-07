@@ -119,19 +119,17 @@ class ProcessTests(unittest.TestCase):
 
 
 class CanaryTests(unittest.TestCase):
-    def test_a_fetched_canary_is_told_from_a_leaked_or_unfetched_one(self):
+    def test_a_secret_is_neither_offered_nor_shown_to_a_model(self):
         import https_model_fixture as fixture
         canary = 'hatchling-canary-fixture'
-        def request(content):
-            body = {'messages': [{'role': 'user', 'content': content}]}
-            return body, json.dumps(body).encode()
-        fetched = '<tool_result tool="vault_fetch" status="ok">{"secret":"[redacted secret]"}</tool_result>'
-        self.assertEqual(fixture.canary_seen(*request(fetched), canary), 'fetched-redacted')
-        leaked = fetched.replace('[redacted secret]', canary)
-        self.assertEqual(fixture.canary_seen(*request(leaked), canary), 'plain')
-        denied = '<tool_result tool="vault_fetch" status="error">denied</tool_result>'
-        self.assertEqual(fixture.canary_seen(*request(denied), canary), 'not-fetched')
-        self.assertEqual(fixture.canary_seen(*request('[redacted secret]'), canary), 'not-fetched')
+        def seen(content, tools=()):
+            body = {'messages': [{'role': 'user', 'content': content}],
+                    'tools': [{'function': {'name': name}} for name in tools]}
+            return fixture.canary_seen(body, json.dumps(body).encode(), canary)
+        self.assertEqual(seen('hello', ['memory_propose']), 'absent')
+        self.assertEqual(seen('hello', ['vault_fetch']), 'offered')
+        self.assertEqual(seen(canary), 'plain')
+        self.assertEqual(seen(canary, ['vault_fetch']), 'plain')
 
 
 if __name__ == '__main__':
