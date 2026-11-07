@@ -266,6 +266,7 @@ mod tests {
 
     use super::*;
     use crate::api_auth::tests::{owner_config, real_uid};
+    use crate::held_check::HeldHit;
     use crate::test_socket::TestSocket;
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef";
@@ -769,7 +770,7 @@ mod tests {
             );
             // Alive while the operator asks.
             let started = launcher
-                .launch_cell(PLANTED[0], run, |token, socket| {
+                .launch_cell(PLANTED[0], run, HeldHit::default(), |token, socket| {
                     crate::scoped_config(&config, &request, token, socket)
                 })
                 .unwrap();

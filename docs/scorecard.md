@@ -103,7 +103,8 @@ What Hatchling really does on a fresh install, one row at a time.
 | Finding | Status |
 |---|---|
 | A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0: the keeper checks it, tested against a real keeper |
-| The output, artifact, web, browser and subagent gates only know what a cell has had | Open, for a decision |
+| A refused check tells the agent a guess matched, so a weak password could be guessed | Fixed in 0.8.0: a hit ends the run and tells the owner, tested against a real keeper in a real cell |
+| Wrong guesses at a held secret aren't rate-limited, and a site feeding an agent guesses could work out a hit from the one it never receives | Open: once a run, and the owner is told |
 | The Keep sign-in form took a password in the web app | Fixed in 0.8.0: the form is gone, and sign-ins are added at the terminal |
 | Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
 | Memory, goals, feed posts, decisions, ideas, run specs and harness temp files aren't sealed at rest | Open. Continuity doesn't ship onto these |

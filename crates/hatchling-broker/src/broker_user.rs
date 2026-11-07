@@ -28,6 +28,20 @@ pub fn broker_user() -> Result<Option<(u32, u32)>, Error> {
         .map_err(|reason| Error::BrokerUser { reason })
 }
 
+/// Who Hatchling's own state may belong to: this process's user and, run
+/// as root, the broker's and the vault keeper's. What a delete run as root
+/// takes as Hatchling's, in stores those users own.
+#[must_use]
+pub fn own_users() -> Vec<u32> {
+    let service = [
+        broker_user().ok().flatten(),
+        crate::keeper::keeper_user().ok().flatten(),
+    ];
+    std::iter::once(hatchling_sys::euid())
+        .chain(service.into_iter().flatten().map(|(uid, _)| uid))
+        .collect()
+}
+
 /// The directories the broker's user owns.
 ///
 /// Each sealed store's root but the vault and the sign-ins, which are the
@@ -279,6 +293,7 @@ mod tests {
             let before = hatchling_sys::euid();
             assert!(!drop_to_broker().unwrap());
             assert_eq!(hatchling_sys::euid(), before);
+            assert_eq!(own_users(), [before], "no service users, only itself");
         }
     }
 

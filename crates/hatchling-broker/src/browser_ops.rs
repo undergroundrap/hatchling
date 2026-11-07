@@ -13,8 +13,9 @@
 //! - **Once is one visit.** A site allowed once, a page's or one a page
 //!   needed, is held while the browser stays on the site it's visiting,
 //!   and revoked, its tunnels closed, when the browser opens another.
-//! - **Typed text is checked:** text that holds a secret the broker keeps
-//!   is refused before it reaches the page.
+//! - **Typed text is checked:** text that holds a secret Hatchling keeps,
+//!   whether or not a cell has had it, is refused before it reaches the
+//!   page ([`crate::held_check`]).
 //! - **The owner watches, and may stop it** ([`crate::browser_board`]):
 //!   each op is shown in the app, the session, the action in the owner's
 //!   words (never the text typed) and a frame of the page after it. A
@@ -999,7 +1000,7 @@ fn answer(
         BrowserOp::Read {} => browser.command(&BrowserCommand::Snapshot),
         BrowserOp::Act { element, action } => {
             if let PageAction::Type { text } = action {
-                if let Some(refusal) = typed_secret(config, keys, text) {
+                if let Some(refusal) = typed_secret(config, keys, web, text) {
                     return refusal;
                 }
             }
@@ -1206,9 +1207,7 @@ fn open(
     if config.web.refuses(url.origin().host()) {
         return refused("the operator refuses this site");
     }
-    if let Some(reason) =
-        crate::web_ops::held_secret_in(config, keys, &url.to_string(), "page's address")
-    {
+    if let Some(reason) = crate::web_ops::held_secret_in_address(config, keys, web, &url) {
         return refused(&reason);
     }
     let destination = url.origin().destination();
@@ -1449,15 +1448,30 @@ fn cell_id() -> Result<String, String> {
 }
 
 /// What the agent is told when typing `text` is refused: it holds a secret
-/// the broker keeps, or the secrets couldn't be read to check.
-fn typed_secret(config: &Config, keys: &dyn OpensStores, text: &str) -> Option<BrowserResult> {
-    match crate::held_secrets(config, keys) {
-        Ok(secrets) if secrets.exposed_in(text.as_bytes()) => Some(refused(
-            "the text holds a secret the broker keeps: it isn't typed",
-        )),
-        Ok(_) => None,
+/// Hatchling keeps, a cell having had it or not ([`crate::held_check`]), or
+/// nothing can say it doesn't. Text holding one ends `web`'s run
+/// ([`crate::held_check::HeldHit`]).
+///
+/// One check for each act of typing, whatever its length. A sign-in and a
+/// code are filled by their own commands and don't come here, and neither
+/// does the owner's own typing under Take control, which goes to the
+/// browser from the board; nor is any frame checked.
+fn typed_secret(
+    config: &Config,
+    keys: &dyn OpensStores,
+    web: &WebSession,
+    text: &str,
+) -> Option<BrowserResult> {
+    match crate::held_check::check(crate::keeper::keeper(), config, keys, text.as_bytes()) {
+        Ok(true) => {
+            web.ended_by(hatchling_scheduler::SentTo::Page);
+            Some(refused(
+                "the text holds a secret the broker keeps: it isn't typed",
+            ))
+        }
+        Ok(false) => None,
         Err(error) => {
-            tracing::error!(%error, "the held secrets couldn't be read: typing refused");
+            tracing::error!(%error, "the check for held secrets failed: typing refused");
             Some(refused(
                 "the broker couldn't check the text for secrets: it isn't typed",
             ))
@@ -2827,6 +2841,16 @@ mod tests {
             .any(|secret| sent.contains(secret) || exposed.iter().any(|text| text.contains(secret)))
     }
 
+    /// How many checks for held secrets are on the record.
+    fn checks(config: &Config) -> usize {
+        crate::vault_access::read_log(&config.vault.root)
+            .unwrap()
+            .0
+            .iter()
+            .filter(|access| access.action == crate::vault_access::CHECK_ACTION)
+            .count()
+    }
+
     fn sign_in_op(username: Option<u32>, label: Option<&str>) -> BrowserOp {
         BrowserOp::SignIn {
             username,
@@ -2837,7 +2861,12 @@ mod tests {
 
     #[test]
     fn a_sign_in_is_filled_in_its_profiles_browser_on_its_origin_and_never_shown() {
-        let (config, _scratch, keys, _profile) = with_sign_ins("fill", &["Work"]);
+        let (mut config, scratch, keys, _profile) = with_sign_ins("fill", &["Work"]);
+        // A vault that's there, so each check is on the record.
+        config.vault.root = scratch.0.join("vault");
+        std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+            .create(&config.vault.root)
+            .unwrap();
         // Another profile's sign-in for the same site is never this one's.
         let other = crate::browser_profiles::Profiles::of(&config, &keys)
             .unwrap()
@@ -2866,6 +2895,8 @@ mod tests {
             "https://a.example/login",
             "Signed in as work@a.example, Work-hunter2",
         );
+        let before = checks(&config);
+        assert!(before > 0, "opening the page was checked");
         let answer = as_owner_allows(
             &config,
             &keys,
@@ -2873,6 +2904,7 @@ mod tests {
             &mut browser,
             &sign_in_op(Some(1), None),
         );
+        assert_eq!(checks(&config), before, "a fill isn't a text to check");
         let told = format!("{answer:?}");
         assert!(
             matches!(answer, BrowserResult::Page { .. }),
@@ -4410,12 +4442,12 @@ mod tests {
         assert!(fake.log.lock().unwrap().commands.is_empty());
         // The check itself: a secret anywhere in the text, or none.
         assert_eq!(
-            typed_secret(&config, &keys, "hunter2-sesame"),
+            typed_secret(&config, &keys, &web, "hunter2-sesame"),
             Some(refused(
                 "the text holds a secret the broker keeps: it isn't typed"
             ))
         );
-        assert_eq!(typed_secret(&config, &keys, "hunter2"), None);
+        assert_eq!(typed_secret(&config, &keys, &web, "hunter2"), None);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

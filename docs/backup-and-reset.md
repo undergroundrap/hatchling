@@ -53,6 +53,8 @@ Each level asks you to confirm, and takes a backup first:
 
 Use `--yes` to skip the question in a script. Use `--no-backup` if you can't open the vault to back it up, which is what to do when your keys and codes are all gone.
 
+`reset` and `restore` remove only what belongs to Hatchling's own users, and to its cells' user, so what a crash left behind in a store goes too. Anything else in a store, or a link where a store should be, stops them there, and they name it: look at it, and remove it yourself if it's yours to lose.
+
 After `reset everything`, set your keys up again as on a new install. **Never reset a security key to start fresh:** it isn't needed, and it wipes the key's passkeys for everything else.
 
 ## Throwaway use

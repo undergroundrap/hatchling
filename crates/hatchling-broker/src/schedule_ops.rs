@@ -50,7 +50,7 @@ use hatchling_core::{
     ScheduleSummary, SecretName,
 };
 use hatchling_scheduler::{
-    Claim, Creator, Delivery, Dispatcher, FailureNotice, FollowupParent, Hook, Launcher,
+    Claim, Creator, Delivery, Dispatcher, Ending, FailureNotice, FollowupParent, Hook, Launcher,
     Occurrence, OccurrenceState, Parked, Schedule, Services, Sources, Store, TickReport, Timestamp,
     validate, validate_followup, validate_hook,
 };
@@ -1250,13 +1250,17 @@ const NOTICE_TASK_CHARS: usize = 80;
 /// What the person is told of a failed scheduled run: the broker's own
 /// words, naming the task only when the owner wrote it, and never what
 /// the run wrote.
+///
+/// A run stopped for a secret isn't named at all: the task may be where the
+/// secret came from.
 #[must_use]
 pub fn failure_notice(
     failure: &FailureNotice,
     model: Option<&str>,
     reached: Option<&crate::usage::Reached>,
 ) -> String {
-    let what = failure.task.as_deref().map_or_else(
+    let stopped = matches!(failure.ending, Some(Ending::Stopped(_)));
+    let what = failure.task.as_deref().filter(|_| !stopped).map_or_else(
         || String::from("Scheduled work"),
         |task| {
             let mut quoted: String = task.chars().take(NOTICE_TASK_CHARS).collect();
@@ -1291,6 +1295,13 @@ impl Delivery for HubDelivery<'_> {
         let reached = self
             .usage
             .and_then(|usage| crate::usage::reached(usage, Timestamp::now().as_second()));
+        // A run stopped for a secret is told in the chat, wherever its
+        // answer was going: a Feed page or the log would keep it from them.
+        let channel = if matches!(failure.ending, Some(Ending::Stopped(_))) {
+            "local"
+        } else {
+            channel
+        };
         self.deliver_notice(
             channel,
             &failure_notice(failure, self.model, reached.as_ref()),
@@ -1516,7 +1527,6 @@ mod tests {
     #[test]
     fn a_failed_run_is_told_in_the_brokers_words() {
         use hatchling_core::run_failure::RunFailure;
-        use hatchling_scheduler::Ending;
         let failed = |task: Option<&str>, started: bool, ending| FailureNotice {
             schedule_id: String::from("sch-1"),
             task: task.map(str::to_owned),
@@ -1594,6 +1604,49 @@ mod tests {
             told.starts_with("Your scheduled work “Stretch” didn't finish."),
             "{told}"
         );
+    }
+
+    /// A run stopped for a secret is told in the chat whatever its channel,
+    /// in fixed words: not its task, which could be where the secret came
+    /// from, and not on a page the owner may not be reading.
+    #[test]
+    fn a_stopped_run_is_told_in_the_chat_without_its_task() {
+        use hatchling_scheduler::SentTo;
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink_seen = std::sync::Arc::clone(&seen);
+        let _ = hub.attach(Box::new(move |cleared: &hatchling_channel::Cleared| {
+            if let Ok(mut seen) = sink_seen.lock() {
+                seen.push(cleared.message().text.clone());
+            }
+            Ok(())
+        }));
+        let delivery = HubDelivery::new(Some(&hub));
+        let stopped = FailureNotice {
+            schedule_id: String::from("sch-1"),
+            task: Some(String::from("Log in with hunter2-sesame")),
+            started: true,
+            ending: Some(Ending::Stopped(SentTo::Search)),
+        };
+        for channel in ["local", crate::suggestions::IDEAS_PAGE] {
+            delivery.notify_failure(channel, &stopped).unwrap();
+        }
+        let told = "Scheduled work didn't finish. Hatchling stopped this run: it tried to send a saved secret to a search service. It's kept for you to review.";
+        assert_eq!(*seen.lock().unwrap(), [told, told]);
+        // Any other failure stays on its own channel.
+        let other = FailureNotice {
+            ending: Some(Ending::TimedOut),
+            ..stopped
+        };
+        delivery
+            .notify_failure(crate::suggestions::IDEAS_PAGE, &other)
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().len(), 2);
+        // How it ended survives the schedule store.
+        let ending = Ending::Stopped(SentTo::Harness);
+        let kept = serde_json::to_string(&ending).unwrap();
+        assert_eq!(kept, r#"{"stopped":"harness"}"#);
+        assert_eq!(serde_json::from_str::<Ending>(&kept).unwrap(), ending);
     }
 
     #[test]

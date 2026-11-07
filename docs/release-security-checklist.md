@@ -39,6 +39,15 @@ The frontend host is the only HTTP endpoint, on loopback. There are no metrics o
 - **No ownership or mode change by path:** `chown`, `chmod` or `set_permissions` on a path the broker didn't just open without following symlinks. Use `hatchling_sys`'s handle-based helpers (`create_private_dir`, `ensure_private_dir`, `chmod_socket`, `hand_over_socket`, `share_dir_with_cell`).
 - **No predictable names in a shared directory:** anything the broker makes under the temp directory gets a random name and is created exclusively.
 - **Deletes and signals stand behind two guards** (WO-024, [Testing code that deletes](testing-destructive-code.md)): a recursive delete goes through `hatchling_sys::remove_tree` or `remove_dir_tree`; any other delete, and any group signal, has two independent checks, each with its own test. A new `remove_dir_all`, `remove_file` of a computed path, or `kill` in non-test code fails this item unless it shows both.
+  - **One file:** `hatchling_sys::remove_file_of`. It works through a handle on the directory, opened without following a link, and removes the name only if it is the kind asked for and belongs to one of the owners named.
+  - **A store a service user owns, cleared by root:** `remove_dir_tree` keeps to the effective uid, and on an install no store is root's, so a `reset` or a `restore` would be refused all of them. `backup.rs` (`clear_tree`) uses `remove_dir_tree_of` for the tree's owner, once that owner is one of Hatchling's own users (`broker_user::own_users`). Each is checked alone, and anything else stops the clear and stays.
+- **These deletes stay as they are, each for its reason.** Each was read against the code on 2026-11-07; a new one is a new line, with a reason that's true of it. `remove_file` unlinks a name, so none of them can reach what a link points at.
+  - **A confirmed erase:** `backup.rs`, `erase_keys`, and `key_seen.rs`, `erase`, which only it calls. Only `reset everything` runs them, once `erase everything` is typed or `--yes` is on root's own command line. They take what opens the vault because that's what was asked for.
+  - **Fixed names, Hatchling's own files in its own directory:**
+    - `key_seen.rs`, `set_reminders`: `<keyring>.no-reminders`, which `vault-keyring reminders-off` made, beside the keyring.
+    - `key_setup.rs`, `recovery_kit`: `<keyring>.codes-unconfirmed`, which it made itself, once the last code is typed back.
+    - `model_choice.rs`, `set` and `switch`: `model.json` and `server.json` in the scheduler's owner directory, by the app's owner, as the broker's user and never as root.
+    - `unlock_relay.rs`, `master_key_for_start`: `unlock.sock` in `<vault>.unlock`, as the keeper's user, the socket it has just finished with.
 
 ```bash
 grep -rn "set_permissions\|fs::chown\|lchown\|temp_dir()" crates/*/src --include=*.rs
@@ -69,7 +78,8 @@ Check each `%` field, the shorthand `%name` too, for a value a cell or a client 
 
 - Types holding a secret, key or token redact their `Debug`, and no log line prints one.
 - Every new secret-bearing type is zeroized where it's dropped.
-- **What a harness is given or hands back is checked by the keeper**, against every secret it holds, a cell having had them or not (`held_check.rs`, `Keeper::contains`). The broker gets one boolean for a whole text, and never a value. A check is an oracle, so each is a line in the vault's access log; a new way to ask one is a change to this item. Proof, against the real keeper: `crates/hatchling-broker/tests/harness_keeper.rs`.
+- **What leaves the machine is checked by the keeper**, against every secret it holds, a cell having had them or not (`held_check.rs`, `Keeper::contains`): what a harness is given or hands back, a web read's address, a search, a page's address, and text the agent types into a page. An address is checked as a site reads it, percent escapes undone. The broker gets one boolean for a whole text, and never a value. A check is an oracle, so each is a line in the vault's access log, and there's one for each thing sent, never one for a frame; a new way to ask one is a change to this item. Proof, against the real keeper: `crates/hatchling-broker/tests/harness_keeper.rs`, `crates/hatchling-broker/tests/leaving_keeper.rs`.
+- **The output, artifact and subagent gates look only for what a cell has had** (`held_secrets`): no cell can hold a vault secret now, and their text goes to the owner or stays local.
 - Credentials never enter an agent's or a harness's cell: the egress swap and the harness relay attach them at the boundary. The one cell given one is a browser started for a signed-in profile: its cookies are restored over its connection, and the vault keeper fills a sign-in on its vault channel (WO-030, WO-031). The agent driving it never sees either: snapshots hide what was filled, and the agent names fields by id.
 
 ## 6. The cell's surface is what was reviewed
