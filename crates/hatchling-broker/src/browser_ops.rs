@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, MAX_COOKIE_PAGE_BYTES, PageAction,
-    PageSnapshot, SignInField,
+    PageSnapshot, SignInField, hiding_in_names,
 };
 use hatchling_core::ui::{BrowserState, CodeState};
 use hatchling_core::ui::{Concealed, ConfirmationField, FieldSource};
@@ -476,6 +476,12 @@ impl BrowserSession {
             return result;
         }
         self.keep_jar(config, keys);
+        self.hiding_from(result)
+    }
+
+    /// `result`, with what's hidden so far hidden from it, in the page and
+    /// in the sites it was refused, and fitted again.
+    fn hiding_from(&self, result: BrowserResult) -> BrowserResult {
         let fitted = |snapshot: PageSnapshot, refused: &[String]| {
             snapshot.fitted_in(|snapshot| {
                 hatchling_core::fits_one_frame(&SessionResponse::Browser(BrowserResult::Page {
@@ -485,6 +491,7 @@ impl BrowserSession {
             })
         };
         if let BrowserResult::Page { snapshot, refused } = result {
+            let refused = hiding_in_names(refused, &self.hidden);
             let snapshot = fitted(snapshot.hiding(&self.hidden), &refused);
             return BrowserResult::Page { snapshot, refused };
         }
@@ -523,11 +530,42 @@ impl BrowserSession {
         }
     }
 
+    /// The browser's cookies as they are now, hidden from `result`: what
+    /// the owner's hands left, in a browser with no profile to keep them. A
+    /// jar that can't be read gives the agent nothing of the page.
+    fn jar_hidden_from(&mut self, result: BrowserResult) -> BrowserResult {
+        let Some(driven) = self.browser.clone() else {
+            return result;
+        };
+        match read_jar(&driven) {
+            Ok(jar) => {
+                for cookie in &jar {
+                    self.hide(&cookie.value);
+                }
+                self.hiding_from(result)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the cookies left by the owner can't be read");
+                BrowserResult::Failed {
+                    failure: BrowserFailure::NoPage,
+                }
+            }
+        }
+    }
+
     /// The owner handed the browser back: the agent looks at the page
     /// afresh, takes a frame of it, and drives again. The page as it is
-    /// now.
-    fn resume(&mut self) -> BrowserResult {
+    /// now, with what the owner's session set hidden from it: they may have
+    /// signed in.
+    fn resume(&mut self, config: &Config, keys: &dyn OpensStores) -> BrowserResult {
         let looked = self.command(&BrowserCommand::Snapshot);
+        let looked = if !matches!(looked, BrowserResult::Page { .. }) {
+            looked
+        } else if self.profile.is_some() {
+            self.kept(config, keys, &BrowserOp::Read {}, looked)
+        } else {
+            self.jar_hidden_from(looked)
+        };
         let result = if let BrowserResult::Page { snapshot, refused } = looked {
             self.remember(&snapshot);
             if let (Some(board), Some(shown)) = (self.board.clone(), self.shown.as_ref()) {
@@ -844,7 +882,7 @@ impl BrowserSession {
         match reply {
             Ok(BrowserReply::Page { snapshot }) => {
                 let snapshot = snapshot.hiding(&self.hidden);
-                let refused = self.sites.refused();
+                let refused = self.refused_sites(&driven);
                 let snapshot = snapshot.fitted_in(|snapshot| {
                     hatchling_core::fits_one_frame(&SessionResponse::Browser(BrowserResult::Page {
                         snapshot: snapshot.clone(),
@@ -864,6 +902,7 @@ impl BrowserSession {
             // another.
             Ok(
                 BrowserReply::Frame { .. }
+                | BrowserReply::Hidden { .. }
                 | BrowserReply::Cookies { .. }
                 | BrowserReply::CookiesSet,
             ) => {
@@ -879,6 +918,31 @@ impl BrowserSession {
                 BrowserResult::Failed {
                     failure: BrowserFailure::BrowserGone,
                 }
+            }
+        }
+    }
+
+    /// The sites this browser's pages were refused, as the agent may see
+    /// them. A site's name is the page's to choose, so it's a way to show
+    /// what the page read: what the broker hides is hidden here, and what
+    /// was filled, which only the controller knows, there. A controller
+    /// that doesn't answer for every name leaves the agent with none.
+    fn refused_sites(&self, driven: &Driven) -> Vec<String> {
+        let names = hiding_in_names(self.sites.refused(), &self.hidden);
+        if names.is_empty() {
+            return names;
+        }
+        let asked = names.len();
+        let reply = driven
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .map(|browser| browser.command(&BrowserCommand::Hide { names }));
+        match reply {
+            Some(Ok(BrowserReply::Hidden { names })) if names.len() == asked => names,
+            _ => {
+                tracing::warn!("the refused sites weren't answered for: none are shown");
+                Vec::new()
             }
         }
     }
@@ -1035,7 +1099,7 @@ pub fn handle_browser_op(
     match browser.turn() {
         Turn::Wait => return BrowserResult::OwnerDriving,
         Turn::Resume => {
-            let result = browser.resume();
+            let result = browser.resume(config, keys);
             browser.done();
             return result;
         }
@@ -1397,6 +1461,7 @@ pub(crate) fn read_jar(driven: &Driven) -> Result<Vec<Cookie>, String> {
                     return Err(format!("the browser couldn't give its jar: {failure:?}"));
                 }
                 BrowserReply::Page { .. }
+                | BrowserReply::Hidden { .. }
                 | BrowserReply::Frame { .. }
                 | BrowserReply::CookiesSet
                 | BrowserReply::Closed => {
@@ -1441,6 +1506,7 @@ pub(crate) fn set_jar(driven: &Driven, cookies: &[Cookie]) -> Result<(), String>
                     return Err(format!("the browser couldn't set the jar: {failure:?}"));
                 }
                 BrowserReply::Page { .. }
+                | BrowserReply::Hidden { .. }
                 | BrowserReply::Frame { .. }
                 | BrowserReply::Cookies { .. }
                 | BrowserReply::Closed => {
@@ -1784,6 +1850,9 @@ mod tests {
                 }
             }
             Ok(match command {
+                BrowserCommand::Hide { names } => BrowserReply::Hidden {
+                    names: hiding_in_names(names.clone(), &self.filled.lock().unwrap()),
+                },
                 BrowserCommand::Open { url } => BrowserReply::Page {
                     snapshot: PageSnapshot {
                         url: url.clone(),
@@ -3686,6 +3755,7 @@ mod tests {
                 | BrowserCommand::Cookies { .. }
                 | BrowserCommand::Fill { .. }
                 | BrowserCommand::SignIn { .. }
+                | BrowserCommand::Hide { .. }
                 | BrowserCommand::Close => None,
             })
             .collect();
@@ -4146,6 +4216,123 @@ mod tests {
         drop(sessions);
     }
 
+    /// What the owner's own session left is hidden from the agent's first
+    /// look at the page, whether the browser has a profile or not: a cookie
+    /// the page was given while they drove can be shown like any other. A
+    /// jar that can't be read gives the agent nothing of the page.
+    #[test]
+    fn cookies_set_while_the_owner_drove_are_hidden_when_it_is_handed_back() {
+        let (config, _scratch, keys, _profile) = profiled(
+            "profile-handed-back",
+            &["a.example:443"],
+            vec![cookie("a.example", "sid")],
+        );
+        let page_shown = |fake: &Fake| {
+            showing(fake, "https://a.example/", "Your session is sid-value");
+        };
+        let is_hidden = |answer: &BrowserResult| {
+            let told = format!("{answer:?}");
+            assert!(
+                matches!(answer, BrowserResult::HandedBack { .. }),
+                "not handed back"
+            );
+            assert!(told.contains("Your session is [hidden]"), "shown as it was");
+            assert!(!told.contains("sid-value"), "the agent saw the cookie");
+        };
+        // Signed in: the profile's browser.
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        let first = open("https://a.example/");
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &first);
+        assert!(browser.profile.is_some(), "not signed in");
+        fake.jar.lock().unwrap().clear();
+        fake.jar.lock().unwrap().push(cookie("a.example", "driven"));
+        showing(&fake, "https://a.example/", "Yours is driven-value");
+        let answer = browser.resume(&config, &keys);
+        let told = format!("{answer:?}");
+        assert!(
+            told.contains("Yours is [hidden]"),
+            "the owner's cookie shown"
+        );
+        assert!(!told.contains("driven-value"), "the owner's cookie shown");
+        // No profile: nothing's kept, and it's still hidden.
+        let fake = Fake::default();
+        let (_, mut browser) = session("t", &fake);
+        browser.browser = Some(driven(fake.clone()));
+        fake.jar.lock().unwrap().push(cookie("b.example", "sid"));
+        page_shown(&fake);
+        // In a site the page was refused, too, the first time it's shown.
+        assert!(!browser.sites().admit("sid-value.evil.example:443"));
+        let answer = browser.resume(&config, &keys);
+        is_hidden(&answer);
+        let BrowserResult::HandedBack { refused, .. } = &answer else {
+            unreachable!("not handed back");
+        };
+        assert_eq!(refused, &["[hidden].evil.example:443"]);
+        // A jar that can't be read: nothing of the page.
+        let (_, mut browser) = session("t", &fake);
+        browser.browser = Some(driven_by(BrowserReply::Page {
+            snapshot: PageSnapshot {
+                text: String::from("sid-value"),
+                ..PageSnapshot::default()
+            },
+        }));
+        assert_eq!(
+            browser.resume(&config, &keys),
+            BrowserResult::Failed {
+                failure: BrowserFailure::NoPage
+            }
+        );
+    }
+
+    /// A page can ask for a site named with what it read: `<password>.evil`.
+    /// The sites a page was refused are shown to the agent, so what was
+    /// filled and what the broker hides are hidden there too, as a browser
+    /// sends the name, in small letters. An entry hidden can't be allowed,
+    /// and a controller that doesn't answer for the names shows none.
+    #[test]
+    fn what_a_page_read_is_hidden_from_the_sites_it_was_refused() {
+        let (config, _scratch, keys, _profile) = with_sign_ins("refused-names", &["Work"]);
+        let fake = Fake::default();
+        let (mut web, mut browser) = session("t", &fake);
+        keeping(&fake, &mut browser, &config, &keys);
+        let opened = open("https://a.example/login");
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &opened);
+        showing(&fake, "https://a.example/login", "Sign in");
+        let filled = as_owner_allows(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &sign_in_op(Some(1), None),
+        );
+        assert!(matches!(filled, BrowserResult::Page { .. }), "not filled");
+        assert!(!browser.sites().admit("work-hunter2.evil.example:443"));
+        assert!(!browser.sites().admit("cdn.example:443"));
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
+        let BrowserResult::Page { refused, .. } = &answer else {
+            unreachable!("not a page");
+        };
+        assert_eq!(refused, &["cdn.example:443", "[hidden].evil.example:443"]);
+        let asked = allow("[hidden].evil.example:443");
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &asked);
+        assert!(
+            matches!(answer, BrowserResult::Refused { .. }),
+            "a hidden name was put to the owner"
+        );
+        // A controller that answers anything else shows no names.
+        let (_, mut browser) = session("t", &fake);
+        browser.browser = Some(driven_by(BrowserReply::Page {
+            snapshot: PageSnapshot::default(),
+        }));
+        assert!(!browser.sites().admit("work-hunter2.evil.example:443"));
+        let answer = browser.command(&BrowserCommand::Snapshot);
+        let BrowserResult::Page { refused, .. } = &answer else {
+            unreachable!("not a page");
+        };
+        assert!(refused.is_empty(), "shown unhidden");
+    }
+
     #[test]
     fn a_stop_is_seen_once_and_kept() {
         let fake = Fake::default();
@@ -4166,11 +4353,13 @@ mod tests {
 
     #[test]
     fn handed_back_the_agent_looks_afresh_and_a_broken_look_is_its_failure() {
+        let config = web_config("browser-handed-back");
+        let keys = MasterKey::generate().unwrap();
         let fake = Fake::default();
         let (_, mut browser) = session("t", &fake);
         browser.browser = Some(driven(fake.clone()));
         assert_eq!(
-            browser.resume(),
+            browser.resume(&config, &keys),
             BrowserResult::HandedBack {
                 snapshot: PageSnapshot::default(),
                 refused: Vec::new(),
@@ -4178,12 +4367,15 @@ mod tests {
         );
         assert_eq!(
             fake.log.lock().unwrap().commands,
-            [BrowserCommand::Snapshot],
-            "a look, and no frame with nobody watching"
+            [
+                BrowserCommand::Snapshot,
+                BrowserCommand::Cookies { from: 0 }
+            ],
+            "a look and the cookies to hide, and no frame with nobody watching"
         );
         fake.broken.store(true, Ordering::SeqCst);
         assert_eq!(
-            browser.resume(),
+            browser.resume(&config, &keys),
             BrowserResult::Failed {
                 failure: BrowserFailure::BrowserGone,
             }
@@ -4269,8 +4461,12 @@ mod tests {
             .collect();
         assert_eq!(
             sent,
-            [BrowserCommand::Snapshot, BrowserCommand::Frame],
-            "a fresh look and a frame, not the scroll"
+            [
+                BrowserCommand::Snapshot,
+                BrowserCommand::Cookies { from: 0 },
+                BrowserCommand::Frame
+            ],
+            "a fresh look, the cookies to hide, and a frame, not the scroll"
         );
         let handoffs: Vec<(Handoff, u64)> = carried_after(&bus, 0)
             .into_iter()
@@ -4618,11 +4814,16 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// A browser whose every page is `0`.
+    /// A browser whose every page is `0`, that was filled nothing to hide.
     struct Big(PageSnapshot);
 
     impl Browser for Big {
-        fn command(&mut self, _: &BrowserCommand) -> Result<BrowserReply, String> {
+        fn command(&mut self, command: &BrowserCommand) -> Result<BrowserReply, String> {
+            if let BrowserCommand::Hide { names } = command {
+                return Ok(BrowserReply::Hidden {
+                    names: names.clone(),
+                });
+            }
             Ok(BrowserReply::Page {
                 snapshot: self.0.clone(),
             })

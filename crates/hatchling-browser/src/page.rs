@@ -16,7 +16,9 @@
 //! What a fill types (a sign-in, a one-time code) is kept until the
 //! browser closes, and hidden from every snapshot after it (WO-031): a
 //! page can read a field it was given and show it, and the agent never
-//! sees it. The broker keeps none of it.
+//! sees it. The broker keeps none of it, so it sends the sites a page was
+//! refused here to be hidden too ([`BrowserCommand::Hide`]): a page can
+//! name one with what it read.
 //!
 //! A sign-in comes from the vault keeper, on the cell's vault channel, and
 //! is typed when the broker names it ([`BrowserCommand::SignIn`]), on the
@@ -28,7 +30,7 @@ use std::time::{Duration, Instant};
 use hatchling_core::browser::{
     BrowserCommand, BrowserFailure, BrowserReply, Cookie, Key, MAX_COOKIE_PAGE_BYTES, MAX_COOKIES,
     MAX_TYPED_CHARS, OwnerInput, PageAction, PageSnapshot, SameSite, SignInField, SignInFill,
-    VIEWPORT,
+    VIEWPORT, hiding_in_names,
 };
 use hatchling_core::framing::read_frame;
 use hatchling_core::ui::Concealed;
@@ -152,6 +154,11 @@ impl Session {
                 username,
                 password,
             } => self.sign_in(&nonce, username, password),
+            BrowserCommand::Hide { names } => {
+                return BrowserReply::Hidden {
+                    names: hiding_in_names(names, &self.filled),
+                };
+            }
             BrowserCommand::Close => {
                 self.close();
                 return BrowserReply::Closed;

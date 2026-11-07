@@ -326,6 +326,7 @@ fn page(reply: BrowserReply) -> PageSnapshot {
     match reply {
         BrowserReply::Page { snapshot } => snapshot,
         other @ (BrowserReply::Failed { .. }
+        | BrowserReply::Hidden { .. }
         | BrowserReply::Closed
         | BrowserReply::Frame { .. }
         | BrowserReply::Cookies { .. }
@@ -352,6 +353,7 @@ fn is_picture(frame: &BrowserReply) {
     let jpeg = match frame {
         BrowserReply::Frame { jpeg } => jpeg.clone(),
         other @ (BrowserReply::Page { .. }
+        | BrowserReply::Hidden { .. }
         | BrowserReply::Failed { .. }
         | BrowserReply::Closed
         | BrowserReply::Cookies { .. }
@@ -559,6 +561,31 @@ fn sign_in_filled(connection: &UnixStream) {
         typed.text
     );
     assert!(!typed.text.contains("comment: h"), "{}", typed.text);
+}
+
+/// What [`sign_in_filled`] filled, hidden from the sites a page was refused.
+/// A page can name one with what it was given, and the broker asks the
+/// controller, which alone holds it, to hide that too.
+fn filled_hidden_from_refused_sites(connection: &UnixStream) {
+    let shown = send(
+        connection,
+        &BrowserCommand::Hide {
+            names: vec![
+                String::from("481516.ada@hatchling.test.evil.test:443"),
+                String::from("clean.test:443"),
+            ],
+        },
+    );
+    assert_eq!(
+        shown,
+        BrowserReply::Hidden {
+            names: vec![
+                String::from("[hidden].[hidden].evil.test:443"),
+                String::from("clean.test:443"),
+            ],
+        },
+        "what was filled is hidden from the refused sites"
+    );
 }
 
 /// A sign-in the vault keeper sends on the cell's vault channel, `vault`
@@ -953,6 +980,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     webrtc_loads(&connection);
     links_told_from_the_element(&connection);
     sign_in_filled(&connection);
+    filled_hidden_from_refused_sites(&connection);
     kept_sign_in_filled(&connection, &vault);
     framed_never_filled(&connection);
     kept_sign_in_follows_the_page(&connection, &vault);

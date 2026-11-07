@@ -127,6 +127,14 @@ pub enum BrowserCommand {
         /// The password field's element.
         password: u32,
     },
+    /// `names`, the sites the page was refused, with what this browser was
+    /// filled hidden from them, as from a snapshot: a page can name a site
+    /// with a field it was given. The controller holds what it filled, and
+    /// the broker doesn't. It answers [`BrowserReply::Hidden`].
+    Hide {
+        /// The sites, as the broker keeps them.
+        names: Vec<String>,
+    },
     /// Close the page and the browser. The reply is [`BrowserReply::Closed`].
     Close,
 }
@@ -219,6 +227,11 @@ pub enum BrowserReply {
     Page {
         /// What it shows.
         snapshot: PageSnapshot,
+    },
+    /// The sites of a [`BrowserCommand::Hide`], one for each, in order.
+    Hidden {
+        /// The sites, with what was filled hidden.
+        names: Vec<String>,
     },
     /// A picture of the page, what its viewport shows at half size: a
     /// JPEG, as standard base64, at most [`MAX_FRAME_JPEG_BASE64`]. The page's pixels, untrusted like the rest: the broker checks
@@ -406,23 +419,86 @@ pub const HIDDEN: &str = "[hidden]";
 /// a secret that short would hide half the page's words.
 pub const MIN_HIDDEN_CHARS: usize = 4;
 
+/// The secrets long enough to hide.
+fn to_hide(secrets: &[crate::ui::Concealed]) -> impl Iterator<Item = &str> {
+    secrets
+        .iter()
+        .map(crate::ui::Concealed::expose)
+        .filter(|secret| secret.chars().count() >= MIN_HIDDEN_CHARS)
+}
+
+/// `field` with `secret` hidden, and, if it was `cut`, with what's left of
+/// `secret` at its end hidden too, down to [`MIN_HIDDEN_CHARS`] characters.
+/// A page's fields are clipped where the secrets aren't to be had, in the
+/// page's own process, so one that straddles the cut is found here, from
+/// what the cut left.
+fn hide_in(field: &mut String, secret: &str, cut: bool) {
+    *field = field.replace(secret, HIDDEN);
+    if !cut {
+        return;
+    }
+    let longer = secret.chars().count().saturating_sub(MIN_HIDDEN_CHARS);
+    let left = secret
+        .char_indices()
+        .rev()
+        .take(longer)
+        .filter_map(|(at, _)| secret.get(..at))
+        .find(|start| field.ends_with(start));
+    if let Some(left) = left {
+        field.truncate(field.len() - left.len());
+        field.push_str(HIDDEN);
+    }
+}
+
+/// Whether a label may have been cut: the controller's clip counts as its
+/// script does, in UTF-16 units.
+fn at_label_bound(label: &str) -> bool {
+    label.encode_utf16().count() >= MAX_LABEL_CHARS
+}
+
+/// `names`, the sites a page was refused, with each of `secrets` hidden.
+///
+/// A browser lowers a site's letters, so a secret is looked for whatever
+/// their case. A name is what the page sent, whole, so nothing's cut here.
+#[must_use]
+pub fn hiding_in_names(names: Vec<String>, secrets: &[crate::ui::Concealed]) -> Vec<String> {
+    names
+        .into_iter()
+        .map(|name| {
+            to_hide(secrets).fold(name, |name, secret| {
+                let (lower, secret) = (name.to_ascii_lowercase(), secret.to_ascii_lowercase());
+                // Lowering keeps every byte's place.
+                let mut hidden = String::with_capacity(name.len());
+                let mut from = 0;
+                for (at, found) in lower.match_indices(&secret) {
+                    hidden.push_str(name.get(from..at).unwrap_or_default());
+                    hidden.push_str(HIDDEN);
+                    from = at + found.len();
+                }
+                hidden.push_str(name.get(from..).unwrap_or_default());
+                hidden
+            })
+        })
+        .collect()
+}
+
 impl PageSnapshot {
     /// This snapshot with each of `secrets` hidden wherever the page shows
     /// it: its URL, its title, its text, its elements' names (WO-030). A
     /// page can read a field it was given and show it; the agent never
-    /// sees it.
+    /// sees it. One a clip cut through is hidden from the end of what's
+    /// left ([`hide_in`]), when at least [`MIN_HIDDEN_CHARS`] of it are.
     #[must_use]
     pub fn hiding(mut self, secrets: &[crate::ui::Concealed]) -> Self {
-        for secret in secrets
-            .iter()
-            .map(crate::ui::Concealed::expose)
-            .filter(|secret| secret.chars().count() >= MIN_HIDDEN_CHARS)
-        {
-            self.url = self.url.replace(secret, HIDDEN);
-            self.title = self.title.replace(secret, HIDDEN);
-            self.text = self.text.replace(secret, HIDDEN);
+        let text_cut = self.truncated;
+        for secret in to_hide(secrets) {
+            let (url_cut, title_cut) = (at_label_bound(&self.url), at_label_bound(&self.title));
+            hide_in(&mut self.url, secret, url_cut);
+            hide_in(&mut self.title, secret, title_cut);
+            hide_in(&mut self.text, secret, text_cut);
             for element in &mut self.elements {
-                element.name = element.name.replace(secret, HIDDEN);
+                let cut = at_label_bound(&element.name);
+                hide_in(&mut element.name, secret, cut);
             }
         }
         self
@@ -510,6 +586,125 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::ui::Concealed;
+
+    /// The test's one hidden value.
+    const VALUE: &str = "Hunter2-long-value";
+
+    fn the_value() -> [Concealed; 1] {
+        [Concealed::new(VALUE.to_owned())]
+    }
+
+    /// A value cut by a clip has what's left of it hidden, wherever the
+    /// clip fell in it, in each kind of field, so a page can't show all but
+    /// its tail by putting it across the cut. A field that wasn't cut keeps
+    /// what merely looks like the value's start.
+    #[test]
+    fn a_value_a_clip_cut_through_is_hidden_from_what_is_left() {
+        let start = |chars: usize| VALUE.chars().take(chars).collect::<String>();
+        let label = |tail: &str| {
+            let pad = MAX_LABEL_CHARS - tail.chars().count();
+            format!("{}{tail}", "x".repeat(pad))
+        };
+        let tail = start(VALUE.len() - 1);
+        let snapshot = PageSnapshot {
+            url: label(&tail),
+            title: label(&tail),
+            text: format!("the page says {tail}"),
+            elements: vec![PageElement {
+                id: 1,
+                role: String::from("button"),
+                name: label(&tail),
+                link: false,
+            }],
+            truncated: true,
+        }
+        .hiding(&the_value());
+        let names = snapshot
+            .elements
+            .iter()
+            .map(|element| element.name.as_str());
+        let fields = [
+            snapshot.url.as_str(),
+            snapshot.title.as_str(),
+            snapshot.text.as_str(),
+        ];
+        for field in fields.into_iter().chain(names) {
+            assert!(field.ends_with(HIDDEN), "a cut value's tail isn't hidden");
+            assert!(!field.contains(&start(4)), "a cut value's start is shown");
+        }
+        // Down to the least that's hidden, and no further.
+        for (left, shown) in [(MIN_HIDDEN_CHARS, false), (MIN_HIDDEN_CHARS - 1, true)] {
+            let cut = PageSnapshot {
+                text: format!("end {}", start(left)),
+                truncated: true,
+                ..PageSnapshot::default()
+            }
+            .hiding(&the_value());
+            assert_eq!(cut.text.contains(&start(left)), shown, "{left} characters");
+        }
+        // Not cut: nothing to find at the end.
+        let whole = PageSnapshot {
+            url: format!("https://a.example/{}", start(6)),
+            title: start(6),
+            text: format!("ends with {}", start(6)),
+            elements: vec![PageElement {
+                id: 1,
+                role: String::from("button"),
+                name: start(6),
+                link: false,
+            }],
+            truncated: false,
+        }
+        .hiding(&the_value());
+        assert_eq!(whole.title, start(6));
+        let name = whole.elements.first().map(|element| element.name.clone());
+        assert_eq!(name, Some(start(6)));
+        assert!(whole.text.ends_with(&start(6)) && whole.url.ends_with(&start(6)));
+    }
+
+    /// A field near its bound is measured as the controller's script
+    /// clipped it: four-byte characters count double.
+    #[test]
+    fn a_label_is_at_its_bound_in_the_scripts_own_units() {
+        let start: String = VALUE.chars().take(4).collect();
+        let at_the_bound = format!("{}{start}", "\u{1F980}".repeat(MAX_LABEL_CHARS / 2 - 2));
+        assert_eq!(at_the_bound.encode_utf16().count(), MAX_LABEL_CHARS);
+        assert!(at_label_bound(&at_the_bound));
+        assert!(!at_label_bound("short"));
+        let snapshot = PageSnapshot {
+            title: at_the_bound,
+            ..PageSnapshot::default()
+        }
+        .hiding(&the_value());
+        assert!(snapshot.title.ends_with(HIDDEN), "not found at the cut");
+    }
+
+    /// A site's name is the page's to choose: what's hidden is hidden from
+    /// it, however a browser changed its case, and a short value isn't.
+    #[test]
+    fn a_value_is_hidden_from_the_sites_a_page_was_refused() {
+        let lowered = VALUE.to_ascii_lowercase();
+        let names = hiding_in_names(
+            vec![
+                format!("{lowered}.evil.example:443"),
+                format!("a.{VALUE}.{lowered}.evil.example:443"),
+                String::from("cdn.example:443"),
+            ],
+            &the_value(),
+        );
+        assert_eq!(
+            names,
+            [
+                "[hidden].evil.example:443",
+                "a.[hidden].[hidden].evil.example:443",
+                "cdn.example:443",
+            ]
+        );
+        let short = [Concealed::new(String::from("cdn"))];
+        let names = vec![String::from("cdn.example:443")];
+        assert_eq!(hiding_in_names(names.clone(), &short), names);
+    }
 
     #[test]
     fn a_secret_is_hidden_wherever_a_page_shows_it_unless_its_too_short_to_hide() {
@@ -526,9 +721,9 @@ mod tests {
             truncated: false,
         };
         let shown = page.hiding(&[
-            crate::ui::Concealed::new(String::from("ada@x")),
-            crate::ui::Concealed::new(String::from("abc")),
-            crate::ui::Concealed::new(String::from("wxyz")),
+            Concealed::new(String::from("ada@x")),
+            Concealed::new(String::from("abc")),
+            Concealed::new(String::from("wxyz")),
         ]);
         assert_eq!(shown.url, "https://a.example/?u=[hidden]");
         assert_eq!(shown.title, "[hidden]");

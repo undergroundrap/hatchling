@@ -596,6 +596,7 @@ fn a_page_in_a_real_browser_reaches_only_the_sites_its_session_holds() {
     let page = |reply: BrowserReply| match reply {
         BrowserReply::Page { snapshot } => snapshot,
         other @ (BrowserReply::Failed { .. }
+        | BrowserReply::Hidden { .. }
         | BrowserReply::Closed
         | BrowserReply::Frame { .. }
         | BrowserReply::Cookies { .. }
