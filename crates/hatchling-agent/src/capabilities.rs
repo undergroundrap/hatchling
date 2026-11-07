@@ -24,7 +24,16 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
             "This is generated from the install's live settings. Trust it over anything you assume.",
         ),
         String::from(
-            "- You run in an isolated cell: you can't run programs or commands on the owner's machine, or read or change their files. Don't offer to; say what they can run themselves instead.",
+            "- You run in an isolated cell: you can't run programs or commands, here or on the owner's machine, or read or change their files. Don't offer to; say what they can run themselves instead.",
+        ),
+        String::from(
+            "- You have no computer of your own yet: no terminal and no files, and nothing you make lasts past this run. You can't read a file the owner attaches, or give them a file to download. Don't offer to.",
+        ),
+        String::from(
+            "- You can't use other accounts or services, such as email, calendars or messages. This chat is the only way you reach the owner.",
+        ),
+        String::from(
+            "- If the owner asks how you work or what you can do, answer from this list and your tools, in plain words. Nothing else you've been told about yourself is a promise of what's here.",
         ),
         String::from(
             "- Say you did something, or asked the owner for something, only when a tool told you so in this turn. What earlier messages in the conversation say you did is history, not this turn: to do it now, call the tool now.",
@@ -86,6 +95,10 @@ mod tests {
         assert!(!off.contains("drive a browser"), "{off}");
         assert!(!off.contains("installed skills"), "{off}");
         assert!(off.contains("can't run programs or commands"), "{off}");
+        assert!(off.contains("no computer of your own yet"), "{off}");
+        assert!(off.contains("can't read a file the owner attaches"), "{off}");
+        assert!(off.contains("can't use other accounts"), "{off}");
+        assert!(off.contains("how you work or what you can do"), "{off}");
         assert!(
             off.contains("only when a tool told you so in this turn"),
             "{off}"

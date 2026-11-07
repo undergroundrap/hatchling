@@ -54,12 +54,14 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 | **Scheduling** | Cron or one-off tasks in explicit IANA timezones; each schedule runs with exactly the grants it was created with. |
 | **Memory and goals** | Broker-owned durable memory and goal tracking, paged so no reply outgrows its frame. |
 | **Feed** | A scheduled digest of your own records: what changed in your goals, tracking and tagged memory. |
-| **Skills** | Signed, verified skill packages, each run in a dedicated cell scoped to its declared capabilities. |
-| **Artifacts and research** | Documents and pages made by signed builder skills, inspected at the boundary before they reach you; deep-research runs that deliver a cited report. |
-| **Spaces** | Shared, persistent scopes with members and devices. |
-| **Browser** | A real headless Chromium the agent drives, in a cell of its own, that reaches only the sites you approve, through the broker. You watch it in the app, and can stop it, or take it over and hand it back. |
+| **Skills** | Signed, verified skill packages, each run in a dedicated cell scoped to its declared capabilities. None ship yet. |
+| **Artifacts and research** | Documents and pages made by signed builder skills, inspected at the boundary. Not yet delivered to you as files, and deep research has no way to start it from the app. |
+| **Spaces** | Shared, persistent scopes with members and devices, in the broker. Nothing in the app uses them yet. |
+| **Browser** | A real headless Chromium the agent drives, in a cell of its own, that reaches only the sites you approve, through the broker. You watch it in the app, and can stop it, or take it over and hand it back. Off until you set it up. |
 | **Local API** | A Unix-socket JSON API with a generated JSON Schema, for your own clients and integrations: **[docs/local-api.md](docs/local-api.md)**. |
 | **App** | A TypeScript UI, served on loopback by `hatchling-host`: chat with the agent and follow its status. Opened on its own, it runs a scripted preview. |
+
+**On a default install** you get chat, memory, goals, scheduled work, the feed, ideas and subagents, with your approvals. The web, search, the browser, skills, builders and coding harnesses are built and need setting up. Hatchling can't yet read files you attach, give you files to download, or use accounts such as email: [the scorecard](docs/scorecard.md) says what's been proven on a fresh install.
 
 **Platforms:** Linux (kernel 5.11+, unprivileged user namespaces). On Windows, use WSL2 — you get the Hyper-V boundary underneath the cells. macOS: the isolation layer is a platform-neutral trait, but there is no macOS backend yet.
 

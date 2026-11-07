@@ -73,7 +73,7 @@ export function renderLibrary(ctx: AppContext): HTMLElement {
         }, { variant: filter === 'trash' ? 'primary' : 'danger', disabled: ctx.ui.selectedArtifacts.size === 0 })));
     page.append(h('div', { class: 'section-heading library-section-label' }, h('h2', {}, filter === 'trash' ? 'Recoverable for 30 days' : libraryNames[filter]), h('span', { class: 'muted tiny' }, `${items.length} ${items.length === 1 ? 'item' : 'items'}${ctx.state.mode === 'live' ? '' : ' · sample workspace'}`)));
     if (!items.length)
-        page.append(emptyState(filter === 'trash' ? 'trash' : 'library', 'Nothing here yet.', ctx.state.mode === 'live' ? 'Files Hatchling makes for you appear here.' : 'Create an artifact using the button above.'));
+        page.append(emptyState(filter === 'trash' ? 'trash' : 'library', 'Nothing here yet.', ctx.state.mode === 'live' ? 'Hatchling can’t make files you can download yet. They’ll appear here when it can.' : 'Create an artifact using the button above.'));
     else
         page.append(h('div', { class: ctx.ui.libraryLayout === 'grid' ? 'artifact-grid' : 'artifact-list' }, ...items.map((item) => artifactCard(ctx, item))));
     return page;

@@ -203,7 +203,8 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         sendButton.title = ctx.delivery.blockedReason(ctx.ui.chatId) || (ctx.delivery.connection.kind !== 'ready' ? 'Queue message until the connection returns' : 'Send message');
         microphone.hidden = false;
     };
-    form.append(attach, input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton);
+    // A real install can't take a file yet, so it doesn't offer to.
+    form.append(...(ctx.state.mode === 'live' ? [] : [attach]), input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton);
     updateComposer();
     requestAnimationFrame(() => {
         if (input.isConnected && input.value) {
