@@ -15,7 +15,7 @@
 
 use std::path::Path;
 
-use hatchling_core::{CellId, SecretB64, SecretName, VaultOp, VaultResult, decode_secret};
+use hatchling_core::{CellId, SecretName, VaultOp, VaultResult, decode_secret};
 use hatchling_vault::{OpensStores, SealedVault, Secret};
 
 use crate::vault_access::{Caller, Outcome};

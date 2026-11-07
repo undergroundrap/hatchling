@@ -46,7 +46,7 @@ pub struct PeerAuthorized;
 ///
 /// The cell is fully online. Post-handshake traffic goes through the
 /// vault methods ([`vault_store`](Cell::vault_store),
-/// [`vault_fetch`](Cell::vault_fetch), [`vault_remove`](Cell::vault_remove));
+/// [`vault_remove`](Cell::vault_remove));
 /// the raw handle is [`broker`](Cell::broker).
 #[derive(Debug)]
 pub struct Ready;
@@ -314,16 +314,6 @@ impl Cell<Ready> {
         vault::store(self.vault_channel(), name, secret)
     }
 
-    /// Fetches the secret stored under `name` from the broker-mediated
-    /// vault. Returns `Ok(None)` when no secret is stored under the name.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`vault_store`](Self::vault_store).
-    pub fn vault_fetch(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
-        vault::fetch(self.vault_channel(), name)
-    }
-
     /// Removes the secret stored under `name` from the broker-mediated
     /// vault. Idempotent: removing a missing secret succeeds.
     ///
@@ -404,7 +394,7 @@ impl Cell<Ready> {
     /// Run the agent tool-calling loop against `model`.
     ///
     /// Builds the registry from the broker-mediated built-ins
-    /// (`vault_fetch`, `egress_request`, `skill_invoke`) and drives the loop to a
+    /// (`egress_request`, `skill_invoke`) and drives the loop to a
     /// final answer within `budget`. Every tool effect goes through
     /// the peer-authorized broker session; the loop adds no new
     /// trust surface. Recalled memory comes from the broker-backed
@@ -427,32 +417,7 @@ impl Cell<Ready> {
         request: String,
         budget: hatchling_loop::LoopBudget,
     ) -> Result<hatchling_loop::LoopResult, hatchling_loop::Error> {
-        self.run_loop_redacted(
-            kind,
-            model,
-            request,
-            budget,
-            &hatchling_model::Redactor::default(),
-        )
-    }
-
-    /// [`run_loop`](Self::run_loop), registering every secret the run
-    /// fetches with `redactor`. A provider built with the same
-    /// redactor never sends one: the model, local or cloud, sees the
-    /// fetch succeed, not the secret.
-    ///
-    /// # Errors
-    ///
-    /// As [`run_loop`](Self::run_loop).
-    pub fn run_loop_redacted(
-        &self,
-        kind: hatchling_loop::PromptKind,
-        model: &dyn hatchling_loop::Model,
-        request: String,
-        budget: hatchling_loop::LoopBudget,
-        redactor: &hatchling_model::Redactor,
-    ) -> Result<hatchling_loop::LoopResult, hatchling_loop::Error> {
-        self.run_loop_delegating(kind, model, request, budget, redactor, None)
+        self.run_loop_delegating(kind, model, request, budget, None)
     }
 
     /// Registers in `registry` the tool groups the broker says are on
@@ -525,7 +490,7 @@ impl Cell<Ready> {
         }
     }
 
-    /// [`run_loop_redacted`](Self::run_loop_redacted), able to delegate
+    /// [`run_loop`](Self::run_loop), able to delegate
     ///: child agents' budgets come out of this run's own step
     /// ledger, `model_grant` (the run's model endpoint) goes to every
     /// child so it can think, and when the run ends, however it ends,
@@ -536,7 +501,6 @@ impl Cell<Ready> {
         model: &dyn hatchling_loop::Model,
         request: String,
         budget: hatchling_loop::LoopBudget,
-        redactor: &hatchling_model::Redactor,
         model_grant: Option<hatchling_core::ScheduleGrant>,
     ) -> Result<hatchling_loop::LoopResult, hatchling_loop::Error> {
         let ledger = std::sync::Arc::new(hatchling_loop::StepLedger::new(budget.max_steps));
@@ -802,7 +766,6 @@ mod tests {
                 &model,
                 String::from("The second one."),
                 hatchling_loop::LoopBudget { max_steps: 3 },
-                &hatchling_model::Redactor::default(),
                 None,
             )
             .unwrap();

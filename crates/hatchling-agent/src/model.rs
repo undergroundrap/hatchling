@@ -183,7 +183,6 @@ impl Cell<Ready> {
             &provider,
             task,
             hatchling_loop::LoopBudget { max_steps },
-            &redactor,
             Some(model_grant),
         )
         .map_err(|error| match error {

@@ -51,37 +51,6 @@ pub fn store(stream: &UnixStream, name: &str, secret: &[u8]) -> Result<(), Error
     }
 }
 
-/// Fetches the secret stored under `name`.
-///
-/// Returns `Ok(None)` when no secret is stored under the name.
-///
-/// # Errors
-///
-/// Returns [`Error::InvalidSecretName`] before any I/O,
-/// [`Error::VaultDenied`] if the broker holds no grant,
-/// [`Error::VaultFailed`] on a broker-side backend failure,
-/// [`Error::VaultIo`] on transport failure, or [`Error::VaultProtocol`]
-/// on a malformed broker reply.
-pub fn fetch(stream: &UnixStream, name: &str) -> Result<Option<Vec<u8>>, Error> {
-    let name = validated_name(name)?;
-    let op = VaultOp::Fetch {
-        name: name.as_str().to_owned(),
-    };
-    match request(stream, &op)? {
-        VaultResult::Fetched { secret_b64 } => {
-            let bytes =
-                decode_secret(secret_b64.as_str()).map_err(|error| Error::VaultProtocol {
-                    reason: error.to_string(),
-                })?;
-            Ok(Some(bytes))
-        }
-        VaultResult::NotFound => Ok(None),
-        VaultResult::Denied => Err(denied(&op, &name)),
-        VaultResult::VaultError => Err(Error::VaultFailed),
-        other @ (VaultResult::Stored | VaultResult::Removed) => Err(unexpected_reply(&op, &other)),
-    }
-}
-
 /// Removes the secret stored under `name`.
 ///
 /// Idempotent: removing a missing secret succeeds. Whether anything was

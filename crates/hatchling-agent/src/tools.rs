@@ -17,7 +17,6 @@ use hatchling_core::{
     grant_label, parse_grant_label,
 };
 use hatchling_loop::{Error as LoopError, StepLedger, Tool, ToolOutput};
-use hatchling_model::Redactor;
 use serde_json::{Value, json};
 
 use crate::subagent::Children;
