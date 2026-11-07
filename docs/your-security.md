@@ -81,7 +81,7 @@ Some text on its way out is checked without asking you. What the agent puts in a
 
 **What a disk can keep.** Protecting your vault overwrites the old key file before removing it, but a disk can keep older copies of its own, and old sealed files aren't overwritten. Memory in use can reach the swap file, and Hatchling doesn't lock it.
 
-**What the secret check misses.** It looks for a secret as it's held and in common encodings. A secret under 8 bytes counts only when it's the whole text, one that's been changed or split up first isn't found, and cookies aren't checked. What's sent to your model and to APIs you've granted isn't checked. Wrong guesses aren't limited, and each is logged. A follow-up that's already running when a run is stopped goes on. A service that echoes a credential back in another encoding can show it to the cell.
+**What the secret check misses.** It looks for a secret as it's held and in common encodings. A secret under 8 bytes counts only when it's the whole text, one that's been changed or split up first isn't found, and cookies aren't checked. What's sent to your model and to APIs you've granted isn't checked. Wrong guesses aren't limited, and each is logged. A follow-up that starts before a stopped run is over goes on, and a restart of the Broker in that moment lets go what it would have held. A service that echoes a credential back in another encoding can show it to the cell.
 
 **Your typing under Take control.** What you type goes through the app to the site, and so does a one-time code a site asks you for. Your keys, PIN and saved passwords don't go through the app.
 

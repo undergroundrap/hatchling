@@ -631,6 +631,14 @@ impl Store for SealedScheduleStore<'_> {
     fn record(&self, id: &str, due: i64, state: OccurrenceState) -> Result<bool, Error> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
+        // A held fire stays held: only the owner's resolve or retry frees it.
+        // A claim settled late, say, would otherwise run what a hit held.
+        let held = Self::latest(&vault, id)?
+            .and_then(|stored| stored.ledger.occurrence)
+            .is_some_and(|fire| fire.due == due && held_state(fire.state));
+        if held && !matches!(state, OccurrenceState::Stopped { .. }) {
+            return Ok(false);
+        }
         let changed = Self::change_fire(&vault, id, due, |stored| {
             if let Some(fire) = stored.ledger.occurrence.as_mut() {
                 fire.state = state;
@@ -1541,6 +1549,16 @@ pub fn dispatch_once<L: Launcher>(
             events: &events,
             authenticated: &authenticated,
         },
+    )
+}
+
+
+/// Whether a fire in `state` is held for the owner: of unknown outcome, or
+/// its run stopped for a secret.
+const fn held_state(state: OccurrenceState) -> bool {
+    matches!(
+        state,
+        OccurrenceState::Unknown { .. } | OccurrenceState::Stopped { .. }
     )
 }
 
@@ -2534,6 +2552,23 @@ mod tests {
             store.hold_asked_by(&stopped_run).unwrap(),
             std::slice::from_ref(&held)
         );
+        // Nothing but the owner frees it: a claim settled late is refused.
+        let fire = |id: &str| {
+            let schedules = store.load().unwrap();
+            let found = schedules.iter().find(|schedule| schedule.id == id);
+            found.and_then(|schedule| schedule.ledger.occurrence.clone())
+        };
+        let due = fire(&held).map(|fire| fire.due).unwrap();
+        assert!(!store.record(&held, due, OccurrenceState::Claimed).unwrap());
+        assert!(!store.record("sch-a", 1_790_002_800, OccurrenceState::Running).unwrap());
+        assert!(matches!(
+            fire(&held).map(|fire| fire.state),
+            Some(OccurrenceState::Stopped { started: false })
+        ));
+        assert!(matches!(
+            fire("sch-a").map(|fire| fire.state),
+            Some(OccurrenceState::Stopped { started: true })
+        ));
         assert!(
             store.hold_asked_by(&stopped_run).unwrap().is_empty(),
             "held once"

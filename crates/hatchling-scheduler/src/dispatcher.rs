@@ -622,7 +622,9 @@ impl<R: Run> Dispatcher<R> {
                     ending: run.ending(),
                 },
             });
-            if active.kind == Kind::Schedule {
+            // A run stopped for a secret didn't finish: what waits on its
+            // finishing waits with it, held, for the owner.
+            if active.kind == Kind::Schedule && !stopped(&outcome) {
                 events.push(HookSource::ScheduleRunFinished {
                     schedule_id: id.clone(),
                 });
@@ -1404,6 +1406,13 @@ mod tests {
             else {
                 return Ok(false);
             };
+            let held = matches!(
+                fire.state,
+                OccurrenceState::Unknown { .. } | OccurrenceState::Stopped { .. }
+            );
+            if held && !matches!(state, OccurrenceState::Stopped { .. }) {
+                return Ok(false);
+            }
             fire.state = state;
             Ok(true)
         }

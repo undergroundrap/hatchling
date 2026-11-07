@@ -1357,6 +1357,31 @@ fn a_landed_claim_whose_schedule_is_cancelled_launches_nothing() {
 /// schedule held, so the next fire, another run of tries, doesn't happen
 /// until the owner looks. A run that failed any other way doesn't hold its
 /// schedule. Once the owner resolves the held fire, the cadence goes on.
+/// A run stopped for a secret didn't finish: a hook waiting on its schedule
+/// finishing isn't fired, and waits with it.
+#[test]
+fn a_stopped_run_fires_no_hook_on_its_finishing() {
+    let mut world = World::new();
+    schedule(
+        &world.store,
+        "s",
+        cron("0 * * * *", "UTC"),
+        "2026-09-21T12:00:00Z",
+    );
+    world.hook("hk-on-s", finished("s"), vec![send("local")]);
+    assert_eq!(
+        world.tick("2026-09-21T13:00:00Z").launched,
+        [(String::from("s"), false)]
+    );
+    world.launcher.run(0).stop();
+    let report = world.tick("2026-09-21T13:01:00Z");
+    assert_eq!(report.held, ["s"]);
+    assert!(
+        report.launched.is_empty(),
+        "a hook fired on a stopped run's finishing"
+    );
+}
+
 #[test]
 fn a_stopped_run_holds_its_schedule_until_the_owner_resolves_it() {
     let mut world = World::new();
