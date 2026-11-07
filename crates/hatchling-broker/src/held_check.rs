@@ -1,10 +1,13 @@
-//! Whether a text holds a secret Hatchling keeps, for what a harness is
-//! given and what it hands back.
+//! Whether a text holds a secret Hatchling keeps.
 //!
-//! What a harness is given goes to its vendor, so the check covers every
-//! secret held, whether or not a cell has ever had it: API keys, vendor
-//! keys, the search key, channel accounts and sign-in passwords. The broker
-//! never holds most of those, so with a keeper running the keeper answers
+//! It's asked of what a harness is given and hands back, and of what the
+//! agent sends off the machine: a web read's address, a search, a page's
+//! address, and text typed into a page.
+//!
+//! All of that goes to someone else, so the check covers every secret held,
+//! whether or not a cell has ever had it: API keys, vendor keys, the search
+//! key, channel accounts and sign-in passwords. The broker never holds most
+//! of those, so with a keeper running the keeper answers
 //! ([`crate::keeper::Keeper::contains`]): the text goes in, one boolean
 //! comes out, and no value, name or position ever leaves it. A broker with
 //! no keeper reads them itself ([`check_here`]), as it reads everything.
@@ -20,6 +23,10 @@
 //! the whole text is exactly that value. A value stored with space around
 //! it is looked for with and without it, as a vendor key is used trimmed
 //! ([`crate::harness::key_text`]).
+//!
+//! **An address is checked as a site reads it** ([`as_read`]): percent
+//! escapes hide a value from a plain look, and the site undoes them. So
+//! the text is the address as written and as decoded once, in one check.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -32,7 +39,7 @@ use zeroize::Zeroizing;
 use crate::Config;
 use crate::browser_credentials::Credentials;
 use crate::harness::MAX_WORK_BYTES;
-use crate::keeper::RELEASED_RECORD;
+use crate::keeper::{Keeper, RELEASED_RECORD};
 use crate::vault_access::{Caller, Outcome, record_check};
 
 /// The shortest value looked for inside a text. A shorter one matches only
@@ -141,6 +148,67 @@ pub(crate) fn broker() -> Caller {
     }
 }
 
+/// Whether `text` holds a secret: asked of `keeper`, or with none, of the
+/// broker itself ([`check_here`]).
+///
+/// # Errors
+///
+/// Why nothing is known: the keeper refused it, can't be reached, or the
+/// check couldn't be made or recorded. A caller treats that as holding one.
+pub(crate) fn check(
+    keeper: Option<&Keeper>,
+    config: &Config,
+    keys: &dyn OpensStores,
+    text: &[u8],
+) -> Result<bool, String> {
+    keeper.map_or_else(
+        || check_here(config, keys, text),
+        |keeper| keeper.contains(text).map_err(|error| error.to_string()),
+    )
+}
+
+/// The address `url` as the text to check: as written, then as a site reads
+/// it, each on a line of its own. Decoded once, as a site does: `%` escapes
+/// everywhere, then with `+` as a space too, as a query is. A form that adds
+/// nothing is left out.
+pub(crate) fn as_read(url: &str) -> Vec<u8> {
+    let written = url.as_bytes();
+    let plain = decoded(written, false);
+    let query = decoded(written, true);
+    let mut text = written.to_vec();
+    if plain != written {
+        text.push(b'\n');
+        text.extend_from_slice(&plain);
+    }
+    if query != plain {
+        text.push(b'\n');
+        text.extend_from_slice(&query);
+    }
+    text
+}
+
+/// `text` with its `%` escapes undone, and `+` as a space if `plus`. A `%`
+/// that doesn't start an escape stands for itself.
+fn decoded(text: &[u8], plus: bool) -> Vec<u8> {
+    let digit = |byte: Option<&u8>| byte.and_then(|byte| char::from(*byte).to_digit(16));
+    let mut plain = Vec::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((&byte, after)) = rest.split_first() {
+        let escaped = (byte == b'%')
+            .then(|| Some((digit(after.first())? << 4) | digit(after.get(1))?))
+            .flatten()
+            .and_then(|value| u8::try_from(value).ok());
+        if let Some(value) = escaped {
+            plain.push(value);
+            rest = after.get(2..).unwrap_or_default();
+        } else {
+            plain.push(if plus && byte == b'+' { b' ' } else { byte });
+            rest = after;
+        }
+    }
+    plain
+}
+
 /// The check, for a broker with no keeper, reading the secrets itself with
 /// `keys`, and on the record as the keeper's are.
 ///
@@ -175,6 +243,57 @@ mod tests {
         list.iter()
             .map(|value| Zeroizing::new(value.to_vec()))
             .collect()
+    }
+
+    /// An address is the text written, then what a site reads from it. A
+    /// `%` that starts no escape stands, and a form that's the same as
+    /// another isn't sent twice.
+    #[test]
+    fn an_address_is_checked_as_written_and_as_read() {
+        let lines = |url: &str| {
+            String::from_utf8_lossy(&as_read(url))
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<String>>()
+        };
+        assert_eq!(
+            lines("https://a.example/plain"),
+            ["https://a.example/plain"]
+        );
+        assert_eq!(
+            lines("https://a.example/%73k%2dA"),
+            ["https://a.example/%73k%2dA", "https://a.example/sk-A"]
+        );
+        assert_eq!(
+            lines("https://a.example/a+b%2Bc"),
+            [
+                "https://a.example/a+b%2Bc",
+                "https://a.example/a+b+c",
+                "https://a.example/a b+c"
+            ]
+        );
+        assert_eq!(
+            lines("https://a.example/a+b"),
+            ["https://a.example/a+b", "https://a.example/a b"]
+        );
+        for stands in ["100%", "%", "%4", "%zz", "%g1"] {
+            assert_eq!(lines(stands), [stands], "{stands}");
+        }
+        assert_eq!(as_read("%41%ff"), b"%41%ff\nA\xff");
+        // Decoded once: what's escaped twice reads as escaped once.
+        assert_eq!(lines("%2541"), ["%2541", "%41"]);
+        // What the whole check finds in it.
+        let held = values(&[b"correct horse", b"sk-live-0123456789"]);
+        assert!(holds(
+            &held,
+            &as_read("https://a.example/?k=%73k-live-0123456789")
+        ));
+        assert!(holds(&held, &as_read("https://a.example/?p=correct+horse")));
+        assert!(holds(
+            &held,
+            &as_read("https://a.example/?p=correct%20horse")
+        ));
+        assert!(!holds(&held, &as_read("https://a.example/?k=sk-live")));
     }
 
     /// A value of the minimum length is found anywhere, and one a byte

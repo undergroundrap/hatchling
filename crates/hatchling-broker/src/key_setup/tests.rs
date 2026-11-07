@@ -817,6 +817,36 @@ fn the_marker_sits_beside_the_keyring() {
     assert!(!codes_unconfirmed(path));
 }
 
+/// A stopped keeper's socket goes, and only that: a file or a link at its
+/// name stays, with what the link points at, as does a stranger's socket.
+#[test]
+fn only_a_keepers_socket_is_forgotten() {
+    let dir = std::env::temp_dir().join(format!("hatchling-socket-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let me = [hatchling_sys::euid()];
+    let stranger = [me[0].wrapping_add(1)];
+    let socket = dir.join("unlock.sock");
+    forget_socket(&socket, &me);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    forget_socket(&socket, &stranger);
+    assert!(socket.symlink_metadata().is_ok(), "a stranger's socket");
+    forget_socket(&socket, &me);
+    assert!(socket.symlink_metadata().is_err(), "the keeper's socket");
+    drop(listener);
+    let target = dir.join("target");
+    std::fs::write(&target, b"untouched").unwrap();
+    std::os::unix::fs::symlink(&target, &socket).unwrap();
+    forget_socket(&socket, &me);
+    assert!(socket.symlink_metadata().is_ok(), "the link went");
+    assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+    std::fs::remove_file(&socket).unwrap();
+    std::fs::write(&socket, b"a file").unwrap();
+    forget_socket(&socket, &me);
+    assert_eq!(std::fs::read(&socket).unwrap(), b"a file");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// The marker that backup codes aren't confirmed yet is made as root,
 /// beside a keyring its service user owns: a link planted at its name
 /// isn't followed, and what it points at stays as it was.
