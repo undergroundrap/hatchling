@@ -14,7 +14,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | 🚧 | Built, but off by default, or part of it is missing |
 | ❌ | Not there |
 
-**Last checked:** Windows setup, 2026-11-07, ahead of 0.8.0. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
+**Last checked:** Windows setup, 2026-11-07, ahead of 0.8.0, by Ocean on the setup and by an agent on the final build. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
 
 ## Install and vault
 
@@ -28,8 +28,8 @@ What Hatchling really does on a fresh install, one row at a time.
 | Secure store: see what's kept, by name | ❌ | From a names-only listing by the keeper |
 | Add a key or a password from the app's Add | ❌ | Terminal commands for now: an interim, not a pass |
 | Make a backup | ✅ | |
-| Restore a backup | ⬜ | |
-| Distro sealed from Windows | ⬜ | Tested by setup run, not yet by a person |
+| Restore a backup | 🔵 | At the terminal, over what a crash left, on a fresh install of 0.8.0's build |
+| Distro sealed from Windows | 🔵 | The setup checks Windows' drives are gone before it installs, on a fresh install of 0.8.0's build |
 | The author's fresh install, end to end | ✅ | Install, protect, update, unlock, chat |
 | A stranger's fresh install, end to end | ⬜ | Someone other than the author |
 | The full vault flow: unlock, add a key and a site password, the agent uses both, lock, unlock, both still work | ❌ | Needs a way to add them and the browser on |
@@ -86,7 +86,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | Scheduled runs all accounted for | ⬜ | |
 | Per-model conformance, published | ❌ | |
 | Benchmark: the same tasks and model on Hatchling's loop and an external harness, failures included | ❌ | Includes a non-coding multi-step job. Cited only with conformance: a harness multiplies a model, it doesn't replace one |
-| Backup and restore drill | ⬜ | |
+| Backup and restore drill | 🔵 | Backup, `reset agent` and `restore`, each over a crash's leftovers, on a fresh install of 0.8.0's build |
 | Export and import drill | ❌ | Import memory isn't there |
 
 ## Your accounts
@@ -104,7 +104,7 @@ What Hatchling really does on a fresh install, one row at a time.
 |---|---|
 | A held secret in a file given to a harness could reach its AI vendor | Fixed in 0.8.0: the keeper checks it, tested with a real keeper and a real harness cell, before and after the run |
 | A secret a harness put together could be read back from what was withheld | Fixed in 0.8.0: a secret in what comes back ends an agent's run, tested with a real keeper, the real spawner, a real harness cell and a real session |
-| A refused check tells the agent a guess matched, so a weak password could be guessed | Fixed in 0.8.0: a hit ends the run, kills the run, harness and skill cells of its tree where it's recorded, and tells the owner. A chat run, a scheduled run, a subagent tree and the broker's own cell were tested with a real keeper, the real spawner and real cells, each caught on a web read with no site behind it. A search, a page's address, typed text and a harness's brief were tested on a real session with a real keeper, the searcher and the browser standing in. None of it has run on an install |
+| A refused check tells the agent a guess matched, so a weak password could be guessed | Fixed in 0.8.0: a hit ends the run, kills the run, harness and skill cells of its tree where it's recorded, and tells the owner. A chat run, a scheduled run, a subagent tree and the broker's own cell were tested with a real keeper, the real spawner and real cells, each caught on a web read with no site behind it. A search, a page's address, typed text and a harness's brief were tested on a real session with a real keeper, the searcher and the browser standing in. On a fresh install of 0.8.0's build, a chat run sending a held secret in a web address was stopped and the owner told once, with no trace of the secret in the logs or state, by an agent through the real app |
 | Wrong guesses at a held secret aren't rate-limited, and a site feeding an agent guesses could work out a hit from the one it never receives | Open: once a run, and the owner is told. A schedule or follow-up a run made fires again after a hit, so that's one guess for each fire, and the owner is told of each |
 | The output, artifact and subagent gates look only for what a cell stored and channel accounts' credentials, whole values, and a hit there ends no run | Open: that text goes to the owner or stays local |
 | A session waiting for the owner when a hit lands elsewhere in its tree waits on, and an approved read can still go | Open: its text was already checked clean, and the wait is at most two minutes |
