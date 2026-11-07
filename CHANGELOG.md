@@ -6,6 +6,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-07
+
 ### Added
 
 - **A page that says who keeps you safe, and what they can't do.** [Your security](docs/your-security.md) sets out, in plain words, what you, the Keeper, the Broker, the cells and the wall each do, and gives what none of them can do the same room. The same page is in the app, under Settings, and starts with how this install's vault opens, read from the install.
@@ -590,7 +592,8 @@ The first public release. [Release notes](https://github.com/undergroundrap/hatc
 
 Published in [the trust boundary](docs/arch/trust-boundary.md#known-limitations), each with a work order and an issue.
 
-[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/undergroundrap/hatchling/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.8.0
 [0.7.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.7.0
 [0.6.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.6.0
 [0.5.0]: https://github.com/undergroundrap/hatchling/releases/tag/v0.5.0

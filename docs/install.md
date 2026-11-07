@@ -61,11 +61,11 @@ Nothing runs while you're logged out or the computer is off. If a security key p
 From a clone of the version you install, download its release into `release/` and install from it. `scripts/install.sh` checks every file against the release's `SHA256SUMS` before installing anything.
 
 ```bash
-git -c advice.detachedHead=false clone --branch v0.7.0 https://github.com/undergroundrap/hatchling && cd hatchling
+git -c advice.detachedHead=false clone --branch v0.8.0 https://github.com/undergroundrap/hatchling && cd hatchling
 ```
 
 ```bash
-gh release download v0.7.0 --repo undergroundrap/hatchling --dir release
+gh release download v0.8.0 --repo undergroundrap/hatchling --dir release
 ```
 
 ```bash
