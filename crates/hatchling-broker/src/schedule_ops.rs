@@ -2515,6 +2515,56 @@ mod tests {
     /// the schedule whose fire it was, each follow-up it asked for that
     /// hasn't run, and a hook. The list says why a schedule is held, and the
     /// owner alone releases each, as they do a fire of unknown outcome.
+    /// A held fire stays held: a claim settled late, or any other state
+    /// written over it, is refused. Only the owner's resolve or retry frees
+    /// it.
+    #[test]
+    fn a_held_fire_is_never_written_over() {
+        let (config, _dir, master) = claimed_then_died("held-stays");
+        let store = SealedScheduleStore::new(&config.scheduler.root, &master);
+        let stopped = OccurrenceState::Stopped { started: true };
+        assert!(store.record("sch-a", 1_790_002_800, stopped).unwrap());
+        let send = vec![ScheduleGrant::ChannelSend {
+            channel: String::from("local"),
+        }];
+        let run = format!("run-held-{}", std::process::id());
+        let scope = FollowupScope {
+            root: config.scheduler.root.clone(),
+            run: run.clone(),
+            grants: send.clone(),
+            channel: String::from("local"),
+            depth: 0,
+        };
+        let asked_at = Timestamp::from_second(1_790_003_000).unwrap();
+        let created = request_followup(&scope, &master, "check again", 600, &send, asked_at);
+        release_followup(&run);
+        let ScheduleResult::Created { id: held } = created else {
+            unreachable!("a follow-up wasn't created");
+        };
+        assert_eq!(store.hold_asked_by(&run).unwrap(), std::slice::from_ref(&held));
+        // Nothing but the owner frees it: a claim settled late is refused.
+        let fire = |id: &str| {
+            let schedules = store.load().unwrap();
+            let found = schedules.iter().find(|schedule| schedule.id == id);
+            found.and_then(|schedule| schedule.ledger.occurrence.clone())
+        };
+        let due = fire(&held).map(|fire| fire.due).unwrap();
+        assert!(!store.record(&held, due, OccurrenceState::Claimed).unwrap());
+        assert!(
+            !store
+                .record("sch-a", 1_790_002_800, OccurrenceState::Running)
+                .unwrap()
+        );
+        assert!(matches!(
+            fire(&held).map(|fire| fire.state),
+            Some(OccurrenceState::Stopped { started: false })
+        ));
+        assert!(matches!(
+            fire("sch-a").map(|fire| fire.state),
+            Some(OccurrenceState::Stopped { started: true })
+        ));
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -2551,27 +2601,6 @@ mod tests {
             store.hold_asked_by(&stopped_run).unwrap(),
             std::slice::from_ref(&held)
         );
-        // Nothing but the owner frees it: a claim settled late is refused.
-        let fire = |id: &str| {
-            let schedules = store.load().unwrap();
-            let found = schedules.iter().find(|schedule| schedule.id == id);
-            found.and_then(|schedule| schedule.ledger.occurrence.clone())
-        };
-        let due = fire(&held).map(|fire| fire.due).unwrap();
-        assert!(!store.record(&held, due, OccurrenceState::Claimed).unwrap());
-        assert!(
-            !store
-                .record("sch-a", 1_790_002_800, OccurrenceState::Running)
-                .unwrap()
-        );
-        assert!(matches!(
-            fire(&held).map(|fire| fire.state),
-            Some(OccurrenceState::Stopped { started: false })
-        ));
-        assert!(matches!(
-            fire("sch-a").map(|fire| fire.state),
-            Some(OccurrenceState::Stopped { started: true })
-        ));
         assert!(
             store.hold_asked_by(&stopped_run).unwrap().is_empty(),
             "held once"
