@@ -4,8 +4,9 @@
 //! Every credential access is one JSON [`Access`] line in
 //! `<vault root>/.access.log`, mode `0600`, inside the owner-only vault
 //! root: when, which caller (an agent session, by its kernel uid and the
-//! cell id it gave, or the broker reading for its own purpose), the
-//! action, the names, and the outcome. Names only, never a value. The
+//! cell id it gave, the broker or the egress authority reading for its own
+//! purpose, or the spawner asking for a room disk's key), the action, the
+//! names, and the outcome. Names only, never a value. The
 //! leading dot keeps the log out of the store: no secret name can collide
 //! with it, and migration and rekeying skip it.
 //!
@@ -63,6 +64,12 @@ pub enum Caller {
     /// The egress authority (WO-017), reading for the request it makes.
     Authority {
         /// What for: `search`.
+        purpose: String,
+    },
+    /// The spawner, on its own channel to the keeper: a room disk's key,
+    /// which goes to cryptsetup and never to the spawner or the broker.
+    Spawner {
+        /// What for: `room disk create` or `room disk open`.
         purpose: String,
     },
 }
@@ -309,6 +316,7 @@ fn describe(access: &Access) -> String {
         Caller::Session { uid, cell } => format!("session uid {uid} ({cell})"),
         Caller::Broker { purpose } => format!("broker ({purpose})"),
         Caller::Authority { purpose } => format!("egress authority ({purpose})"),
+        Caller::Spawner { purpose } => format!("spawner ({purpose})"),
     };
     let outcome = match access.outcome {
         Outcome::Allowed => "allowed",
@@ -700,6 +708,35 @@ mod tests {
         assert!(!second.contains("size"), "{text}");
         assert!(!second.contains("run"), "{text}");
         assert!(text.ends_with('\n'), "{text}");
+    }
+
+    /// The spawner's ask for a room disk's key is its own line: said as
+    /// the spawner's, and read back as written.
+    #[test]
+    fn a_spawners_line_is_the_spawners() {
+        let by_spawner = Access {
+            at: 0,
+            caller: Caller::Spawner {
+                purpose: String::from("room disk open"),
+            },
+            action: String::from("room-key"),
+            names: vec![String::from("room disk image")],
+            outcome: Outcome::Allowed,
+            size: None,
+            found: None,
+            run: None,
+        };
+        assert_eq!(
+            describe(&by_spawner),
+            "1970-01-01T00:00:00Z spawner (room disk open) room-key allowed"
+        );
+        let line = serde_json::to_string(&by_spawner).unwrap();
+        assert!(line.contains(r#""caller":"spawner""#), "{line}");
+        assert_eq!(
+            serde_json::from_str::<Access>(&line).unwrap(),
+            by_spawner,
+            "a spawner's line doesn't read back"
+        );
     }
 
     #[test]

@@ -24,6 +24,13 @@
 //! - **a check of a text** ([`Keeper::contains`]): whether it holds any
 //!   secret the keeper holds ([`crate::held_check`]), for the broker alone.
 //!
+//! On the spawner's own channel it takes each cell's vault channel, and
+//! answers one thing more: **a room disk's key** (0.9), derived from the
+//! master key ([`hatchling_vault::RoomRootKey`]) and written into the pipe
+//! the spawner hands it, whose other end is cryptsetup's. The spawner and
+//! the broker never hold it, and nothing else may ask for it: on the
+//! broker's channel and the authority's it isn't a request at all.
+//!
 //! A read, a cell's op, a fill and a check are each recorded in the
 //! vault's access log before the keeper answers. One that released or
 //! changed something and can't be recorded is answered with nothing, or as
@@ -60,7 +67,7 @@
 //! process either way.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::fd::{AsFd as _, AsRawFd as _};
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -74,7 +81,7 @@ use hatchling_core::ui::VaultProtection;
 use hatchling_core::{
     CellId, MAX_FRAME_BYTES, SecretName, SessionRequest, SessionResponse, VaultOp, VaultResult,
 };
-use hatchling_vault::{MasterKey, Secret, Store, StoreKeys};
+use hatchling_vault::{MasterKey, RoomImageId, RoomRootKey, Secret, Store, StoreKeys};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -1106,9 +1113,12 @@ fn refuse_to_run(reason: &str) -> ExitCode {
 /// What the keeper keeps after its start.
 struct Kept {
     config: Config,
-    /// The keys of the secrets store and the sign-ins': the only ones it
-    /// keeps.
+    /// The keys of the secrets store and the sign-ins': the only stores'
+    /// keys it keeps.
     keys: StoreKeys,
+    /// The room disks' root key, derived from the master key at the start
+    /// (0.9): each image's key is derived from it, for the spawner alone.
+    room: RoomRootKey,
     releases: Releases,
     /// The secrets a cell has been given or has stored
     /// ([`RELEASED_RECORD`]).
@@ -1150,6 +1160,9 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
     let handed = broker_keys(stream, &master, &brokers)?
         .to_bytes()
         .map_err(|source| Error::Vault { source })?;
+    // The last moment the master key is here: the room disks' keys are
+    // derived from it, then it goes.
+    let room = RoomRootKey::of(&master);
     let keys = crate::hand_store_keys(master, &vault)?;
     let mut frame = Zeroizing::new(Vec::with_capacity(handed.len() + 1));
     frame.push(HANDED);
@@ -1160,6 +1173,7 @@ fn begin(stream: &UnixStream, config: Config) -> Result<Kept, Error> {
     Ok(Kept {
         config,
         keys,
+        room,
         releases: rules,
         released,
         browsers: BTreeMap::new(),
@@ -1349,21 +1363,75 @@ pub(crate) struct CellChannel {
     pub profile: Option<String>,
 }
 
+/// What the spawner hands the keeper on its channel: a frame naming it,
+/// then a descriptor. The two shapes share no field, and each refuses any
+/// field it doesn't have, so a frame is one or the other, or neither, and
+/// a cell's frame is written as it always was.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum FromSpawner {
+    /// A cell's vault channel, named.
+    Cell(CellChannel),
+    /// An ask for a room disk's key (0.9): the descriptor is the writing
+    /// end of the pipe it goes into.
+    RoomKey(RoomKeyAsk),
+}
+
+/// The spawner's ask for a room disk's key: which image, by the LUKS UUID
+/// the spawner read from it or is making it with, and what for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RoomKeyAsk {
+    pub image: String,
+    pub room_key: RoomKeyFor,
+}
+
+/// What a room disk's key is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RoomKeyFor {
+    /// To make a new image with.
+    Create,
+    /// To open one.
+    Open,
+}
+
+impl RoomKeyFor {
+    /// What it's for, as the access log says it.
+    const fn purpose(self) -> &'static str {
+        match self {
+            Self::Create => "room disk create",
+            Self::Open => "room disk open",
+        }
+    }
+}
+
+/// The action a room disk's key is recorded as.
+const ROOM_KEY_ACTION: &str = "room-key";
+
 /// How long a fill may take to be written to a browser cell's channel: a
 /// cell that doesn't read it fails the fill, and doesn't hold the keeper.
 const FILL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Takes each cell's channel the spawner hands over, named first, and
-/// answers it on a thread of its own, until the spawner goes.
+/// answers it on a thread of its own, until the spawner goes; and answers
+/// each ask for a room disk's key ([`answer_room_key`]).
 fn take_cells(spawner: &UnixStream, kept: &Arc<Mutex<Kept>>) -> Result<(), Error> {
     while let Some(frame) = read_frame_or_eof(spawner).map_err(keeper_gone)? {
-        let named: CellChannel = serde_json::from_slice(&frame).map_err(|e| Error::Keeper {
-            reason: format!("a cell's channel named in a frame that doesn't parse: {e}"),
+        let named: FromSpawner = serde_json::from_slice(&frame).map_err(|e| Error::Keeper {
+            reason: format!("a frame from the spawner that doesn't parse: {e}"),
         })?;
-        let channel = hatchling_sys::net::recv_fd(spawner.as_fd()).map_err(|e| Error::Keeper {
-            reason: format!("a cell's channel wasn't handed over: {e}"),
+        let handed = hatchling_sys::net::recv_fd(spawner.as_fd()).map_err(|e| Error::Keeper {
+            reason: format!("what the spawner named wasn't handed over: {e}"),
         })?;
-        let channel = UnixStream::from(channel);
+        let named = match named {
+            FromSpawner::Cell(named) => named,
+            FromSpawner::RoomKey(asked) => {
+                answer_room_key(kept, &asked, handed);
+                continue;
+            }
+        };
+        let channel = UnixStream::from(handed);
         if let Some(profile) = named.profile.clone() {
             if let Err(error) = hold_browser(channel, &named.cell, profile, kept) {
                 tracing::warn!(cell = %named.cell, %error, "a browser cell's channel isn't held");
@@ -1379,6 +1447,58 @@ fn take_cells(spawner: &UnixStream, kept: &Arc<Mutex<Kept>>) -> Result<(), Error
         });
     }
     Ok(())
+}
+
+/// Answers the spawner's ask for a room disk's key, `asked`: the key goes
+/// into `into`, the writing end of a pipe whose reading end is
+/// cryptsetup's, and never to the spawner or the broker.
+///
+/// The image must be named by its canonical LUKS UUID, which the key is
+/// derived for, and `into` must be a pipe: never a file, a socket or a
+/// terminal, where the key would be kept or sent on. Each ask is recorded
+/// in the vault's access log, as the spawner's, before anything is
+/// written; one that can't be recorded writes nothing. Nothing comes back
+/// on the spawner's channel: cryptsetup's own answer says whether the key
+/// opened the image, and a refusal leaves it with nothing to read.
+fn answer_room_key(kept: &Mutex<Kept>, asked: &RoomKeyAsk, into: OwnedFd) {
+    let Ok(guard) = kept.lock() else {
+        tracing::error!("a room disk's key wasn't given: an earlier answer panicked");
+        return;
+    };
+    let root = guard.config.vault.root.clone();
+    let recorded = |names: Vec<String>, outcome| {
+        let caller = Caller::Spawner {
+            purpose: asked.room_key.purpose().to_owned(),
+        };
+        crate::vault_access::record(&root, caller, ROOM_KEY_ACTION, names, outcome)
+    };
+    let denied = |names: Vec<String>, why: &str| {
+        if let Err(error) = recorded(names, Outcome::Denied) {
+            tracing::error!(%error, "a refused room disk's key not recorded");
+        }
+        tracing::warn!(why, "refused a room disk's key");
+    };
+    let Ok(image) = asked.image.parse::<RoomImageId>() else {
+        return denied(
+            vec![String::from("room disk (not an image's UUID)")],
+            "not an image's UUID",
+        );
+    };
+    let names = vec![format!("room disk {image}")];
+    if !hatchling_sys::is_pipe(into.as_fd()) {
+        return denied(names, "it would go somewhere other than a pipe");
+    }
+    if let Err(error) = recorded(names, Outcome::Allowed) {
+        tracing::error!(%error, "a room disk's key not recorded: nothing is written");
+        return;
+    }
+    let key = guard.room.image_key(&image);
+    drop(guard);
+    // Written whole or not at all: a pipe takes this much at once, and one
+    // already full fails here rather than hold the keeper.
+    if let Err(error) = hatchling_sys::write_whole_to_pipe(into, key.expose()) {
+        tracing::warn!(%error, "a room disk's key couldn't be written into its pipe");
+    }
 }
 
 /// Holds the channel of the browser cell `cell`, started for `profile`,
@@ -1861,6 +1981,11 @@ mod tests {
         }
     }
 
+    /// A room root key of a master key no test keeps.
+    fn any_room() -> RoomRootKey {
+        RoomRootKey::of(&MasterKey::generate().unwrap())
+    }
+
     fn names(list: &[&str]) -> Vec<SecretName> {
         list.iter().map(|name| name.parse().unwrap()).collect()
     }
@@ -2224,6 +2349,7 @@ mod tests {
             releases,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs
@@ -2297,6 +2423,7 @@ mod tests {
             releases,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         });
         let (ours, theirs) = UnixStream::pair().unwrap();
         let root = dir.0.join("vault");
@@ -2382,6 +2509,7 @@ mod tests {
             keys,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         }));
         let store = SessionRequest::Vault(VaultOp::Store {
             name: String::from("token"),
@@ -2526,6 +2654,7 @@ mod tests {
             keys,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         });
         let (ours, theirs) = UnixStream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_secs(10)))
@@ -2585,6 +2714,7 @@ mod tests {
             releases,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         });
         let (ours, theirs) = UnixStream::pair().unwrap();
         std::thread::scope(|scope| {
@@ -2620,6 +2750,7 @@ mod tests {
             config,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         });
         let (ours, theirs) = UnixStream::pair().unwrap();
         let (authoritys, authority_end) = UnixStream::pair().unwrap();
@@ -2679,6 +2810,7 @@ mod tests {
             keys: keepers,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         });
         let secret = SignIn {
             username: Concealed::new(String::from("zoe-user")),
@@ -2802,6 +2934,7 @@ mod tests {
             keys: keepers,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         }));
         let (spawners, keepers) = UnixStream::pair().unwrap();
         let taking = std::thread::spawn({
@@ -3127,6 +3260,7 @@ mod tests {
             keys,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         });
         let (ours, theirs) = UnixStream::pair().unwrap();
         ours.set_read_timeout(Some(Duration::from_secs(10)))
@@ -3250,6 +3384,7 @@ mod tests {
             releases,
             released: BTreeSet::new(),
             browsers: BTreeMap::new(),
+            room: any_room(),
         };
         let (ours, theirs) = UnixStream::pair().unwrap();
         theirs
@@ -3294,5 +3429,209 @@ mod tests {
         answer_scan(&ours, &kept, "egress").unwrap();
         let reply = String::from_utf8(read_frame(&theirs).unwrap()).unwrap();
         assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
+    }
+
+    /// A keeper's state for a room disk's tests: an empty vault at
+    /// `root`, made owner-only, and the room root key of `master`.
+    fn room_kept(root: &Path, master: &MasterKey) -> Arc<Mutex<Kept>> {
+        use std::os::unix::fs::DirBuilderExt as _;
+        std::fs::DirBuilder::new().mode(0o700).create(root).unwrap();
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = root.to_path_buf();
+        Arc::new(Mutex::new(Kept {
+            releases: Releases::of(&config, BTreeSet::new()),
+            keys: StoreKeys::unwrap(master, &[(Store::SECRETS, root)]).unwrap(),
+            config,
+            released: BTreeSet::new(),
+            browsers: BTreeMap::new(),
+            room: RoomRootKey::of(master),
+        }))
+    }
+
+    /// What a pipe's reading end gets before its writing ends are all
+    /// closed.
+    fn drained(read: OwnedFd) -> Vec<u8> {
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut std::fs::File::from(read), &mut got).unwrap();
+        got
+    }
+
+    /// The spawner's end of its channel to the keeper over `kept`, and the
+    /// keeper's taking of it, on a thread of its own.
+    fn spawners_channel(
+        kept: &Arc<Mutex<Kept>>,
+    ) -> (UnixStream, std::thread::JoinHandle<Result<(), Error>>) {
+        let (spawners, keepers) = UnixStream::pair().unwrap();
+        let kept = Arc::clone(kept);
+        (
+            spawners,
+            std::thread::spawn(move || take_cells(&keepers, &kept)),
+        )
+    }
+
+    /// Every line of the vault's access log at `root`.
+    fn accesses(root: &Path) -> Vec<crate::vault_access::Access> {
+        let (accesses, unreadable) = crate::vault_access::read_log(root).unwrap();
+        assert_eq!(unreadable, 0, "the access log has a line that doesn't read");
+        accesses
+    }
+
+    /// The spawner asks for a room disk's key on its own channel: the key,
+    /// derived for that image from the master key, goes into the pipe it
+    /// hands over and nowhere else, and the ask is recorded first, as the
+    /// spawner's, naming the image. A descriptor that isn't a pipe (a file,
+    /// a socket) gets nothing, and neither does a name that isn't an
+    /// image's UUID: each is recorded as denied. An ask that can't be
+    /// recorded writes nothing. A frame with a field neither shape has ends
+    /// the channel.
+    #[test]
+    fn a_room_disks_key_goes_into_its_pipe_alone_and_is_recorded_first() {
+        use crate::vault_access::Caller;
+        let dir = crate::api_auth::tests::scratch("keeper-room-key");
+        let root = dir.0.join("vault");
+        let master = MasterKey::generate().unwrap();
+        let kept = room_kept(&root, &master);
+        let (spawners, taking) = spawners_channel(&kept);
+        let image = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
+        let ask = |image: &str, room_key: &str, into: std::os::fd::BorrowedFd<'_>| {
+            let asked = serde_json::json!({ "image": image, "room_key": room_key });
+            write_frame(&spawners, asked.to_string().as_bytes()).unwrap();
+            hatchling_sys::net::send_fd(spawners.as_fd(), into).unwrap();
+        };
+        // Each ask is answered before the next is read: a pipe's answer
+        // says every ask before it is done.
+        let through_pipe = |image: &str, room_key: &str| {
+            let (read, write) = hatchling_sys::pipe().unwrap();
+            ask(image, room_key, write.as_fd());
+            drop(write);
+            drained(read)
+        };
+        let expected = |image: &str| {
+            RoomRootKey::of(&master)
+                .image_key(&image.parse().unwrap())
+                .expose()
+                .to_vec()
+        };
+        let spawner = |purpose: &str| Caller::Spawner {
+            purpose: purpose.to_owned(),
+        };
+
+        let got = through_pipe(image, "open");
+        assert!(
+            got == expected(image),
+            "the pipe didn't get the image's key, whole"
+        );
+        let line = accesses(&root).pop().unwrap();
+        assert_eq!(line.caller, spawner("room disk open"));
+        assert_eq!(line.action, "room-key");
+        assert_eq!(line.names, [format!("room disk {image}")]);
+        assert_eq!(line.outcome, Outcome::Allowed);
+
+        let other = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f1";
+        let got = through_pipe(other, "create");
+        assert!(
+            got == expected(other) && got != expected(image),
+            "another image didn't get a key of its own"
+        );
+        let line = accesses(&root).pop().unwrap();
+        assert_eq!(line.caller, spawner("room disk create"));
+        assert_eq!(line.names, [format!("room disk {other}")]);
+
+        // A file: the key would stay there. Answered here directly, as
+        // the spawner's channel answers it.
+        let file_path = dir.0.join("not-a-pipe");
+        let file = std::fs::File::create(&file_path).unwrap();
+        let asked = RoomKeyAsk {
+            image: image.to_owned(),
+            room_key: RoomKeyFor::Open,
+        };
+        answer_room_key(&kept, &asked, OwnedFd::from(file));
+        // A socket: the key would go on to whatever holds the other end.
+        let (socket, peer) = UnixStream::pair().unwrap();
+        ask(image, "open", socket.as_fd());
+        drop(socket);
+        assert!(
+            through_pipe("not-a-uuid", "open").is_empty(),
+            "a key was given for what isn't an image"
+        );
+        assert_eq!(
+            std::fs::metadata(&file_path).unwrap().len(),
+            0,
+            "the key was written into a file"
+        );
+        peer.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut sent = Vec::new();
+        std::io::Read::read_to_end(&mut &peer, &mut sent).unwrap();
+        assert!(sent.is_empty(), "the key was written into a socket");
+        let refused: Vec<(Outcome, bool)> = accesses(&root)
+            .iter()
+            .skip(2)
+            .map(|access| (access.outcome, access.names.join("").contains(image)))
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                (Outcome::Denied, true),
+                (Outcome::Denied, true),
+                (Outcome::Denied, false),
+            ],
+            "a refused ask wasn't recorded as denied, naming what it named"
+        );
+
+        // An access log that can't be written to: nothing is given.
+        let log = root.join(crate::vault_access::ACCESS_LOG);
+        std::fs::remove_file(&log).unwrap();
+        std::fs::create_dir(&log).unwrap();
+        assert!(
+            through_pipe(image, "open").is_empty(),
+            "a key was given that wasn't recorded"
+        );
+
+        let extra = serde_json::json!({ "image": image, "room_key": "open", "uid": 7 });
+        write_frame(&spawners, extra.to_string().as_bytes()).unwrap();
+        assert!(
+            taking.join().unwrap().is_err(),
+            "a frame of neither shape was taken"
+        );
+    }
+
+    /// A room disk's key is the spawner's to ask for alone: on the broker's
+    /// channel and on the egress authority's it isn't a request at all, so
+    /// the channel ends there, and a pipe sent with it gets nothing.
+    #[test]
+    fn a_room_disks_key_is_no_request_on_the_brokers_channel_or_the_authoritys() {
+        let dir = crate::api_auth::tests::scratch("keeper-room-key-refused");
+        let root = dir.0.join("vault");
+        let master = MasterKey::generate().unwrap();
+        let kept = room_kept(&root, &master);
+        assert_eq!(RoomKeyFor::Open.purpose(), "room disk open");
+        assert_eq!(RoomKeyFor::Create.purpose(), "room disk create");
+        for asked in [
+            r#"{"request":"room-key","image":"0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0","room_key":"open"}"#,
+            r#"{"image":"0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0","room_key":"open"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Request>(asked).is_err(),
+                "an ask for a room disk's key parsed as a request"
+            );
+            for role in [Role::Broker, Role::Authority] {
+                let (ours, theirs) = UnixStream::pair().unwrap();
+                let (read, write) = hatchling_sys::pipe().unwrap();
+                write_frame(&ours, asked.as_bytes()).unwrap();
+                hatchling_sys::net::send_fd(ours.as_fd(), write.as_fd()).unwrap();
+                drop(write);
+                assert!(
+                    serve(&theirs, &kept, role).is_err(),
+                    "the channel went on after an ask for a room disk's key"
+                );
+                drop((ours, theirs));
+                assert!(drained(read).is_empty(), "a room disk's key was given");
+            }
+        }
+        assert!(
+            accesses(&root).is_empty(),
+            "a refused request reached the access log"
+        );
     }
 }
