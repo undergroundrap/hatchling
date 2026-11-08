@@ -31,6 +31,9 @@
 //! A tier changes only with its own unlock; a backup code restores, never
 //! lowers. [`KeyLease`] scopes how long the DEK stays in memory.
 //!
+//! The [`room`] module derives the room disk's keys from the master key:
+//! nothing stores them, and they follow it through every rotation.
+//!
 //! The vault is a library, not a daemon. Only the broker drives it, over
 //! the peer-authorized session (the agent never touches these files;
 //! filesystem permissions are the second barrier).
@@ -45,6 +48,7 @@ pub mod handoff;
 pub mod keyring;
 pub mod lease;
 pub mod manage;
+pub mod room;
 pub mod rotate;
 pub mod seal;
 pub mod secret;
@@ -64,6 +68,7 @@ pub use hatchling_core::{MAX_SECRET_BYTES, SecretName};
 pub use keyring::{Factor, Kek, Keyring, Tier, Unlocked, Wrap};
 pub use lease::KeyLease;
 pub use manage::{KeyInfo, Label, MAX_LABEL_CHARS, Protection, Warning};
+pub use room::{NotARoomImageId, ROOM_KEY_BYTES, RoomImageId, RoomKey, RoomRootKey};
 pub use rotate::{Rotated, Rotation};
 pub use seal::{
     FileKey, KeySource, MasterKey, MigrateReport, OpenedKey, OpensStores, RekeyReport,
