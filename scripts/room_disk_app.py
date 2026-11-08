@@ -137,6 +137,10 @@ def check(address, physical, output, read_after=snapshot_as_owner):
             after = read_after()
             socket, setup = setups[-1]
             counters = validate_view(physical, setup, block.inner_text(), after)
+            # The Settings pane scrolls independently of the page. DOM
+            # visibility alone can pass for a block below its viewport.
+            block.scroll_into_view_if_needed()
+            expect(block).to_be_in_viewport(ratio=1)
             expect(page.locator('.connection-banner')).to_have_count(0)
             if socket in closed:
                 raise ProofError('The setup connection closed before the screenshot')
@@ -147,7 +151,7 @@ def check(address, physical, output, read_after=snapshot_as_owner):
                 raise ProofError('The app did not consume its bearer fragment')
             output.mkdir(parents=True, exist_ok=True)
             page.screenshot(path=str(output / 'room-disk-settings.png'), full_page=True)
-            (output / 'proof.json').write_text(json.dumps({'before': physical, 'after': after, 'broker': counters, 'tier': 'file', 'fragment_consumed': True}, indent=2) + '\n')
+            (output / 'proof.json').write_text(json.dumps({'before': physical, 'after': after, 'broker': counters, 'tier': 'file', 'fragment_consumed': True, 'block_in_viewport': True}, indent=2) + '\n')
         finally:
             browser.close()
 
