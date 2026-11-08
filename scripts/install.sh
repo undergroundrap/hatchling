@@ -356,6 +356,21 @@ if /usr/local/bin/hatchling-broker vault-keyring status 2> /dev/null | grep -q "
   rm -f /var/lib/hatchling/vault.unlock/unlock.sock
 fi
 
+# The agent's room disk is encrypted with cryptsetup: cryptsetup-bin, not
+# cryptsetup, which adds boot-time hooks Hatchling doesn't use. Without it
+# the agent's computer is off here, and doctor says so; the rest works.
+if [ -x /usr/sbin/cryptsetup ]; then
+  :
+elif command -v apt-get > /dev/null; then
+  say "adding cryptsetup-bin, for the agent's encrypted room disk"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y -qq cryptsetup-bin > /dev/null 2>&1 \
+    || { apt-get update -qq > /dev/null 2>&1 && apt-get install -y -qq cryptsetup-bin > /dev/null 2>&1; } \
+    || say "cryptsetup-bin didn't install, so the agent's computer is off here, and the rest of Hatchling works: sudo apt-get install cryptsetup-bin, then run this again"
+else
+  say "no apt-get here to add cryptsetup, so the agent's computer is off here, and the rest of Hatchling works: install cryptsetup (/usr/sbin/cryptsetup), then run this again"
+fi
+
 say "checking it can work here"
 if ! /usr/local/bin/hatchling-broker doctor --env "$ENV"; then
   fail "fix what doctor found, then run this again: it keeps your configuration"
