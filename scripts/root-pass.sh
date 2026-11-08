@@ -17,9 +17,10 @@
 #     can read (not under your home), for the browser cells' suites.
 #
 # Every cell suite must run: HATCHLING_REQUIRE_CELL=1 turns a skip into a
-# failure, and HATCHLING_REQUIRE_ROOT_MOUNTS=1 does for the suites that
-# mount. A test that can't apply to a root run says so, and the pass
-# lists each one at the end with its reason.
+# failure, HATCHLING_REQUIRE_ROOT_MOUNTS=1 does for the suites that mount,
+# and HATCHLING_REQUIRE_ROOM_DISK=1 for the room disk's, which needs
+# cryptsetup (cryptsetup-bin) and dm_crypt. A test that can't apply to a
+# root run says so, and the pass lists each one at the end with its reason.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,6 +33,7 @@ SUITES=(
     "-p hatchling-broker --test cell_boundary"
     "-p hatchling-broker --test harness"
     "-p hatchling-broker --test harness_cli"
+    "-p hatchling-broker --test room_disk"
     "-p hatchling-broker --test schedule_run"
     "-p hatchling-broker --test skill_cell_spawn"
     "-p hatchling-broker --test skill_envelope"
@@ -111,6 +113,7 @@ for exe in "$copy"/deps/*; do
     # As the README's root setup: cells run as hatchling-cell, the id
     # map's base, and must run (no skip).
     if sudo env HATCHLING_REQUIRE_CELL=1 HATCHLING_REQUIRE_CGROUP=1 HATCHLING_REQUIRE_ROOT_MOUNTS=1 \
+        HATCHLING_REQUIRE_ROOM_DISK=1 \
         HATCHLING_TEST_CGROUP="$cg/cells" HATCHLING_CELL_UID_BASE="$cell_uid" \
         "${browser[@]}" PATH="$PATH" \
         bash -c 'echo $$ > "$1/job/cgroup.procs" && cd "crates/$2" && exec "$3"' \
