@@ -64,12 +64,13 @@ verdict. Record the reviewed commit and findings; review corrections again.
 Use [Security fixes](CONTRIBUTING.md#security-fixes) and
 [testing patterns](docs/testing-patterns.md) to assess the proof.
 
-The `Protect main` rules currently require these six checks:
+The `Protect main` rules currently require these seven checks:
 
 - `gate (1.98.1)` and `gate (1.85.0)`;
 - `protocol drift`;
 - `validate`;
 - `crates.io dry run`;
+- `cells as root`;
 - `cla`.
 
 Inspect semver checks and CodeQL too, and resolve failing checks before
