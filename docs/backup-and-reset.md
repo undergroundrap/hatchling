@@ -37,6 +37,8 @@ sudo hatchling-broker restore /media/usb/hatchling.backup
 
 It opens the whole backup and checks it before it touches anything. **It replaces what's there now.** A backup keeps the keys of its day: if you've changed keys since, use one of those, or a backup code from then.
 
+The agent's room disk, its encrypted workspace, isn't in a backup. A restore tests the restored vault's key against the room disk that's there: if it opens it, the room disk stays, and it's today's, not the backup's; if it doesn't (the vault's key changed since that backup), the room disk is wiped, and restore says so.
+
 ## Start over
 
 ```bash
@@ -48,7 +50,7 @@ Each level asks you to confirm, and takes a backup first:
 | Command | Clears | Keeps |
 | --- | --- | --- |
 | `reset conversation` | The conversation | Everything else |
-| `reset agent` | The conversation, memory, goals, schedules and what it made | Your API keys, sign-ins, security keys and backup codes |
+| `reset agent` | The conversation, memory, goals, schedules and what it made, its room disk included | Your API keys, sign-ins, security keys and backup codes |
 | `reset everything` | All of that, your API keys and sign-ins, and the keyring | Your settings. Security keys aren't changed |
 
 Use `--yes` to skip the question in a script. Use `--no-backup` if you can't open the vault to back it up, which is what to do when your keys and codes are all gone.

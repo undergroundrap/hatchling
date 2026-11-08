@@ -19,6 +19,13 @@
 //!
 //! All three are root's alone, at this machine: no agent reaches them. The
 //! service is stopped for them, as a running broker would keep writing.
+//!
+//! **The agent's room disk** (0.9) is in no backup. `lock`, `restore` and
+//! every `reset` close it once the service is stopped, and confirm it's
+//! closed. `reset agent` and `reset everything` wipe it, as it's what the
+//! agent made; `reset conversation` leaves it. A restore tests the restored
+//! vault's key against it: one it opens stays, as today's and not the
+//! backup's; one it doesn't is wiped.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -644,29 +651,90 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
     let (mut ask, mut devices) = ring::terminal_operator();
     let (key, staged_ring) =
         open_for_restore(config, &keyring_config, &ring_bytes, &mut ask, &mut devices)?;
+    let room = crate::room_disk::here()?;
     service("stop")?;
     let restored = (|| {
         let staging = config.vault.root.with_extension("restoring");
         fresh_staging(&staging)?;
         let mut reader = ArchiveReader::new(file, &key, &ring_bytes).map_err(ring::vault_error)?;
         let count = stage(&mut reader, &by_name, &staging)?;
+        close_room(&room)?;
         swap_in_for(config, &places, &staging)?;
         if let (Some(path), false) = (keyring_config.keyring.as_deref(), ring_bytes.is_empty()) {
             fs::rename(&staged_ring, path).map_err(ring::io_error)?;
         }
         drop_staging(&staging);
-        Ok::<usize, Error>(count)
+        Ok::<(usize, Option<String>), Error>((count, room_after_restore(&room, &key)))
     })();
     let started = service("start");
-    let count = restored?;
+    let (count, room_said) = restored?;
     started?;
     let _ = writeln!(
         std::io::stdout().lock(),
-        "Restored {count} files from {}.\n{}",
+        "Restored {count} files from {}.{}\n{}",
         from.display(),
+        room_said
+            .map(|said| format!("\n{said}"))
+            .unwrap_or_default(),
         crate::windows_setup::here(after_restart(needs_a_person(&keyring_config)))
     );
     Ok(())
+}
+
+/// Closes the room disk, once the service is stopped, and confirms it's
+/// closed.
+///
+/// # Errors
+///
+/// [`Error::Usage`], saying why it's still open.
+fn close_room(room: &crate::room_disk::RoomDisk) -> Result<(), Error> {
+    crate::room_disk::close(room).map_err(|reason| Error::Usage {
+        reason: format!("the agent's room disk is still open, and nothing was changed: {reason}"),
+    })
+}
+
+/// What becomes of the room disk after a restore with `master`, the
+/// restored vault's key, and what's said of it: none, nothing. Backups
+/// don't hold it, so one the restored vault opens stays, today's and not
+/// the backup's; one it doesn't is wiped, as nothing could open it again.
+/// A test of the key that fails for anything but the key leaves it as it
+/// is, and says so.
+fn room_after_restore(room: &crate::room_disk::RoomDisk, master: &MasterKey) -> Option<String> {
+    match crate::room_disk::opens_with(room, master) {
+        Ok(None) => None,
+        Ok(Some(true)) => Some(String::from(
+            "The agent's room disk is today's, not the backup's: backups don't hold it, and the restored vault still opens it.",
+        )),
+        Ok(Some(false)) => Some(match crate::room_disk::wipe(room) {
+            Ok(()) => String::from(
+                "The restored vault doesn't open today's room disk, so it was wiped: the agent's room starts empty.",
+            ),
+            Err(reason) => format!(
+                "The restored vault doesn't open today's room disk, and it couldn't be wiped: {reason}. Wipe it with: sudo hatchling-broker reset agent"
+            ),
+        }),
+        Err(reason) => Some(format!(
+            "The room disk's key couldn't be tested, so the room disk was left as it is: {reason}"
+        )),
+    }
+}
+
+/// What a reset at `level` does to the room disk, once the service is
+/// stopped: `conversation` closes it, and leaves it; `agent` and
+/// `everything` wipe it, as it's what the agent made.
+///
+/// # Errors
+///
+/// [`Error::Usage`], saying why it wasn't closed or wiped.
+fn room_for_reset(level: Level, room: &crate::room_disk::RoomDisk) -> Result<(), Error> {
+    match level {
+        Level::Conversation => close_room(room),
+        Level::Agent | Level::Everything => {
+            crate::room_disk::wipe(room).map_err(|reason| Error::Usage {
+                reason: format!("the agent's room disk wasn't wiped: {reason}"),
+            })
+        }
+    }
 }
 
 /// A new directory at `staging`, this user's alone. What an earlier restore
@@ -755,6 +823,7 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
     } else {
         Some(opened(config, &keyring, &mut ask, &mut devices)?)
     };
+    let room = crate::room_disk::here()?;
     service("stop")?;
     let done = (|| {
         if let Some(key) = &key {
@@ -765,6 +834,7 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
                 made.display()
             );
         }
+        room_for_reset(level, &room)?;
         clear_for(config, level)?;
         if level == Level::Everything {
             erase_keys(config, &keyring)?;
@@ -835,15 +905,40 @@ pub fn run_lock() -> Result<(), Error> {
             ),
         });
     }
-    service("restart")?;
+    let room = crate::room_disk::here()?;
+    lock_with(&mut service, &|| crate::room_disk::close(&room))?;
     let _ = writeln!(
         std::io::stdout().lock(),
         "{}",
         crate::windows_setup::here(
-            "Locked. The agent and its schedules are stopped until you unlock it: sudo hatchling-broker unlock"
+            "Locked. The agent and its schedules are stopped, and its room disk closed, until you unlock it: sudo hatchling-broker unlock"
         )
     );
     Ok(())
+}
+
+/// A lock's steps: the service stopped, which takes the vault's key out of
+/// memory, then the room disk closed and confirmed closed, then the service
+/// started again, waiting to be unlocked. Locked only once the room disk is
+/// closed: one still open is refused, saying so, and the service is started
+/// all the same.
+///
+/// # Errors
+///
+/// Why the service didn't stop or start, or the room disk is still open.
+fn lock_with(
+    service: &mut dyn FnMut(&str) -> Result<(), Error>,
+    close: &dyn Fn() -> Result<(), String>,
+) -> Result<(), Error> {
+    service("stop")?;
+    let closed = close();
+    let started = service("start");
+    closed.map_err(|reason| Error::Usage {
+        reason: format!(
+            "the vault is locked, but the agent's room disk is still open, so a disk taken now could read it: {reason}. Close it with: sudo hatchling-broker room-disk close"
+        ),
+    })?;
+    started
 }
 
 /// How `reset` is used.
@@ -1431,5 +1526,148 @@ mod tests {
         assert!(mark_backup(&dir).is_err());
         assert!(fs::symlink_metadata(&last).unwrap().is_symlink());
         assert_eq!(scratch.read("mine").unwrap(), b"mine");
+    }
+
+    /// A lock stops the service, closes the room disk, and starts the
+    /// service again, in that order. It's locked only once the room disk is
+    /// closed: one still open is refused, saying so, and the service is
+    /// started all the same.
+    #[test]
+    fn a_lock_is_said_only_once_the_room_disk_is_closed() {
+        use std::cell::RefCell;
+        let steps = RefCell::new(Vec::new());
+        let mut service = |action: &str| {
+            steps.borrow_mut().push(action.to_owned());
+            Ok(())
+        };
+        let closed = || {
+            steps.borrow_mut().push(String::from("close"));
+            Ok(())
+        };
+        lock_with(&mut service, &closed).unwrap();
+        assert_eq!(*steps.borrow(), ["stop", "close", "start"]);
+        steps.borrow_mut().clear();
+        let still_open = || {
+            steps.borrow_mut().push(String::from("close"));
+            Err(String::from("the room disk is busy"))
+        };
+        let said = lock_with(&mut service, &still_open)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("still open") && said.contains("busy"),
+            "a lock with the room disk open wasn't refused: {said}"
+        );
+        assert_eq!(
+            *steps.borrow(),
+            ["stop", "close", "start"],
+            "the service wasn't started again"
+        );
+        let mut stuck = |action: &str| {
+            if action == "stop" {
+                Err(Error::Usage {
+                    reason: String::from("stuck"),
+                })
+            } else {
+                Ok(())
+            }
+        };
+        let never = || -> Result<(), String> { Err(String::from("closed while the service ran")) };
+        let said = lock_with(&mut stuck, &never).unwrap_err().to_string();
+        assert!(
+            said.contains("stuck"),
+            "a lock went on past a stop that failed: {said}"
+        );
+    }
+
+    /// A reset closes the room disk; `agent` and `everything` wipe it, and
+    /// `conversation` leaves it.
+    #[test]
+    fn a_reset_wipes_the_room_disk_from_agent_up() {
+        use crate::room_disk::RoomDiskState;
+        let state = |bench: &crate::room_disk::tests::Bench| {
+            crate::room_disk::status(&bench.disk).unwrap().state
+        };
+        let bench = crate::room_disk::tests::Bench::new("reset-conversation");
+        bench.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+        let name = bench.list_own_mapping();
+        room_for_reset(Level::Conversation, &bench.disk).unwrap();
+        assert_eq!(
+            state(&bench),
+            RoomDiskState::Closed,
+            "a conversation reset wiped the room disk"
+        );
+        assert!(
+            bench.disk.image().exists() && !bench.root.join("sys/dm-7").exists(),
+            "a conversation reset didn't close the room disk: {name}"
+        );
+        for level in [Level::Agent, Level::Everything] {
+            let bench = crate::room_disk::tests::Bench::new("reset-agent");
+            bench.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+            room_for_reset(level, &bench.disk).unwrap();
+            assert_eq!(
+                state(&bench),
+                RoomDiskState::Absent,
+                "a reset from agent up left the room disk"
+            );
+        }
+    }
+
+    /// After a restore, the room disk the restored vault's key opens stays,
+    /// said to be today's; one it doesn't open is wiped, saying so; one whose
+    /// key can't be tested is left, saying why. None, nothing's said.
+    #[test]
+    fn a_restore_keeps_the_room_disk_its_vault_opens_and_wipes_the_rest() {
+        use crate::room_disk::RoomDiskState;
+        let master = MasterKey::generate().unwrap();
+        let bench = crate::room_disk::tests::Bench::new("restore-room");
+        assert_eq!(room_after_restore(&bench.disk, &master), None);
+        bench.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+        let said = room_after_restore(&bench.disk, &master).unwrap();
+        assert!(said.contains("today's, not the backup's"), "{said}");
+        assert_eq!(
+            crate::room_disk::status(&bench.disk).unwrap().state,
+            RoomDiskState::Closed
+        );
+        bench.switch("fail-open", true);
+        let said = room_after_restore(&bench.disk, &master).unwrap();
+        assert!(said.contains("left as it is"), "{said}");
+        assert!(
+            bench.disk.image().exists(),
+            "a key that couldn't be tested wiped the room disk"
+        );
+        bench.switch("fail-open", false);
+        bench.switch("no-key", true);
+        let said = room_after_restore(&bench.disk, &master).unwrap();
+        assert!(said.contains("so it was wiped"), "{said}");
+        assert_eq!(
+            crate::room_disk::status(&bench.disk).unwrap().state,
+            RoomDiskState::Absent,
+            "a room disk the restored vault can't open was kept"
+        );
+        let bench = crate::room_disk::tests::Bench::new("restore-close");
+        bench.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+        bench.list_own_mapping();
+        bench.switch("keep-mapped", true);
+        let said = close_room(&bench.disk).unwrap_err().to_string();
+        assert!(said.contains("still open"), "{said}");
+    }
+
+    /// Lock, reset and restore are root's: run as anyone else, each is
+    /// refused before it touches the service, the room disk or a store.
+    #[test]
+    fn lock_reset_and_restore_are_roots_alone() {
+        if hatchling_sys::euid() == 0 {
+            return;
+        }
+        let config = crate::api_auth::tests::owner_config(None);
+        for refused in [
+            run_lock(),
+            run_reset(&config, &[String::from("agent"), String::from("--yes")]),
+            run_restore(&config, Path::new("/nonexistent/hatchling.backup")),
+        ] {
+            let said = refused.unwrap_err().to_string();
+            assert!(said.contains("sudo"), "refused for something else: {said}");
+        }
     }
 }

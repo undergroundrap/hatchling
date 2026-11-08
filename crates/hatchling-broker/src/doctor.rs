@@ -67,6 +67,13 @@ enum Finding {
     },
     /// Not checked, and why.
     Unchecked(String),
+    /// Worth knowing, and not a problem: Hatchling works without it.
+    Note {
+        /// What there is to know.
+        what: String,
+        /// What to do, if it's wanted.
+        fix: String,
+    },
 }
 
 impl Finding {
@@ -147,6 +154,7 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
         }),
         ("other model", check_other(&lookup)),
         ("vault", check_vault(&lookup, &Machine::here())),
+        ("room disk", check_room_disk(&lookup)),
         ("memory", check_memory(crate::model_window::memory())),
     ];
     report(&label, &checks)
@@ -343,7 +351,10 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
         Finding::Fine(said) if crate::key_setup::codes_unconfirmed(path) => Finding::Fine(format!(
             "{said}. Your backup codes were never confirmed saved: vault-keyring setup makes a fresh set"
         )),
-        other @ (Finding::Fine(_) | Finding::Problem { .. } | Finding::Unchecked(_)) => other,
+        other @ (Finding::Fine(_)
+        | Finding::Problem { .. }
+        | Finding::Unchecked(_)
+        | Finding::Note { .. }) => other,
     }
 }
 
@@ -397,6 +408,162 @@ fn vault_said(
             }
             Finding::Fine(said)
         }
+    }
+}
+
+/// The room disk (0.9): whether this machine can have one, and how it is.
+fn check_room_disk(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
+    let Ok(disk) = crate::room_disk::RoomDisk::parse(lookup) else {
+        return Finding::problem(
+            "its settings don't parse",
+            "Check HATCHLING_ROOM_DISK_DIR and HATCHLING_ROOM_DISK_SIZE (hatchling-broker --help).",
+        );
+    };
+    let waiting = Config::parse(lookup)
+        .is_ok_and(|config| crate::unlock_relay::socket_path(&config.vault).exists());
+    room_said(&RoomFacts::here(&disk, waiting))
+}
+
+/// What [`check_room_disk`] looks at on this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RoomFacts {
+    /// Whether doctor runs as root, where the room disk can be looked at.
+    root: bool,
+    /// cryptsetup's version, or why it can't be run.
+    cryptsetup: Result<String, String>,
+    /// What the kernel has of what the room disk needs.
+    kernel: Kernel,
+    /// How the room disk is, as root.
+    status: Option<Result<crate::room_disk::RoomDiskStatus, String>>,
+    /// Whether the vault waits, locked, to be unlocked.
+    waiting: bool,
+}
+
+impl RoomFacts {
+    /// The facts here, of `disk`, with the vault `waiting` or not.
+    fn here(disk: &crate::room_disk::RoomDisk, waiting: bool) -> Self {
+        let root = hatchling_sys::euid() == 0;
+        let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+        let modules = Path::new("/lib/modules").join(release.trim());
+        Self {
+            root,
+            cryptsetup: crate::room_disk::cryptsetup_version(disk),
+            kernel: Kernel {
+                mapper: Path::new("/dev/mapper/control").exists(),
+                loop_control: Path::new("/dev/loop-control").exists(),
+                dm_crypt: kernel_has_dm_crypt(Path::new("/sys/module/dm_crypt"), &modules),
+            },
+            status: root.then(|| crate::room_disk::status(disk)),
+            waiting,
+        }
+    }
+}
+
+/// What the kernel has of what the room disk needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Kernel {
+    /// Whether `/dev/mapper/control` is there: device-mapper.
+    mapper: bool,
+    /// Whether `/dev/loop-control` is there: loop devices.
+    loop_control: bool,
+    /// Whether the kernel has `dm_crypt`, loaded or to load.
+    dm_crypt: bool,
+}
+
+/// Whether the kernel has `dm_crypt`: loaded (`loaded`, its `/sys/module`
+/// entry), or a module or built in, as `modules` (its `/lib/modules/<release>`)
+/// lists it.
+fn kernel_has_dm_crypt(loaded: &Path, modules: &Path) -> bool {
+    let listed = |file: &str| {
+        std::fs::read_to_string(modules.join(file)).is_ok_and(|text| text.contains("dm-crypt.ko"))
+    };
+    loaded.exists() || listed("modules.dep") || listed("modules.builtin")
+}
+
+/// Bytes, as a person reads them.
+fn bytes_said(bytes: u64) -> String {
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
+    if bytes >= GIB {
+        format!("{}.{} GiB", bytes / GIB, (bytes % GIB) * 10 / GIB)
+    } else {
+        format!("{} MiB", bytes / MIB)
+    }
+}
+
+/// What doctor says of the room disk, from `facts`. Off is a note, not a
+/// problem: Hatchling works without the agent's computer. Open while the
+/// vault is locked is a problem: a locked install mustn't hold it open.
+fn room_said(facts: &RoomFacts) -> Finding {
+    use crate::room_disk::RoomDiskState;
+    let off = |what: String, fix: &str| Finding::Note {
+        what: format!("the agent's computer is off here: {what}"),
+        fix: fix.to_owned(),
+    };
+    let version = match &facts.cryptsetup {
+        Ok(version) => version.clone(),
+        Err(why) => {
+            return off(
+                format!("no cryptsetup to encrypt its disk ({why})"),
+                "sudo apt-get install cryptsetup-bin, then sudo systemctl restart hatchling",
+            );
+        }
+    };
+    if !facts.kernel.mapper || !facts.kernel.dm_crypt {
+        return off(
+            String::from("this kernel has no device-mapper or no dm_crypt"),
+            "a kernel with dm_crypt (Ubuntu's and WSL's have it)",
+        );
+    }
+    if !facts.kernel.loop_control {
+        return off(
+            String::from("this kernel has no loop devices"),
+            "a kernel with loop devices (Ubuntu's and WSL's have them)",
+        );
+    }
+    let Some(status) = &facts.status else {
+        return Finding::Unchecked(format!(
+            "{version}; the room disk is root's: run doctor with sudo to see it"
+        ));
+    };
+    let status = match status {
+        Ok(status) => status,
+        Err(why) => {
+            return Finding::problem(
+                format!("the room disk can't be used: {why}"),
+                "Check HATCHLING_ROOM_DISK_DIR names a directory of root's alone, apart from Hatchling's other state.",
+            );
+        }
+    };
+    if facts.waiting && status.state == RoomDiskState::Open {
+        return Finding::problem(
+            "the room disk is open while the vault is locked, so a disk taken now could read it",
+            "sudo hatchling-broker room-disk close",
+        );
+    }
+    let state = match status.state {
+        RoomDiskState::Absent => String::from("none made yet"),
+        RoomDiskState::Closed => String::from("made, closed"),
+        RoomDiskState::Open => String::from("open"),
+    };
+    let on_disk = status.on_disk.unwrap_or(0);
+    let said = format!(
+        "{version}; {state}; {} at most, {} on the disk now",
+        bytes_said(status.cap),
+        bytes_said(on_disk)
+    );
+    match status.host_free {
+        Some(free) if free < status.cap.saturating_sub(on_disk) => Finding::Note {
+            what: format!(
+                "{said}; only {} free below, less than it can grow to, and writes in it fail when that runs out",
+                bytes_said(free)
+            ),
+            fix: String::from(
+                "free some space, or set HATCHLING_ROOM_DISK_SIZE smaller before the room disk is made",
+            ),
+        },
+        Some(free) => Finding::Fine(format!("{said}; {} free below", bytes_said(free))),
+        None => Finding::Fine(said),
     }
 }
 
@@ -1035,6 +1202,13 @@ fn rendered(source: &str, checks: &[(&str, Finding)]) -> (String, usize) {
         let _ = match finding {
             Finding::Fine(seen) => writeln!(text, "  ok       {name:<14} {seen}"),
             Finding::Unchecked(why) => writeln!(text, "  skipped  {name:<14} {why}"),
+            Finding::Note { what, fix } => {
+                writeln!(
+                    text,
+                    "  note     {name:<14} {what}\n{:26}to change it: {fix}",
+                    ""
+                )
+            }
             Finding::Problem { what, fix } => {
                 problems = problems.saturating_add(1);
                 writeln!(text, "  PROBLEM  {name:<14} {what}\n{:26}fix: {fix}", "")
@@ -1101,13 +1275,13 @@ mod tests {
         };
         let fine = |finding: Finding| match finding {
             Finding::Fine(said) => said,
-            other @ (Finding::Problem { .. } | Finding::Unchecked(_)) => {
+            other @ (Finding::Problem { .. } | Finding::Unchecked(_) | Finding::Note { .. }) => {
                 format!("not fine: {other:?}")
             }
         };
         let fix = |finding: Finding| match finding {
             Finding::Problem { what, fix } => format!("{what} | {fix}"),
-            other @ (Finding::Fine(_) | Finding::Unchecked(_)) => {
+            other @ (Finding::Fine(_) | Finding::Unchecked(_) | Finding::Note { .. }) => {
                 format!("not a problem: {other:?}")
             }
         };
@@ -1250,11 +1424,206 @@ mod tests {
     fn problem(found: Finding) -> (String, String) {
         match found {
             Finding::Problem { what, fix } => (what, fix),
-            other @ (Finding::Fine(_) | Finding::Unchecked(_)) => {
+            other @ (Finding::Fine(_) | Finding::Unchecked(_) | Finding::Note { .. }) => {
                 assert_eq!(other, Finding::problem("", ""), "not a problem");
                 (String::new(), String::new())
             }
         }
+    }
+
+    /// The room disk's facts on a machine that has all it needs, with a
+    /// room disk made and closed.
+    fn room_facts() -> RoomFacts {
+        RoomFacts {
+            root: true,
+            cryptsetup: Ok(String::from("cryptsetup 2.8.4")),
+            kernel: Kernel {
+                mapper: true,
+                loop_control: true,
+                dm_crypt: true,
+            },
+            status: Some(Ok(crate::room_disk::RoomDiskStatus {
+                state: crate::room_disk::RoomDiskState::Closed,
+                cap: 10 * 1024 * 1024 * 1024,
+                image_bytes: Some(10 * 1024 * 1024 * 1024),
+                on_disk: Some(300 * 1024 * 1024),
+                used: None,
+                free: None,
+                host_free: Some(100 * 1024 * 1024 * 1024),
+            })),
+            waiting: false,
+        }
+    }
+
+    /// The room disk's facts, with the room below it `host_free`.
+    fn room_with_free(host_free: u64) -> RoomFacts {
+        RoomFacts {
+            status: Some(Ok(crate::room_disk::RoomDiskStatus {
+                host_free: Some(host_free),
+                ..room_facts().status.unwrap().unwrap()
+            })),
+            ..room_facts()
+        }
+    }
+
+    /// What a note says, `what | fix`; anything else, that it isn't one.
+    fn note_said(facts: &RoomFacts) -> String {
+        match room_said(facts) {
+            Finding::Note { what, fix } => format!("{what} | {fix}"),
+            other @ (Finding::Fine(_) | Finding::Unchecked(_) | Finding::Problem { .. }) => {
+                format!("not a note: {other:?}")
+            }
+        }
+    }
+
+    /// The room disk off, for want of cryptsetup, device-mapper, `dm_crypt`
+    /// or loop devices, is a note and not a problem: an install doesn't
+    /// stop at it, and a report with one says nothing's wrong. Open while
+    /// the vault is locked is a problem, and so is a room disk that can't
+    /// be used.
+    #[test]
+    fn the_room_disk_off_is_a_note_and_open_while_locked_a_problem() {
+        use crate::room_disk::RoomDiskState;
+        let without = RoomFacts {
+            cryptsetup: Err(String::from("no such file")),
+            ..room_facts()
+        };
+        let said = note_said(&without);
+        assert!(said.contains("cryptsetup-bin"), "{said}");
+        let kernel = room_facts().kernel;
+        for missing in [
+            Kernel {
+                mapper: false,
+                ..kernel
+            },
+            Kernel {
+                dm_crypt: false,
+                ..kernel
+            },
+        ] {
+            let said = note_said(&RoomFacts {
+                kernel: missing,
+                ..room_facts()
+            });
+            assert!(said.contains("dm_crypt"), "{said}");
+        }
+        let said = note_said(&RoomFacts {
+            kernel: Kernel {
+                loop_control: false,
+                ..kernel
+            },
+            ..room_facts()
+        });
+        assert!(said.contains("loop devices"), "{said}");
+        let not_root = RoomFacts {
+            root: false,
+            status: None,
+            ..room_facts()
+        };
+        assert!(matches!(room_said(&not_root), Finding::Unchecked(said) if said.contains("sudo")));
+        let unusable = RoomFacts {
+            status: Some(Err(String::from("can't be trusted"))),
+            ..room_facts()
+        };
+        assert!(problem(room_said(&unusable)).0.contains("can't be trusted"));
+        let open = |waiting| RoomFacts {
+            status: Some(Ok(crate::room_disk::RoomDiskStatus {
+                state: RoomDiskState::Open,
+                ..room_facts().status.unwrap().unwrap()
+            })),
+            waiting,
+            ..room_facts()
+        };
+        let (what, fix) = problem(room_said(&open(true)));
+        assert!(what.contains("open while the vault is locked"), "{what}");
+        assert_eq!(fix, "sudo hatchling-broker room-disk close");
+        assert!(matches!(room_said(&open(false)), Finding::Fine(said) if said.contains("; open;")));
+        // A note isn't a problem: a report with one says nothing's wrong.
+        let (text, problems) = rendered("here", &[("room disk", note_of(&without))]);
+        assert_eq!(problems, 0, "a note was counted as a problem");
+        assert!(text.contains("  note     room disk"), "{text}");
+        assert!(text.contains("Nothing found wrong."), "{text}");
+    }
+
+    /// A room disk that's fine is said in numbers: cryptsetup's version,
+    /// its state, its cap, what it holds of the disk, and what's free
+    /// below. Less room below than it can grow to is a note; room for all
+    /// of it, to the byte, is enough.
+    #[test]
+    fn the_room_disk_is_said_in_numbers_and_too_little_room_is_a_note() {
+        assert_eq!(
+            room_said(&room_facts()),
+            Finding::Fine(String::from(
+                "cryptsetup 2.8.4; made, closed; 10.0 GiB at most, 300 MiB on the disk now; 100.0 GiB free below"
+            ))
+        );
+        let said = note_said(&room_with_free(1024 * 1024 * 1024));
+        assert!(said.contains("less than it can grow to"), "{said}");
+        assert!(
+            matches!(
+                room_said(&room_with_free(10 * 1024 * 1024 * 1024 - 300 * 1024 * 1024)),
+                Finding::Fine(_)
+            ),
+            "room below for all the room disk can grow to was said to be too little"
+        );
+        assert_eq!(bytes_said(5 * 1024 * 1024), "5 MiB");
+        assert_eq!(bytes_said(3 * 1024 * 1024 * 1024 / 2), "1.5 GiB");
+    }
+
+    /// `dm_crypt` is loaded, or a module, or built in; or it isn't there.
+    #[test]
+    fn dm_crypt_is_seen_loaded_as_a_module_or_built_in() {
+        let dir = crate::api_auth::tests::scratch("doctor-dm-crypt");
+        let (loaded, modules) = (dir.0.join("dm_crypt"), dir.0.join("modules"));
+        std::fs::create_dir(&modules).unwrap();
+        assert!(!kernel_has_dm_crypt(&loaded, &modules));
+        let list = |file: &str, text: &str| std::fs::write(modules.join(file), text).unwrap();
+        list("modules.dep", "kernel/drivers/md/dm-mod.ko:\n");
+        assert!(
+            !kernel_has_dm_crypt(&loaded, &modules),
+            "dm-mod taken for dm-crypt"
+        );
+        std::fs::create_dir(&loaded).unwrap();
+        assert!(
+            kernel_has_dm_crypt(&loaded, &modules),
+            "a loaded dm_crypt wasn't seen"
+        );
+        std::fs::remove_dir(&loaded).unwrap();
+        list(
+            "modules.dep",
+            "kernel/drivers/md/dm-crypt.ko: kernel/drivers/md/dm-mod.ko\n",
+        );
+        assert!(
+            kernel_has_dm_crypt(&loaded, &modules),
+            "a dm_crypt module wasn't seen"
+        );
+        std::fs::remove_file(modules.join("modules.dep")).unwrap();
+        list("modules.builtin", "kernel/drivers/md/dm-crypt.ko\n");
+        assert!(
+            kernel_has_dm_crypt(&loaded, &modules),
+            "a built-in dm_crypt wasn't seen"
+        );
+    }
+
+    /// Doctor looks at the room disk here, as this test runs, and says what
+    /// it finds; with settings that can't be read, it says so, and fails.
+    #[test]
+    fn doctor_looks_at_the_room_disk_here() {
+        let here = RoomFacts::here(&crate::room_disk::RoomDisk::parse(|_| None).unwrap(), false);
+        assert_eq!(here.root, hatchling_sys::euid() == 0);
+        let _ = check_room_disk(&|_| None);
+        assert_eq!(
+            format!(
+                "{:?}",
+                doctor_main(&args(&["--env", "/nonexistent/hatchling.env"]))
+            ),
+            format!("{:?}", ExitCode::FAILURE)
+        );
+    }
+
+    /// `facts`' finding, as it stands.
+    fn note_of(facts: &RoomFacts) -> Finding {
+        room_said(facts)
     }
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -1369,6 +1738,7 @@ mod tests {
                 assert!(!what.is_empty() && !fix.is_empty());
             }
             Finding::Unchecked(why) => assert_eq!(why, "", "cells are always checked"),
+            Finding::Note { what, .. } => assert_eq!(what, "", "cells are never a note"),
         }
         // Its staging directory, randomly named, is gone.
         let left: Vec<_> = std::fs::read_dir(&temp)

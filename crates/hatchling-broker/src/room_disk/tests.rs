@@ -101,7 +101,11 @@ impl Bench {
              cat /proc/$$/environ > \"$d/environ\"\n\
              cat > \"$d/stdin\"\n\
              [ -e {root}/hang ] && sleep 30\n\
-             [ -e \"{root}/fail-$1\" ] && {{ echo \"the stand-in fails $1\" >&2; exit 3; }}\n"
+             [ -e \"{root}/fail-$1\" ] && {{ echo \"the stand-in fails $1\" >&2; exit 3; }}\n\
+             case \" $* \" in *\" --test-passphrase \"*) [ -e {root}/no-key ] && exit 2; exit 0 ;; esac\n\
+             [ \"$1\" = --version ] && [ -e {root}/quiet-version ] && exit 0\n\
+             [ \"$1\" = --version ] && [ -e {root}/odd-version ] && {{ echo 'cryptsetup 2.8.4'; exit 1; }}\n\
+             [ \"$1\" = --version ] && {{ echo 'cryptsetup 2.8.4 flags: STAND-IN'; exit 0; }}\n"
         );
         let cryptsetup = format!(
             "{record}\
@@ -875,17 +879,14 @@ fn each_part_does_what_it_says() {
         said.contains("failed with status 3: the stand-in fails -V"),
         "a failure didn't say what the program said: {said}"
     );
+    let (stderr, its_stderr) = UnixStream::pair().unwrap();
     let mut child = Command::new("/bin/sh")
         .args(["-c", "echo said >&2"])
-        .stderr(Stdio::piped())
+        .stderr(Stdio::from(OwnedFd::from(its_stderr)))
         .spawn()
         .unwrap();
-    let said = read_said(child.stderr.take().unwrap());
     child.wait().unwrap();
-    assert_eq!(
-        said.recv_timeout(Duration::from_secs(10)).unwrap(),
-        "said\n"
-    );
+    assert_eq!(said_now(&stderr), "said\n");
 
     hatchling_sys::make_sparse_file(&disk.new_image(), disk.size).unwrap();
     let image = new_image_id().unwrap();
@@ -981,4 +982,188 @@ fn what_cant_be_looked_at_is_refused_and_what_isnt_there_is_none() {
         RoomDiskState::Closed,
         "a disk mapped but not mounted was said to be open"
     );
+}
+
+/// An operator's command tests a vault's key against the image: the key it
+/// derives goes on cryptsetup's stdin, and nothing is mapped. A no is
+/// cryptsetup's own (status 2); any other failure is refused, never taken
+/// as a wrong key. No image is no answer.
+#[test]
+fn a_vault_key_is_tested_against_the_image_with_its_own_key() {
+    let bench = Bench::new("opens-with");
+    let master = hatchling_vault::MasterKey::generate().unwrap();
+    assert_eq!(opens_with(&bench.disk, &master).unwrap(), None);
+    bench.run(RoomDiskOp::Create).unwrap();
+    bench.forget_runs();
+    assert_eq!(bench.disk.opens_with(&master).unwrap(), Some(true));
+    let ran = bench.ran();
+    let image = bench.disk.image().display().to_string();
+    assert_eq!(
+        ran.iter()
+            .map(|ran| ran.argv.iter().skip(1).cloned().collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
+        [args(&[
+            "open",
+            "--test-passphrase",
+            "--type",
+            "luks2",
+            "--key-file",
+            "-",
+            "--keyfile-size",
+            "64",
+            &image
+        ])]
+    );
+    let key = hatchling_vault::RoomRootKey::of(&master).image_key(&bench.image_id());
+    assert!(
+        ran.first().unwrap().stdin == key.expose(),
+        "the test wasn't given the image's key from the vault's key"
+    );
+    bench.switch("no-key", true);
+    assert_eq!(opens_with(&bench.disk, &master).unwrap(), Some(false));
+    bench.switch("no-key", false);
+    bench.switch("fail-open", true);
+    assert!(
+        opens_with(&bench.disk, &master).is_err(),
+        "a test that failed for something else was taken as a wrong key"
+    );
+    assert!(
+        bench
+            .disk
+            .mapping_uuid(&mapping_name(&bench.image_id()))
+            .unwrap()
+            .is_none(),
+        "a test mapped the image"
+    );
+}
+
+/// What an operator's command and doctor reach: a close, a wipe and a
+/// status, one op at a time with the spawner's; cryptsetup's version; the
+/// room disk this process's settings make; and `room-disk close`, refused
+/// but as root.
+#[test]
+fn the_operators_entry_points_close_wipe_and_say() {
+    let bench = Bench::new("entry-points");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let name = bench.list_own_mapping();
+    close(&bench.disk).unwrap();
+    assert!(
+        bench.disk.mapping_uuid(&name).unwrap().is_none(),
+        "a close left the mapping"
+    );
+    assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Closed);
+    assert_eq!(cryptsetup_version(&bench.disk).unwrap(), "cryptsetup 2.8.4");
+    assert_eq!(bench.disk.cryptsetup_version().unwrap(), "cryptsetup 2.8.4");
+    for odd in ["quiet-version", "odd-version"] {
+        bench.switch(odd, true);
+        assert!(
+            cryptsetup_version(&bench.disk).is_err(),
+            "a version said with a failure, or none said, was taken as one"
+        );
+        bench.switch(odd, false);
+    }
+    bench.forget_runs();
+    let (code, said) = bench
+        .disk
+        .run_tool_exit(&bench.disk.mke2fs, &[OsString::from("-V")], None)
+        .unwrap();
+    assert_eq!((code, said.as_str()), (0, ""));
+    bench.switch("fail--V", true);
+    let (code, said) = bench
+        .disk
+        .run_tool_exit(&bench.disk.mke2fs, &[OsString::from("-V")], None)
+        .unwrap();
+    assert_eq!(code, 3, "a program's own status wasn't said");
+    assert!(said.contains("the stand-in fails -V"), "{said}");
+    bench.switch("fail--V", false);
+    wipe(&bench.disk).unwrap();
+    assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Absent);
+    assert!(here().is_ok(), "this process's settings make no room disk");
+    if hatchling_sys::euid() != 0 {
+        assert_eq!(
+            format!("{:?}", close_main("hatchling-broker")),
+            format!("{:?}", std::process::ExitCode::FAILURE),
+            "room-disk close ran without root"
+        );
+    }
+}
+
+/// A program run leaves no thread behind: a broker's stale close runs
+/// before its keeper starts, while it must have one thread. What a program
+/// that failed said is read once it's done, without waiting for what it
+/// started that still holds its error output. (In a child of one thread.)
+#[test]
+fn a_program_run_leaves_the_broker_one_thread() {
+    use hatchling_sys::{ForkResult, child_exit_code, exit_child, fork};
+    let bench = Bench::new("one-thread");
+    let threads = || {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Threads:"))
+                    .and_then(|threads| threads.trim().parse::<usize>().ok())
+            })
+    };
+    let late = |code: u8| {
+        [
+            OsString::from("-c"),
+            OsString::from(format!(
+                "echo early >&2; (sleep 2; echo late >&2) & exit {code}"
+            )),
+        ]
+    };
+    match fork().unwrap() {
+        ForkResult::Parent { child } => {
+            let status = child.wait_deadline(Duration::from_secs(30)).unwrap();
+            assert_eq!(
+                child_exit_code(status),
+                0,
+                "1: a thread was left behind; 2: the run failed; 3: what it said was waited for, or not said"
+            );
+        }
+        ForkResult::Child => {
+            if threads() != Some(1) {
+                exit_child(2);
+            }
+            let sh = Path::new("/bin/sh");
+            match bench.disk.run_tool_exit(sh, &late(0), None) {
+                Ok((0, said)) if said.is_empty() => {}
+                _ => exit_child(2),
+            }
+            match bench.disk.run_tool_exit(sh, &late(3), None) {
+                Ok((3, said)) if said == "early\n" => {}
+                Ok(_) => exit_child(3),
+                Err(_) => exit_child(2),
+            }
+            exit_child(i32::from(threads() != Some(1)));
+        }
+    }
+}
+
+/// A broker's start closes what an earlier one left open of the room disk,
+/// as root alone, and says when it couldn't.
+#[test]
+fn a_stale_room_disk_is_closed_at_start_by_root_alone() {
+    let bench = Bench::new("stale");
+    bench.run(RoomDiskOp::Create).unwrap();
+    bench.list_own_mapping();
+    let mapped = || bench.root.join("sys/dm-7").exists();
+    assert_eq!(close_stale(Ok(bench.disk.clone()), 1000), Stale::NotRoot);
+    assert!(mapped(), "a broker that isn't root closed the room disk");
+    assert_eq!(close_stale(Ok(bench.disk.clone()), 0), Stale::Closed);
+    assert!(
+        !mapped(),
+        "a room disk left open wasn't closed at the start"
+    );
+    assert_eq!(close_stale(Ok(bench.disk.clone()), 0), Stale::Closed);
+    bench.list_own_mapping();
+    bench.switch("keep-mapped", true);
+    assert_eq!(close_stale(Ok(bench.disk.clone()), 0), Stale::LeftOpen);
+    bench.switch("keep-mapped", false);
+    let unread = Error::Usage {
+        reason: String::from("settings that don't parse"),
+    };
+    assert_eq!(close_stale(Err(unread), 0), Stale::LeftOpen);
 }

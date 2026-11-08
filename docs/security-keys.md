@@ -86,7 +86,7 @@ If you're leaving a machine somewhere you don't trust, or something looks wrong:
 sudo hatchling-broker lock
 ```
 
-The vault's key leaves memory at once, and the agent and its schedules stop until you unlock it. It takes a security key: a vault its key file opens would come straight back, so it says so instead.
+The vault's key leaves memory at once, the agent's room disk is closed, and the agent and its schedules stop until you unlock it. It says "Locked" only once the room disk is closed: one something still holds open is named instead, with `sudo hatchling-broker room-disk close` to close it. It takes a security key: a vault its key file opens would come straight back, so it says so instead.
 
 ## If your key isn't seen
 

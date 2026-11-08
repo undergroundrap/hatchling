@@ -62,6 +62,10 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // broker's life, before anything is written, and `clean` and a
     // second broker are refused while it is (WO-012).
     let _serving = crate::sweep::take_lock(config)?;
+    // A locked install holds no room disk open: what an earlier broker left
+    // of one (killed, or stopped with its close not run) is closed now, as
+    // root, before the vault keeper waits to be unlocked.
+    let _stale = crate::room_disk::close_stale(crate::room_disk::here(), hatchling_sys::euid());
     // The vault keeper starts first, while the broker has one thread
     // (WO-017): it loads (or provisions on first run) the master key,
     // checks the stores, and hands the broker the keys of its own stores.
@@ -80,6 +84,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // It takes the keeper's channel for cells' vault channels (WO-031),
     // which the broker doesn't keep.
     crate::spawner::start(spawners)?;
+    // The vault is unlocked: the room disk opens, made first if there's
+    // none. One that can't turns the room off, and the agent talks.
+    let _room = crate::room_disk::open_at_start(crate::spawner::spawner());
     // Load skills before binding, before any session can name one:
     // each is verified, pinned, and registered, or refused loudly on
     // its own. A broken skill never stops the broker; it never runs.
