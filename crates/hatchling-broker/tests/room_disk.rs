@@ -180,6 +180,34 @@ fn mount_options(mount: &Path) -> Option<String> {
     })
 }
 
+/// What a lock, a reset, a restore, the service's stop and a broker's start
+/// use, as an operator's command: the same close, for real, of the room disk
+/// open at `mount`. Closed, a second close is nothing to do.
+fn operators_close(place: &Place, mount: &Path) -> Result<(), Failed> {
+    room_disk::close(&place.disk)?;
+    assert!(!hatchling_sys::is_mount_point(mount)?);
+    assert!(!place.mapped(), "an operator's close left the mapping");
+    room_disk::close(&place.disk)?;
+    Ok(())
+}
+
+/// A restore's test of a vault's key, for real: its own vault's (the
+/// keeper's) opens the room disk, another's doesn't, and neither maps it.
+fn keys_tested(place: &Place) -> Result<(), Failed> {
+    let master =
+        |tag: &str| hatchling_vault::FileKey::new(place.dir.join(tag).join("vault.key/key")).load();
+    assert_eq!(
+        room_disk::opens_with(&place.disk, &master("keeper")?)?,
+        Some(true)
+    );
+    assert_eq!(
+        room_disk::opens_with(&place.disk, &master("other")?)?,
+        Some(false)
+    );
+    assert!(!place.mapped(), "a test of a key mapped the room disk");
+    Ok(())
+}
+
 /// A room disk made, opened, held, closed, opened again, refused another
 /// vault's key, and wiped, for real.
 #[test]
@@ -254,13 +282,15 @@ fn a_room_disk_is_made_opened_closed_and_wiped_for_real() {
         canary,
         "what was written didn't come back"
     );
-    run(RoomDiskOp::Close).unwrap();
+    operators_close(&place, &mount).unwrap();
 
     let other = Keeper::start(&place, "other").unwrap();
     let said = room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Open).unwrap_err();
     assert!(!said.is_empty());
     assert!(!place.mapped(), "another vault's key mapped the room disk");
     assert!(!hatchling_sys::is_mount_point(&mount).unwrap());
+
+    keys_tested(&place).unwrap();
 
     let image = std::fs::File::open(place.disk.image()).unwrap();
     run(RoomDiskOp::Wipe).unwrap();

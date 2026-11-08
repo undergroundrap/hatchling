@@ -2014,6 +2014,62 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         );
     }
 
+    /// At the broker's start the room disk is made when there's none, then
+    /// opened; one there already is opened, never made again. Anything that
+    /// stops it turns the room off and says why: here, where nothing can be
+    /// mounted, the open; with no spawner, or one that keeps no room disk,
+    /// that.
+    #[test]
+    fn the_room_disk_opens_at_start_or_turns_the_room_off() {
+        use crate::room_disk::{AtStart, open_at_start};
+        assert_eq!(
+            open_at_start(None),
+            AtStart::Off(String::from("no spawner keeps one"))
+        );
+        let (keeping_none, _served) = serving("/bin/sh");
+        assert!(matches!(
+            open_at_start(Some(&keeping_none)),
+            AtStart::Off(why) if why.contains("no room disk here")
+        ));
+        let bench = crate::room_disk::tests::Bench::new("spawner-at-start");
+        let policy = Policy {
+            room: Some(bench.disk.clone()),
+            ..policy()
+        };
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy));
+        let keeper = Arc::clone(&bench.keeper);
+        let _served = std::thread::spawn(move || serve(&theirs, &held, Some(&keeper)));
+        let spawner = Spawner::over(ours);
+        let commands = |bench: &crate::room_disk::tests::Bench| -> Vec<String> {
+            bench
+                .ran()
+                .into_iter()
+                .filter_map(|ran| ran.argv.get(1).cloned())
+                .collect()
+        };
+        assert!(
+            matches!(
+                open_at_start(Some(&spawner)),
+                AtStart::Off(why) if why.contains("can't be mounted")
+            ),
+            "a start that couldn't mount the room disk didn't turn the room off, or never opened it"
+        );
+        assert_eq!(
+            commands(&bench),
+            ["luksFormat", "open", "-t", "close", "open", "close"],
+            "a start with no room disk didn't make one, then open it"
+        );
+        assert!(bench.disk.image().exists());
+        bench.forget_runs();
+        assert!(matches!(open_at_start(Some(&spawner)), AtStart::Off(_)));
+        assert_eq!(
+            commands(&bench),
+            ["open", "close"],
+            "a start with a room disk made another, or didn't open it"
+        );
+    }
+
     /// The paths of a broker with nothing configured: only its run
     /// directories.
     fn paths() -> Paths {

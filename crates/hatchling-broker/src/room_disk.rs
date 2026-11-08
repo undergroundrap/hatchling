@@ -10,6 +10,16 @@
 //! it. The room disk is on only where the spawner runs as root and has a
 //! vault keeper.
 //!
+//! **When it's open.** The broker opens it at its start, once the vault is
+//! unlocked, making it first if there's none ([`open_at_start`]): one that
+//! can't be turns the room off, and the agent talks. Before the vault is
+//! unlocked, a broker that starts closes what an earlier one left open
+//! ([`close_stale`]), and stopping the service closes it
+//! (`hatchling-broker room-disk close`, the service's `ExecStopPost`). So a
+//! locked or stopped install holds none open. `lock`, `reset` and `restore`
+//! close it with the service stopped, and confirm it's closed
+//! ([`crate::backup`]).
+//!
 //! **Its key** is derived by the vault keeper from the master key, for that
 //! image's own LUKS UUID ([`hatchling_vault::RoomRootKey`]). The spawner
 //! makes a pipe, gives its reading end to cryptsetup as stdin, closes its own
@@ -444,12 +454,38 @@ impl RoomDisk {
         &self,
         program: &Path,
         args: &[OsString],
-        key: Option<(&Mutex<UnixStream>, &RoomImageId, RoomKeyFor)>,
+        key: Option<KeyFrom<'_>>,
     ) -> Result<(), String> {
+        let (code, said) = self.run_tool_exit(program, args, key)?;
+        if code == 0 {
+            return Ok(());
+        }
+        let first = args.first().map(|arg| arg.to_string_lossy().into_owned());
+        Err(format!(
+            "{} {} failed with status {code}: {}",
+            program.display(),
+            first.unwrap_or_default(),
+            said.trim()
+        ))
+    }
+
+    /// [`RoomDisk::run_tool`]'s run, and how it ended: its exit status and
+    /// what it said on its error output, cut short. A program that can't
+    /// start, or runs past its deadline, fails.
+    fn run_tool_exit(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        key: Option<KeyFrom<'_>>,
+    ) -> Result<(i32, String), String> {
         let named = || {
             let first = args.first().map(|arg| arg.to_string_lossy().into_owned());
             format!("{} {}", program.display(), first.unwrap_or_default())
         };
+        // Its error output is a socket, which can be read without waiting
+        // once it's done.
+        let (stderr, its_stderr) =
+            UnixStream::pair().map_err(|error| format!("{} can't start: {error}", named()))?;
         let mut command = Command::new(program);
         command
             .env_clear()
@@ -457,7 +493,7 @@ impl RoomDisk {
             .env("LC_ALL", "C")
             .args(args)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::from(OwnedFd::from(its_stderr)));
         let mut into = None;
         command.stdin(Stdio::null());
         if key.is_some() {
@@ -468,16 +504,20 @@ impl RoomDisk {
         let mut child = command
             .spawn()
             .map_err(|error| format!("{} can't start: {error}", named()))?;
-        // Its copy of the pipe's reading end goes with it: cryptsetup holds
-        // the only one.
+        // Its copies of the pipe's reading end and of its error output's
+        // end go with it: the program holds the only ones.
         drop(command);
-        let said = child.stderr.take().map(read_said);
         let supervised = hatchling_isolation::platform()
             .supervise(&mut child)
             .map_err(|error| format!("{} can't be supervised: {error}", named()))?;
         drop(child);
-        if let (Some(write), Some((keeper, image, purpose))) = (into, key) {
-            if let Err(reason) = ask_key(keeper, image, purpose, write) {
+        if let (Some(write), Some(key)) = (into, key) {
+            let handed = match key {
+                KeyFrom::Keeper(keeper, image, purpose) => ask_key(keeper, image, purpose, write),
+                KeyFrom::Held(key) => hatchling_sys::write_whole_to_pipe(write, key.expose())
+                    .map_err(|error| format!("the room disk's key can't be given: {error}")),
+            };
+            if let Err(reason) = handed {
                 let _ = supervised.terminate();
                 return Err(reason);
             }
@@ -485,18 +525,80 @@ impl RoomDisk {
         let exit = supervised
             .wait_deadline(self.timeout)
             .map_err(|error| format!("{} didn't finish: {error}", named()))?;
-        if exit.code == 0 {
-            return Ok(());
+        // What it said is read here, once it's done, on this thread: a
+        // broker's stale close runs before its keeper starts, while it must
+        // have one thread.
+        let said = if exit.code == 0 {
+            String::new()
+        } else {
+            said_now(&stderr)
+        };
+        Ok((exit.code, said))
+    }
+
+    /// Whether `master`, a vault's key, opens the room disk: `None` when
+    /// there's no image. Its key is derived here and goes to cryptsetup's
+    /// test of it alone; nothing is mapped. Only cryptsetup's own answer
+    /// that the key doesn't open it (status 2) is a no: anything else that
+    /// fails is refused, so a missing program is never taken as a wrong key.
+    fn opens_with(&self, master: &hatchling_vault::MasterKey) -> Result<Option<bool>, String> {
+        if std::fs::symlink_metadata(&self.dir).is_err() {
+            return Ok(None);
         }
-        let said = said
-            .and_then(|said| said.recv_timeout(Duration::from_secs(2)).ok())
-            .unwrap_or_default();
-        Err(format!(
-            "{} failed with status {}: {}",
-            named(),
-            exit.code,
-            said.trim()
-        ))
+        self.check_dir()?;
+        if self.image_at(&self.image())?.is_none() {
+            return Ok(None);
+        }
+        self.trusted_program(&self.cryptsetup)?;
+        let image = self.image_id()?;
+        let key = hatchling_vault::RoomRootKey::of(master).image_key(&image);
+        let mut args: Vec<OsString> = [
+            "open",
+            "--test-passphrase",
+            "--type",
+            "luks2",
+            "--key-file",
+            "-",
+            "--keyfile-size",
+            "64",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
+        args.push(self.image().into_os_string());
+        match self.run_tool_exit(&self.cryptsetup, &args, Some(KeyFrom::Held(&key)))? {
+            (0, _) => Ok(Some(true)),
+            (2, _) => Ok(Some(false)),
+            (code, said) => Err(format!(
+                "cryptsetup couldn't test the room disk's key, status {code}: {}",
+                said.trim()
+            )),
+        }
+    }
+
+    /// cryptsetup's version, as it says it: the program checked first.
+    fn cryptsetup_version(&self) -> Result<String, String> {
+        self.trusted_program(&self.cryptsetup)?;
+        let said = Command::new(&self.cryptsetup)
+            .env_clear()
+            .env("PATH", TOOL_PATH)
+            .env("LC_ALL", "C")
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|error| format!("cryptsetup can't start: {error}"))?;
+        let text = String::from_utf8_lossy(&said.stdout);
+        let version = text
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(" ");
+        if said.status.success() && !version.is_empty() {
+            Ok(version)
+        } else {
+            Err(String::from("cryptsetup didn't say its version"))
+        }
     }
 
     /// Makes the room disk: refused if one is there.
@@ -546,12 +648,12 @@ impl RoomDisk {
         self.run_tool(
             &self.cryptsetup,
             &format_args(image, &new),
-            Some((keeper, image, RoomKeyFor::Create)),
+            Some(KeyFrom::Keeper(keeper, image, RoomKeyFor::Create)),
         )?;
         self.run_tool(
             &self.cryptsetup,
             &open_args(&new, name),
-            Some((keeper, image, RoomKeyFor::Open)),
+            Some(KeyFrom::Keeper(keeper, image, RoomKeyFor::Open)),
         )?;
         let made = self.run_tool(&self.mke2fs, &mkfs_args(name), None);
         let closed = self.close_mapping(name);
@@ -595,7 +697,7 @@ impl RoomDisk {
             self.run_tool(
                 &self.cryptsetup,
                 &open_args(&self.image(), &name),
-                Some((keeper, &image, RoomKeyFor::Open)),
+                Some(KeyFrom::Keeper(keeper, &image, RoomKeyFor::Open)),
             )?;
         }
         let device = Path::new(MAPPER).join(&name);
@@ -717,6 +819,16 @@ impl RoomDisk {
             ))
         }
     }
+}
+
+/// Where a program's key comes from: the keeper, for an image and a
+/// purpose, or a key this process derived itself (an operator's command,
+/// which holds the vault's key).
+enum KeyFrom<'a> {
+    /// Asked of the keeper.
+    Keeper(&'a Mutex<UnixStream>, &'a RoomImageId, RoomKeyFor),
+    /// Held here.
+    Held(&'a hatchling_vault::RoomKey),
 }
 
 /// The room disk's record, beside the image.
@@ -841,12 +953,191 @@ fn resolve(path: &Path) -> PathBuf {
 /// Closes the room disk when the broker has gone: what the spawner does as
 /// it leaves.
 pub(crate) fn close_on_leaving(disk: &RoomDisk) {
+    if let Err(reason) = close(disk) {
+        tracing::error!(%reason, "the room disk wasn't closed as the broker went");
+    }
+}
+
+/// The room disk the settings in this process's environment configure.
+///
+/// # Errors
+///
+/// As [`RoomDisk::parse`].
+pub fn here() -> Result<RoomDisk, Error> {
+    RoomDisk::parse(|key| std::env::var(key).ok())
+}
+
+/// Closes the room disk, one op at a time with the spawner's: unmounted, its
+/// mapping closed and confirmed gone. Nothing open, nothing to do.
+///
+/// # Errors
+///
+/// Why not: a check that failed, or a disk in use (busy).
+pub fn close(disk: &RoomDisk) -> Result<(), String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
     let closed = disk.close();
     drop(turn);
-    if let Err(reason) = closed {
-        tracing::error!(%reason, "the room disk wasn't closed as the broker went");
+    closed
+}
+
+/// Closes the room disk and wipes it, one op at a time with the spawner's.
+///
+/// # Errors
+///
+/// As [`close`], and why the image or its record can't be removed.
+pub fn wipe(disk: &RoomDisk) -> Result<(), String> {
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let wiped = disk.wipe();
+    drop(turn);
+    wiped
+}
+
+/// Whether the vault key `master` opens the room disk: `None` when there's
+/// no image.
+///
+/// For an operator's command, which holds the vault's key: the image's key
+/// is derived here and goes to cryptsetup's test alone.
+///
+/// # Errors
+///
+/// A check that failed, or cryptsetup failing for anything but the key.
+pub fn opens_with(
+    disk: &RoomDisk,
+    master: &hatchling_vault::MasterKey,
+) -> Result<Option<bool>, String> {
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let opens = disk.opens_with(master);
+    drop(turn);
+    opens
+}
+
+/// How the room disk is, one op at a time with the spawner's.
+///
+/// # Errors
+///
+/// A check that failed.
+pub fn status(disk: &RoomDisk) -> Result<RoomDiskStatus, String> {
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let status = disk.status();
+    drop(turn);
+    status
+}
+
+/// cryptsetup's version, as the room disk would run it.
+///
+/// # Errors
+///
+/// Why it can't be run, or didn't say.
+pub fn cryptsetup_version(disk: &RoomDisk) -> Result<String, String> {
+    disk.cryptsetup_version()
+}
+
+/// `hatchling-broker room-disk close`: the room disk closed, now, as root,
+/// with the service's settings alone. What stopping the service runs
+/// (`ExecStopPost`). Nothing open is nothing to do.
+#[must_use]
+pub fn close_main(program: &str) -> std::process::ExitCode {
+    use std::io::Write as _;
+    let said = if hatchling_sys::euid() == 0 {
+        here()
+            .map_err(|error| error.to_string())
+            .and_then(|disk| close(&disk))
+    } else {
+        Err(String::from(
+            "run it with sudo: only root closes the room disk",
+        ))
+    };
+    match said {
+        Ok(()) => {
+            let _ = writeln!(
+                std::io::stdout().lock(),
+                "{program} room-disk close: closed"
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        Err(reason) => {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{program} room-disk close: {reason}"
+            );
+            std::process::ExitCode::FAILURE
+        }
     }
+}
+
+/// What [`close_stale`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stale {
+    /// Nothing: a broker that isn't root has no room disk.
+    NotRoot,
+    /// Closed, or there was nothing open.
+    Closed,
+    /// Left open, said in the log.
+    LeftOpen,
+}
+
+/// Closes what an earlier broker left of `disk`, before the vault is
+/// unlocked: a broker killed, or a stop whose close didn't run, leaves its
+/// mapping and its mount, and a locked install must hold none. Only for a
+/// broker that runs as root (`euid` 0): one that doesn't has no room disk.
+pub(crate) fn close_stale(disk: Result<RoomDisk, Error>, euid: u32) -> Stale {
+    if euid != 0 {
+        return Stale::NotRoot;
+    }
+    let closed = disk
+        .map_err(|error| error.to_string())
+        .and_then(|disk| close(&disk));
+    match closed {
+        Ok(()) => Stale::Closed,
+        Err(reason) => {
+            tracing::error!(%reason, "the room disk left open by an earlier broker wasn't closed");
+            Stale::LeftOpen
+        }
+    }
+}
+
+/// How the room disk came out of the broker's start.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AtStart {
+    /// Open: it was already, or opened now.
+    Opened,
+    /// Made now, and opened.
+    Made,
+    /// Off, and why: the room is off, and the agent talks.
+    Off(String),
+}
+
+/// Opens the room disk at the broker's start, once the vault is unlocked:
+/// made first if there's none. Anything that stops it turns the room off,
+/// says why in the log, and leaves the rest of Hatchling as it is.
+pub(crate) fn open_at_start(spawner: Option<&crate::spawner::Spawner>) -> AtStart {
+    let Some(spawner) = spawner else {
+        return off(String::from("no spawner keeps one"));
+    };
+    let state = match spawner.room_disk(RoomDiskOp::Status) {
+        Ok(Some(status)) => status.state,
+        Ok(None) => return off(String::from("the spawner didn't say how it is")),
+        Err(reason) => return off(reason),
+    };
+    let made = state == RoomDiskState::Absent;
+    if made {
+        if let Err(reason) = spawner.room_disk(RoomDiskOp::Create) {
+            return off(reason);
+        }
+    }
+    if state != RoomDiskState::Open {
+        if let Err(reason) = spawner.room_disk(RoomDiskOp::Open) {
+            return off(reason);
+        }
+    }
+    tracing::info!(made, "the room disk is open");
+    if made { AtStart::Made } else { AtStart::Opened }
+}
+
+/// The room off, for `reason`, said in the log.
+fn off(reason: String) -> AtStart {
+    tracing::warn!(%reason, "the room disk is off: the room is off, and the agent talks");
+    AtStart::Off(reason)
 }
 
 /// Hands the keeper the ask for `image`'s key, for `purpose`, with `into`,
@@ -875,16 +1166,19 @@ fn ask_key(
     Ok(())
 }
 
-/// What a program says on its error output, cut short, once it's done.
-fn read_said(stderr: std::process::ChildStderr) -> std::sync::mpsc::Receiver<String> {
+/// What a program said on its error output, `stderr`, once it's done:
+/// what's there now, cut short, read without waiting. A program it started
+/// that still holds the output open adds nothing, and isn't waited for. The
+/// socket holds far more than a tool's error says, so a tool never waits to
+/// say it.
+fn said_now(stderr: &UnixStream) -> String {
     use std::io::Read as _;
-    let (told, said) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = stderr.take(SAID_BYTES).read_to_end(&mut bytes);
-        let _ = told.send(String::from_utf8_lossy(&bytes).into_owned());
-    });
-    said
+    let _ = stderr.set_nonblocking(true);
+    let mut bytes = Vec::new();
+    // Read until there's no more now (`WouldBlock`) or none at all (its
+    // end); what was read before either is kept.
+    let _ = stderr.take(SAID_BYTES).read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// A size as `HATCHLING_ROOM_DISK_SIZE` gives it: bytes, or a whole number

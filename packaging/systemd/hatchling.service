@@ -20,6 +20,10 @@ Restart=on-failure
 RestartSec=5s
 # Every cell, and every process the broker starts, ends with the service.
 KillMode=control-group
+# The agent's room disk is closed whenever the service stops, however it
+# stopped: a stopped or locked Hatchling holds none open. A close that
+# fails is in the journal, and the next start closes it before anything.
+ExecStopPost=-/usr/local/bin/hatchling-broker room-disk close
 
 [Install]
 WantedBy=multi-user.target
