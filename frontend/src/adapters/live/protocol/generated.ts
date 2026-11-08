@@ -2371,6 +2371,49 @@ export type QueryResult = {
     readonly result: 'query-error';
 };
 /**
+ * How the room disk is.
+ */
+export type RoomDiskCondition = 'absent' | 'closed' | 'open' | 'off';
+/**
+ * Why the room disk is off.
+ */
+export type RoomDiskOff = 'not_here' | 'not_opened' | 'not_read';
+/**
+ * The agent's room disk, as the app shows it: how it is, and its sizes in
+ * bytes. Numbers and fixed reasons only, never a path or what a program
+ * said.
+ */
+export type RoomDiskView = {
+    /**
+     * The most it holds.
+     */
+    readonly cap?: number | null;
+    /**
+     * What's free inside, while it's open.
+     */
+    readonly free?: number | null;
+    /**
+     * What's free on this machine's disk, for it to grow into.
+     */
+    readonly host_free?: number | null;
+    /**
+     * Why it's off, when it is.
+     */
+    readonly off?: RoomDiskOff | null;
+    /**
+     * What it takes of this machine's disk: it never shrinks.
+     */
+    readonly on_disk?: number | null;
+    /**
+     * How it is.
+     */
+    readonly state: RoomDiskCondition;
+    /**
+     * What's in use inside, while it's open.
+     */
+    readonly used?: number | null;
+};
+/**
  * One capability a scheduled run may hold. The vocabulary mirrors the
  * broker's own grants, so "subset of the creator's" is an exact set
  * comparison.
@@ -3664,6 +3707,11 @@ export type SetupState = {
      * the broker: making one restarts it. None when there's been none.
      */
     readonly last_backup?: number | null;
+    /**
+     * The agent's room disk, its encrypted computer: none from a broker
+     * from before there was one.
+     */
+    readonly room_disk?: RoomDiskView | null;
     /**
      * Who can open the vault.
      */

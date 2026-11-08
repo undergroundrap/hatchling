@@ -1311,9 +1311,7 @@ fn room_disk_reply(
 ) -> Reply {
     let (Some(room), Some(keeper)) = (&policy.room, keeper) else {
         return Reply::Refused {
-            reason: String::from(
-                "there's no room disk here: it needs a broker run as root, with a vault keeper",
-            ),
+            reason: String::from(crate::room_disk::NOT_HERE),
         };
     };
     match crate::room_disk::run(room, keeper, op) {

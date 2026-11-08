@@ -1459,3 +1459,108 @@ fn each_step_of_a_rotation_on_its_own() {
         (0, String::new())
     );
 }
+
+/// The app is told the room disk in numbers and fixed reasons: how it is,
+/// from the start and the spawner's status now, and why it's off when it
+/// is. What a program said, and any path, never reaches it.
+#[test]
+fn the_app_is_told_numbers_and_fixed_reasons_alone() {
+    let status = |state| RoomDiskStatus {
+        state,
+        cap: 10 << 30,
+        image_bytes: Some(10 << 30),
+        on_disk: Some(300 << 20),
+        used: Some(1 << 30),
+        free: Some(9 << 30),
+        host_free: Some(100 << 30),
+    };
+    let leaked = "cryptsetup said: /var/lib/hatchling/room/disk.img: Device or resource busy";
+    let open = view(
+        Some(&AtStart::Opened),
+        Ok(Some(status(RoomDiskState::Open))),
+    );
+    assert_eq!(
+        open,
+        RoomDiskView {
+            state: RoomDiskCondition::Open,
+            off: None,
+            cap: Some(10 << 30),
+            used: Some(1 << 30),
+            free: Some(9 << 30),
+            on_disk: Some(300 << 20),
+            host_free: Some(100 << 30),
+        }
+    );
+    for (state, said) in [
+        (RoomDiskState::Absent, RoomDiskCondition::Absent),
+        (RoomDiskState::Closed, RoomDiskCondition::Closed),
+    ] {
+        assert_eq!(
+            view(Some(&AtStart::Made), Ok(Some(status(state)))).state,
+            said
+        );
+        assert_eq!(view(None, Ok(Some(status(state)))).state, said);
+    }
+    let failed = view(
+        Some(&AtStart::Off(String::from(leaked))),
+        Ok(Some(status(RoomDiskState::Closed))),
+    );
+    assert_eq!(
+        (failed.state, failed.off, failed.on_disk),
+        (
+            RoomDiskCondition::Off,
+            Some(RoomDiskOff::NotOpened),
+            Some(300 << 20)
+        ),
+        "a room disk that didn't open at the start wasn't said to be off, with its sizes"
+    );
+    for why in [NO_SPAWNER, NOT_HERE] {
+        let started = AtStart::Off(String::from(why));
+        assert_eq!(
+            view(Some(&started), Err(String::from(why))).off,
+            Some(RoomDiskOff::NotHere),
+            "an install with no room disk was said to have one that failed"
+        );
+        assert_eq!(
+            view(None, Err(String::from(why))).off,
+            Some(RoomDiskOff::NotHere)
+        );
+    }
+    let unread = view(Some(&AtStart::Opened), Err(String::from(leaked)));
+    assert_eq!(
+        (unread.state, unread.off, unread.cap),
+        (RoomDiskCondition::Off, Some(RoomDiskOff::NotRead), None)
+    );
+    assert_eq!(view(None, Ok(None)).off, Some(RoomDiskOff::NotRead));
+    for told in [open, failed, unread] {
+        let json = serde_json::to_value(told).unwrap();
+        let keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            keys.iter().all(|key| [
+                "state",
+                "off",
+                "cap",
+                "used",
+                "free",
+                "on_disk",
+                "host_free"
+            ]
+            .contains(key)),
+            "the app was told more than numbers and a reason"
+        );
+        let text = json.to_string();
+        assert!(
+            !text.contains('/') && !text.contains("cryptsetup") && !text.contains("busy"),
+            "what a program said, or a path, reached the app"
+        );
+    }
+    assert!(not_here(NOT_HERE) && not_here(NO_SPAWNER) && !not_here(leaked));
+    // As this test runs: no spawner, so none here, whatever the start was.
+    remember_start(AtStart::Off(String::from(NO_SPAWNER)));
+    assert_eq!(view_here().off, Some(RoomDiskOff::NotHere));
+}
