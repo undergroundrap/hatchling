@@ -17,6 +17,11 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
   - **This changes the lock, not the room disk's own key inside it.** So `vault-keyring lost-key` with a stolen key now offers to reset the room disk, which deletes what the agent kept there, and says plainly what's left open if you keep it: someone with the stolen key, its PIN, an old copy of the vault's keyring and an old copy of the room disk could read it. Its question no longer says an old copy of your files is no use with a stolen key, which wasn't true of the room disk.
 - **The room disk's settings, ahead of the room disk.** `HATCHLING_ROOM_DISK_DIR` (default `/var/lib/hatchling/room`) and `HATCHLING_ROOM_DISK_SIZE` (default 10G, from 64M to 1024G) say where the agent's encrypted room disk is made and how large. A broker run as root now refuses to start if that directory overlaps a store, the vault, the keeper's or the broker's directories, or the agent socket's, and says which: set `HATCHLING_ROOM_DISK_DIR` elsewhere.
 
+### Changed
+
+- **Agent-led installation checks have a completion checklist.** The guide identifies disposable boxes, protects secret entry and screenshots, distinguishes live behavior from demo UI, and preserves failure and cleanup evidence. Contributor instructions link to it; the security overview now states the browser rail's limits.
+
+
 ## [0.8.0] - 2026-11-07
 
 ### Added
