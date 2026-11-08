@@ -2317,6 +2317,102 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "RoomDiskCondition": {
+        "oneOf": [
+            {
+                "const": "absent",
+                "type": "string"
+            },
+            {
+                "const": "closed",
+                "type": "string"
+            },
+            {
+                "const": "mapped",
+                "type": "string"
+            },
+            {
+                "const": "open",
+                "type": "string"
+            },
+            {
+                "const": "off",
+                "type": "string"
+            }
+        ]
+    },
+    "RoomDiskOff": {
+        "oneOf": [
+            {
+                "const": "not_here",
+                "type": "string"
+            },
+            {
+                "const": "not_opened",
+                "type": "string"
+            },
+            {
+                "const": "not_read",
+                "type": "string"
+            }
+        ]
+    },
+    "RoomDiskView": {
+        "properties": {
+            "cap": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "free": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "host_free": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "off": {
+                "anyOf": [
+                    {
+                        "$ref": "#/$defs/RoomDiskOff"
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
+            },
+            "on_disk": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
+            "state": {
+                "$ref": "#/$defs/RoomDiskCondition"
+            },
+            "used": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            }
+        },
+        "required": [
+            "state"
+        ],
+        "type": "object"
+    },
     "ScheduleGrant": {
         "oneOf": [
             {
@@ -3080,6 +3176,16 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": [
                     "integer",
                     "null"
+                ]
+            },
+            "room_disk": {
+                "anyOf": [
+                    {
+                        "$ref": "#/$defs/RoomDiskView"
+                    },
+                    {
+                        "type": "null"
+                    }
                 ]
             },
             "vault": {

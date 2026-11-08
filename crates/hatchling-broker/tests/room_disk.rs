@@ -182,6 +182,52 @@ fn mount_options(mount: &Path) -> Option<String> {
     })
 }
 
+/// Release only this test's extra bind, even when an assertion fails.
+/// Use the system tool so a hand mutant of `unmount_strict` can't skip cleanup.
+struct HeldBind(PathBuf);
+
+impl Drop for HeldBind {
+    fn drop(&mut self) {
+        let _ = Command::new("umount")
+            .arg("-l")
+            .arg(&self.0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+/// A second bind of the open room disk, as a cell's would be, holds it: the
+/// close takes the mount away but can't close the mapping, says so, and the
+/// room disk is then mapped, never said to be closed. Once the bind's gone,
+/// the close finishes. It's left closed.
+fn held_by_a_bind(place: &Place, mount: &Path) -> Result<(), Failed> {
+    let held = place.dir.join("held");
+    std::fs::create_dir(&held)?;
+    let _held_bind = HeldBind(held.clone());
+    let bound = Command::new("mount")
+        .arg("--bind")
+        .arg(mount)
+        .arg(&held)
+        .status()?;
+    assert!(bound.success(), "the test's bind wasn't made");
+    assert!(
+        room_disk::close(&place.disk).is_err(),
+        "a close that left the mapping was said to have closed it"
+    );
+    assert!(place.mapped(), "the bind didn't hold the mapping");
+    assert_eq!(
+        room_disk::status(&place.disk)?.state,
+        RoomDiskState::Mapped,
+        "a room disk still mapped was said to be closed"
+    );
+    hatchling_sys::unmount_strict(&held)?;
+    room_disk::close(&place.disk)?;
+    assert!(!place.mapped());
+    assert_eq!(room_disk::status(&place.disk)?.state, RoomDiskState::Closed);
+    Ok(())
+}
+
 /// What a lock, a reset, a restore, the service's stop and a broker's start
 /// use, as an operator's command: the same close, for real, of the room disk
 /// open at `mount`. Closed, a second close is nothing to do.
@@ -284,6 +330,8 @@ fn a_room_disk_is_made_opened_closed_and_wiped_for_real() {
         canary,
         "what was written didn't come back"
     );
+    held_by_a_bind(&place, &mount).unwrap();
+    run(RoomDiskOp::Open).unwrap();
     operators_close(&place, &mount).unwrap();
 
     let other = Keeper::start(&place, "other").unwrap();

@@ -7,6 +7,23 @@ import type { DataCommand } from './data-commands.js';
 import { whereShort } from './model.js';
 import type { ModelView } from './model.js';
 export type VaultTier = 'file' | 'totp' | 'hardware_key';
+/** Why the agent's computer is off. */
+export type RoomDiskOff = 'not_here' | 'not_opened' | 'not_read';
+/** The agent's computer, its room disk: how it is, and its sizes in bytes, as the broker said. */
+export interface RoomDiskView {
+    readonly state: 'absent' | 'closed' | 'mapped' | 'open' | 'off';
+    readonly off: RoomDiskOff | null;
+    /** The most it holds. */
+    readonly cap: number | null;
+    /** In use inside, while it's open. */
+    readonly used: number | null;
+    /** Free inside, while it's open. */
+    readonly free: number | null;
+    /** What it takes of this machine's disk. */
+    readonly onDisk: number | null;
+    /** Free on this machine's disk. */
+    readonly hostFree: number | null;
+}
 export interface SetupView {
     readonly tier: VaultTier;
     /** The security keys that open the vault. */
@@ -18,6 +35,8 @@ export interface SetupView {
     readonly lastBackup: number | null;
     /** Whether the Windows setup made this install. */
     readonly windowsSetup: boolean;
+    /** The agent's computer: none from a broker from before there was one. */
+    readonly roomDisk: RoomDiskView | null;
 }
 /** What's set up, as last read. */
 export type SetupState = {

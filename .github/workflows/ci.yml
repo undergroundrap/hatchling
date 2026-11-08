@@ -360,6 +360,30 @@ jobs:
           waited || { echo "the room disk didn't open again at the next start"; exit 1; }
           sudo hatchling-broker doctor | grep "room disk"
 
+      - name: Check the connected room-disk proof's guards
+        run: python3 -m unittest discover -s scripts -p 'test_room_disk_app.py' -v
+
+      - name: Install a browser for the installed app
+        run: |
+          python3 -m venv "$RUNNER_TEMP/room-app-venv"
+          "$RUNNER_TEMP/room-app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          timeout -k 10 600 "$RUNNER_TEMP/room-app-venv/bin/python" -m playwright install-deps chromium
+          timeout -k 10 300 "$RUNNER_TEMP/room-app-venv/bin/python" -m playwright install chromium
+
+      - name: The real room disk is shown in the connected app
+        run: |
+          umask 077
+          mkdir "$RUNNER_TEMP/room-disk-app"
+          sudo python3 scripts/room_disk_app.py snapshot > "$RUNNER_TEMP/room-disk-app/disk.json"
+          "$RUNNER_TEMP/room-app-venv/bin/python" scripts/room_disk_app.py check "$RUNNER_TEMP/room-disk-app/disk.json" "$RUNNER_TEMP/room-disk-app"
+
+      - name: Retain the room-disk app proof and screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: room-disk-in-the-app
+          path: ${{ runner.temp }}/room-disk-app
+
       - name: Doctor finds nothing wrong, then names a stopped model
         run: |
           sudo hatchling-broker doctor | tee "$RUNNER_TEMP/doctor.log"

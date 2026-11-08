@@ -5824,6 +5824,125 @@
         }
       ]
     },
+    "RoomDiskCondition": {
+      "description": "How the room disk is.",
+      "oneOf": [
+        {
+          "const": "absent",
+          "description": "None has been made yet.",
+          "type": "string"
+        },
+        {
+          "const": "closed",
+          "description": "Made, and closed.",
+          "type": "string"
+        },
+        {
+          "const": "mapped",
+          "description": "Decrypted on this machine, but not mounted at its usual location:\nsomething kept it from being closed. Another mount may still use it.",
+          "type": "string"
+        },
+        {
+          "const": "open",
+          "description": "Decrypted and mounted. An `off` reason still means the room is off.",
+          "type": "string"
+        },
+        {
+          "const": "off",
+          "description": "Off, for a reason [`RoomDiskOff`] gives.",
+          "type": "string"
+        }
+      ]
+    },
+    "RoomDiskOff": {
+      "description": "Why the room disk is off.",
+      "oneOf": [
+        {
+          "const": "not_here",
+          "description": "This install can't have one: it needs a broker run as root, with a\nvault keeper.",
+          "type": "string"
+        },
+        {
+          "const": "not_opened",
+          "description": "It couldn't be made or opened when the broker started.",
+          "type": "string"
+        },
+        {
+          "const": "not_read",
+          "description": "How it is couldn't be read just now.",
+          "type": "string"
+        }
+      ]
+    },
+    "RoomDiskView": {
+      "description": "The agent's room disk, as the app shows it: how it is, and its sizes in\nbytes. Numbers and fixed reasons only, never a path or what a program\nsaid.",
+      "properties": {
+        "cap": {
+          "description": "The most it holds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "free": {
+          "description": "What's free inside, while it's open.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "host_free": {
+          "description": "What's free on this machine's disk, for it to grow into.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "off": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RoomDiskOff"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Why it's off, when it is."
+        },
+        "on_disk": {
+          "description": "What it takes of this machine's disk: it never shrinks.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/RoomDiskCondition",
+          "description": "How it is."
+        },
+        "used": {
+          "description": "What's in use inside, while it's open.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
     "ScheduleGrant": {
       "description": "One capability a scheduled run may hold. The vocabulary mirrors the\nbroker's own grants, so \"subset of the creator's\" is an exact set\ncomparison.",
       "oneOf": [
@@ -9068,6 +9187,17 @@
             "integer",
             "null"
           ]
+        },
+        "room_disk": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RoomDiskView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The agent's room disk, its encrypted computer: none from a broker\nfrom before there was one."
         },
         "vault": {
           "$ref": "#/$defs/VaultProtection",

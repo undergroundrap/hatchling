@@ -1311,9 +1311,7 @@ fn room_disk_reply(
 ) -> Reply {
     let (Some(room), Some(keeper)) = (&policy.room, keeper) else {
         return Reply::Refused {
-            reason: String::from(
-                "there's no room disk here: it needs a broker run as root, with a vault keeper",
-            ),
+            reason: String::from(crate::room_disk::NOT_HERE),
         };
     };
     match crate::room_disk::run(room, keeper, op) {
@@ -3086,6 +3084,58 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 .unwrap_err()
                 .contains("/etc isn't a path a cell may be given")
         );
+    }
+
+    /// Deliveries go to the owner the settings name, not to whoever runs
+    /// the spawner: the policy's owner is read from them. (In a child run
+    /// with `HATCHLING_OWNER_UID`, as the owner is read once a process.)
+    #[test]
+    fn the_policy_gives_deliveries_to_the_owner_the_settings_name() {
+        const CHILD: &str = "HATCHLING_TEST_POLICY_OWNER_CHILD";
+        let named = hatchling_sys::euid().wrapping_add(4242);
+        if std::env::var_os(CHILD).is_some() {
+            let agent = hatchling_sys::euid().max(1);
+            let settings = std::collections::HashMap::from([
+                (
+                    "HATCHLING_BROKER_SOCKET",
+                    String::from("/tmp/hatchling-policy-owner/broker.sock"),
+                ),
+                ("HATCHLING_AGENT_UID", agent.to_string()),
+                (
+                    "HATCHLING_VAULT_DIR",
+                    String::from("/tmp/hatchling-policy-owner/vault"),
+                ),
+            ]);
+            let get = |key: &str| settings.get(key).cloned();
+            let read = Policy::parse(
+                &get,
+                PathBuf::from("/tmp/hatchling-policy-owner-temp"),
+                (hatchling_sys::euid(), hatchling_sys::egid()),
+            )
+            .unwrap();
+            assert_eq!(
+                read.owner, named,
+                "deliveries would go to whoever runs the spawner, not the owner the settings name"
+            );
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "spawner::tests::the_policy_gives_deliveries_to_the_owner_the_settings_name",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HATCHLING_OWNER_UID", named.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }
 
     /// The policy a broker's settings give: its configured cell, and the

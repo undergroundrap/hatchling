@@ -249,6 +249,19 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Nothing is said to be unmounted that wasn't: a directory with
+    /// nothing mounted on it, and a path that isn't there, are refused.
+    #[test]
+    fn an_unmount_of_nothing_mounted_is_refused() {
+        let dir = scratch("unmount");
+        assert!(
+            unmount_strict(&dir).is_err(),
+            "a directory with nothing mounted on it was said to be unmounted"
+        );
+        assert!(unmount_strict(&dir.join("none")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// A directory that isn't mounted on is no mount point, and neither is
     /// a link to one; `/` is.
     #[test]
