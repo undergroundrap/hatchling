@@ -142,7 +142,7 @@ fn run_lost(
 
 /// [`run_pins`], running `guide`.
 fn run_doing(
-    guide: fn(&mut Setup<'_>) -> Result<Done, Error>,
+    guide: impl FnOnce(&mut Setup<'_>) -> Result<Done, Error>,
     vault: &VaultConfig,
     config: &KeyringConfig,
     bench: &mut Bench,
@@ -656,6 +656,139 @@ fn a_stolen_key_also_changes_the_vaults_key() {
     assert!(run.said.text().contains("Your recovery kit"));
     assert_ne!(sealed_files(&vault), before, "sealed anew");
     assert!(!keyring_of(&config).rotation_pending());
+}
+
+/// After a stolen key, the agent's room disk is offered a reset: yes resets
+/// it; no keeps it and says plainly what's left open. With no room disk,
+/// there's nothing to ask.
+#[test]
+fn a_stolen_key_offers_to_reset_the_room_disk() {
+    for (answer, kept) in [("yes", false), ("no", true)] {
+        let (_scratch, vault, config, mut bench, _) =
+            with_keys(&format!("stolen-room-{answer}"), 2);
+        let room = crate::room_disk::tests::Bench::new(&format!("stolen-room-{answer}"));
+        room.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+        let run = run_doing(
+            |setup| lost_key_with(setup, &room.disk),
+            &vault,
+            &config,
+            &mut bench,
+            &["2", "stolen", "", "<code>", answer, "no"],
+            &[],
+            &[],
+        );
+        assert!(
+            run.asked
+                .iter()
+                .any(|asked| asked.contains("Reset the agent's room disk?")),
+            "a stolen key wasn't offered a room disk reset"
+        );
+        assert_eq!(run.done.unwrap(), Done::Protected);
+        let said = run.said.text();
+        assert_eq!(
+            room.disk.image().exists(),
+            kept,
+            "the room disk's reset didn't follow the answer"
+        );
+        if kept {
+            assert!(
+                said.contains("an old copy of the room disk could still read it"),
+                "a room disk kept after a stolen key didn't say what's left open: {said}"
+            );
+        } else {
+            assert!(
+                said.contains("Reset: the agent's room disk is gone"),
+                "{said}"
+            );
+        }
+    }
+    // As run, from this process's settings: no room disk is here, so
+    // there's nothing to ask.
+    let (_scratch, vault, config, mut bench, _) = with_keys("stolen-no-room", 2);
+    let run = run_doing(
+        |setup| {
+            let room = crate::room_disk::here().unwrap();
+            assert!(!room.image().exists(), "a room disk is here");
+            lost_key(setup)
+        },
+        &vault,
+        &config,
+        &mut bench,
+        &["2", "stolen", "", "<code>", "no"],
+        &[],
+        &[],
+    );
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert!(
+        !run.asked.iter().any(|asked| asked.contains("room disk?")),
+        "a reset was offered with no room disk"
+    );
+}
+
+/// The question says what a stolen key changes, and doesn't say an old
+/// copy of everything is no use: it asks about the room disk after.
+#[test]
+fn whether_a_key_is_stolen_is_asked_plainly() {
+    let (_scratch, vault, config) = vault("stolen-asked");
+    let mut bench = Bench::new_keys(1, &[0]);
+    let run = run_doing(
+        |setup| {
+            might_be_stolen(setup).map(|stolen| {
+                if stolen {
+                    Done::Protected
+                } else {
+                    Done::AlreadySetUp
+                }
+            })
+        },
+        &vault,
+        &config,
+        &mut bench,
+        &["stolen"],
+        &[],
+        &[],
+    );
+    assert_eq!(run.done.unwrap(), Done::Protected);
+    assert!(
+        run.asked.iter().any(|asked| asked.contains(
+            "so an old copy of the vault is no use with it, and asks about the agent's room disk"
+        )),
+        "the question still says more is safe than is"
+    );
+}
+
+/// A room disk that can't be looked at isn't offered a reset, and what's
+/// left open is said all the same.
+#[test]
+fn a_room_disk_that_cant_be_looked_at_is_said_plainly() {
+    let (_scratch, vault, config) = vault("room-unchecked");
+    let mut bench = Bench::new_keys(1, &[0]);
+    let room = crate::room_disk::tests::Bench::new("room-unchecked");
+    room.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+    std::fs::set_permissions(
+        room.disk.dir(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o777),
+    )
+    .unwrap();
+    let run = run_doing(
+        |setup| offer_room_reset(setup, &room.disk).map(|()| Done::AlreadySetUp),
+        &vault,
+        &config,
+        &mut bench,
+        &[],
+        &[],
+        &[],
+    );
+    assert_eq!(run.done.unwrap(), Done::AlreadySetUp);
+    let said = run.said.text();
+    assert!(
+        said.contains("couldn't be looked at") && said.contains("could still read it"),
+        "a room disk that couldn't be looked at wasn't said plainly: {said}"
+    );
+    assert!(
+        run.asked.is_empty(),
+        "a reset was offered for a room disk that couldn't be looked at"
+    );
 }
 
 /// Every sealed file in the vault's stores.

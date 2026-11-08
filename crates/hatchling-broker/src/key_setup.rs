@@ -260,7 +260,7 @@ pub fn run_change_pin(
 fn might_be_stolen(setup: &mut Setup<'_>) -> Result<bool, Error> {
     for _ in 0..TRIES {
         let answer = (setup.ask)(
-            "Is it lost, or could someone have it? Type lost or stolen. Stolen also changes the vault's key and your backup codes, so an old copy of your files is no use with it:",
+            "Is it lost, or could someone have it? Type lost or stolen. Stolen also changes the vault's key and your backup codes, so an old copy of the vault is no use with it, and asks about the agent's room disk:",
         )?;
         match answer.trim().to_ascii_lowercase().as_str() {
             "lost" => return Ok(false),
@@ -275,13 +275,24 @@ fn might_be_stolen(setup: &mut Setup<'_>) -> Result<bool, Error> {
 ///
 /// A key that might be in someone's hands also changes the vault's key, as
 /// removing it alone leaves an old copy of the keyring that it, its PIN and
-/// that copy could open. An only key's replacement comes first, as the
-/// vault never has none: a backup code gets in.
+/// that copy could open. That moves the room disk's key slot too, but not
+/// the disk's own key inside it, so it then offers to reset the room disk.
+/// An only key's replacement comes first, as the vault never has none: a
+/// backup code gets in.
 ///
 /// # Errors
 ///
 /// Why it stopped: nothing is removed until it's been authorized.
 pub fn lost_key(setup: &mut Setup<'_>) -> Result<Done, Error> {
+    let room = crate::room_disk::here()?;
+    lost_key_with(setup, &room)
+}
+
+/// [`lost_key`], with the room disk `room`.
+pub(crate) fn lost_key_with(
+    setup: &mut Setup<'_>,
+    room: &crate::room_disk::RoomDisk,
+) -> Result<Done, Error> {
     let path = setup.config.keyring_path()?.to_path_buf();
     finish_interrupted(setup, &path)?;
     let mut keyring = Keyring::load(&path).map_err(ring::vault_error)?;
@@ -317,9 +328,47 @@ pub fn lost_key(setup: &mut Setup<'_>) -> Result<Done, Error> {
         if let Some(codes) = codes {
             recovery_kit(setup, &path, &codes)?;
         }
+        offer_room_reset(setup, room)?;
     }
     let keyring = Keyring::load(&path).map_err(ring::vault_error)?;
     carry_on(setup, keyring, &path)
+}
+
+/// Why a stolen key leaves the room disk readable to someone: a key-slot
+/// change moves the lock, and the disk's own key inside stays.
+const ROOM_GAP: &str = "Someone with the stolen key, its PIN, an old copy of the vault's keyring and an old copy of the room disk could still read it, as it is now and later. To close that: sudo hatchling-broker reset agent, which also clears the rest of what the agent made.";
+
+/// The offer to reset the room disk, after a stolen key.
+const ROOM_RESET: &str = "The agent's room disk has a key of its own inside it, and changing the vault's key doesn't change that one. So someone with the stolen key, its PIN, an old copy of the vault's keyring and an old copy of the room disk could read it, as it is now and later. Resetting it closes that, and deletes everything the agent keeps on it. Reset the agent's room disk? Type yes or no:";
+
+/// After a stolen key, offers to reset the room disk `room`, if there is
+/// one, and says plainly what's left open if it's kept. Whatever happens,
+/// the key is out and the vault's key is changed: this never stops that.
+fn offer_room_reset(setup: &mut Setup<'_>, room: &crate::room_disk::RoomDisk) -> Result<(), Error> {
+    match crate::room_disk::status(room) {
+        Ok(status) if status.state == crate::room_disk::RoomDiskState::Absent => return Ok(()),
+        Ok(_) => {}
+        Err(why) => {
+            setup.say(&format!(
+                "The agent's room disk couldn't be looked at ({why}). If there is one: {ROOM_GAP}"
+            ));
+            return Ok(());
+        }
+    }
+    let answer = (setup.ask)(ROOM_RESET)?;
+    if !answer.trim().eq_ignore_ascii_case("yes") {
+        setup.say(&format!("The agent's room disk is kept. {ROOM_GAP}"));
+        return Ok(());
+    }
+    match crate::room_disk::wipe(room) {
+        Ok(()) => setup.say(
+            "Reset: the agent's room disk is gone. Hatchling makes a new, empty one when it starts.",
+        ),
+        Err(why) => setup.say(&format!(
+            "The agent's room disk wasn't reset: {why}. {ROOM_GAP}"
+        )),
+    }
+    Ok(())
 }
 
 /// Moves a vault below the hardware-key tier to its keys.
