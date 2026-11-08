@@ -2,12 +2,24 @@
 // owner comes back from their terminal. Only the broker says; this app never
 // guesses, and what it reads is counts and a date, never a key.
 import type { LiveClient } from './client.js';
-import type { SetupState as WireSetup } from './protocol/generated.js';
-import type { SetupChoice, SetupPort, SetupState, SetupView } from '../../session/setup.js';
+import type { RoomDiskView as WireRoomDisk, SetupState as WireSetup } from './protocol/generated.js';
+import type { RoomDiskView, SetupChoice, SetupPort, SetupState, SetupView } from '../../session/setup.js';
 const REFUSED = 'Hatchling couldn’t say what’s set up. `hatchling-broker doctor`, run as root, checks everything.';
 const UNEXPECTED = 'Hatchling answered with something else.';
 function storageKey(choice: SetupChoice): string {
     return `hatchling.setup.${choice}`;
+}
+/** The broker's word for the agent's computer, in the app's: numbers and a fixed reason. */
+export function roomDiskOf(disk: WireRoomDisk): RoomDiskView {
+    return {
+        state: disk.state,
+        off: disk.off ?? null,
+        cap: disk.cap ?? null,
+        used: disk.used ?? null,
+        free: disk.free ?? null,
+        onDisk: disk.on_disk ?? null,
+        hostFree: disk.host_free ?? null,
+    };
 }
 /** The broker's word, in the app's. */
 export function setupOf(setup: WireSetup): SetupView {
@@ -18,6 +30,7 @@ export function setupOf(setup: WireSetup): SetupView {
         codesUnconfirmed: setup.vault.codes_unconfirmed ?? false,
         lastBackup: setup.last_backup ?? null,
         windowsSetup: setup.windows_setup ?? false,
+        roomDisk: setup.room_disk ? roomDiskOf(setup.room_disk) : null,
     };
 }
 export class LiveSetup implements SetupPort {

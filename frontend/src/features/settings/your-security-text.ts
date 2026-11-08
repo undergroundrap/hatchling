@@ -79,7 +79,7 @@ export const YOUR_SECURITY = [
     "",
     "**What isn't sealed.** Memory, goals, feed posts, decisions, ideas, run records, coding tools' temporary files, the usage and activity logs, your secrets' names and the Keeper's log aren't sealed where they live, on any install. Anyone who can read the disk can read them. A backup of them is sealed, and opens with what opens your vault: with authenticator codes, that's inside the backup.",
     "",
-    "**What a disk can keep.** Protecting your vault overwrites the old key file before removing it, but a disk can keep older copies of its own, and old sealed files aren't overwritten. Memory in use can reach the swap file, and Hatchling doesn't lock it.",
+    "**What a disk can keep.** Protecting your vault overwrites the old key file before removing it, but a disk can keep older copies of its own, and old sealed files aren't overwritten. That goes for the agent's room disk too, where there is one: changing the vault's key changes its lock, not the key inside it, so an older copy of its lock still opens it with the old key. Memory in use can reach the swap file, and Hatchling doesn't lock it.",
     "",
     "**What the secret check misses.** It looks for a secret as it's held and in common encodings. A secret under 8 bytes counts only when it's the whole text, one that's been changed or split up first isn't found, and cookies aren't checked. What's sent to your model and to APIs you've granted isn't checked. Wrong guesses aren't limited, and each is logged. A follow-up that starts before a stopped run is over goes on, and a restart of the Broker in that moment lets go what it would have held. A service that echoes a credential back in another encoding can show it to the cell.",
     "",

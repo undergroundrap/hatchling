@@ -61,10 +61,11 @@ use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use hatchling_core::framing::write_frame;
+use hatchling_core::ui::{RoomDiskCondition, RoomDiskOff, RoomDiskView};
 use hatchling_isolation::{IsolationBackend as _, Supervised as _};
 use hatchling_vault::{MasterKey, RoomImageId, RoomKey, RoomRootKey};
 use serde::{Deserialize, Serialize};
@@ -163,8 +164,12 @@ pub enum RoomDiskOp {
 pub enum RoomDiskState {
     /// None has been made.
     Absent,
-    /// Made, and closed.
+    /// Made, and closed: no mapping of it.
     Closed,
+    /// Its mapping is there, decrypted, but it isn't mounted: a close that
+    /// failed (something else still holds it) or an open cut short. Never
+    /// said to be closed.
+    Mapped,
     /// Open, and mounted.
     Open,
 }
@@ -920,12 +925,19 @@ impl RoomDisk {
         let image = self.image_id()?;
         let mounted = std::fs::symlink_metadata(&mount).is_ok()
             && hatchling_sys::is_mount_point(&mount).map_err(|error| error.to_string())?;
-        if mounted && self.mapped(&image, &mapping_name(&image))? {
-            let space = hatchling_sys::space(&mount).map_err(|error| error.to_string())?;
-            status.state = RoomDiskState::Open;
-            status.used = Some(space.size.saturating_sub(space.free));
-            status.free = Some(space.available);
+        // A mapping is looked for whether or not it's mounted: one a close
+        // left is decrypted all the same, and is never said to be closed.
+        if !self.mapped(&image, &mapping_name(&image))? {
+            return Ok(status);
         }
+        if !mounted {
+            status.state = RoomDiskState::Mapped;
+            return Ok(status);
+        }
+        let space = hatchling_sys::space(&mount).map_err(|error| error.to_string())?;
+        status.state = RoomDiskState::Open;
+        status.used = Some(space.size.saturating_sub(space.free));
+        status.free = Some(space.available);
         Ok(status)
     }
 
@@ -1334,7 +1346,7 @@ pub(crate) enum AtStart {
 /// says why in the log, and leaves the rest of Hatchling as it is.
 pub(crate) fn open_at_start(spawner: Option<&crate::spawner::Spawner>) -> AtStart {
     let Some(spawner) = spawner else {
-        return off(String::from("no spawner keeps one"));
+        return off(String::from(NO_SPAWNER));
     };
     let state = match spawner.room_disk(RoomDiskOp::Status) {
         Ok(Some(status)) => status.state,
@@ -1360,6 +1372,83 @@ pub(crate) fn open_at_start(spawner: Option<&crate::spawner::Spawner>) -> AtStar
 fn off(reason: String) -> AtStart {
     tracing::warn!(%reason, "the room disk is off: the room is off, and the agent talks");
     AtStart::Off(reason)
+}
+
+/// Why the room is off when no spawner keeps a room disk.
+const NO_SPAWNER: &str = "no spawner keeps one";
+
+/// The spawner's refusal of every room disk op where it keeps none: not
+/// root, or no vault keeper.
+pub(crate) const NOT_HERE: &str =
+    "there's no room disk here: it needs a broker run as root, with a vault keeper";
+
+/// How the room disk came out of this broker's start, once it's started.
+static STARTED: OnceLock<AtStart> = OnceLock::new();
+
+/// Keeps how the room disk came out of this broker's start, for the app to
+/// be told. Once: a later one is ignored.
+pub(crate) fn remember_start(started: AtStart) {
+    let _ = STARTED.set(started);
+}
+
+/// Whether `why` says this install can have no room disk at all.
+fn not_here(why: &str) -> bool {
+    why == NO_SPAWNER || why == NOT_HERE
+}
+
+/// The room disk as the app is told it, from how it came out of the start
+/// (`started`, none before one) and the spawner's `status` of it now:
+/// numbers, and a fixed reason when it's off. Nothing a program said, and
+/// no path, ever reaches the app: a reason is one of [`RoomDiskOff`]'s.
+pub(crate) fn view(
+    started: Option<&AtStart>,
+    status: Result<Option<RoomDiskStatus>, String>,
+) -> RoomDiskView {
+    let off_at_start = match started {
+        Some(AtStart::Off(why)) if not_here(why) => Some(RoomDiskOff::NotHere),
+        Some(AtStart::Off(_)) => Some(RoomDiskOff::NotOpened),
+        Some(AtStart::Opened | AtStart::Made) | None => None,
+    };
+    let off_now = |reason: RoomDiskOff| RoomDiskView {
+        state: RoomDiskCondition::Off,
+        off: Some(off_at_start.unwrap_or(reason)),
+        cap: None,
+        used: None,
+        free: None,
+        on_disk: None,
+        host_free: None,
+    };
+    match status {
+        Ok(Some(status)) => RoomDiskView {
+            state: match (off_at_start, status.state) {
+                // A failed start doesn't mean its cleanup succeeded: keep
+                // the live decrypted state as well as the fixed off reason.
+                (_, RoomDiskState::Mapped) => RoomDiskCondition::Mapped,
+                (_, RoomDiskState::Open) => RoomDiskCondition::Open,
+                (Some(_), _) => RoomDiskCondition::Off,
+                (None, RoomDiskState::Absent) => RoomDiskCondition::Absent,
+                (None, RoomDiskState::Closed) => RoomDiskCondition::Closed,
+            },
+            off: off_at_start,
+            cap: Some(status.cap),
+            used: status.used,
+            free: status.free,
+            on_disk: status.on_disk,
+            host_free: status.host_free,
+        },
+        Err(why) if not_here(&why) => off_now(RoomDiskOff::NotHere),
+        Ok(None) | Err(_) => off_now(RoomDiskOff::NotRead),
+    }
+}
+
+/// The room disk as the app is told it now: [`view`], of this broker's
+/// start and its spawner's status.
+pub(crate) fn view_here() -> RoomDiskView {
+    let status = crate::spawner::spawner().map_or_else(
+        || Err(String::from(NO_SPAWNER)),
+        |spawner| spawner.room_disk(RoomDiskOp::Status),
+    );
+    view(STARTED.get(), status)
 }
 
 /// Hands the keeper the ask for `image`'s key, for `purpose`, with `into`,

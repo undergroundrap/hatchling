@@ -1015,8 +1015,8 @@ fn what_cant_be_looked_at_is_refused_and_what_isnt_there_is_none() {
     std::fs::create_dir(bench.disk.mount_point()).unwrap();
     assert_eq!(
         bench.run(RoomDiskOp::Status).unwrap().unwrap().state,
-        RoomDiskState::Closed,
-        "a disk mapped but not mounted was said to be open"
+        RoomDiskState::Mapped,
+        "a disk mapped but not mounted was said to be open, or closed"
     );
 }
 
@@ -1458,4 +1458,201 @@ fn each_step_of_a_rotation_on_its_own() {
             .unwrap(),
         (0, String::new())
     );
+}
+
+/// The app is told the room disk in numbers and fixed reasons: how it is,
+/// from the start and the spawner's status now, and why it's off when it
+/// is. What a program said, and any path, never reaches it.
+#[test]
+fn the_app_is_told_numbers_and_fixed_reasons_alone() {
+    let status = |state| RoomDiskStatus {
+        state,
+        cap: 10 << 30,
+        image_bytes: Some(10 << 30),
+        on_disk: Some(300 << 20),
+        used: Some(1 << 30),
+        free: Some(9 << 30),
+        host_free: Some(100 << 30),
+    };
+    let leaked = "cryptsetup said: /var/lib/hatchling/room/disk.img: Device or resource busy";
+    let open = view(
+        Some(&AtStart::Opened),
+        Ok(Some(status(RoomDiskState::Open))),
+    );
+    assert_eq!(
+        open,
+        RoomDiskView {
+            state: RoomDiskCondition::Open,
+            off: None,
+            cap: Some(10 << 30),
+            used: Some(1 << 30),
+            free: Some(9 << 30),
+            on_disk: Some(300 << 20),
+            host_free: Some(100 << 30),
+        }
+    );
+    for (state, said) in [
+        (RoomDiskState::Absent, RoomDiskCondition::Absent),
+        (RoomDiskState::Closed, RoomDiskCondition::Closed),
+    ] {
+        assert_eq!(
+            view(Some(&AtStart::Made), Ok(Some(status(state)))).state,
+            said
+        );
+        assert_eq!(view(None, Ok(Some(status(state)))).state, said);
+    }
+    let failed = view(
+        Some(&AtStart::Off(String::from(leaked))),
+        Ok(Some(status(RoomDiskState::Closed))),
+    );
+    assert_eq!(
+        (failed.state, failed.off, failed.on_disk),
+        (
+            RoomDiskCondition::Off,
+            Some(RoomDiskOff::NotOpened),
+            Some(300 << 20)
+        ),
+        "a room disk that didn't open at the start wasn't said to be off, with its sizes"
+    );
+    for why in [NO_SPAWNER, NOT_HERE] {
+        let started = AtStart::Off(String::from(why));
+        assert_eq!(
+            view(Some(&started), Err(String::from(why))).off,
+            Some(RoomDiskOff::NotHere),
+            "an install with no room disk was said to have one that failed"
+        );
+        assert_eq!(
+            view(None, Err(String::from(why))).off,
+            Some(RoomDiskOff::NotHere)
+        );
+    }
+    let unread = view(Some(&AtStart::Opened), Err(String::from(leaked)));
+    assert_eq!(
+        (unread.state, unread.off, unread.cap),
+        (RoomDiskCondition::Off, Some(RoomDiskOff::NotRead), None)
+    );
+    assert_eq!(view(None, Ok(None)).off, Some(RoomDiskOff::NotRead));
+    for told in [open, failed, unread] {
+        let json = serde_json::to_value(told).unwrap();
+        let keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            keys.iter().all(|key| [
+                "state",
+                "off",
+                "cap",
+                "used",
+                "free",
+                "on_disk",
+                "host_free"
+            ]
+            .contains(key)),
+            "the app was told more than numbers and a reason"
+        );
+        let text = json.to_string();
+        assert!(
+            !text.contains('/') && !text.contains("cryptsetup") && !text.contains("busy"),
+            "what a program said, or a path, reached the app"
+        );
+    }
+    assert!(not_here(NOT_HERE) && not_here(NO_SPAWNER) && !not_here(leaked));
+    // As this test runs: no spawner, so none here.
+    assert_eq!(view_here().off, Some(RoomDiskOff::NotHere));
+}
+
+/// A close that leaves the mapping, decrypted, says so, and the room disk
+/// is then never said to be closed, to the spawner's asker or to the app:
+/// it's mapped until a close takes the mapping away.
+#[test]
+fn a_mapping_a_close_leaves_is_never_said_closed() {
+    let bench = Bench::new("left-mapped");
+    bench.run(RoomDiskOp::Create).unwrap();
+    for left in ["keep-mapped", "fail-close"] {
+        bench.list_own_mapping();
+        bench.switch(left, true);
+        assert!(
+            close(&bench.disk).is_err(),
+            "a close that left the mapping was said to have closed it"
+        );
+        let state = status(&bench.disk).unwrap().state;
+        bench.switch(left, false);
+        assert_eq!(
+            state,
+            RoomDiskState::Mapped,
+            "a room disk whose mapping a close left was said to be closed"
+        );
+        let told = view(
+            Some(&AtStart::Opened),
+            Ok(Some(status(&bench.disk).unwrap())),
+        );
+        assert_eq!(told.state, RoomDiskCondition::Mapped);
+        close(&bench.disk).unwrap();
+        assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Closed);
+    }
+}
+
+/// A failed start can also fail to close its disk: show both facts.
+#[test]
+fn a_failed_start_never_hides_a_decrypted_disk() {
+    for (state, expected) in [
+        (RoomDiskState::Mapped, RoomDiskCondition::Mapped),
+        (RoomDiskState::Open, RoomDiskCondition::Open),
+    ] {
+        let current = RoomDiskStatus {
+            state,
+            cap: 10 << 30,
+            image_bytes: Some(10 << 30),
+            on_disk: Some(300 << 20),
+            used: None,
+            free: None,
+            host_free: Some(100 << 30),
+        };
+        let told = view(
+            Some(&AtStart::Off(String::from("startup failed"))),
+            Ok(Some(current)),
+        );
+        assert_eq!(
+            (told.state, told.off),
+            (expected, Some(RoomDiskOff::NotOpened)),
+            "a failed start hid a currently decrypted disk, or lost why the room is off"
+        );
+    }
+}
+
+/// How the room disk came out of the start is kept for the app: one that
+/// couldn't be opened is told as such afterwards, and a later start kept
+/// doesn't take its place. (In a child: it's kept once a process.)
+#[test]
+fn how_the_start_went_is_kept_for_the_app() {
+    const CHILD: &str = "HATCHLING_TEST_ROOM_START_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        remember_start(AtStart::Off(String::from("cryptsetup couldn't open it")));
+        remember_start(AtStart::Opened);
+        assert_eq!(
+            view_here().off,
+            Some(RoomDiskOff::NotOpened),
+            "how the start went wasn't kept, or a later one took its place"
+        );
+        return;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "room_disk::tests::how_the_start_went_is_kept_for_the_app",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }

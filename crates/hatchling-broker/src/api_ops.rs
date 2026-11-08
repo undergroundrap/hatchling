@@ -38,8 +38,8 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, SetupState, SignInOp, SiteOp,
-    SuggestionOp, UiAction, UiActionResult, UiEventBody, VaultProtection,
+    Decision, GoalOp, Handoff, KeptOp, ProfileOp, ProfileResult, RoomDiskView, SetupState,
+    SignInOp, SiteOp, SuggestionOp, UiAction, UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -109,15 +109,18 @@ fn read_setup(owns: bool) -> (UiActionResult, ApiOutcome) {
     setup_answer(
         crate::keeper::keeper().map(crate::keeper::Keeper::protection),
         crate::backup::last_backup(),
+        crate::room_disk::view_here(),
     )
 }
 
 /// What's set up on this machine, from what the keeper said of the vault
-/// (`asked`, none when there's no keeper) and the last backup: a keeper that
-/// couldn't say is said as such, and nothing is guessed.
+/// (`asked`, none when there's no keeper), the last backup and the room
+/// disk as the app is told it (`room`): a keeper that couldn't say is said
+/// as such, and nothing is guessed.
 fn setup_answer(
     asked: Option<Result<VaultProtection, Error>>,
     last_backup: Option<u64>,
+    room: RoomDiskView,
 ) -> (UiActionResult, ApiOutcome) {
     let unavailable = || {
         (
@@ -134,6 +137,7 @@ fn setup_answer(
                     vault,
                     last_backup,
                     windows_setup: crate::windows_setup::installed(),
+                    room_disk: Some(room),
                 },
             },
             ApiOutcome::Served,
@@ -2257,10 +2261,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Only the owner reads what's set up; with no keeper to say who can
-    /// open the vault, nothing is guessed.
+    /// Only the owner reads what's set up, the room disk with it; with no
+    /// keeper to say who can open the vault, nothing is guessed.
     #[test]
     fn only_the_owner_reads_whats_set_up() {
+        let room = crate::room_disk::view_here();
         let vault = VaultProtection {
             tier: hatchling_core::ui::VaultTier::HardwareKey,
             keys: 2,
@@ -2274,23 +2279,44 @@ mod tests {
             ApiOutcome::Refused,
         );
         assert_eq!(
-            setup_answer(Some(Ok(vault)), Some(7)),
+            setup_answer(Some(Ok(vault)), Some(7), room),
             (
                 UiActionResult::Setup {
                     setup: SetupState {
                         vault,
                         last_backup: Some(7),
                         windows_setup: crate::windows_setup::installed(),
+                        room_disk: Some(room),
                     }
                 },
                 ApiOutcome::Served
             )
         );
+        assert_eq!(
+            room.off,
+            Some(hatchling_core::ui::RoomDiskOff::NotHere),
+            "a broker with no spawner was said to have a room disk"
+        );
         let failed = Error::Keeper {
             reason: String::from("no"),
         };
-        assert_eq!(setup_answer(Some(Err(failed)), Some(7)), unavailable);
-        assert_eq!(setup_answer(None, Some(7)), unavailable);
+        assert_eq!(setup_answer(Some(Err(failed)), Some(7), room), unavailable);
+        assert_eq!(setup_answer(None, Some(7), room), unavailable);
+        assert_eq!(
+            read_setup(false),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            ),
+            "someone other than the owner read what's set up"
+        );
+        assert_eq!(
+            read_setup(true),
+            unavailable,
+            "the owner, with no keeper here"
+        );
 
         let config = owner_config(None);
         let key = MasterKey::generate().unwrap();

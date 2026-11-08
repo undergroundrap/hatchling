@@ -86,7 +86,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     crate::spawner::start(spawners)?;
     // The vault is unlocked: the room disk opens, made first if there's
     // none. One that can't turns the room off, and the agent talks.
-    let _room = crate::room_disk::open_at_start(crate::spawner::spawner());
+    crate::room_disk::remember_start(crate::room_disk::open_at_start(crate::spawner::spawner()));
     // Load skills before binding, before any session can name one:
     // each is verified, pinned, and registered, or refused loudly on
     // its own. A broken skill never stops the broker; it never runs.

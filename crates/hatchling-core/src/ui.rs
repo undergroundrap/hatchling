@@ -803,6 +803,70 @@ pub struct SetupState {
     /// to the Start menu rather than to a Linux shell.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub windows_setup: bool,
+    /// The agent's room disk, its encrypted computer: none from a broker
+    /// from before there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room_disk: Option<RoomDiskView>,
+}
+
+/// The agent's room disk, as the app shows it: how it is, and its sizes in
+/// bytes. Numbers and fixed reasons only, never a path or what a program
+/// said.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct RoomDiskView {
+    /// How it is.
+    pub state: RoomDiskCondition,
+    /// Why it's off, when it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub off: Option<RoomDiskOff>,
+    /// The most it holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cap: Option<u64>,
+    /// What's in use inside, while it's open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<u64>,
+    /// What's free inside, while it's open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free: Option<u64>,
+    /// What it takes of this machine's disk: it never shrinks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_disk: Option<u64>,
+    /// What's free on this machine's disk, for it to grow into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_free: Option<u64>,
+}
+
+/// How the room disk is.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RoomDiskCondition {
+    /// None has been made yet.
+    Absent,
+    /// Made, and closed.
+    Closed,
+    /// Decrypted on this machine, but not mounted at its usual location:
+    /// something kept it from being closed. Another mount may still use it.
+    Mapped,
+    /// Decrypted and mounted. An `off` reason still means the room is off.
+    Open,
+    /// Off, for a reason [`RoomDiskOff`] gives.
+    Off,
+}
+
+/// Why the room disk is off.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum RoomDiskOff {
+    /// This install can't have one: it needs a broker run as root, with a
+    /// vault keeper.
+    NotHere,
+    /// It couldn't be made or opened when the broker started.
+    NotOpened,
+    /// How it is couldn't be read just now.
+    NotRead,
 }
 
 /// The tokens counted toward the owner's limits, read and written

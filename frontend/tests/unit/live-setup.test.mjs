@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { LiveSetup, setupOf } from '../../dist/app/adapters/live/setup.js';
+import { LiveSetup, roomDiskOf, setupOf } from '../../dist/app/adapters/live/setup.js';
 import { ago, setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS } from '../../dist/app/session/setup.js';
 const NOW = 2000000000;
 const DAY = 86400;
@@ -126,8 +126,14 @@ function live() {
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 test('the broker\'s word, in the app\'s', () => {
-    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null, windowsSetup: false });
-    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7, windows_setup: true }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7, windowsSetup: true });
+    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null, windowsSetup: false, roomDisk: null });
+    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7, windows_setup: true }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7, windowsSetup: true, roomDisk: null });
+});
+test('the agent\'s computer, in the app\'s words: numbers and a fixed reason, and nothing made up', () => {
+    const disk = { state: 'open', cap: 10, used: 2, free: 8, on_disk: 3, host_free: 90 };
+    assert.deepEqual(setupOf({ ...wire, room_disk: disk }).roomDisk, { state: 'open', off: null, cap: 10, used: 2, free: 8, onDisk: 3, hostFree: 90 });
+    assert.deepEqual(roomDiskOf({ state: 'off', off: 'not_here' }), { state: 'off', off: 'not_here', cap: null, used: null, free: null, onDisk: null, hostFree: null });
+    assert.equal(setupOf({ ...wire, room_disk: null }).roomDisk, null, 'from a broker with none to say');
 });
 test('it reads each time the connection opens, and only then', async () => {
     const { client, port, changes } = live();

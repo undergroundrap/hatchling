@@ -6,6 +6,7 @@ import { button } from '../../components/ui.js';
 import { KEEP_COMMANDS, KEY_COMMANDS, MODEL_COMMANDS, RESET_COMMANDS } from '../../session/data-commands.js';
 import { onWindows } from '../../session/data-commands.js';
 import type { DataCommand } from '../../session/data-commands.js';
+import { roomDiskLines } from '../../session/room-disk.js';
 function copyButton(ctx: AppContext, command: string): HTMLElement {
     const copy = (): void => {
         void navigator.clipboard.writeText(command).then(() => ctx.toast(onWindowsSetup(ctx) ? 'Copied. Open PowerShell from the Start menu, and paste it there.' : 'Copied. Paste it in a terminal on this machine.'), () => ctx.toast('That couldn’t be copied. Select the command instead.', true));
@@ -45,6 +46,14 @@ export function liveSetup(ctx: AppContext): HTMLElement[] {
         commandGroup(ctx, 'Where your model runs', MODEL_COMMANDS),
         commandGroup(ctx, 'Who can open your vault', KEY_COMMANDS),
     ];
+}
+/** The agent's computer, as the broker last said: nothing until it's been read, or from a broker with none to say. */
+export function liveRoomDisk(ctx: AppContext): HTMLElement[] {
+    const setup = ctx.setup?.current();
+    if (setup?.kind !== 'read' || setup.setup.roomDisk === null)
+        return [];
+    const lines = roomDiskLines(setup.setup.roomDisk, setup.setup.tier, setup.setup.windowsSetup);
+    return [h('section', { class: 'room-disk' }, h('h3', { class: 'settings-section-title' }, 'Your agent’s computer'), h('div', { class: 'settings-group' }, h('div', { class: 'data-command' }, ...lines.map(line => h('p', { class: 'data-description' }, line)))))];
 }
 /** Back up, restore and start over. */
 export function liveData(ctx: AppContext): HTMLElement[] {

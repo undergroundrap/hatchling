@@ -163,11 +163,11 @@ class NavigationCases:
         expect(self.page.locator('#message-input')).to_have_value('Still writing while work arrives')
         expect(self.page.locator('.native-file-card').filter(has_text='Sample handoff tarball')).to_be_visible()
 
-    def delayed_transport(self, succeeds):
+    def delayed_transport(self, succeeds, prime_chat=None):
         """Test-only adapter wrapper, injected into a copied document. Never shipped in the app.
         Its promise models a slow transport without adding a protocol member or a production hook.
         """
-        import hashlib, base64
+        import hashlib, base64, json
         from pathlib import Path
         html=(Path(__file__).resolve().parents[2]/'dist/hatchling-standalone.html').read_text()
         match=re.search(r'<script>([\s\S]*?)</script>',html)
@@ -187,6 +187,10 @@ delayed.execute = command => {
     return executeOriginal(command);
 };
 const app = new controller_js_1.App(delayed, root, dialogs, toasts);'''.replace('OUTCOME', 'await executeOriginal(command)' if succeeds else "{ok:false,message:'The test transport rejected this message.'}")
+        if prime_chat is not None:
+            # Seed real adapter state before mounting the app, without a production hook.
+            command={'type':'chat.send','chatId':prime_chat,'text':'\n\n'.join(['Earlier conversation context makes this view scrollable.']*40)}
+            replacement=replacement.replace('let waiting = true;', 'void executeOriginal('+json.dumps(command)+');\nlet waiting = true;')
         modified=script.replace(old,replacement)
         digest=base64.b64encode(hashlib.sha256(modified.encode()).digest()).decode()
         html=html.replace(script,modified).replace(re.search(r"sha256-[A-Za-z0-9+/=]+",html).group(0),'sha256-'+digest)
@@ -230,17 +234,23 @@ const app = new controller_js_1.App(delayed, root, dialogs, toasts);'''.replace(
         self.assertEqual(self.page.locator('.user-bubble').count(),count)
 
     def test_157_late_success_does_not_steal_focus_or_scroll_from_another_chat(self):
-        self.delayed_transport(True)
+        # Force overflow: a tall viewport can hide an incorrect bottom snap.
+        self.delayed_transport(True, prime_chat='main')
+        self.page.set_viewport_size({'width':1919,'height':500})
         self.page.locator('#message-input').fill('A successful delayed message')
         self.page.get_by_role('button',name='Send message',exact=True).click()
         self.page.locator('#chat-back').click()
-        self.page.locator('.chat-scroll').evaluate('(el)=>el.scrollTop=5')
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+        stream=self.page.locator('.chat-scroll')
+        self.assertGreater(stream.evaluate('(el)=>el.scrollHeight-el.clientHeight'),30)
+        stream.evaluate('(el)=>el.scrollTop=el.scrollHeight-el.clientHeight-25')
         self.page.locator('#chat-navigation-toggle').focus()
         top=self.page.locator('.chat-scroll').evaluate('(el)=>el.scrollTop')
         self.page.wait_for_function("() => typeof window.__settleTestSend === 'function'")
         self.page.evaluate('window.__settleTestSend()')
         expect(self.page.locator('.conversation-title')).to_have_text('Chats')
         expect(self.page.locator('#chat-navigation-toggle')).to_be_focused()
+        self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
         self.assertAlmostEqual(self.page.locator('.chat-scroll').evaluate('(el)=>el.scrollTop'),top,delta=2)
         self.route('chat/reference')
         expect(self.page.locator('.user-bubble').filter(has_text='A successful delayed message')).to_be_visible()
@@ -256,3 +266,28 @@ const app = new controller_js_1.App(delayed, root, dialogs, toasts);'''.replace(
         self.page.keyboard.press('Escape')
         expect(self.page.locator('.settings-dialog')).to_have_count(0)
         expect(self.page.locator('.identity-document-dock')).to_be_visible()
+
+    def test_180_current_chat_growth_follows_only_while_near_the_bottom(self):
+        for distance in [25,150]:
+            with self.subTest(distance=distance):
+                self.delayed_transport(True, prime_chat='reference')
+                self.page.set_viewport_size({'width':1919,'height':500})
+                self.page.locator('#message-input').fill('A delayed reply that grows this conversation')
+                self.page.get_by_role('button',name='Send message',exact=True).click()
+                self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+                stream=self.page.locator('.chat-scroll')
+                self.assertGreater(stream.evaluate('(el)=>el.scrollHeight-el.clientHeight'),180)
+                count=self.page.locator('.agent-bubble').count()
+                height=stream.evaluate('(el)=>el.scrollHeight')
+                stream.evaluate('(el,distance)=>el.scrollTop=el.scrollHeight-el.clientHeight-distance',distance)
+                self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+                top=stream.evaluate('(el)=>el.scrollTop')
+                self.page.wait_for_function("() => typeof window.__settleTestSend === 'function'")
+                self.page.evaluate('window.__settleTestSend()')
+                expect(self.page.locator('.agent-bubble')).to_have_count(count+1)
+                self.page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
+                self.assertGreater(stream.evaluate('(el)=>el.scrollHeight'),height,'the fixture must really grow')
+                if distance == 25:
+                    self.assertLessEqual(stream.evaluate('(el)=>el.scrollHeight-el.clientHeight-el.scrollTop'),2)
+                else:
+                    self.assertAlmostEqual(stream.evaluate('(el)=>el.scrollTop'),top,delta=2)
