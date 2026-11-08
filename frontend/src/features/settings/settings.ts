@@ -1,4 +1,4 @@
-import { liveData } from './live-data.js';
+import { liveData, liveRoomDisk } from './live-data.js';
 import { openAgentControls } from '../../automation/bridge.js';
 import { clearDocumentDrafts } from '../library/markdown-editor.js';
 import { icon } from '../../components/icons.js';
@@ -168,7 +168,7 @@ function dataTab(ctx: AppContext, refresh: () => void): HTMLElement {
         return control;
     };
     if (ctx.state.mode === 'live')
-        return h('div', { class: 'settings-stack data-controls-stack' }, ...liveData(ctx), h('div', { class: 'settings-group data-links-card' }, row('Memory & preferences', () => { ctx.dialogs.closeAll(); ctx.navigate('memory'); })));
+        return h('div', { class: 'settings-stack data-controls-stack' }, ...liveData(ctx), ...liveRoomDisk(ctx), h('div', { class: 'settings-group data-links-card' }, row('Memory & preferences', () => { ctx.dialogs.closeAll(); ctx.navigate('memory'); })));
     return h('div', { class: 'settings-stack data-controls-stack' }, privacy, h('section', {}, h('div', { class: 'settings-group data-toggle-card' }, toggle('Help improve our AI models', ctx.state.settings.telemetry, (value) => { void ctx.run({ type: 'settings.telemetry', value }).then(refresh); })), h('p', { class: 'data-description' }, 'Preference preview only. This frontend does not send interactions or train models.')), h('div', { class: 'settings-group data-links-card' }, row('Import memory', importMemory), row('Download your agent data', () => { void ctx.run({ type: 'data.export' }); })), h('section', {}, h('div', { class: 'settings-group data-reset-card' }, button('Reset hatchling', () => resetDemo(ctx), { variant: 'danger' })), h('p', { class: 'data-description' }, 'Removes local demo edits, chat history and saved tasks, then restores the original examples.')), h('details', { class: 'data-advanced' }, h('summary', {}, 'More data options'), row('Memory & preferences', () => { ctx.dialogs.closeAll(); ctx.navigate('memory'); }), row('Recover deleted artifacts', () => { ctx.dialogs.closeAll(); ctx.navigate('library', 'trash'); })));
 }
 function liveHelpTab(ctx: AppContext): HTMLElement {
