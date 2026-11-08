@@ -3119,7 +3119,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             );
             return;
         }
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
                 "spawner::tests::the_policy_gives_deliveries_to_the_owner_the_settings_name",
@@ -3131,8 +3131,9 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             .unwrap();
         assert!(
             output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stdout)
+            "stdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }

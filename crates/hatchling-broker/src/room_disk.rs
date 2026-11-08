@@ -1421,11 +1421,13 @@ pub(crate) fn view(
     match status {
         Ok(Some(status)) => RoomDiskView {
             state: match (off_at_start, status.state) {
+                // A failed start doesn't mean its cleanup succeeded: keep
+                // the live decrypted state as well as the fixed off reason.
+                (_, RoomDiskState::Mapped) => RoomDiskCondition::Mapped,
+                (_, RoomDiskState::Open) => RoomDiskCondition::Open,
                 (Some(_), _) => RoomDiskCondition::Off,
                 (None, RoomDiskState::Absent) => RoomDiskCondition::Absent,
                 (None, RoomDiskState::Closed) => RoomDiskCondition::Closed,
-                (None, RoomDiskState::Mapped) => RoomDiskCondition::Mapped,
-                (None, RoomDiskState::Open) => RoomDiskCondition::Open,
             },
             off: off_at_start,
             cap: Some(status.cap),

@@ -182,6 +182,21 @@ fn mount_options(mount: &Path) -> Option<String> {
     })
 }
 
+/// Release only this test's extra bind, even when an assertion fails.
+/// Use the system tool so a hand mutant of `unmount_strict` can't skip cleanup.
+struct HeldBind(PathBuf);
+
+impl Drop for HeldBind {
+    fn drop(&mut self) {
+        let _ = Command::new("umount")
+            .arg("-l")
+            .arg(&self.0)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 /// A second bind of the open room disk, as a cell's would be, holds it: the
 /// close takes the mount away but can't close the mapping, says so, and the
 /// room disk is then mapped, never said to be closed. Once the bind's gone,
@@ -189,6 +204,7 @@ fn mount_options(mount: &Path) -> Option<String> {
 fn held_by_a_bind(place: &Place, mount: &Path) -> Result<(), Failed> {
     let held = place.dir.join("held");
     std::fs::create_dir(&held)?;
+    let _held_bind = HeldBind(held.clone());
     let bound = Command::new("mount")
         .arg("--bind")
         .arg(mount)

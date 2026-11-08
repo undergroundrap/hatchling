@@ -5839,12 +5839,12 @@
         },
         {
           "const": "mapped",
-          "description": "Decrypted on this machine, but not mounted: something kept it from\nbeing closed. Not closed, and not usable either.",
+          "description": "Decrypted on this machine, but not mounted at its usual location:\nsomething kept it from being closed. Another mount may still use it.",
           "type": "string"
         },
         {
           "const": "open",
-          "description": "Open: the agent's computer can use it.",
+          "description": "Decrypted and mounted. An `off` reason still means the room is off.",
           "type": "string"
         },
         {

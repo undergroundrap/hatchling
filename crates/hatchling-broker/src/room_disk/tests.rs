@@ -1585,10 +1585,41 @@ fn a_mapping_a_close_leaves_is_never_said_closed() {
             RoomDiskState::Mapped,
             "a room disk whose mapping a close left was said to be closed"
         );
-        let told = view(Some(&AtStart::Opened), Ok(Some(status(&bench.disk).unwrap())));
+        let told = view(
+            Some(&AtStart::Opened),
+            Ok(Some(status(&bench.disk).unwrap())),
+        );
         assert_eq!(told.state, RoomDiskCondition::Mapped);
         close(&bench.disk).unwrap();
         assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Closed);
+    }
+}
+
+/// A failed start can also fail to close its disk: show both facts.
+#[test]
+fn a_failed_start_never_hides_a_decrypted_disk() {
+    for (state, expected) in [
+        (RoomDiskState::Mapped, RoomDiskCondition::Mapped),
+        (RoomDiskState::Open, RoomDiskCondition::Open),
+    ] {
+        let current = RoomDiskStatus {
+            state,
+            cap: 10 << 30,
+            image_bytes: Some(10 << 30),
+            on_disk: Some(300 << 20),
+            used: None,
+            free: None,
+            host_free: Some(100 << 30),
+        };
+        let told = view(
+            Some(&AtStart::Off(String::from("startup failed"))),
+            Ok(Some(current)),
+        );
+        assert_eq!(
+            (told.state, told.off),
+            (expected, Some(RoomDiskOff::NotOpened)),
+            "a failed start hid a currently decrypted disk, or lost why the room is off"
+        );
     }
 }
 
@@ -1619,8 +1650,9 @@ fn how_the_start_went_is_kept_for_the_app() {
         .unwrap();
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }

@@ -1555,8 +1555,13 @@ mod tests {
             ..room_facts()
         };
         let (what, _) = problem(room_said(&mapped(true)));
-        assert!(what.contains("unlocked, though not mounted, while the vault is locked"), "{what}");
-        assert!(matches!(room_said(&mapped(false)), Finding::Fine(said) if said.contains("unlocked but not mounted")));
+        assert!(
+            what.contains("unlocked, though not mounted, while the vault is locked"),
+            "{what}"
+        );
+        assert!(
+            matches!(room_said(&mapped(false)), Finding::Fine(said) if said.contains("unlocked but not mounted"))
+        );
         // A note isn't a problem: a report with one says nothing's wrong.
         let (text, problems) = rendered("here", &[("room disk", note_of(&without))]);
         assert_eq!(problems, 0, "a note was counted as a problem");
