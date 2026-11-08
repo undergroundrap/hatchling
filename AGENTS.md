@@ -16,6 +16,8 @@ Instructions for AI agents working in this repository.
 - **Security fixes** follow `CONTRIBUTING.md#security-fixes` and `docs/testing-patterns.md`: name the attack, hand-break the defense, and prove the affected boundary.
 - **Maintainer work** follows [MAINTAINING.md](MAINTAINING.md) for issue/WO tracking, labels, milestones, reviews, the CLA, changelog and branches.
 
+- **App and installer checks** follow [Testing with an AI agent](docs/testing-with-an-agent.md): use a disposable install, prove connected behavior and preserve the evidence. Read the current CI workflows for the complete gates.
+
 ## Repository layout
 
 - `crates/` — Rust workspace. See `docs/arch/module-map.md` for what each

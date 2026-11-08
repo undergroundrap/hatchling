@@ -180,6 +180,8 @@ How releases and first publishes work, step by step:
   lint, design and protocol checks, formatting, and tests.
 - Visual changes follow [`frontend/STYLE_GUIDE.md`](frontend/STYLE_GUIDE.md).
 
+For app and installer changes, [Testing with an AI agent](docs/testing-with-an-agent.md) covers disposable installs, owner-only secret entry and checking real behavior. Use its completion checklist alongside the automated gates; a scripted preview is not a connected-app test.
+
 ### What your PR must include
 
 - **Screenshots** for any UI change. Before/after for visual
