@@ -35,6 +35,8 @@ pub(crate) struct Ran {
     pub environ: Vec<String>,
     /// What it read on stdin.
     pub stdin: Vec<u8>,
+    /// The second key it was given, on a pipe of its own: `luksAddKey`'s.
+    pub new_key: Vec<u8>,
 }
 
 /// A room disk of stand-ins, in a scratch directory of its own, checked
@@ -102,7 +104,11 @@ impl Bench {
              cat > \"$d/stdin\"\n\
              [ -e {root}/hang ] && sleep 30\n\
              [ -e \"{root}/fail-$1\" ] && {{ echo \"the stand-in fails $1\" >&2; exit 3; }}\n\
-             case \" $* \" in *\" --test-passphrase \"*) [ -e {root}/no-key ] && exit 2; exit 0 ;; esac\n\
+             hex() {{ od -An -tx1 -v \"$1\" | tr -d ' \\n'; }}\n\
+             slotted() {{ [ -e \"{root}/slots/$(hex \"$1\")\" ]; }}\n\
+             case \" $* \" in *\" --test-passphrase \"*)\n\
+               [ -d {root}/slots ] && {{ slotted \"$d/stdin\" && exit 0; exit 2; }}\n\
+               [ -e {root}/no-key ] && exit 2; exit 0 ;; esac\n\
              [ \"$1\" = --version ] && [ -e {root}/quiet-version ] && exit 0\n\
              [ \"$1\" = --version ] && [ -e {root}/odd-version ] && {{ echo 'cryptsetup 2.8.4'; exit 1; }}\n\
              [ \"$1\" = --version ] && {{ echo 'cryptsetup 2.8.4 flags: STAND-IN'; exit 0; }}\n"
@@ -121,6 +127,13 @@ impl Bench {
                printf 'CRYPT-LUKS2-%s-%s\\n' \"$(cat {root}/uuid-hex)\" \"$last\" > {root}/sys/dm-7/dm/uuid ;;\n\
              close)\n\
                [ -e {root}/keep-mapped ] || rm -rf {root}/sys/dm-7 ;;\n\
+             luksAddKey)\n\
+               slotted \"$d/stdin\" || exit 2\n\
+               cat \"$last\" > \"$d/new-key\"\n\
+               [ -e {root}/add-ignored ] || touch \"{root}/slots/$(hex \"$d/new-key\")\" ;;\n\
+             luksRemoveKey)\n\
+               slotted \"$d/stdin\" || exit 2\n\
+               rm \"{root}/slots/$(hex \"$d/stdin\")\" ;;\n\
              esac\n\
              exit 0\n"
         );
@@ -157,6 +170,7 @@ impl Bench {
                     argv: lines("argv", '\n'),
                     environ: lines("environ", '\0'),
                     stdin: std::fs::read(dir.join("stdin")).unwrap(),
+                    new_key: std::fs::read(dir.join("new-key")).unwrap_or_default(),
                 }
             })
             .collect()
@@ -166,6 +180,28 @@ impl Bench {
     pub(crate) fn forget_runs(&self) {
         std::fs::remove_dir_all(self.root.join("log")).unwrap();
         std::fs::create_dir(self.root.join("log")).unwrap();
+    }
+
+    /// Turns the cryptsetup stand-in's key slots on, holding `keys`: from
+    /// now a key opens the image only from a slot, and `luksAddKey` and
+    /// `luksRemoveKey` change them, each authorized by a key in one.
+    pub(crate) fn slots(&self, keys: &[&[u8]]) {
+        let dir = self.root.join("slots");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        for key in keys {
+            std::fs::write(dir.join(hex(key)), b"").unwrap();
+        }
+    }
+
+    /// The keys in the stand-in's slots, in hex, sorted.
+    pub(crate) fn slotted(&self) -> Vec<String> {
+        let mut keys: Vec<String> = std::fs::read_dir(self.root.join("slots"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        keys.sort();
+        keys
     }
 
     /// Sets a stand-in's switch: `fail-<command>`, `hang` or `keep-mapped`.
@@ -991,7 +1027,7 @@ fn what_cant_be_looked_at_is_refused_and_what_isnt_there_is_none() {
 #[test]
 fn a_vault_key_is_tested_against_the_image_with_its_own_key() {
     let bench = Bench::new("opens-with");
-    let master = hatchling_vault::MasterKey::generate().unwrap();
+    let master = MasterKey::generate().unwrap();
     assert_eq!(opens_with(&bench.disk, &master).unwrap(), None);
     bench.run(RoomDiskOp::Create).unwrap();
     bench.forget_runs();
@@ -1014,7 +1050,7 @@ fn a_vault_key_is_tested_against_the_image_with_its_own_key() {
             &image
         ])]
     );
-    let key = hatchling_vault::RoomRootKey::of(&master).image_key(&bench.image_id());
+    let key = RoomRootKey::of(&master).image_key(&bench.image_id());
     assert!(
         ran.first().unwrap().stdin == key.expose(),
         "the test wasn't given the image's key from the vault's key"
@@ -1166,4 +1202,260 @@ fn a_stale_room_disk_is_closed_at_start_by_root_alone() {
         reason: String::from("settings that don't parse"),
     };
     assert_eq!(close_stale(Err(unread), 0), Stale::LeftOpen);
+}
+
+/// `bytes` in hex, as the stand-in names its key slots.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut hex, byte| {
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    })
+}
+
+/// The image's keys from two vault keys, `old` and `new`, made here.
+fn two_vault_keys(bench: &Bench) -> (MasterKey, MasterKey, RoomKey, RoomKey) {
+    let (old, new) = (
+        MasterKey::generate().unwrap(),
+        MasterKey::generate().unwrap(),
+    );
+    let image = bench.image_id();
+    let old_key = RoomRootKey::of(&old).image_key(&image);
+    let new_key = RoomRootKey::of(&new).image_key(&image);
+    (old, new, old_key, new_key)
+}
+
+/// What each program run was asked to do, in order.
+fn commands(bench: &Bench) -> Vec<String> {
+    bench
+        .ran()
+        .into_iter()
+        .filter_map(|ran| ran.argv.get(1).cloned())
+        .collect()
+}
+
+/// A change of the vault's key moves the room disk's key slot: the new key
+/// is added first, authorized by the old, and each on a pipe of its own;
+/// only once the new key opens the image is the old one taken out.
+#[test]
+fn a_rotation_adds_the_new_key_before_it_removes_the_old() {
+    let bench = Bench::new("rotate");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let (old, new, old_key, new_key) = two_vault_keys(&bench);
+    bench.slots(&[old_key.expose().as_slice()]);
+    bench.forget_runs();
+    assert_eq!(rotate(&bench.disk, &old, &new).unwrap(), Rotated::Done);
+    assert_eq!(
+        bench.slotted(),
+        [hex(new_key.expose())],
+        "the room disk doesn't open with the new key alone"
+    );
+    assert_eq!(
+        commands(&bench),
+        [
+            "open",
+            "open",
+            "luksAddKey",
+            "open",
+            "luksRemoveKey",
+            "open"
+        ],
+        "the old key was taken out before the new one was seen to open it"
+    );
+    let ran = bench.ran();
+    let image = bench.disk.image().display().to_string();
+    let add = ran.get(2).unwrap();
+    let (named, last) = add.argv.split_at(add.argv.len() - 1);
+    assert_eq!(
+        named,
+        [
+            bench.disk.cryptsetup.display().to_string().as_str(),
+            "luksAddKey",
+            "--batch-mode",
+            "--key-file",
+            "-",
+            "--keyfile-size",
+            "64",
+            "--pbkdf",
+            "pbkdf2",
+            "--pbkdf-force-iterations",
+            "1000",
+            "--new-keyfile-size",
+            "64",
+            image.as_str(),
+        ]
+    );
+    assert!(
+        last.first()
+            .is_some_and(|path| path.starts_with("/dev/fd/")),
+        "the new key wasn't named as a pipe of its own"
+    );
+    assert!(
+        add.stdin == old_key.expose() && add.new_key == new_key.expose(),
+        "the new key wasn't given on its own pipe, authorized by the old"
+    );
+    let remove = ran.get(4).unwrap();
+    assert_eq!(
+        remove
+            .argv
+            .iter()
+            .skip(1)
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "luksRemoveKey",
+            "--batch-mode",
+            "--key-file",
+            "-",
+            "--keyfile-size",
+            "64",
+            image.as_str()
+        ]
+    );
+    assert!(
+        remove.stdin == old_key.expose(),
+        "the key taken out wasn't the old one"
+    );
+    assert!(
+        ran.iter()
+            .all(|ran| ran.environ == ["LC_ALL=C", "PATH=/usr/sbin:/usr/bin"]),
+        "a key-slot change ran with more than its own environment"
+    );
+}
+
+/// A rotation picks up from wherever one stopped, by what opens the image:
+/// added but not removed, only the removal; done, nothing. One neither key
+/// opens is left alone, there's nothing to do with no image, and the same
+/// key twice takes nothing out.
+#[test]
+fn a_rotation_picks_up_from_where_it_stopped() {
+    let bench = Bench::new("rotate-resume");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let (old, new, old_key, new_key) = two_vault_keys(&bench);
+    for (slots, done, ran) in [
+        (
+            vec![old_key.expose().as_slice(), new_key.expose().as_slice()],
+            Rotated::Done,
+            vec!["open", "open", "luksRemoveKey", "open"],
+        ),
+        (
+            vec![new_key.expose().as_slice()],
+            Rotated::Done,
+            vec!["open", "open"],
+        ),
+        (Vec::new(), Rotated::NeitherOpens, vec!["open", "open"]),
+    ] {
+        bench.slots(&slots);
+        bench.forget_runs();
+        let before = bench.slotted();
+        assert_eq!(rotate(&bench.disk, &old, &new).unwrap(), done);
+        assert_eq!(
+            commands(&bench),
+            ran,
+            "a rotation didn't pick up where it stopped"
+        );
+        if done == Rotated::Done {
+            assert_eq!(bench.slotted(), [hex(new_key.expose())]);
+        } else {
+            assert_eq!(
+                bench.slotted(),
+                before,
+                "an image neither key opens was changed"
+            );
+        }
+    }
+    bench.slots(&[old_key.expose().as_slice()]);
+    bench.forget_runs();
+    assert_eq!(rotate(&bench.disk, &old, &old).unwrap(), Rotated::Done);
+    assert_eq!(
+        bench.slotted(),
+        [hex(old_key.expose())],
+        "the same key twice took the only one out"
+    );
+    assert!(commands(&bench).is_empty());
+    assert!(rotate_with_vault(&bench.disk, &old, &MasterKey::generate().unwrap()).is_ok());
+    wipe(&bench.disk).unwrap();
+    bench.forget_runs();
+    assert_eq!(rotate(&bench.disk, &old, &new).unwrap(), Rotated::NoImage);
+    assert!(commands(&bench).is_empty());
+}
+
+/// A rotation that fails at any step leaves a key that opens the image,
+/// and says the change isn't finished; run again, it finishes.
+#[test]
+fn a_rotation_that_fails_keeps_a_key_that_opens() {
+    let bench = Bench::new("rotate-fails");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let (old, new, old_key, new_key) = two_vault_keys(&bench);
+    let old_only = [hex(old_key.expose())];
+    for stop in ["fail-luksAddKey", "add-ignored", "fail-open"] {
+        bench.slots(&[old_key.expose().as_slice()]);
+        bench.switch(stop, true);
+        let refused = rotate_with_vault(&bench.disk, &old, &new)
+            .unwrap_err()
+            .to_string();
+        bench.switch(stop, false);
+        assert!(refused.contains("isn't finished"), "{refused}");
+        assert_eq!(
+            bench.slotted(),
+            old_only,
+            "a rotation that failed left the room disk without the old key"
+        );
+    }
+    bench.slots(&[old_key.expose().as_slice()]);
+    bench.switch("fail-luksRemoveKey", true);
+    assert!(rotate(&bench.disk, &old, &new).is_err());
+    bench.switch("fail-luksRemoveKey", false);
+    let mut both = vec![hex(old_key.expose()), hex(new_key.expose())];
+    both.sort();
+    assert_eq!(bench.slotted(), both);
+    assert_eq!(rotate(&bench.disk, &old, &new).unwrap(), Rotated::Done);
+    assert_eq!(bench.slotted(), [hex(new_key.expose())]);
+}
+
+/// Each step of a rotation on its own: a key tested, a key added on a pipe
+/// of its own, the whole move, the arguments of a key-slot change, and the
+/// runs under them.
+#[test]
+fn each_step_of_a_rotation_on_its_own() {
+    let bench = Bench::new("rotate-steps");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let (old, new, old_key, new_key) = two_vault_keys(&bench);
+    bench.slots(&[old_key.expose().as_slice()]);
+    assert!(bench.disk.opens(&old_key).unwrap());
+    assert!(!bench.disk.opens(&new_key).unwrap());
+    bench.disk.add_key(&old_key, &new_key).unwrap();
+    assert!(
+        bench.disk.opens(&new_key).unwrap(),
+        "an added key doesn't open the image"
+    );
+    assert_eq!(bench.disk.rotate(&old, &new).unwrap(), Rotated::Done);
+    assert_eq!(bench.slotted(), [hex(new_key.expose())]);
+    assert_eq!(
+        key_args("luksRemoveKey", Path::new("/room/disk.img")),
+        [
+            "luksRemoveKey",
+            "--batch-mode",
+            "--key-file",
+            "-",
+            "--keyfile-size",
+            "64",
+            "/room/disk.img"
+        ]
+    );
+    let tool = &bench.disk.mke2fs;
+    let version = [OsString::from("-V")];
+    assert!(
+        bench
+            .disk
+            .run_tool_giving(tool, &version, None, None)
+            .is_ok()
+    );
+    assert_eq!(
+        bench
+            .disk
+            .run_tool_keyed(tool, &version, None, None)
+            .unwrap(),
+        (0, String::new())
+    );
 }

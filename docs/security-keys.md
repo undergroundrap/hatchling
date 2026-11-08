@@ -139,7 +139,7 @@ sudo hatchling-broker vault-keyring lost-key
 Pick the key from the list, and say whether it's **lost** or **stolen**:
 
 - **Lost:** it's removed, so a finder can't use it with a guessed PIN.
-- **Stolen:** the vault's key changes too, and you get new backup codes, so an old copy of your files is no use with the key. It takes a few more seconds, and your other key stays registered.
+- **Stolen:** the vault's key changes too, and you get new backup codes, so an old copy of the vault is no use with the key. It takes a few more seconds, and your other key stays registered. Then it offers to reset the agent's room disk, if it has one: changing the vault's key changes the room disk's lock, but not the key inside it, so someone with the stolen key, its PIN, an old copy of the vault's keyring and an old copy of the room disk could still read it. A reset deletes what the agent kept there. Keep it, and it says so.
 
 Then it offers to add a replacement. If it was your only key, the replacement comes first, and a backup code gets you in.
 
