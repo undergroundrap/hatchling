@@ -70,11 +70,14 @@ paths an unprivileged one never does:
 - it drops to users of its own once it has started.
 
 CI's "cells as root" job runs the cell suites as root
-(`scripts/root-pass.sh`), and every suite must run. Run it yourself
-before you push a change to any of these:
+(`scripts/root-pass.sh`), and every suite must run. The suites that
+mount (`hatchling-sys --test locked_mount`) skip when not run as root,
+and `HATCHLING_REQUIRE_ROOT_MOUNTS=1`, which the pass sets, makes that a
+failure. Run it yourself before you push a change to any of these:
 - how a cell is spawned, or which user it runs as;
 - whose a file, socket or directory is, or who it's handed to;
 - the spawner's policy;
+- what is mounted, and how;
 - anything that branches on running as root.
 
 ```bash

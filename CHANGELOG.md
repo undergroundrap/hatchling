@@ -6,6 +6,11 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- **The vault's access log can name the spawner.** When the spawner asks the vault keeper for a room disk's key, which goes to cryptsetup and never to the spawner or the broker, the ask is a line of its own in `hatchling-broker vault-audit log`. Nothing asks yet: the room disk comes in 0.9.
+  - **Breaking for `hatchling-broker`:** `Caller::Spawner` is new. The workspace is now 0.9.0.
+
 ## [0.8.0] - 2026-11-07
 
 ### Added

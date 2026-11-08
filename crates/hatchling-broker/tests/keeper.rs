@@ -1045,3 +1045,58 @@ fn a_harness_relay_runs_in_the_authority_with_the_key_it_reads() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The real keeper derives the room disks' keys from the vault's master
+/// key at its start (0.9): asked on the spawner's channel, an image's key
+/// goes into the pipe handed over, and it is the key the master key in
+/// the vault's key file derives for that image. The ask is in the access
+/// log as the spawner's.
+#[test]
+fn the_keeper_gives_a_room_disks_key_on_the_spawners_channel() {
+    use std::io::Read as _;
+    use std::sync::mpsc;
+
+    use hatchling_broker::keeper::Keeper;
+    use hatchling_vault::{FileKey, RoomRootKey};
+    let dir = scratch("room-key").unwrap();
+    sealed_vault(&dir, &[]).unwrap();
+    let (keeper, _, _, spawner) = Keeper::start_with(program(&dir, &[])).unwrap();
+    let image = "0f1e2d3c-4b5a-4968-8776-a5b4c3d2e1f0";
+    let ask = |channel: &UnixStream| {
+        let (read, write) = hatchling_sys::pipe().unwrap();
+        let asked = serde_json::json!({ "image": image, "room_key": "open" });
+        write_frame(channel, asked.to_string().as_bytes()).unwrap();
+        hatchling_sys::net::send_fd(channel.as_fd(), write.as_fd()).unwrap();
+        drop(write);
+        // Read on a thread of its own, so a keeper that holds the pipe
+        // fails this test rather than hang it.
+        let (sent, got) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let read = std::fs::File::from(read).read_to_end(&mut bytes);
+            let _ = sent.send(read.map(|_| bytes));
+        });
+        got.recv_timeout(Duration::from_secs(20))
+            .expect("the keeper held the pipe")
+            .unwrap()
+    };
+    let master = FileKey::new(dir.join("vault.key/key")).load().unwrap();
+    let expected = RoomRootKey::of(&master)
+        .image_key(&image.parse().unwrap())
+        .expose()
+        .to_vec();
+    assert!(
+        ask(&spawner) == expected,
+        "the spawner's pipe didn't get the image's key from the vault's master key"
+    );
+    let log = std::fs::read_to_string(dir.join("vault/.access.log")).unwrap();
+    let line = log.lines().last().unwrap_or_default();
+    assert!(
+        line.contains(r#""caller":"spawner""#)
+            && line.contains(r#""action":"room-key""#)
+            && line.contains(image),
+        "the ask isn't the access log's last line: {line}"
+    );
+    drop(keeper);
+    let _ = std::fs::remove_dir_all(&dir);
+}

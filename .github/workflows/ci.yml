@@ -230,6 +230,31 @@ jobs:
       - name: Run the cell suites as root
         run: HATCHLING_ROOT_PASS=1 bash scripts/check.sh
 
+  # 0.9's room disk, ahead of the code that makes one: can a runner, as
+  # root, make a LUKS2 image from a key in a pipe, open it, mount it
+  # nodev,nosuid,noexec, change its key slot, and close it again
+  # (scripts/room-disk-probe.sh)? Every step must pass, and none is skipped.
+  room-disk:
+    name: room disk probe (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # As a setup will add it: cryptsetup alone, not its boot-time hooks.
+      - name: Install cryptsetup-bin
+        run: |
+          timeout 300 sudo apt-get update -qq
+          timeout 300 sudo apt-get install -y -qq cryptsetup-bin
+
+      - name: Make, open, mount, rekey and close a room disk, as root
+        run: timeout 600 sudo bash scripts/room-disk-probe.sh
+
   service:
     # WO-033: Hatchling installed on a fresh runner with systemd, from this
     # commit's own build, as a stock Ubuntu has it (Ubuntu's AppArmor

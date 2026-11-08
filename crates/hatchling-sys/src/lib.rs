@@ -33,6 +33,7 @@ pub mod fds;
 pub mod idmap;
 pub mod landlock;
 pub mod lock;
+pub mod locked_mount;
 pub mod mounts;
 pub mod namespaces;
 pub mod net;
@@ -51,17 +52,20 @@ pub mod umask;
 pub use copy::{TreeEntry, TreeLimits, copy_tree, open_regular};
 pub use error::Error;
 pub use fds::{
-    StdioKind, cloexec_fds_above_stderr, close_fds_above_stderr_except, fd_flags, inherited_device,
-    keep_across_exec, open_fds, pipe, place_across_exec, stdio_kind, take_stdin, wait_readable,
+    PIPE_ATOMIC_BYTES, StdioKind, cloexec_fds_above_stderr, close_fds_above_stderr_except,
+    fd_flags, inherited_device, is_pipe, keep_across_exec, open_fds, pipe, place_across_exec,
+    stdio_kind, take_stdin, wait_readable, write_whole_to_pipe,
 };
 pub use idmap::IdMap;
 pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
+pub use locked_mount::{is_mount_point, mount_locked_down, unmount_strict, verify_locked_down};
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
 pub use ownership::{
     DirShare, FileKind, chmod_dir, chmod_socket, create_private_dir, dir_share, ensure_private_dir,
     give_dir_to, give_to, hand_file_to, hand_over_socket, owner_traverses, remove_file_of,
-    replace_file, share_dir_with_cell, wipe_file_of, write_file, write_new_file_for,
+    replace_file, share_dir_with_cell, trusted_dir_chain, wipe_file_of, wipe_head_of, write_file,
+    write_new_file_for,
 };
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{
