@@ -4,7 +4,7 @@
 //! structural one: nothing above stderr crosses the exec, whatever
 //! anyone forgot to mark.
 
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd, BorrowedFd, OwnedFd};
 
 use crate::Error;
 
@@ -401,9 +401,61 @@ pub fn wait_readable(fds: &[BorrowedFd<'_>]) -> Result<Vec<bool>, Error> {
     Ok(polled.iter().map(|fd| !fd.revents().is_empty()).collect())
 }
 
+/// The most a write into a pipe can carry and still be atomic: Linux's
+/// `PIPE_BUF`.
+pub const PIPE_ATOMIC_BYTES: usize = 4096;
+
+/// Whether `fd` is a pipe, or a FIFO: what [`write_whole_to_pipe`]
+/// writes into. Never a file, a socket or a terminal.
+#[must_use]
+pub fn is_pipe(fd: BorrowedFd<'_>) -> bool {
+    rustix::fs::fstat(fd).is_ok_and(|stat| {
+        rustix::fs::FileType::from_raw_mode(stat.st_mode) == rustix::fs::FileType::Fifo
+    })
+}
+
+/// Writes `bytes` into the pipe `fd` in one write, whole or not at all,
+/// then closes it: for a secret going straight into the program at the
+/// pipe's other end (0.9: a room disk's key into cryptsetup).
+///
+/// Only into a pipe ([`is_pipe`]), where nothing is kept once it's read,
+/// and only up to [`PIPE_ATOMIC_BYTES`], which a pipe takes whole. The
+/// write doesn't wait: a pipe that's full, or that no one reads from,
+/// fails it rather than hold the writer.
+///
+/// # Errors
+///
+/// [`Error::Process`] when `fd` isn't a pipe, `bytes` is too long, or the
+/// write doesn't go whole. Nothing is written then.
+pub fn write_whole_to_pipe(fd: OwnedFd, bytes: &[u8]) -> Result<(), Error> {
+    use rustix::fs::OFlags;
+    let failed = |source: std::io::Error| Error::Process {
+        operation: "write into a pipe",
+        source,
+    };
+    let refused = |why: &str| failed(std::io::Error::new(std::io::ErrorKind::InvalidInput, why));
+    if !is_pipe(fd.as_fd()) {
+        return Err(refused("it isn't a pipe"));
+    }
+    if bytes.len() > PIPE_ATOMIC_BYTES {
+        return Err(refused("more than a pipe takes whole"));
+    }
+    let raw = |source: rustix::io::Errno| failed(std::io::Error::from(source));
+    let flags = rustix::fs::fcntl_getfl(&fd).map_err(raw)?;
+    rustix::fs::fcntl_setfl(&fd, flags | OFlags::NONBLOCK).map_err(raw)?;
+    let written = rustix::io::write(&fd, bytes).map_err(raw)?;
+    // Closed now: its reader sees the end as soon as it has the bytes.
+    drop(fd);
+    if written == bytes.len() {
+        Ok(())
+    } else {
+        Err(refused("the pipe took part of it"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::os::fd::{AsFd as _, IntoRawFd as _};
+    use std::os::fd::IntoRawFd as _;
     use std::time::Duration;
 
     use super::*;
@@ -942,6 +994,118 @@ mod tests {
             wait_readable(&[read.as_fd(), quiet.as_fd()]).unwrap(),
             [true, false],
             "a hung-up end is ready"
+        );
+    }
+
+    /// What a pipe's reading end holds now, without waiting.
+    fn waiting_in(read: &OwnedFd) -> Vec<u8> {
+        let flags = rustix::fs::fcntl_getfl(read).unwrap();
+        rustix::fs::fcntl_setfl(read, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
+        let mut held = vec![0u8; 128 * 1024];
+        let read = rustix::io::read(read, &mut held).unwrap_or(0);
+        held.truncate(read);
+        held
+    }
+
+    /// Bytes go into a pipe whole, in one write, and the writing end is
+    /// closed after. Into anything that isn't a pipe (a file, a socket),
+    /// nothing goes; nor into a pipe that's full, which fails at once
+    /// rather than wait; nor more than a pipe takes whole.
+    #[test]
+    fn bytes_go_into_a_pipe_whole_or_not_at_all() {
+        use std::os::unix::net::UnixStream;
+        let (read, write) = pipe().unwrap();
+        assert!(is_pipe(read.as_fd()) && is_pipe(write.as_fd()));
+        write_whole_to_pipe(write, b"sixty-four bytes, or so").unwrap();
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut std::fs::File::from(read), &mut got).unwrap();
+        assert_eq!(
+            got, b"sixty-four bytes, or so",
+            "not written whole, or not closed"
+        );
+
+        let dir = std::env::temp_dir().join(format!("hatchling-fds-pipe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("file");
+        let file = std::fs::File::create(&path).unwrap();
+        assert!(!is_pipe(file.as_fd()));
+        assert!(
+            write_whole_to_pipe(OwnedFd::from(file), b"kept").is_err(),
+            "a file was taken for a pipe"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            0,
+            "written into a file"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let (socket, peer) = UnixStream::pair().unwrap();
+        assert!(!is_pipe(socket.as_fd()));
+        assert!(
+            write_whole_to_pipe(OwnedFd::from(socket), b"sent").is_err(),
+            "a socket was taken for a pipe"
+        );
+        let mut sent = Vec::new();
+        std::io::Read::read_to_end(&mut &peer, &mut sent).unwrap();
+        assert!(sent.is_empty(), "written into a socket");
+
+        // A full pipe, already set not to wait: the write fails at once,
+        // on a thread of its own so a write that waits fails this test
+        // rather than hang it.
+        let (read, write) = pipe().unwrap();
+        let flags = rustix::fs::fcntl_getfl(&write).unwrap();
+        rustix::fs::fcntl_setfl(&write, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
+        let mut filled = 0;
+        while let Ok(more) = rustix::io::write(&write, &[1u8; 4096]) {
+            filled += more;
+        }
+        let (told, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = told.send(write_whole_to_pipe(write, b"late").is_err());
+        });
+        assert_eq!(
+            answer.recv_timeout(Duration::from_secs(10)).ok(),
+            Some(true),
+            "a full pipe held the writer, or took it"
+        );
+        let waiting = waiting_in(&read);
+        assert_eq!(waiting.len(), filled, "a full pipe took part of it");
+
+        // A full pipe that would wait: the write is set not to, and fails.
+        let (read, write) = pipe().unwrap();
+        let room = rustix::pipe::fcntl_getpipe_size(&write).unwrap();
+        rustix::io::write(&write, &vec![3u8; room]).unwrap();
+        let (told, answer) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = told.send(write_whole_to_pipe(write, b"late").is_err());
+        });
+        assert_eq!(
+            answer.recv_timeout(Duration::from_secs(10)).ok(),
+            Some(true),
+            "a full pipe that waits held the writer, or took it"
+        );
+        assert_eq!(waiting_in(&read).len(), room, "a full pipe took part of it");
+
+        // As much as a pipe takes whole goes; one byte more doesn't.
+        let (read, write) = pipe().unwrap();
+        let whole = vec![4u8; PIPE_ATOMIC_BYTES];
+        write_whole_to_pipe(write, &whole).unwrap();
+        assert_eq!(
+            waiting_in(&read),
+            whole,
+            "all a pipe takes whole wasn't written"
+        );
+        let (read, write) = pipe().unwrap();
+        let long = vec![2u8; PIPE_ATOMIC_BYTES + 1];
+        assert!(
+            write_whole_to_pipe(write, &long).is_err(),
+            "more than a pipe takes whole was taken"
+        );
+        assert!(
+            waiting_in(&read).is_empty(),
+            "too much for one write, written"
         );
     }
 }

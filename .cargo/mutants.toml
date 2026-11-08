@@ -8,6 +8,12 @@
 # the kill floor fails loudly — the proof must be re-examined then.
 
 exclude_re = [
+    # `wipe_head_of`: `while at < end` -> `<=`. `at` is 0 or a `stop`, which
+    # is at most `end`, so the two differ only when `at == end`: then the
+    # extra pass seeks the next data at `end`, which is past it or isn't
+    # there, and breaks before writing anything. One seek more, nothing
+    # written: no test can tell them apart.
+    "hatchling-sys/src/ownership\\.rs:.*replace < with <= in wipe_head_of",
     # `Channel::cbor`: time left `> BUSY_WAIT` -> `>=`. They differ only when
     # the clock reads exactly `BUSY_WAIT` from the deadline, a nanosecond
     # no test can arrange, and then only in whether one more short wait is

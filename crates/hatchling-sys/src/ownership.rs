@@ -476,8 +476,131 @@ pub fn remove_file_of(path: &Path, kind: FileKind, owners: &[u32]) -> Result<boo
 /// is a link or can't be opened, what's there isn't a regular file of one
 /// of `owners`, or it can't be written or removed. It's not removed then.
 pub fn wipe_file_of(path: &Path, owners: &[u32]) -> Result<bool, Error> {
-    use std::io::Write as _;
+    let wrote = |source| Error::Ownership {
+        operation: "overwrite the file",
+        source,
+    };
+    let Some(Wiping {
+        dir,
+        name,
+        file,
+        size,
+    }) = open_to_wipe(path, owners)?
+    else {
+        return Ok(false);
+    };
+    zero_range(&file, 0, size).map_err(wrote)?;
+    file.sync_all().map_err(wrote)?;
+    rustix::fs::unlinkat(&dir, name, rustix::fs::AtFlags::empty())
+        .map_err(failed("remove the file"))?;
+    Ok(true)
+}
 
+/// Overwrites the first `head` bytes of the regular file at `path` with
+/// zeros, then removes it.
+///
+/// For a disk image whose head holds what opens it (a LUKS2 header and its
+/// key slots): with the head gone, what's left is ciphertext nothing opens,
+/// and the rest of the image isn't written. Overwriting all of a large
+/// sparse image would fill its every hole on the disk below it, a
+/// Windows-hosted one for good; this writes only the head, and only where
+/// the head holds data, so a hole in it stays a hole and the file never
+/// takes more of the disk than it did. A file shorter than `head` is
+/// written to its end, never past it.
+///
+/// Stands behind the same guards as [`wipe_file_of`], with the same checks
+/// of what's opened: a regular file, of one of `owners`, with no other
+/// name. That nothing is there isn't an error.
+///
+/// A file system or a disk can keep older copies of its own: this removes
+/// the copy Hatchling can reach, and doesn't promise more.
+///
+/// # Errors
+///
+/// As [`wipe_file_of`]. The file is not removed then.
+pub fn wipe_head_of(path: &Path, owners: &[u32], head: u64) -> Result<bool, Error> {
+    use rustix::fs::SeekFrom;
+    use rustix::io::Errno;
+    let wrote = |source| Error::Ownership {
+        operation: "overwrite the file's head",
+        source,
+    };
+    let offset = |at: u64| {
+        i64::try_from(at).map_err(|_| refused("wipe a file's head", "an offset past i64"))
+    };
+    let Some(Wiping {
+        dir,
+        name,
+        file,
+        size,
+    }) = open_to_wipe(path, owners)?
+    else {
+        return Ok(false);
+    };
+    let end = head.min(size);
+    let mut at = 0;
+    while at < end {
+        // The next data at or after `at`, and the hole that ends it. Past
+        // the last data there's nothing left to write.
+        let data = match rustix::fs::seek(&file, SeekFrom::Data(offset(at)?)) {
+            Ok(data) => data,
+            Err(Errno::NXIO) => break,
+            Err(error) => return Err(failed("find the file's data")(error)),
+        };
+        if data >= end {
+            break;
+        }
+        let hole = rustix::fs::seek(&file, SeekFrom::Hole(offset(data)?))
+            .map_err(failed("find the file's holes"))?;
+        let stop = hole.min(end);
+        zero_range(&file, data, stop).map_err(wrote)?;
+        at = stop;
+    }
+    file.sync_all().map_err(wrote)?;
+    rustix::fs::unlinkat(&dir, name, rustix::fs::AtFlags::empty())
+        .map_err(failed("remove the file"))?;
+    Ok(true)
+}
+
+/// Writes zeros over the bytes `from..to` of `file`, in place, a block at a
+/// time at its own offset: never before `from`, and never more than a
+/// block past `to`, however the arithmetic goes. A wipe that ran on would
+/// fill the disk it's meant to protect.
+///
+/// # Errors
+///
+/// The first write that fails.
+fn zero_range(file: &std::fs::File, from: u64, to: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt as _;
+    const ZEROS: [u8; 4096] = [0; 4096];
+    for at in (from..to).step_by(ZEROS.len()) {
+        let part = usize::try_from(to - at).map_or(ZEROS.len(), |left| left.min(ZEROS.len()));
+        file.write_all_at(ZEROS.get(..part).unwrap_or_default(), at)?;
+    }
+    Ok(())
+}
+
+/// A file opened to be wiped, and where it is: its directory's handle and
+/// its name there, and its size when opened.
+struct Wiping<'p> {
+    dir: rustix::fd::OwnedFd,
+    name: &'p std::ffi::OsStr,
+    file: std::fs::File,
+    size: u64,
+}
+
+/// The regular file at `path`, opened for writing to wipe it, if it's one
+/// of `owners`' with no other name: none if nothing is there.
+///
+/// Its directory is opened without following a link, and all that follows
+/// is relative to that handle. What's there is looked at before it's
+/// opened, so opening a device has no effect, and again once it's open, so
+/// what's written is what was looked at.
+///
+/// # Errors
+///
+/// As [`wipe_file_of`].
+fn open_to_wipe<'p>(path: &'p Path, owners: &[u32]) -> Result<Option<Wiping<'p>>, Error> {
     use rustix::fs::{AtFlags, FileType, Mode, OFlags};
     use rustix::io::Errno;
     /// Never through a link, or held on a pipe.
@@ -486,29 +609,23 @@ pub fn wipe_file_of(path: &Path, owners: &[u32]) -> Result<bool, Error> {
         .union(OFlags::NONBLOCK)
         .union(OFlags::NOCTTY)
         .union(OFlags::CLOEXEC);
-    let wrote = |source| Error::Ownership {
-        operation: "overwrite the file",
-        source,
-    };
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(refused("wipe a file", "not a file in a directory"));
     };
     let handle = match open_dir_nofollow(dir) {
         Ok(handle) => handle,
-        Err(Errno::NOENT) => return Ok(false),
+        Err(Errno::NOENT) => return Ok(None),
         Err(error) => return Err(failed("open the directory")(error)),
     };
-    // Looked at before it's opened, so opening a device has no effect, and
-    // again once it's open, so what's written is what was looked at.
     match rustix::fs::statat(&handle, name, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(seen) if FileType::from_raw_mode(seen.st_mode) == FileType::RegularFile => {}
         Ok(_) => return Err(refused("wipe a file", "it isn't a regular file")),
-        Err(Errno::NOENT) => return Ok(false),
+        Err(Errno::NOENT) => return Ok(None),
         Err(error) => return Err(failed("look at the file")(error)),
     }
     let file = match rustix::fs::openat(&handle, name, FLAGS, Mode::empty()) {
         Ok(file) => file,
-        Err(Errno::NOENT) => return Ok(false),
+        Err(Errno::NOENT) => return Ok(None),
         Err(error) => return Err(failed("open the file")(error)),
     };
     let stat = rustix::fs::fstat(&file).map_err(failed("look at the file"))?;
@@ -522,18 +639,76 @@ pub fn wipe_file_of(path: &Path, owners: &[u32]) -> Result<bool, Error> {
     if stat.st_nlink != 1 {
         return Err(refused("wipe a file", "it has another name"));
     }
-    let zeros = [0u8; 4096];
-    let mut left = u64::try_from(stat.st_size).unwrap_or(0);
-    let mut file = std::fs::File::from(file);
-    while left > 0 {
-        let part = usize::try_from(left).map_or(zeros.len(), |left| left.min(zeros.len()));
-        file.write_all(zeros.get(..part).unwrap_or_default())
-            .map_err(wrote)?;
-        left -= u64::try_from(part).unwrap_or(left);
+    Ok(Some(Wiping {
+        dir: handle,
+        name,
+        file: std::fs::File::from(file),
+        size: u64::try_from(stat.st_size).unwrap_or(0),
+    }))
+}
+
+/// Why `path`, a directory, can't be trusted with what only `trusted` may
+/// change, if it can't.
+///
+/// Every directory from `/` down to `path`, `path` included, must be a
+/// directory itself, never a link, owned by one of `trusted`, and writable
+/// by no one else: no group or other write bit, so a world-writable
+/// directory with the sticky bit (`/tmp`) is refused too. Then no one but
+/// `trusted` can put anything at a name below it, and a check made of what
+/// is there stays true. Each is looked at in turn from the top, so a
+/// directory is looked at only once what holds it is known to be safe:
+/// nothing else can swap it meanwhile.
+///
+/// `path` is absolute, and each of its parts a plain name: no `.` or `..`.
+///
+/// # Errors
+///
+/// [`Error::Ownership`], naming the first directory that fails.
+pub fn trusted_dir_chain(path: &Path, trusted: &[u32]) -> Result<(), Error> {
+    trusted_chain_from(Path::new("/"), path, trusted)
+}
+
+/// [`trusted_dir_chain`], from `top` down rather than from `/`: `top`
+/// itself is checked too.
+fn trusted_chain_from(top: &Path, path: &Path, trusted: &[u32]) -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt as _;
+    let refuse = |dir: &Path, why: &str| Error::Ownership {
+        operation: "trust a directory",
+        source: io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{}: {why}", dir.display()),
+        ),
+    };
+    let plain = path.is_absolute()
+        && path
+            .components()
+            .skip(1)
+            .all(|part| matches!(part, std::path::Component::Normal(_)));
+    let Some(below) = plain.then(|| path.strip_prefix(top).ok()).flatten() else {
+        return Err(refuse(
+            path,
+            "not a plain absolute path below where it's checked from",
+        ));
+    };
+    let mut dir = top.to_path_buf();
+    let mut parts = below.components();
+    loop {
+        let meta = std::fs::symlink_metadata(&dir)
+            .map_err(|error| refuse(&dir, &format!("can't be looked at: {error}")))?;
+        if !meta.file_type().is_dir() {
+            return Err(refuse(&dir, "isn't a directory itself"));
+        }
+        if !trusted.contains(&meta.uid()) {
+            return Err(refuse(&dir, "isn't owned by a user it's trusted to"));
+        }
+        if meta.mode() & 0o022 != 0 {
+            return Err(refuse(&dir, "is writable by others"));
+        }
+        let Some(part) = parts.next() else {
+            return Ok(());
+        };
+        dir.push(part);
     }
-    file.sync_all().map_err(wrote)?;
-    rustix::fs::unlinkat(&handle, name, AtFlags::empty()).map_err(failed("remove the file"))?;
-    Ok(true)
 }
 
 /// Writes `bytes` to the file at `path`, replacing what it holds, made
@@ -669,6 +844,259 @@ mod tests {
         assert!(wipe_file_of(&empty, &me).unwrap());
         assert!(!empty.exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    const MIB: u64 = 1024 * 1024;
+
+    /// Where the file behind `held` next holds data, from `at`: its size
+    /// when there's none.
+    fn next_data(held: &std::fs::File, at: u64) -> u64 {
+        let size = held.metadata().unwrap().len();
+        match rustix::fs::seek(held, rustix::fs::SeekFrom::Data(i64::try_from(at).unwrap())) {
+            Err(rustix::io::Errno::NXIO) => size,
+            found => found.unwrap(),
+        }
+    }
+
+    /// A sparse image's head is zeros on the disk before it goes, and only
+    /// its head: what's past it is as it was, a hole in the head is still a
+    /// hole, and the file takes no more of the disk than it did. A handle
+    /// opened before, which outlives the name, shows what was written. A
+    /// file shorter than the head is zeroed to its end and no further.
+    #[test]
+    fn a_head_wipe_zeros_the_head_alone_and_fills_no_hole() {
+        use std::os::unix::fs::{FileExt as _, MetadataExt as _};
+        let dir = scratch("wipe-head");
+        let me = [crate::euid()];
+        let image = dir.join("disk.img");
+        let file = std::fs::File::create(&image).unwrap();
+        file.set_len(64 * MIB).unwrap();
+        // Data at the start, and a little more past a hole, both in the
+        // head; and a block past the head, which stays.
+        file.write_all_at(&vec![0xAA; usize::try_from(MIB).unwrap()], 0)
+            .unwrap();
+        file.write_all_at(&[0xBB; 4096], 2 * MIB).unwrap();
+        file.write_all_at(&[0xCC; 4096], 8 * MIB).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        let held = std::fs::File::open(&image).unwrap();
+        let blocks = held.metadata().unwrap().blocks();
+        assert!(
+            next_data(&held, MIB) >= 2 * MIB,
+            "the file system here doesn't keep holes, so this test can't tell"
+        );
+        assert!(wipe_head_of(&image, &me, 4 * MIB).unwrap());
+        assert!(!image.exists(), "the image was left in place");
+        let mut zeroed = vec![1u8; usize::try_from(4 * MIB).unwrap()];
+        held.read_exact_at(&mut zeroed, 0).unwrap();
+        assert!(
+            zeroed.iter().all(|byte| *byte == 0),
+            "the head isn't all zeros"
+        );
+        let mut past = [0u8; 4096];
+        held.read_exact_at(&mut past, 8 * MIB).unwrap();
+        assert_eq!(past, [0xCC; 4096], "what's past the head was written");
+        assert!(
+            next_data(&held, MIB) >= 2 * MIB,
+            "a hole in the head was filled"
+        );
+        let meta = held.metadata().unwrap();
+        assert_eq!(meta.len(), 64 * MIB, "the image changed size");
+        assert!(
+            meta.blocks() <= blocks,
+            "the image takes more of the disk than it did"
+        );
+
+        let short = dir.join("short");
+        std::fs::write(&short, [9u8; 100]).unwrap();
+        let held = std::fs::File::open(&short).unwrap();
+        assert!(wipe_head_of(&short, &me, 4 * MIB).unwrap());
+        assert_eq!(held.metadata().unwrap().len(), 100, "written past its end");
+        let mut after = Vec::new();
+        io::Read::read_to_end(&mut &held, &mut after).unwrap();
+        assert_eq!(after, vec![0u8; 100], "zeros where it was");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Zeros go over exactly the range asked for, at its own offsets: not
+    /// before it, not after it, and not one byte past the file's end.
+    #[test]
+    fn zeros_cover_the_range_and_nothing_else() {
+        let dir = scratch("zero-range");
+        let path = dir.join("bytes");
+        std::fs::write(&path, vec![7u8; 10_000]).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        zero_range(&file, 100, 9_000).unwrap();
+        zero_range(&file, 9_500, 9_500).unwrap();
+        let after = std::fs::read(&path).unwrap();
+        assert_eq!(after.len(), 10_000, "the file changed size");
+        assert!(
+            after.get(..100).unwrap().iter().all(|byte| *byte == 7),
+            "zeros before the range"
+        );
+        assert!(
+            after.get(100..9_000).unwrap().iter().all(|byte| *byte == 0),
+            "the range isn't all zeros"
+        );
+        assert!(
+            after.get(9_000..).unwrap().iter().all(|byte| *byte == 7),
+            "zeros after the range"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A head wipe stands behind the guards a wipe does: another name, a
+    /// link and what's through one, another owner's file and a directory
+    /// are each refused and left as they were. Nothing there is fine.
+    #[test]
+    fn a_head_wipe_is_refused_what_a_wipe_is() {
+        let dir = scratch("wipe-head-guards");
+        let me = [crate::euid()];
+        let named = dir.join("named");
+        std::fs::write(&named, b"kept").unwrap();
+        std::fs::hard_link(&named, dir.join("other")).unwrap();
+        assert!(wipe_head_of(&named, &me, 2).is_err(), "another name");
+        assert_eq!(std::fs::read(dir.join("other")).unwrap(), b"kept");
+        let target = dir.join("target");
+        std::fs::write(&target, b"kept").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(wipe_head_of(&link, &me, 2).is_err(), "a link followed");
+        let through = dir.join("through");
+        std::os::unix::fs::symlink(&dir, &through).unwrap();
+        assert!(wipe_head_of(&through.join("target"), &me, 2).is_err());
+        let stranger = [crate::euid().wrapping_add(1)];
+        assert!(wipe_head_of(&target, &stranger, 2).is_err(), "not ours");
+        assert!(wipe_head_of(&dir, &me, 2).is_err(), "a directory");
+        assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+        assert!(link.is_symlink());
+        assert!(!wipe_head_of(&dir.join("none"), &me, 2).unwrap());
+        // What both wipes open: the file, its size, its directory and name,
+        // or nothing when nothing is there; and the same refusals.
+        let opened = open_to_wipe(&target, &me).unwrap().unwrap();
+        assert_eq!(
+            (opened.size, opened.name),
+            (4, std::ffi::OsStr::new("target"))
+        );
+        drop(opened);
+        assert!(open_to_wipe(&dir.join("none"), &me).unwrap().is_none());
+        assert!(open_to_wipe(&named, &me).is_err(), "another name");
+        assert!(open_to_wipe(&link, &me).is_err(), "a link");
+        assert!(open_to_wipe(&target, &stranger).is_err(), "not ours");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A chain of directories is trusted only when each, from the top down,
+    /// is a directory itself, a trusted user's, and writable by no one
+    /// else; the first that isn't is named. A path that isn't plain and
+    /// absolute is refused before anything is looked at.
+    #[test]
+    fn a_directory_is_trusted_only_through_a_chain_no_one_else_can_change() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let top = scratch("trusted-chain");
+        let me = [crate::euid()];
+        let mode = |dir: &Path, mode: u32| {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let (a, b) = (top.join("a"), top.join("a/b"));
+        std::fs::create_dir_all(&b).unwrap();
+        for dir in [&top, &a, &b] {
+            mode(dir, 0o755);
+        }
+        // Refused at `dir`, for `why`.
+        let named = |result: Result<(), Error>, dir: &Path, why: &str| {
+            let said = result
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+            said.contains(&format!("{}: {why}", dir.display()))
+        };
+        let open = "is writable by others";
+        let itself = "isn't a directory itself";
+        trusted_chain_from(&top, &b, &me).unwrap();
+        trusted_chain_from(&top, &top, &me).unwrap();
+
+        mode(&a, 0o775);
+        assert!(
+            named(trusted_chain_from(&top, &b, &me), &a, open),
+            "group-writable"
+        );
+        mode(&a, 0o757);
+        assert!(
+            named(trusted_chain_from(&top, &b, &me), &a, open),
+            "other-writable"
+        );
+        mode(&a, 0o1777);
+        assert!(
+            named(trusted_chain_from(&top, &b, &me), &a, open),
+            "like /tmp"
+        );
+        mode(&a, 0o755);
+        mode(&b, 0o775);
+        assert!(
+            named(trusted_chain_from(&top, &b, &me), &b, open),
+            "the path itself"
+        );
+        mode(&b, 0o755);
+
+        let stranger = [crate::euid().wrapping_add(1)];
+        assert!(
+            named(
+                trusted_chain_from(&top, &b, &stranger),
+                &top,
+                "isn't owned by a user it's trusted to"
+            ),
+            "not trusted"
+        );
+        let link = a.join("link");
+        std::os::unix::fs::symlink(&b, &link).unwrap();
+        // A link is refused as one, not for its mode, which says nothing.
+        assert!(
+            named(trusted_chain_from(&top, &link, &me), &link, itself),
+            "a link"
+        );
+        std::fs::create_dir(b.join("c")).unwrap();
+        assert!(
+            named(
+                trusted_chain_from(&top, &link.join("c"), &me),
+                &link,
+                itself
+            ),
+            "through a link"
+        );
+        std::fs::write(a.join("file"), b"").unwrap();
+        assert!(
+            named(
+                trusted_chain_from(&top, &a.join("file"), &me),
+                &a.join("file"),
+                itself
+            ),
+            "a file"
+        );
+        assert!(
+            trusted_chain_from(&top, &a.join("none"), &me).is_err(),
+            "nothing there"
+        );
+
+        for refused in [
+            top.join("a/../a/b"),
+            PathBuf::from("a/b"),
+            PathBuf::from("/elsewhere"),
+        ] {
+            assert!(
+                trusted_chain_from(&top, &refused, &me).is_err(),
+                "a path that isn't plain, absolute and below the top was walked"
+            );
+        }
+        assert!(
+            trusted_dir_chain(Path::new("var/lib"), &[0]).is_err(),
+            "relative"
+        );
+        assert!(
+            trusted_dir_chain(Path::new("/var/../etc"), &[0]).is_err(),
+            ".."
+        );
+        std::fs::remove_dir_all(&top).unwrap();
     }
 
     /// Each kind removes what it names, and no other. A link is left, or
