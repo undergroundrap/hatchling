@@ -175,19 +175,37 @@ pub fn migrate_vault(
 /// [`hatchling_vault::rekey`] for the exact semantics (two-phase,
 /// resumable).
 ///
+/// The room disk's key slot moves with the stores, once they're all under
+/// the new key.
+///
 /// # Errors
 ///
 /// Returns [`Error::Vault`] if the new key cannot be loaded/created
-/// or the rotation fails.
+/// or the rotation fails, and [`Error::Usage`] if the room disk's
+/// settings don't parse or its key can't be moved: a rerun with the same
+/// new key file finishes it.
 pub fn rekey_vault(
     stores: &[(Store, PathBuf)],
     old_key: &MasterKey,
     new_key_file: &Path,
 ) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
+    let room = crate::room_disk::here()?;
+    rekey_vault_with(stores, old_key, new_key_file, &room)
+}
+
+/// [`rekey_vault`], with the room disk `room`.
+pub(crate) fn rekey_vault_with(
+    stores: &[(Store, PathBuf)],
+    old_key: &MasterKey,
+    new_key_file: &Path,
+    room: &crate::room_disk::RoomDisk,
+) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
     let new_key = FileKey::new(new_key_file.to_path_buf())
         .load_or_create()
         .map_err(|source| Error::Vault { source })?;
-    reseal_stores(stores, old_key, &new_key)
+    let reports = reseal_stores(stores, old_key, &new_key)?;
+    crate::room_disk::rotate_with_vault(room, old_key, &new_key)?;
+    Ok(reports)
 }
 
 /// Re-seals every existing store in `stores` from `old_key` to `new_key`,
@@ -645,6 +663,53 @@ mod tests {
                 .and_then(|vault| vault.fetch(&name))
                 .is_ok()
         );
+    }
+
+    /// A rekey to a key file moves the room disk's key slot once the stores
+    /// are under the new key; one that can't says the change isn't
+    /// finished, and the same command again finishes it.
+    #[test]
+    fn a_rekey_to_a_key_file_moves_the_room_disks_key_after_the_stores() {
+        use crate::room_disk::tests::{Bench, hex};
+        let dir = crate::api_auth::tests::scratch("vault-ops-rekey-room");
+        let old = MasterKey::generate().unwrap();
+        let name: SecretName = "record".parse().unwrap();
+        SealedVault::open_in(&dir.0.join("spaces"), &old, Store::SPACES)
+            .unwrap()
+            .store(&name, &Secret::new(b"x".to_vec()).unwrap())
+            .unwrap();
+        let stores = [(Store::SPACES, dir.0.join("spaces"))];
+        let bench = Bench::new("rekey-room");
+        bench.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+        let image = bench.image_id();
+        let room_key = |master: &MasterKey| {
+            hex(hatchling_vault::RoomRootKey::of(master)
+                .image_key(&image)
+                .expose())
+        };
+        std::fs::create_dir(bench.root.join("slots")).unwrap();
+        std::fs::write(bench.root.join("slots").join(room_key(&old)), b"").unwrap();
+        let new_file = dir.0.join("new.key");
+        bench.switch("fail-luksAddKey", true);
+        let refused = rekey_vault_with(&stores, &old, &new_file, &bench.disk)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("isn't finished"), "{refused}");
+        let new = FileKey::new(new_file.clone()).load().unwrap();
+        assert!(
+            SealedVault::open_in(&dir.0.join("spaces"), &new, Store::SPACES)
+                .and_then(|vault| vault.fetch(&name))
+                .is_ok(),
+            "the room disk's key moved before the stores"
+        );
+        assert_eq!(
+            bench.slotted(),
+            [room_key(&old)],
+            "a rekey that failed took the old key out"
+        );
+        bench.switch("fail-luksAddKey", false);
+        rekey_vault_with(&stores, &old, &new_file, &bench.disk).unwrap();
+        assert_eq!(bench.slotted(), [room_key(&new)]);
     }
 
     /// The broker's keys hold its configured stores, and open no other;

@@ -505,18 +505,34 @@ fn kek_file_may_go(keyring: &Keyring) -> bool {
 
 /// Finishes a rotation the keyring has committed (WO-003): once the vault
 /// has left the file tier its KEK file goes, every store moves from the
-/// old key to the new, and the retiring key is dropped. Each step is safe
-/// to repeat, so `rekey-vault` resumes here after a crash.
+/// old key to the new, the room disk's key slot moves with them, and the
+/// retiring key is dropped. Each step is safe to repeat, so `rekey-vault`
+/// resumes here after a crash.
 pub(crate) fn finish(
     keyring: &mut Keyring,
     rotation: &Rotation,
     stores: &[(Store, PathBuf)],
     kek_file: &Path,
 ) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
+    let room = crate::room_disk::here()?;
+    finish_with(keyring, rotation, stores, kek_file, &room)
+}
+
+/// [`finish`], with the room disk `room`. A room disk whose key can't be
+/// moved leaves the rotation pending, so the vault isn't served until a
+/// rerun finishes it.
+pub(crate) fn finish_with(
+    keyring: &mut Keyring,
+    rotation: &Rotation,
+    stores: &[(Store, PathBuf)],
+    kek_file: &Path,
+    room: &crate::room_disk::RoomDisk,
+) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
     if kek_file_may_go(keyring) {
         remove_key_file(kek_file)?;
     }
     let reports = crate::reseal_stores(stores, rotation.old(), rotation.new_key())?;
+    crate::room_disk::rotate_with_vault(room, rotation.old(), rotation.new_key())?;
     keyring.finish_rotation(rotation).map_err(vault_error)?;
     Ok(reports)
 }
@@ -4511,6 +4527,71 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert!(!keyring.rotation_pending());
+    }
+
+    /// A rotation moves the room disk's key slot once every store is under
+    /// the new key, and only then is it finished: one whose room disk's key
+    /// can't move stays pending, and a rerun finishes it.
+    #[test]
+    fn a_rotation_moves_the_room_disks_key_before_it_finishes() {
+        use crate::room_disk::tests::{Bench, hex};
+        let (scratch, vault, config) = adopted("finish-room");
+        let old = unlock(&vault, &config).unwrap();
+        let stores = two_stores(&scratch, &vault, &old);
+        let kek_file = config.kek_file(&vault);
+        let mut keyring = Keyring::load(config.keyring.as_deref().unwrap()).unwrap();
+        let kek = Kek::from_file_key(&FileKey::new(kek_file.clone()).load().unwrap());
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let rotated = keyring
+            .rotate_in_place(&unlocked, Some(&kek), &mut [])
+            .unwrap();
+        let bench = Bench::new("finish-room");
+        bench.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+        let image = bench.image_id();
+        let room_key = |master: &MasterKey| {
+            hex(hatchling_vault::RoomRootKey::of(master)
+                .image_key(&image)
+                .expose())
+        };
+        std::fs::create_dir(bench.root.join("slots")).unwrap();
+        std::fs::write(
+            bench
+                .root
+                .join("slots")
+                .join(room_key(rotated.rotation.old())),
+            b"",
+        )
+        .unwrap();
+        bench.switch("fail-luksAddKey", true);
+        let refused = finish_with(
+            &mut keyring,
+            &rotated.rotation,
+            &stores,
+            &kek_file,
+            &bench.disk,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains("isn't finished"), "{refused}");
+        assert!(
+            keyring.rotation_pending(),
+            "a rotation whose room disk's key didn't move was finished"
+        );
+        assert!(
+            opens_all(&stores, rotated.rotation.new_key()),
+            "the room disk's key moved before the stores"
+        );
+        bench.switch("fail-luksAddKey", false);
+        finish_with(
+            &mut keyring,
+            &rotated.rotation,
+            &stores,
+            &kek_file,
+            &bench.disk,
+        )
+        .unwrap();
+        assert!(!keyring.rotation_pending());
+        assert_eq!(bench.slotted(), [room_key(rotated.rotation.new_key())]);
     }
 
     #[test]

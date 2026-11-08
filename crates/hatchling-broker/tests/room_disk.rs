@@ -5,8 +5,10 @@
 //! `nodev,nosuid,noexec`, refuses to run a program, holds a file, is
 //! refused a close while that file is open, closes, and is opaque closed;
 //! it opens again with its key, maps nothing with another vault's, and is
-//! wiped. An image that's a link to a file of the test's own is refused
-//! every op, and the file is left exactly as it was.
+//! wiped. Its key slot moves from one vault's key to another's, closed and
+//! then open, without touching what it holds. An image that's a link to a
+//! file of the test's own is refused every op, and the file is left exactly
+//! as it was.
 //!
 //! Not as root these are skipped, saying so, unless
 //! `HATCHLING_REQUIRE_ROOM_DISK=1` asks for them (the root pass sets it):
@@ -21,7 +23,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use hatchling_broker::room_disk::{self, RoomDisk, RoomDiskOp, RoomDiskState};
+use hatchling_broker::room_disk::{self, RoomDisk, RoomDiskOp, RoomDiskState, Rotated};
 use hatchling_core::framing::{read_frame, write_frame};
 
 /// A room disk's size here: the smallest there is.
@@ -302,6 +304,62 @@ fn a_room_disk_is_made_opened_closed_and_wiped_for_real() {
         "the image's header wasn't overwritten"
     );
     assert_eq!(state().state, RoomDiskState::Absent);
+}
+
+/// A change of the vault's key, for real: the room disk's key slot moves
+/// from one vault's key to another's, closed, without touching the data
+/// area; the old key then fails, and the new one opens it and it mounts.
+/// Then it moves back while the disk is open and mounted, which goes on
+/// working, and the first vault's key opens it again.
+#[test]
+fn a_room_disks_key_moves_with_the_vaults_for_real() {
+    if !as_root("a_room_disks_key_moves_with_the_vaults_for_real") {
+        return;
+    }
+    let place = Place::new("rotate").unwrap();
+    let keeper = Keeper::start(&place, "keeper").unwrap();
+    let other = Keeper::start(&place, "other").unwrap();
+    moved_for_real(&place, &keeper, &other).unwrap();
+}
+
+/// The image past its 16 MiB header: the data area, which a key-slot change
+/// mustn't touch.
+fn data_area(place: &Place) -> Result<Vec<u8>, Failed> {
+    let image = std::fs::read(place.disk.image())?;
+    Ok(image.get(16 * 1024 * 1024..).unwrap_or_default().to_vec())
+}
+
+/// [`a_room_disks_key_moves_with_the_vaults_for_real`], from one vault's
+/// keeper, `keeper`, to another's, `other`, and back.
+fn moved_for_real(place: &Place, keeper: &Keeper, other: &Keeper) -> Result<(), Failed> {
+    let master =
+        |tag: &str| hatchling_vault::FileKey::new(place.dir.join(tag).join("vault.key/key")).load();
+    let (one, two) = (master("keeper")?, master("other")?);
+    room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Create)?;
+    let before = data_area(place)?;
+    assert_eq!(room_disk::rotate(&place.disk, &one, &two)?, Rotated::Done);
+    assert!(
+        data_area(place)? == before,
+        "a key-slot change touched the data area"
+    );
+    assert_eq!(room_disk::opens_with(&place.disk, &one)?, Some(false));
+    assert_eq!(room_disk::opens_with(&place.disk, &two)?, Some(true));
+    assert!(room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Open).is_err());
+    assert!(!place.mapped(), "the old vault's key mapped the room disk");
+    room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Open)?;
+    let mount = place.disk.mount_point();
+    std::fs::write(mount.join("canary"), b"moved")?;
+    // Back again, with the disk open and mounted: it goes on working.
+    assert_eq!(room_disk::rotate(&place.disk, &two, &one)?, Rotated::Done);
+    assert_eq!(std::fs::read(mount.join("canary"))?, b"moved");
+    std::fs::write(mount.join("after"), b"still writable")?;
+    room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Close)?;
+    assert!(room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Open).is_err());
+    room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Open)?;
+    assert_eq!(std::fs::read(mount.join("after"))?, b"still writable");
+    room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Close)?;
+    room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Wipe)?;
+    Ok(())
 }
 
 /// An image that's a link, to a file of the test's own, is refused every op

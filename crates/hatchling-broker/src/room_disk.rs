@@ -20,6 +20,15 @@
 //! close it with the service stopped, and confirm it's closed
 //! ([`crate::backup`]).
 //!
+//! **When the vault's key changes,** the room disk's key slot changes with
+//! it ([`rotate_with_vault`]): the process that changes it holds both vault
+//! keys, derives the image's key from each, and adds the new key before it
+//! removes the old one, so a crash at any point leaves a key that opens it,
+//! and the next run picks up from what opens it then. That changes the lock,
+//! not the disk's own key inside it: an old copy of the image, with the old
+//! vault key, still reads a later copy. `vault-keyring lost-key` offers to
+//! reset the room disk when a key is stolen for that reason.
+//!
 //! **Its key** is derived by the vault keeper from the master key, for that
 //! image's own LUKS UUID ([`hatchling_vault::RoomRootKey`]). The spawner
 //! makes a pipe, gives its reading end to cryptsetup as stdin, closes its own
@@ -47,7 +56,7 @@
 //! empty: only create formats, and only an image it has just made.
 
 use std::ffi::OsString;
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -57,7 +66,7 @@ use std::time::Duration;
 
 use hatchling_core::framing::write_frame;
 use hatchling_isolation::{IsolationBackend as _, Supervised as _};
-use hatchling_vault::RoomImageId;
+use hatchling_vault::{MasterKey, RoomImageId, RoomKey, RoomRootKey};
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
@@ -456,7 +465,19 @@ impl RoomDisk {
         args: &[OsString],
         key: Option<KeyFrom<'_>>,
     ) -> Result<(), String> {
-        let (code, said) = self.run_tool_exit(program, args, key)?;
+        self.run_tool_giving(program, args, key, None)
+    }
+
+    /// [`RoomDisk::run_tool`], giving the program `second` too: a key on a
+    /// pipe of its own, which the arguments name.
+    fn run_tool_giving(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        key: Option<KeyFrom<'_>>,
+        second: Option<SecondKey<'_>>,
+    ) -> Result<(), String> {
+        let (code, said) = self.run_tool_keyed(program, args, key, second)?;
         if code == 0 {
             return Ok(());
         }
@@ -477,6 +498,17 @@ impl RoomDisk {
         program: &Path,
         args: &[OsString],
         key: Option<KeyFrom<'_>>,
+    ) -> Result<(i32, String), String> {
+        self.run_tool_keyed(program, args, key, None)
+    }
+
+    /// [`RoomDisk::run_tool_exit`], giving the program `second` too.
+    fn run_tool_keyed(
+        &self,
+        program: &Path,
+        args: &[OsString],
+        key: Option<KeyFrom<'_>>,
+        second: Option<SecondKey<'_>>,
     ) -> Result<(i32, String), String> {
         let named = || {
             let first = args.first().map(|arg| arg.to_string_lossy().into_owned());
@@ -505,8 +537,13 @@ impl RoomDisk {
             .spawn()
             .map_err(|error| format!("{} can't start: {error}", named()))?;
         // Its copies of the pipe's reading end and of its error output's
-        // end go with it: the program holds the only ones.
+        // end go with it, and so does the second key's reading end, which
+        // crossed into the program: it holds the only ones.
         drop(command);
+        let second = second.map(|second| {
+            drop(second.read);
+            (second.write, second.key)
+        });
         let supervised = hatchling_isolation::platform()
             .supervise(&mut child)
             .map_err(|error| format!("{} can't be supervised: {error}", named()))?;
@@ -520,6 +557,12 @@ impl RoomDisk {
             if let Err(reason) = handed {
                 let _ = supervised.terminate();
                 return Err(reason);
+            }
+        }
+        if let Some((write, key)) = second {
+            if let Err(error) = hatchling_sys::write_whole_to_pipe(write, key.expose()) {
+                let _ = supervised.terminate();
+                return Err(format!("the room disk's new key can't be given: {error}"));
             }
         }
         let exit = supervised
@@ -541,7 +584,7 @@ impl RoomDisk {
     /// test of it alone; nothing is mapped. Only cryptsetup's own answer
     /// that the key doesn't open it (status 2) is a no: anything else that
     /// fails is refused, so a missing program is never taken as a wrong key.
-    fn opens_with(&self, master: &hatchling_vault::MasterKey) -> Result<Option<bool>, String> {
+    fn opens_with(&self, master: &MasterKey) -> Result<Option<bool>, String> {
         if std::fs::symlink_metadata(&self.dir).is_err() {
             return Ok(None);
         }
@@ -551,7 +594,14 @@ impl RoomDisk {
         }
         self.trusted_program(&self.cryptsetup)?;
         let image = self.image_id()?;
-        let key = hatchling_vault::RoomRootKey::of(master).image_key(&image);
+        let key = RoomRootKey::of(master).image_key(&image);
+        self.opens(&key).map(Some)
+    }
+
+    /// Whether `key` opens the image, by cryptsetup's test of it: nothing
+    /// is mapped. Only its own answer that the key doesn't (status 2) is a
+    /// no; anything else that fails is refused.
+    fn opens(&self, key: &RoomKey) -> Result<bool, String> {
         let mut args: Vec<OsString> = [
             "open",
             "--test-passphrase",
@@ -566,14 +616,105 @@ impl RoomDisk {
         .map(OsString::from)
         .collect();
         args.push(self.image().into_os_string());
-        match self.run_tool_exit(&self.cryptsetup, &args, Some(KeyFrom::Held(&key)))? {
-            (0, _) => Ok(Some(true)),
-            (2, _) => Ok(Some(false)),
+        match self.run_tool_exit(&self.cryptsetup, &args, Some(KeyFrom::Held(key)))? {
+            (0, _) => Ok(true),
+            (2, _) => Ok(false),
             (code, said) => Err(format!(
                 "cryptsetup couldn't test the room disk's key, status {code}: {}",
                 said.trim()
             )),
         }
+    }
+
+    /// Moves the image's key slot from the vault key `old`'s key to `new`'s,
+    /// in place, open or not: the data and the disk's own key inside are
+    /// untouched.
+    ///
+    /// It looks first at which keys open the image, so it picks up where a
+    /// run that stopped left it: the new key is added, authorized by the
+    /// old, and only once the new key is seen to open the image is the old
+    /// one removed. So there's always a key that opens it. An image neither
+    /// opens is left as it is: nothing could read it before either.
+    fn rotate(&self, old: &MasterKey, new: &MasterKey) -> Result<Rotated, String> {
+        if std::fs::symlink_metadata(&self.dir).is_err() {
+            return Ok(Rotated::NoImage);
+        }
+        self.check_dir()?;
+        if self.image_at(&self.image())?.is_none() {
+            return Ok(Rotated::NoImage);
+        }
+        self.trusted_program(&self.cryptsetup)?;
+        let image = self.image_id()?;
+        let old = RoomRootKey::of(old).image_key(&image);
+        let new = RoomRootKey::of(new).image_key(&image);
+        // The same key twice: removing the "old" would remove the only one.
+        if old.expose() == new.expose() {
+            return Ok(Rotated::Done);
+        }
+        match (self.opens(&old)?, self.opens(&new)?) {
+            (false, false) => return Ok(Rotated::NeitherOpens),
+            (false, true) => return Ok(Rotated::Done),
+            (true, false) => {
+                self.add_key(&old, &new)?;
+                if !self.opens(&new)? {
+                    return Err(String::from(
+                        "the new key was added to the room disk but doesn't open it, so the old key was kept",
+                    ));
+                }
+            }
+            (true, true) => {}
+        }
+        self.run_tool(
+            &self.cryptsetup,
+            &key_args("luksRemoveKey", &self.image()),
+            Some(KeyFrom::Held(&old)),
+        )?;
+        if self.opens(&old)? {
+            return Err(String::from(
+                "the old key still opens the room disk after it was removed",
+            ));
+        }
+        Ok(Rotated::Done)
+    }
+
+    /// Adds `new` to the image's key slots, authorized by `old`: `old` on
+    /// cryptsetup's stdin, `new` on a pipe of its own, named `/dev/fd/N`.
+    fn add_key(&self, old: &RoomKey, new: &RoomKey) -> Result<(), String> {
+        let given = |error: hatchling_sys::Error| {
+            format!("the room disk's new key can't be given: {error}")
+        };
+        let (read, write) = hatchling_sys::pipe().map_err(given)?;
+        // The reading end crosses into cryptsetup, at its own number: the
+        // one descriptor kept open across the exec. It's closed here once
+        // cryptsetup has started. Nothing else is started meanwhile: a
+        // rotation runs in an operator's command, on its one thread.
+        hatchling_sys::keep_across_exec(read.as_fd()).map_err(given)?;
+        let mut args = key_args("luksAddKey", &self.image());
+        let at = args.len() - 1;
+        for (offset, arg) in [
+            "--pbkdf",
+            "pbkdf2",
+            "--pbkdf-force-iterations",
+            "1000",
+            "--new-keyfile-size",
+            "64",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            args.insert(at + offset, OsString::from(arg));
+        }
+        args.push(OsString::from(format!("/dev/fd/{}", read.as_raw_fd())));
+        self.run_tool_giving(
+            &self.cryptsetup,
+            &args,
+            Some(KeyFrom::Held(old)),
+            Some(SecondKey {
+                read,
+                write,
+                key: new,
+            }),
+        )
     }
 
     /// cryptsetup's version, as it says it: the program checked first.
@@ -828,7 +969,48 @@ enum KeyFrom<'a> {
     /// Asked of the keeper.
     Keeper(&'a Mutex<UnixStream>, &'a RoomImageId, RoomKeyFor),
     /// Held here.
-    Held(&'a hatchling_vault::RoomKey),
+    Held(&'a RoomKey),
+}
+
+/// A second key a program is given, beside the one on its stdin: the pipe
+/// it's read from, whose reading end the program inherits.
+struct SecondKey<'a> {
+    /// The reading end, closed here once the program has started.
+    read: OwnedFd,
+    /// The writing end, the key written into it whole.
+    write: OwnedFd,
+    /// The key.
+    key: &'a RoomKey,
+}
+
+/// What a change of the room disk's key did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rotated {
+    /// There's no room disk: nothing to change.
+    NoImage,
+    /// The new vault key's key opens it, and the old one's doesn't.
+    Done,
+    /// Neither opens it, so nothing was changed: nothing could read it
+    /// before either.
+    NeitherOpens,
+}
+
+/// The arguments of `command`, a key-slot change of `image` authorized by
+/// a key on stdin.
+fn key_args(command: &str, image: &Path) -> Vec<OsString> {
+    let mut args: Vec<OsString> = [
+        command,
+        "--batch-mode",
+        "--key-file",
+        "-",
+        "--keyfile-size",
+        "64",
+    ]
+    .into_iter()
+    .map(OsString::from)
+    .collect();
+    args.push(image.as_os_str().to_owned());
+    args
 }
 
 /// The room disk's record, beside the image.
@@ -1001,14 +1183,54 @@ pub fn wipe(disk: &RoomDisk) -> Result<(), String> {
 /// # Errors
 ///
 /// A check that failed, or cryptsetup failing for anything but the key.
-pub fn opens_with(
-    disk: &RoomDisk,
-    master: &hatchling_vault::MasterKey,
-) -> Result<Option<bool>, String> {
+pub fn opens_with(disk: &RoomDisk, master: &MasterKey) -> Result<Option<bool>, String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
     let opens = disk.opens_with(master);
     drop(turn);
     opens
+}
+
+/// Moves the room disk's key slot from the vault key `old` to `new`, one op
+/// at a time with the spawner's. See [`RoomDisk`]'s `rotate`.
+///
+/// # Errors
+///
+/// A check that failed, or a step of cryptsetup's: there's still a key
+/// that opens it, and running it again picks up from there.
+pub fn rotate(disk: &RoomDisk, old: &MasterKey, new: &MasterKey) -> Result<Rotated, String> {
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let rotated = disk.rotate(old, new);
+    drop(turn);
+    rotated
+}
+
+/// The room disk's key slot moved with a change of the vault's key, from
+/// `old` to `new`: what each change of it runs once every store is under
+/// the new key, and before the change is finished. One that fails leaves
+/// the change unfinished, so the vault isn't served until it's run again.
+///
+/// # Errors
+///
+/// [`Error::Usage`], saying why the room disk's key wasn't changed.
+pub(crate) fn rotate_with_vault(
+    disk: &RoomDisk,
+    old: &MasterKey,
+    new: &MasterKey,
+) -> Result<(), Error> {
+    match rotate(disk, old, new) {
+        Ok(Rotated::NeitherOpens) => {
+            tracing::warn!(
+                "the room disk opens with neither the old nor the new vault key, so its key wasn't changed"
+            );
+            Ok(())
+        }
+        Ok(Rotated::NoImage | Rotated::Done) => Ok(()),
+        Err(reason) => Err(Error::Usage {
+            reason: format!(
+                "the vault's key changed, but the agent's room disk's key didn't, so the change isn't finished: {reason}. Run the same command again to finish it"
+            ),
+        }),
+    }
 }
 
 /// How the room disk is, one op at a time with the spawner's.
