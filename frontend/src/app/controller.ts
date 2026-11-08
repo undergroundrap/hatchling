@@ -93,6 +93,7 @@ export class App implements AppContext {
     private readonly chatScrolls = new Map<string, {
         top: number;
         bottom: boolean;
+        height: number;
     }>();
     private readonly drafts = new ComposerDrafts();
     private readQueued = false;
@@ -234,7 +235,7 @@ export class App implements AppContext {
         const previous = this.root.querySelector<HTMLElement>('.chat-scroll');
         const previousKey = previous?.dataset['scroll'];
         if (previous && previousKey)
-            this.chatScrolls.set(previousKey, { top: previous.scrollTop, bottom: previous.scrollHeight - previous.scrollTop - previous.clientHeight < 40 });
+            this.chatScrolls.set(previousKey, { top: previous.scrollTop, bottom: previous.scrollHeight - previous.scrollTop - previous.clientHeight < 40, height: previous.scrollHeight });
         disposeIconMotion(this.root);
         replacePreservingFocus(this.root, shell);
         animateChatNavigation(this.root, previousChat, previousSidebar);
@@ -242,14 +243,14 @@ export class App implements AppContext {
         const streamKey = stream?.dataset['scroll'];
         if (stream && streamKey) {
             const saved = this.chatScrolls.get(streamKey);
-            stream.scrollTop = !saved || saved.bottom ? stream.scrollHeight : saved.top;
+            stream.scrollTop = !saved || (saved.bottom && saved.height !== stream.scrollHeight) ? stream.scrollHeight : saved.top;
             const jump = this.root.querySelector<HTMLElement>('.jump-to-latest');
             const update = (): void => {
                 // A reflow scroll is not the user leaving the bottom of the conversation.
                 if (window.innerWidth !== this.lastViewportWidth || window.innerHeight !== this.lastViewportHeight)
                     return;
                 const bottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 60;
-                this.chatScrolls.set(streamKey, { top: stream.scrollTop, bottom });
+                this.chatScrolls.set(streamKey, { top: stream.scrollTop, bottom, height: stream.scrollHeight });
                 if (jump)
                     jump.hidden = bottom;
             };

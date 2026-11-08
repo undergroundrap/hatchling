@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **An update in another chat keeps your reading position.** A reply arriving elsewhere no longer snaps the conversation you are reading to the bottom. New replies in the current chat still follow when you are near the bottom.
+
 ### Added
 
 - **The vault's access log can name the spawner.** When the spawner asks the vault keeper for a room disk's key, which goes to cryptsetup and never to the spawner or the broker, the ask is a line of its own in `hatchling-broker vault-audit log`. Nothing asks yet: the room disk comes in 0.9.
