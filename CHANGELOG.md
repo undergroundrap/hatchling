@@ -10,6 +10,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 - **The vault's access log can name the spawner.** When the spawner asks the vault keeper for a room disk's key, which goes to cryptsetup and never to the spawner or the broker, the ask is a line of its own in `hatchling-broker vault-audit log`. Nothing asks yet: the room disk comes in 0.9.
   - **Breaking for `hatchling-broker`:** `Caller::Spawner` is new. The workspace is now 0.9.0.
+- **The room disk's settings, ahead of the room disk.** `HATCHLING_ROOM_DISK_DIR` (default `/var/lib/hatchling/room`) and `HATCHLING_ROOM_DISK_SIZE` (default 10G, from 64M to 1024G) say where the agent's encrypted room disk will be made and how large. Nothing makes one yet. A broker run as root now refuses to start if that directory overlaps a store, the vault, the keeper's or the broker's directories, or the agent socket's, and says which: set `HATCHLING_ROOM_DISK_DIR` elsewhere.
 
 ## [0.8.0] - 2026-11-07
 

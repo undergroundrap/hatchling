@@ -19,6 +19,11 @@
 //! - **A change to a harness's work trees** (`harness-tree` give or
 //!   reclaim): the spawner runs it, its id maps included, and says how it
 //!   went ([`Spawner::trees`]).
+//! - **The room disk** (0.9): create, open, close, status or wipe, by name
+//!   alone ([`crate::room_disk`], [`Spawner::room_disk`]). Where it is, how
+//!   large, and what runs are the spawner's own settings. It's there only
+//!   when the spawner runs as root with a vault keeper, and the spawner
+//!   closes it when the broker goes.
 //!
 //! **Lifetimes.** A helper watches its parent and ends with it: the
 //! spawner, which ends when the broker does (its pair with the broker
@@ -56,8 +61,10 @@ use serde::{Deserialize, Serialize};
 use crate::browser_session::BrowserSettings;
 use crate::cell::{CellConfig, CellLimits, Process, agent_identity};
 use crate::harness_tree::TreeOp;
+use crate::room_disk::RoomDisk;
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
-use crate::{Config, Error};
+use crate::vault_keyring::KeyringConfig;
+use crate::{Config, Error, RedactionConfig};
 
 /// The spawner's subcommand: `hatchling-broker spawner`, started only by
 /// the broker.
@@ -77,6 +84,10 @@ const REAP_AFTER_KILL: Duration = Duration::from_secs(5);
 
 /// How long the broker waits for the spawner to say a helper started.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How long the broker waits for the room disk's op: past the deadlines of
+/// the four programs a create runs, one after another.
+const ROOM_DISK_TIMEOUT: Duration = Duration::from_secs(1500);
 
 /// How long the broker waits for a change to a harness's trees: past the
 /// spawner's own bound on its tree helper.
@@ -346,6 +357,9 @@ pub(crate) struct Policy {
     workspace: Option<PathBuf>,
     /// The broker's owner, who is given every delivery.
     owner: u32,
+    /// The room disk, when this spawner keeps one: as root, with a vault
+    /// keeper (0.9).
+    room: Option<RoomDisk>,
 }
 
 /// Who a cell runs as, and the broker's uid as the cell sees it.
@@ -363,6 +377,7 @@ impl Policy {
         reference: &CellConfig,
         (identity, broker_in_cell): (CellIdentity, u32),
         paths: Paths,
+        room: Option<RoomDisk>,
     ) -> Self {
         Self {
             skill: RunsAs {
@@ -379,6 +394,7 @@ impl Policy {
             agent_program: None,
             workspace: None,
             owner: crate::owner::recorded(),
+            room,
         }
     }
 
@@ -419,6 +435,26 @@ impl Policy {
         let reference = CellConfig::skill_with("spawner-policy", get)?;
         let agent = agent_identity(get)?;
         let config = Config::parse(get)?;
+        // The room disk's settings are checked wherever it runs. It's kept
+        // only by a spawner run as root, and then apart from everything
+        // else Hatchling keeps.
+        let room = RoomDisk::parse(get)?;
+        let room = (hatchling_sys::euid() == 0).then_some(room);
+        if let Some(room) = &room {
+            let redaction = config
+                .channel_ingress
+                .as_ref()
+                .map(|_| RedactionConfig::parse(&config, get))
+                .transpose()?;
+            let keyring = KeyringConfig::parse(get)?;
+            let apart = crate::room_disk::kept_apart(&config, redaction.as_ref(), &keyring);
+            crate::room_disk::check_apart(room.dir(), &apart).map_err(|reason| {
+                Error::InvalidConfig {
+                    key: "HATCHLING_ROOM_DISK_DIR",
+                    reason,
+                }
+            })?;
+        }
         let mut exact = std::collections::BTreeSet::new();
         let mut under = Vec::new();
         let agent_program = get(AGENT_BIN).map(PathBuf::from);
@@ -445,7 +481,7 @@ impl Policy {
             agent_program: agent_program.map(resolve),
             workspace: config.artifacts.workspace,
             owner: crate::owner::owner()?,
-            ..Self::of(&reference, agent, paths)
+            ..Self::of(&reference, agent, paths, room)
         })
     }
 
@@ -522,6 +558,8 @@ enum Request {
         group: u32,
         direct: bool,
     },
+    /// The room disk's `op`, by name alone (0.9).
+    RoomDisk { op: crate::room_disk::RoomDiskOp },
 }
 
 /// What the spawner answers.
@@ -534,8 +572,12 @@ enum Reply {
     Exited { status: i32 },
     /// Refused, or failed, and why.
     Refused { reason: String },
-    /// The trees were changed.
+    /// The trees were changed, or the room disk's op done.
     Done,
+    /// How the room disk is.
+    RoomDisk {
+        status: crate::room_disk::RoomDiskStatus,
+    },
 }
 
 /// The broker's end of the spawner.
@@ -722,7 +764,7 @@ impl Spawner {
         let pid = match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Started { pid } => pid,
             Reply::Refused { reason } => return Err(reason),
-            Reply::Exited { .. } | Reply::Done => {
+            Reply::Exited { .. } | Reply::Done | Reply::RoomDisk { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -791,6 +833,32 @@ impl Spawner {
         match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Done => Ok(()),
             Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. } | Reply::Exited { .. } | Reply::RoomDisk { .. } => {
+                Err(String::from("the spawner answered out of step"))
+            }
+        }
+    }
+
+    /// Has the spawner do the room disk's `op` (0.9): its status, for a
+    /// status, and nothing for the rest.
+    ///
+    /// # Errors
+    ///
+    /// Why not: the spawner keeps no room disk, refused the op, or can't be
+    /// reached.
+    pub fn room_disk(
+        &self,
+        op: crate::room_disk::RoomDiskOp,
+    ) -> Result<Option<crate::room_disk::RoomDiskStatus>, String> {
+        let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| format!("cannot bound the spawner's answer: {error}"))?;
+        send(&stream, &Request::RoomDisk { op }).map_err(|error| error.to_string())?;
+        match receive(&stream).map_err(|error| error.to_string())? {
+            Reply::Done => Ok(None),
+            Reply::RoomDisk { status } => Ok(Some(status)),
+            Reply::Refused { reason } => Err(reason),
             Reply::Started { .. } | Reply::Exited { .. } => {
                 Err(String::from("the spawner answered out of step"))
             }
@@ -824,7 +892,7 @@ impl Spawner {
         match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Done => Ok(()),
             Reply::Refused { reason } => Err(reason),
-            Reply::Started { .. } | Reply::Exited { .. } => {
+            Reply::Started { .. } | Reply::Exited { .. } | Reply::RoomDisk { .. } => {
                 Err(String::from("the spawner answered out of step"))
             }
         }
@@ -862,9 +930,12 @@ impl SpawnedProcess {
                     code: hatchling_sys::child_exit_code(status),
                     status,
                 }),
-                Ok(Reply::Started { .. } | Reply::Refused { .. } | Reply::Done) => {
-                    Err(String::from("the spawner answered out of step"))
-                }
+                Ok(
+                    Reply::Started { .. }
+                    | Reply::Refused { .. }
+                    | Reply::Done
+                    | Reply::RoomDisk { .. },
+                ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
             let (slot, changed) = &*told;
@@ -1121,8 +1192,19 @@ pub fn spawner_main() -> ExitCode {
         Ok(keeper) => keeper.map(|keeper| Arc::new(Mutex::new(keeper))),
         Err(error) => return refuse_to_run(&error.to_string()),
     };
+    let policy = with_keeper(policy, keeper.is_some());
     serve(&broker, &Arc::new((program, policy)), keeper.as_ref());
     ExitCode::SUCCESS
+}
+
+/// `policy`, as a spawner with a vault keeper (`keeper`) or without one
+/// keeps it: the room disk's key comes from the keeper alone, so without
+/// one there's no room disk.
+fn with_keeper(policy: Policy, keeper: bool) -> Policy {
+    Policy {
+        room: policy.room.filter(|_| keeper),
+        ..policy
+    }
 }
 
 fn refuse_to_run(reason: &str) -> ExitCode {
@@ -1145,6 +1227,10 @@ fn serve(broker: &UnixStream, held: &Arc<(PathBuf, Policy)>, keeper: Option<&Kee
                 tracing::warn!(%error, "a connection from the broker ended");
             }
         });
+    }
+    // The broker has gone, however it went: the room disk goes closed.
+    if let (Some(room), Some(_)) = (&held.1.room, keeper) {
+        crate::room_disk::close_on_leaving(room);
     }
 }
 
@@ -1213,6 +1299,27 @@ fn serve_connection(
             };
             send(stream, &reply)
         }
+        Request::RoomDisk { op } => send(stream, &room_disk_reply(policy, keeper, op)),
+    }
+}
+
+/// The answer to the broker's room disk `op`: done, its status, or why not.
+fn room_disk_reply(
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+    op: crate::room_disk::RoomDiskOp,
+) -> Reply {
+    let (Some(room), Some(keeper)) = (&policy.room, keeper) else {
+        return Reply::Refused {
+            reason: String::from(
+                "there's no room disk here: it needs a broker run as root, with a vault keeper",
+            ),
+        };
+    };
+    match crate::room_disk::run(room, keeper, op) {
+        Ok(Some(status)) => Reply::RoomDisk { status },
+        Ok(None) => Reply::Done,
+        Err(reason) => Reply::Refused { reason },
     }
 }
 
@@ -1792,7 +1899,119 @@ sleep 30 </dev/null >/dev/null 2>&1 &
     /// tests' specs are built from.
     fn policy() -> Policy {
         let agent = agent_identity(&|key| crate::cell::env_value(std::env::var(key))).unwrap();
-        Policy::of(&CellConfig::skill("policy").unwrap(), agent, paths())
+        Policy::of(&CellConfig::skill("policy").unwrap(), agent, paths(), None)
+    }
+
+    /// The room disk is asked for by its op alone: no path, size or name,
+    /// and nothing else.
+    #[test]
+    fn a_room_disk_request_names_its_op_and_nothing_else() {
+        use crate::room_disk::RoomDiskOp;
+        let open = r#"{"request":"room-disk","op":"open"}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(open),
+            Ok(Request::RoomDisk {
+                op: RoomDiskOp::Open
+            })
+        ));
+        for refused in [
+            r#"{"request":"room-disk","op":"open","image":"/etc/shadow"}"#,
+            r#"{"request":"room-disk","op":"open","size":1}"#,
+            r#"{"request":"room-disk","op":"format"}"#,
+            r#"{"request":"room-disk"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Request>(refused).is_err(),
+                "{refused}"
+            );
+        }
+        assert!(
+            serde_json::from_str::<Reply>(
+                r#"{"reply":"room-disk","status":{"state":"absent","cap":1,"image_bytes":null,"on_disk":null,"used":null,"free":null,"host_free":null,"path":"/x"}}"#
+            )
+            .is_err(),
+            "a status took a path"
+        );
+    }
+
+    /// With no room disk, as a spawner not run as root has, or no keeper to
+    /// give its key, every op is refused, and nothing runs. A spawner with
+    /// no keeper keeps no room disk.
+    #[test]
+    fn the_room_disk_is_refused_without_root_or_a_keeper() {
+        use crate::room_disk::RoomDiskOp;
+        let room = RoomDisk::parse(|_| None).unwrap();
+        let kept = Policy {
+            room: Some(room),
+            ..policy()
+        };
+        assert!(with_keeper(kept.clone(), true).room.is_some());
+        assert!(
+            with_keeper(kept, false).room.is_none(),
+            "a room disk kept with no keeper to give its key"
+        );
+        assert!(matches!(
+            room_disk_reply(&policy(), None, RoomDiskOp::Status),
+            Reply::Refused { .. }
+        ));
+        let (spawner, _served) = serving("/bin/sh");
+        let said = spawner.room_disk(RoomDiskOp::Status).unwrap_err();
+        assert!(said.contains("no room disk here"), "{said}");
+        let bench = crate::room_disk::tests::Bench::new("spawner-no-keeper");
+        let policy = Policy {
+            room: Some(bench.disk.clone()),
+            ..policy()
+        };
+        let (spawner, _served) = serving_with("/bin/sh", policy);
+        for op in [RoomDiskOp::Create, RoomDiskOp::Open, RoomDiskOp::Close] {
+            let said = spawner.room_disk(op).unwrap_err();
+            assert!(said.contains("no room disk here"), "{said}");
+        }
+        assert!(bench.ran().is_empty(), "a program ran without a keeper");
+    }
+
+    /// The spawner does the room disk's ops the broker names, and answers a
+    /// status with its numbers; when the broker goes, it closes the room
+    /// disk, whatever was left open.
+    #[test]
+    fn the_spawner_does_the_room_disks_ops_and_closes_it_as_the_broker_goes() {
+        use crate::room_disk::{RoomDiskOp, RoomDiskState};
+        let bench = crate::room_disk::tests::Bench::new("spawner-ops");
+        let policy = Policy {
+            room: Some(bench.disk.clone()),
+            ..policy()
+        };
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy));
+        let keeper = Arc::clone(&bench.keeper);
+        let served = std::thread::spawn(move || serve(&theirs, &held, Some(&keeper)));
+        let spawner = Spawner::over(ours);
+        let state = |spawner: &Spawner| {
+            spawner
+                .room_disk(RoomDiskOp::Status)
+                .unwrap()
+                .unwrap()
+                .state
+        };
+        assert_eq!(state(&spawner), RoomDiskState::Absent);
+        assert_eq!(spawner.room_disk(RoomDiskOp::Create).unwrap(), None);
+        assert_eq!(state(&spawner), RoomDiskState::Closed);
+        let said = spawner.room_disk(RoomDiskOp::Create).unwrap_err();
+        assert!(said.contains("is there already"), "{said}");
+        let name = bench.list_own_mapping();
+        bench.forget_runs();
+        drop(spawner);
+        served.join().unwrap();
+        let commands: Vec<Vec<String>> = bench
+            .ran()
+            .into_iter()
+            .map(|ran| ran.argv.into_iter().skip(1).collect())
+            .collect();
+        assert_eq!(
+            commands,
+            [vec![String::from("close"), name]],
+            "the room disk wasn't closed as the broker went"
+        );
     }
 
     /// The paths of a broker with nothing configured: only its run
@@ -2883,9 +3102,37 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             assert_eq!(read.skill.identity, reference.identity());
             assert_eq!(read.agent.identity.principal, reference.uid_base + 1);
         }
+        // The room disk: kept by a spawner run as root alone, as the
+        // settings make it, and apart from everything else kept.
+        assert_eq!(
+            read.room.is_some(),
+            owner == 0,
+            "a room disk kept by a spawner not run as root, or not by one that is"
+        );
+        if owner == 0 {
+            assert_eq!(read.room, Some(RoomDisk::parse(get).unwrap()));
+            let overlapping = |key: &str| {
+                (key == "HATCHLING_ROOM_DISK_DIR")
+                    .then(|| String::from("/tmp/hatchling-policy/vault/room"))
+                    .or_else(|| get(key))
+            };
+            assert!(
+                Policy::parse(&overlapping, temp.clone(), (owner, hatchling_sys::egid())).is_err(),
+                "a room disk inside the vault was kept"
+            );
+        }
         // Settings that don't parse: no policy.
         let broken = |key: &str| (key == "HATCHLING_SEARCH").then(|| String::from("bing"));
-        assert!(Policy::parse(&broken, temp, (owner, hatchling_sys::egid())).is_err());
+        assert!(Policy::parse(&broken, temp.clone(), (owner, hatchling_sys::egid())).is_err());
+        let too_small = |key: &str| {
+            (key == "HATCHLING_ROOM_DISK_SIZE")
+                .then(|| String::from("1M"))
+                .or_else(|| get(key))
+        };
+        assert!(
+            Policy::parse(&too_small, temp, (owner, hatchling_sys::egid())).is_err(),
+            "a room disk size out of bounds was taken"
+        );
         // This process isn't a broker: without its settings, no policy.
         if std::env::var_os("HATCHLING_BROKER_SOCKET").is_none() {
             assert!(Policy::from_env().is_err());

@@ -8,6 +8,13 @@
 # the kill floor fails loudly — the proof must be re-examined then.
 
 exclude_re = [
+    # `RoomDisk::create`: `space.available < needed` -> `<=`. They differ
+    # only when the file system's free space is exactly the image's size
+    # plus the margin, to the byte: a figure that moves with every write on
+    # the disk, which no test can hold still, and where either answer is
+    # as right. A disk with too little room is refused either way, which
+    # `what_cant_be_looked_at_is_refused_and_what_isnt_there_is_none` pins.
+    "hatchling-broker/src/room_disk\\.rs:.*replace < with <= in RoomDisk::create",
     # `wipe_head_of`: `while at < end` -> `<=`. `at` is 0 or a `stop`, which
     # is at most `end`, so the two differ only when `at == end`: then the
     # extra pass seeks the next data at `end`, which is past it or isn't
