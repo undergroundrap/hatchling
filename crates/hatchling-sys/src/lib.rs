@@ -58,14 +58,16 @@ pub use fds::{
 };
 pub use idmap::IdMap;
 pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
-pub use locked_mount::{is_mount_point, mount_locked_down, unmount_strict, verify_locked_down};
+pub use locked_mount::{
+    Space, is_mount_point, mount_locked_down, space, unmount_strict, verify_locked_down,
+};
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};
 pub use ownership::{
     DirShare, FileKind, chmod_dir, chmod_socket, create_private_dir, dir_share, ensure_private_dir,
-    give_dir_to, give_to, hand_file_to, hand_over_socket, owner_traverses, remove_file_of,
-    replace_file, share_dir_with_cell, trusted_dir_chain, wipe_file_of, wipe_head_of, write_file,
-    write_new_file_for,
+    give_dir_to, give_to, hand_file_to, hand_over_socket, make_sparse_file, owner_traverses,
+    read_file_head, remove_file_of, replace_file, share_dir_with_cell, trusted_dir_chain,
+    trusted_dir_chain_from, wipe_file_of, wipe_head_of, write_file, write_new_file_for,
 };
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{

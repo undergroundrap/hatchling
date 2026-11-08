@@ -74,6 +74,8 @@ hatchling_core::declare_environment! {
     HATCHLING_CELL_MAX_FILE_SIZE: ("optional; default 8589934592", "Per-file size limit in bytes or unlimited."),
     HATCHLING_CELL_MAX_OPEN_FILES: ("optional; default 8192", "Per-process open-file limit or unlimited."),
     HATCHLING_CELL_CGROUP: ("optional", "Delegated cgroup v2 parent; unset uses the rlimit fallback."),
+    HATCHLING_ROOM_DISK_DIR: ("optional; default /var/lib/hatchling/room", "Absolute directory of the agent's encrypted room disk, root's alone: its image, its record and its mount point. It may overlap no store, state, vault, keeper or socket directory. Only a broker run as root, with a vault keeper, makes one."),
+    HATCHLING_ROOM_DISK_SIZE: ("optional; default 10G", "The room disk's fixed size: bytes, or a whole number with M or G (MiB, GiB), from 64M to 1024G. The image is sparse, and deleting files never shrinks it."),
     HATCHLING_CELL_MAX_MEMORY: ("optional", "Whole-cell bytes or unlimited; cgroup default is half the effective memory limit."),
     HATCHLING_CELL_MAX_CPUS: ("optional; default unlimited", "Whole-cell fractional core allowance; only effective with a cgroup."),
     HATCHLING_API_SOCKET: ("optional; enables the local API", "Absolute API socket outside the cell's socket directory; requires the schedule activity log."),

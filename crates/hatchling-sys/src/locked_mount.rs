@@ -153,6 +153,33 @@ pub fn unmount_strict(target: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// The size of the file system holding a path, and its free space, in
+/// bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Space {
+    /// All of it.
+    pub size: u64,
+    /// What's free, root's reserve included.
+    pub free: u64,
+    /// What's free to anyone.
+    pub available: u64,
+}
+
+/// The size and free space of the file system holding `path`.
+///
+/// # Errors
+///
+/// [`Error::Mount`] when it can't be looked at.
+pub fn space(path: &Path) -> Result<Space, Error> {
+    let seen = rustix::fs::statvfs(path).map_err(failed("look at a file system's space"))?;
+    let bytes = |blocks: u64| blocks.saturating_mul(seen.f_frsize);
+    Ok(Space {
+        size: bytes(seen.f_blocks),
+        free: bytes(seen.f_bfree),
+        available: bytes(seen.f_bavail),
+    })
+}
+
 /// Whether `path` is the root of a mount.
 ///
 /// As the kernel says (`STATX_ATTR_MOUNT_ROOT`), which Linux has since 5.8,
@@ -205,6 +232,21 @@ mod tests {
             said.contains("check a mount") && said.contains("a reason of its own"),
             "the check's reason wasn't named with its operation: {said}"
         );
+    }
+
+    /// A file system's space is in bytes, and what's free to anyone is no
+    /// more than what's free, which is no more than all of it.
+    #[test]
+    fn a_file_systems_space_adds_up() {
+        let dir = scratch("space");
+        let seen = space(&dir).unwrap();
+        assert!(seen.size > 0, "a file system of no size");
+        assert!(
+            seen.available <= seen.free && seen.free <= seen.size,
+            "the free space doesn't add up"
+        );
+        assert!(space(&dir.join("none")).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A directory that isn't mounted on is no mount point, and neither is

@@ -92,6 +92,7 @@ pub mod run_launcher;
 pub mod run_trail;
 pub use run_launcher::{AGENT_RUN_SUBCOMMAND, CellLauncher, RunEnv, agent_run_main, scoped_config};
 pub mod redactions;
+pub mod room_disk;
 pub mod secret_ops;
 pub use redactions::{FileAudit, FileOverrides, run_operator, run_redactions};
 pub mod broker_user;

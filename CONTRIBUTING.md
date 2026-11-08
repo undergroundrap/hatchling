@@ -71,9 +71,11 @@ paths an unprivileged one never does:
 
 CI's "cells as root" job runs the cell suites as root
 (`scripts/root-pass.sh`), and every suite must run. The suites that
-mount (`hatchling-sys --test locked_mount`) skip when not run as root,
-and `HATCHLING_REQUIRE_ROOT_MOUNTS=1`, which the pass sets, makes that a
-failure. Run it yourself before you push a change to any of these:
+mount (`hatchling-sys --test locked_mount`) and the room disk's
+(`hatchling-broker --test room_disk`, which needs `cryptsetup-bin` and the
+`dm_crypt` module) skip when not run as root, and
+`HATCHLING_REQUIRE_ROOT_MOUNTS=1` and `HATCHLING_REQUIRE_ROOM_DISK=1`,
+which the pass sets, make that a failure. Run it yourself before you push a change to any of these:
 - how a cell is spawned, or which user it runs as;
 - whose a file, socket or directory is, or who it's handed to;
 - the spawner's policy;

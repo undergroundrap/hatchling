@@ -665,12 +665,17 @@ fn open_to_wipe<'p>(path: &'p Path, owners: &[u32]) -> Result<Option<Wiping<'p>>
 ///
 /// [`Error::Ownership`], naming the first directory that fails.
 pub fn trusted_dir_chain(path: &Path, trusted: &[u32]) -> Result<(), Error> {
-    trusted_chain_from(Path::new("/"), path, trusted)
+    trusted_dir_chain_from(Path::new("/"), path, trusted)
 }
 
 /// [`trusted_dir_chain`], from `top` down rather than from `/`: `top`
-/// itself is checked too.
-fn trusted_chain_from(top: &Path, path: &Path, trusted: &[u32]) -> Result<(), Error> {
+/// itself is checked too. For a test's own directories, below a `/tmp`
+/// that no chain from `/` could pass.
+///
+/// # Errors
+///
+/// As [`trusted_dir_chain`], and for a `path` not below `top`.
+pub fn trusted_dir_chain_from(top: &Path, path: &Path, trusted: &[u32]) -> Result<(), Error> {
     use std::os::unix::fs::MetadataExt as _;
     let refuse = |dir: &Path, why: &str| Error::Ownership {
         operation: "trust a directory",
@@ -709,6 +714,63 @@ fn trusted_chain_from(top: &Path, path: &Path, trusted: &[u32]) -> Result<(), Er
         };
         dir.push(part);
     }
+}
+
+/// Makes a new file at `path`, `size` bytes long and holding nothing on the
+/// disk yet: a sparse disk image.
+///
+/// Made in its directory opened without following a link, as a new file
+/// (`O_EXCL | O_NOFOLLOW`), 0600, so nothing that stood at the name, or was
+/// planted there, is ever written to.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] when the directory can't be opened, something is
+/// at the name, or the file can't be made or sized.
+pub fn make_sparse_file(path: &Path, size: u64) -> Result<(), Error> {
+    use rustix::fs::{Mode, OFlags};
+    const FLAGS: OFlags = OFlags::WRONLY
+        .union(OFlags::CREATE)
+        .union(OFlags::EXCL)
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::CLOEXEC);
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(refused("make a file", "not a file in a directory"));
+    };
+    let handle = open_dir_nofollow(dir).map_err(failed("open the directory"))?;
+    let file = rustix::fs::openat(&handle, name, FLAGS, Mode::from_raw_mode(0o600))
+        .map_err(failed("make the file"))?;
+    rustix::fs::ftruncate(&file, size).map_err(failed("size the file"))
+}
+
+/// The first `bytes` bytes of the regular file at `path`, read without
+/// following a link, or waiting on a FIFO put there.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] when it can't be opened, isn't a regular file
+/// itself, or is shorter than `bytes`.
+pub fn read_file_head(path: &Path, bytes: usize) -> Result<Vec<u8>, Error> {
+    use std::io::Read as _;
+
+    use rustix::fs::{FileType, Mode, OFlags};
+    const FLAGS: OFlags = OFlags::RDONLY
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::CLOEXEC);
+    let file = rustix::fs::open(path, FLAGS, Mode::empty()).map_err(failed("open the file"))?;
+    let stat = rustix::fs::fstat(&file).map_err(failed("look at the file"))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile {
+        return Err(refused("read a file", "it isn't a regular file"));
+    }
+    let mut head = vec![0u8; bytes];
+    std::fs::File::from(file)
+        .read_exact(&mut head)
+        .map_err(|source| Error::Ownership {
+            operation: "read the file",
+            source,
+        })?;
+    Ok(head)
 }
 
 /// Writes `bytes` to the file at `path`, replacing what it holds, made
@@ -918,6 +980,36 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// A sparse file is made new, 0600, at its size and holding nothing on
+    /// the disk; never over what's there, or through a link. A file's head
+    /// is read without following a link, and only from a regular file long
+    /// enough.
+    #[test]
+    fn a_sparse_file_is_made_new_and_a_head_is_read_from_a_file_itself() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let dir = scratch("sparse");
+        let image = dir.join("disk.img");
+        make_sparse_file(&image, 64 * MIB).unwrap();
+        let meta = std::fs::metadata(&image).unwrap();
+        assert_eq!(meta.len(), 64 * MIB, "not the size asked for");
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600, "not private");
+        assert!(meta.blocks() < 64, "it holds the disk it's sized at");
+        assert!(make_sparse_file(&image, MIB).is_err(), "made over a file");
+        assert_eq!(std::fs::metadata(&image).unwrap().len(), 64 * MIB);
+        let target = dir.join("target");
+        std::fs::write(&target, b"kept").unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(make_sparse_file(&link, MIB).is_err(), "made through a link");
+        assert_eq!(std::fs::read(&target).unwrap(), b"kept");
+
+        assert_eq!(read_file_head(&target, 2).unwrap(), b"ke");
+        assert!(read_file_head(&link, 2).is_err(), "read through a link");
+        assert!(read_file_head(&target, 5).is_err(), "read past its end");
+        assert!(read_file_head(&dir, 1).is_err(), "a directory read");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     /// Zeros go over exactly the range asked for, at its own offsets: not
     /// before it, not after it, and not one byte past the file's end.
     #[test]
@@ -1013,28 +1105,28 @@ mod tests {
         };
         let open = "is writable by others";
         let itself = "isn't a directory itself";
-        trusted_chain_from(&top, &b, &me).unwrap();
-        trusted_chain_from(&top, &top, &me).unwrap();
+        trusted_dir_chain_from(&top, &b, &me).unwrap();
+        trusted_dir_chain_from(&top, &top, &me).unwrap();
 
         mode(&a, 0o775);
         assert!(
-            named(trusted_chain_from(&top, &b, &me), &a, open),
+            named(trusted_dir_chain_from(&top, &b, &me), &a, open),
             "group-writable"
         );
         mode(&a, 0o757);
         assert!(
-            named(trusted_chain_from(&top, &b, &me), &a, open),
+            named(trusted_dir_chain_from(&top, &b, &me), &a, open),
             "other-writable"
         );
         mode(&a, 0o1777);
         assert!(
-            named(trusted_chain_from(&top, &b, &me), &a, open),
+            named(trusted_dir_chain_from(&top, &b, &me), &a, open),
             "like /tmp"
         );
         mode(&a, 0o755);
         mode(&b, 0o775);
         assert!(
-            named(trusted_chain_from(&top, &b, &me), &b, open),
+            named(trusted_dir_chain_from(&top, &b, &me), &b, open),
             "the path itself"
         );
         mode(&b, 0o755);
@@ -1042,7 +1134,7 @@ mod tests {
         let stranger = [crate::euid().wrapping_add(1)];
         assert!(
             named(
-                trusted_chain_from(&top, &b, &stranger),
+                trusted_dir_chain_from(&top, &b, &stranger),
                 &top,
                 "isn't owned by a user it's trusted to"
             ),
@@ -1052,13 +1144,13 @@ mod tests {
         std::os::unix::fs::symlink(&b, &link).unwrap();
         // A link is refused as one, not for its mode, which says nothing.
         assert!(
-            named(trusted_chain_from(&top, &link, &me), &link, itself),
+            named(trusted_dir_chain_from(&top, &link, &me), &link, itself),
             "a link"
         );
         std::fs::create_dir(b.join("c")).unwrap();
         assert!(
             named(
-                trusted_chain_from(&top, &link.join("c"), &me),
+                trusted_dir_chain_from(&top, &link.join("c"), &me),
                 &link,
                 itself
             ),
@@ -1067,14 +1159,14 @@ mod tests {
         std::fs::write(a.join("file"), b"").unwrap();
         assert!(
             named(
-                trusted_chain_from(&top, &a.join("file"), &me),
+                trusted_dir_chain_from(&top, &a.join("file"), &me),
                 &a.join("file"),
                 itself
             ),
             "a file"
         );
         assert!(
-            trusted_chain_from(&top, &a.join("none"), &me).is_err(),
+            trusted_dir_chain_from(&top, &a.join("none"), &me).is_err(),
             "nothing there"
         );
 
@@ -1084,7 +1176,7 @@ mod tests {
             PathBuf::from("/elsewhere"),
         ] {
             assert!(
-                trusted_chain_from(&top, &refused, &me).is_err(),
+                trusted_dir_chain_from(&top, &refused, &me).is_err(),
                 "a path that isn't plain, absolute and below the top was walked"
             );
         }
