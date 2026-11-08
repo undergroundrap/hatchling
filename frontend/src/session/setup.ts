@@ -11,7 +11,7 @@ export type VaultTier = 'file' | 'totp' | 'hardware_key';
 export type RoomDiskOff = 'not_here' | 'not_opened' | 'not_read';
 /** The agent's computer, its room disk: how it is, and its sizes in bytes, as the broker said. */
 export interface RoomDiskView {
-    readonly state: 'absent' | 'closed' | 'open' | 'off';
+    readonly state: 'absent' | 'closed' | 'mapped' | 'open' | 'off';
     readonly off: RoomDiskOff | null;
     /** The most it holds. */
     readonly cap: number | null;

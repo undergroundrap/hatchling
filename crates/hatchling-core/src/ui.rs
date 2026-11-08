@@ -846,6 +846,9 @@ pub enum RoomDiskCondition {
     Absent,
     /// Made, and closed.
     Closed,
+    /// Decrypted on this machine, but not mounted: something kept it from
+    /// being closed. Not closed, and not usable either.
+    Mapped,
     /// Open: the agent's computer can use it.
     Open,
     /// Off, for a reason [`RoomDiskOff`] gives.

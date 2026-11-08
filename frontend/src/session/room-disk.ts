@@ -12,6 +12,8 @@ const OFF: Readonly<Record<RoomDiskOff, string>> = {
     not_opened: 'It’s off: it couldn’t be opened when Hatchling started. hatchling-broker doctor, run as root, says why.',
     not_read: 'Hatchling couldn’t read how it is just now.',
 };
+/** Unlocked, though nothing uses it: a close something kept from finishing. */
+export const STILL_UNLOCKED = 'It’s still unlocked on this machine, though nothing is using it: something kept it from being closed. hatchling-broker doctor, run as root, says more.';
 /** What its encryption is worth, by how the vault opens: what opens it is the vault's. */
 const LOCKED: Readonly<Record<VaultTier, string>> = {
     hardware_key: 'It’s encrypted, and a stolen disk can’t open it.',
@@ -33,7 +35,7 @@ function sizes(disk: RoomDiskView): string | null {
 export function roomDiskLines(disk: RoomDiskView, tier: VaultTier, windows: boolean): readonly string[] {
     if (disk.state === 'absent')
         return ['It hasn’t been made yet. Hatchling makes it when it starts.'];
-    const lines = disk.state === 'off' ? [OFF[disk.off ?? 'not_read']] : [];
+    const lines = disk.state === 'off' ? [OFF[disk.off ?? 'not_read']] : disk.state === 'mapped' ? [STILL_UNLOCKED] : [];
     const said = sizes(disk);
     if (said === null)
         return lines;

@@ -535,15 +535,23 @@ fn room_said(facts: &RoomFacts) -> Finding {
             );
         }
     };
-    if facts.waiting && status.state == RoomDiskState::Open {
+    if facts.waiting && matches!(status.state, RoomDiskState::Open | RoomDiskState::Mapped) {
+        let how = if status.state == RoomDiskState::Open {
+            "open"
+        } else {
+            "unlocked, though not mounted,"
+        };
         return Finding::problem(
-            "the room disk is open while the vault is locked, so a disk taken now could read it",
+            format!(
+                "the room disk is {how} while the vault is locked, so a disk taken now could read it"
+            ),
             "sudo hatchling-broker room-disk close",
         );
     }
     let state = match status.state {
         RoomDiskState::Absent => String::from("none made yet"),
         RoomDiskState::Closed => String::from("made, closed"),
+        RoomDiskState::Mapped => String::from("unlocked but not mounted: it couldn't be closed"),
         RoomDiskState::Open => String::from("open"),
     };
     let on_disk = status.on_disk.unwrap_or(0);
@@ -1538,6 +1546,17 @@ mod tests {
         assert!(what.contains("open while the vault is locked"), "{what}");
         assert_eq!(fix, "sudo hatchling-broker room-disk close");
         assert!(matches!(room_said(&open(false)), Finding::Fine(said) if said.contains("; open;")));
+        let mapped = |waiting| RoomFacts {
+            status: Some(Ok(crate::room_disk::RoomDiskStatus {
+                state: RoomDiskState::Mapped,
+                ..room_facts().status.unwrap().unwrap()
+            })),
+            waiting,
+            ..room_facts()
+        };
+        let (what, _) = problem(room_said(&mapped(true)));
+        assert!(what.contains("unlocked, though not mounted, while the vault is locked"), "{what}");
+        assert!(matches!(room_said(&mapped(false)), Finding::Fine(said) if said.contains("unlocked but not mounted")));
         // A note isn't a problem: a report with one says nothing's wrong.
         let (text, problems) = rendered("here", &[("room disk", note_of(&without))]);
         assert_eq!(problems, 0, "a note was counted as a problem");

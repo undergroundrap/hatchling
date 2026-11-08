@@ -2,7 +2,7 @@
 // vault tier, and only what's true of this install.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { NO_SHRINK, ON_WINDOWS, diskSize, roomDiskLines } from '../../dist/app/session/room-disk.js';
+import { NO_SHRINK, ON_WINDOWS, STILL_UNLOCKED, diskSize, roomDiskLines } from '../../dist/app/session/room-disk.js';
 import { liveRoomDisk } from '../../dist/app/features/settings/live-data.js';
 const GB = 1e9;
 const open = { state: 'open', off: null, cap: 10 * GB, used: 1.2 * GB, free: 8.8 * GB, onDisk: 3.4 * GB, hostFree: 90 * GB };
@@ -39,6 +39,12 @@ test('off, it says why in plain words, and its sizes when there are some', () =>
     assert.ok(failed.includes(NO_SHRINK) && failed.includes(STOLEN), 'a disk that is there still takes its space');
     assert.deepEqual(roomDiskLines({ ...open, state: 'off', off: 'not_read', cap: null }, 'file', false), ['Hatchling couldn’t read how it is just now.']);
     assert.deepEqual(roomDiskLines({ ...open, state: 'off', off: null, onDisk: null }, 'file', false), ['Hatchling couldn’t read how it is just now.']);
+});
+test('unlocked but unused, it says so first, and is never said to be closed', () => {
+    const said = roomDiskLines({ ...closed, state: 'mapped' }, 'hardware_key', false);
+    assert.equal(said[0], STILL_UNLOCKED, 'a room disk still unlocked was said as if it were closed');
+    assert.ok(said.includes(NO_SHRINK) && said.includes(STOLEN));
+    assert.ok(!roomDiskLines(closed, 'hardware_key', false).includes(STILL_UNLOCKED));
 });
 test('none made yet says so, and nothing else', () => {
     assert.deepEqual(roomDiskLines({ ...open, state: 'absent' }, 'hardware_key', true), ['It hasn’t been made yet. Hatchling makes it when it starts.']);

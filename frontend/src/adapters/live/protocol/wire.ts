@@ -2328,6 +2328,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "mapped",
+                "type": "string"
+            },
+            {
                 "const": "open",
                 "type": "string"
             },

@@ -2373,7 +2373,7 @@ export type QueryResult = {
 /**
  * How the room disk is.
  */
-export type RoomDiskCondition = 'absent' | 'closed' | 'open' | 'off';
+export type RoomDiskCondition = 'absent' | 'closed' | 'mapped' | 'open' | 'off';
 /**
  * Why the room disk is off.
  */

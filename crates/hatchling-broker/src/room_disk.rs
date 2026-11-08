@@ -164,8 +164,12 @@ pub enum RoomDiskOp {
 pub enum RoomDiskState {
     /// None has been made.
     Absent,
-    /// Made, and closed.
+    /// Made, and closed: no mapping of it.
     Closed,
+    /// Its mapping is there, decrypted, but it isn't mounted: a close that
+    /// failed (something else still holds it) or an open cut short. Never
+    /// said to be closed.
+    Mapped,
     /// Open, and mounted.
     Open,
 }
@@ -921,12 +925,19 @@ impl RoomDisk {
         let image = self.image_id()?;
         let mounted = std::fs::symlink_metadata(&mount).is_ok()
             && hatchling_sys::is_mount_point(&mount).map_err(|error| error.to_string())?;
-        if mounted && self.mapped(&image, &mapping_name(&image))? {
-            let space = hatchling_sys::space(&mount).map_err(|error| error.to_string())?;
-            status.state = RoomDiskState::Open;
-            status.used = Some(space.size.saturating_sub(space.free));
-            status.free = Some(space.available);
+        // A mapping is looked for whether or not it's mounted: one a close
+        // left is decrypted all the same, and is never said to be closed.
+        if !self.mapped(&image, &mapping_name(&image))? {
+            return Ok(status);
         }
+        if !mounted {
+            status.state = RoomDiskState::Mapped;
+            return Ok(status);
+        }
+        let space = hatchling_sys::space(&mount).map_err(|error| error.to_string())?;
+        status.state = RoomDiskState::Open;
+        status.used = Some(space.size.saturating_sub(space.free));
+        status.free = Some(space.available);
         Ok(status)
     }
 
@@ -1413,6 +1424,7 @@ pub(crate) fn view(
                 (Some(_), _) => RoomDiskCondition::Off,
                 (None, RoomDiskState::Absent) => RoomDiskCondition::Absent,
                 (None, RoomDiskState::Closed) => RoomDiskCondition::Closed,
+                (None, RoomDiskState::Mapped) => RoomDiskCondition::Mapped,
                 (None, RoomDiskState::Open) => RoomDiskCondition::Open,
             },
             off: off_at_start,

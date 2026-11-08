@@ -5838,6 +5838,11 @@
           "type": "string"
         },
         {
+          "const": "mapped",
+          "description": "Decrypted on this machine, but not mounted: something kept it from\nbeing closed. Not closed, and not usable either.",
+          "type": "string"
+        },
+        {
           "const": "open",
           "description": "Open: the agent's computer can use it.",
           "type": "string"

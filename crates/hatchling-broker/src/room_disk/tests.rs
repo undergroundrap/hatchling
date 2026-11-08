@@ -1015,8 +1015,8 @@ fn what_cant_be_looked_at_is_refused_and_what_isnt_there_is_none() {
     std::fs::create_dir(bench.disk.mount_point()).unwrap();
     assert_eq!(
         bench.run(RoomDiskOp::Status).unwrap().unwrap().state,
-        RoomDiskState::Closed,
-        "a disk mapped but not mounted was said to be open"
+        RoomDiskState::Mapped,
+        "a disk mapped but not mounted was said to be open, or closed"
     );
 }
 
@@ -1560,7 +1560,67 @@ fn the_app_is_told_numbers_and_fixed_reasons_alone() {
         );
     }
     assert!(not_here(NOT_HERE) && not_here(NO_SPAWNER) && !not_here(leaked));
-    // As this test runs: no spawner, so none here, whatever the start was.
-    remember_start(AtStart::Off(String::from(NO_SPAWNER)));
+    // As this test runs: no spawner, so none here.
     assert_eq!(view_here().off, Some(RoomDiskOff::NotHere));
+}
+
+/// A close that leaves the mapping, decrypted, says so, and the room disk
+/// is then never said to be closed, to the spawner's asker or to the app:
+/// it's mapped until a close takes the mapping away.
+#[test]
+fn a_mapping_a_close_leaves_is_never_said_closed() {
+    let bench = Bench::new("left-mapped");
+    bench.run(RoomDiskOp::Create).unwrap();
+    for left in ["keep-mapped", "fail-close"] {
+        bench.list_own_mapping();
+        bench.switch(left, true);
+        assert!(
+            close(&bench.disk).is_err(),
+            "a close that left the mapping was said to have closed it"
+        );
+        let state = status(&bench.disk).unwrap().state;
+        bench.switch(left, false);
+        assert_eq!(
+            state,
+            RoomDiskState::Mapped,
+            "a room disk whose mapping a close left was said to be closed"
+        );
+        let told = view(Some(&AtStart::Opened), Ok(Some(status(&bench.disk).unwrap())));
+        assert_eq!(told.state, RoomDiskCondition::Mapped);
+        close(&bench.disk).unwrap();
+        assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Closed);
+    }
+}
+
+/// How the room disk came out of the start is kept for the app: one that
+/// couldn't be opened is told as such afterwards, and a later start kept
+/// doesn't take its place. (In a child: it's kept once a process.)
+#[test]
+fn how_the_start_went_is_kept_for_the_app() {
+    const CHILD: &str = "HATCHLING_TEST_ROOM_START_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        remember_start(AtStart::Off(String::from("cryptsetup couldn't open it")));
+        remember_start(AtStart::Opened);
+        assert_eq!(
+            view_here().off,
+            Some(RoomDiskOff::NotOpened),
+            "how the start went wasn't kept, or a later one took its place"
+        );
+        return;
+    }
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "room_disk::tests::how_the_start_went_is_kept_for_the_app",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
