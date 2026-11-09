@@ -12,6 +12,7 @@ hashes=room-system-x86_64.verity
 root_hash=room-system-x86_64.root-hash
 manifest=room-system-x86_64.contents.txt
 sbom=room-system-x86_64.sbom.json
+supervisor_path=usr/local/libexec/hatchling-room
 assets=("$image" "$hashes" "$root_hash" "$manifest" "$sbom")
 verity=(--no-superblock --format=1 --hash=sha256 --data-block-size=4096 --hash-block-size=4096)
 
@@ -42,12 +43,30 @@ verify() {
     veritysetup verify "${verity[@]}" --salt "$salt" "$dir/$image" "$dir/$hashes" "$expected"
 }
 
+stage_supervisor() {
+    local source=$1 binary=$2 metadata=$3
+    [[ -f $source && ! -L $source ]] || die 'expected a regular supervisor binary'
+    install -m 0755 -- "$source" "$binary"
+    # The previous job supplies bytes, not authority. Parse the ELF as
+    # nobody through a read-only fd into this job's private staging area.
+    if ! env -i PATH=/usr/bin:/bin LC_ALL=C setpriv --reuid=65534 --regid=65534 \
+        --clear-groups --no-new-privs readelf -h -l -d /proc/self/fd/0 < "$binary" > "$metadata" ||
+        ! grep -Eq 'Machine: +Advanced Micro Devices X86-64$' "$metadata" ||
+        ! grep -Eq 'Type: +(EXEC|DYN) ' "$metadata" ||
+        grep -Eq 'INTERP|NEEDED' "$metadata"; then
+        die 'expected a static x86-64 supervisor ELF'
+    fi
+}
+
 build() {
-    local out=$1 root name version url checksum wheel python_dir node_archive
+    local out=$1 supervisor=$2 root name version url checksum wheel python_dir node_archive
     [[ $(uname -m) == x86_64 && $EUID == 0 ]] || die 'build needs an x86_64 Linux root environment'
-    mkdir -- "$out"
+    local script_dir
+    script_dir=$(dirname -- "$(realpath -- "$0")")
     tmp=$(mktemp -d)
     trap 'rm -rf -- "$tmp"' EXIT
+    stage_supervisor "$supervisor" "$tmp/hatchling-room" "$tmp/supervisor-elf"
+    mkdir -- "$out"
     root=$tmp/root
 
     local packages=(
@@ -83,7 +102,7 @@ build() {
     while read -r name version checksum url; do
         wheel=$tmp/${url##*/}
         download "$url" "$checksum" "$wheel"
-        python3 -m zipfile -e "$wheel" "$python_dir"
+        python3 -I -m zipfile -e "$wheel" "$python_dir"
         printf '%s\t%s\t%s\t%s\n' "$name" "$version" amd64 pypi >> "$tmp/packages"
     done < "$(dirname -- "$0")/room-image-wheels.lock"
 
@@ -94,11 +113,18 @@ build() {
     find "$root" -xdev -type f -perm /6000 -exec chmod a-s -- {} +
     find "$root/dev" -mindepth 1 -delete
     install -d -m 0755 "$root/workspace" "$root/session" "$root/proc" "$root/dev"
+    # Only the image can supply the launcher executable. Copy in the static
+    # build before verity seals it, and record the digest of the installed bytes.
+    install -Dm0755 -- "$tmp/hatchling-room" "$root/$supervisor_path"
 
     dpkg-query --admindir="$root/var/lib/dpkg" -W \
         -f='${db:Status-Status}\t${Package}\t${Version}\t${Architecture}\n' |
         awk -F '\t' '$1 == "installed" {print $2 "\t" $3 "\t" $4 "\tdebian"}' >> "$tmp/packages"
     printf 'nodejs\t%s\tamd64\tnodejs\n' "$node_version" >> "$tmp/packages"
+    version=$(python3 -I -c 'import sys,tomllib; print(tomllib.load(sys.stdin.buffer)["workspace"]["package"]["version"])' \
+        < "$script_dir/../Cargo.toml")
+    printf 'hatchling-room\t%s\tamd64\thatchling\t%s\n' "$version" \
+        "$(digest "$root/$supervisor_path")" >> "$tmp/packages"
     sort -o "$tmp/packages" "$tmp/packages"
 
     # The stock WSL kernel supports SquashFS gzip, but some versions lack zstd.
@@ -113,14 +139,14 @@ build() {
 
     {
         printf 'Hatchling room system image (x86_64)\nDebian snapshot %s\nImage SHA-256 %s\n\n' "$snapshot" "$image_digest"
-        printf 'Name\tVersion\tArchitecture\tSource\n'
+        printf 'Name\tVersion\tArchitecture\tSource\tSHA-256 (when recorded)\n'
         cat "$tmp/packages"
     } > "$out/$manifest"
-    python3 "$(dirname -- "$0")/room-image-sbom.py" "$tmp/packages" "$image_digest" > "$out/$sbom"
+    python3 -I "$script_dir/room-image-sbom.py" "$tmp/packages" "$image_digest" > "$out/$sbom"
 }
 
 case ${1:-} in
-    build) [[ $# == 2 ]] || die 'usage: room-image.sh build NEW_DIRECTORY'; build "$2" ;;
+    build) [[ $# == 3 ]] || die 'usage: room-image.sh build NEW_DIRECTORY SUPERVISOR_BINARY'; build "$2" "$3" ;;
     check-debian-indexes) [[ $# == 2 ]] || die 'missing Debian bootstrap root'; check_debian_indexes "$2" ;;
     compare)
         [[ $# == 3 ]] || die 'usage: room-image.sh compare FIRST_DIRECTORY SECOND_DIRECTORY'

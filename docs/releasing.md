@@ -83,16 +83,24 @@ From 0.9, the x86_64 room image is released as `room-system-x86_64.squashfs` wit
 
 The builder uses signed Debian 13 archives from a dated snapshot, the hash-pinned upstream Node LTS binary, and the hash-pinned Python wheels in `scripts/room-image-wheels.lock`. It checks the exact signed indexes used by APT before running package scripts. APT checks the package digests through those indexes. Debian supplies the remaining libraries and retains their package and copyright records. The package inventory records both Debian's Pillow package and the newer wheel used by the Python interpreter for `pdfplumber`. Refresh the snapshot and upstream hashes with release updates. The build requires x86_64 Ubuntu 26.04 with `mmdebstrap`, `debian-archive-keyring`, `squashfs-tools`, and `cryptsetup-bin`. CI logs their versions.
 
-To replay the image jobs in a disposable Linux environment, build in two empty output paths and run the kernel probe in a private mount namespace.
+Two independent CI jobs compile the unpublished room supervisor as a static x86-64 GNU binary from the locked workspace. A fresh image job for each build receives only the ELF and copies it as data. The image contains it at the fixed root-owned path `/usr/local/libexec/hatchling-room`. The contents inventory and SBOM both record its SHA-256, and the image's verity root covers the executable. The Rust toolchain and Cargo inputs are pinned. CI records the Ubuntu native compiler, linker and library versions because those affect the static binary. For the room artifacts, the byte-for-byte check covers the two CI builds with the logged runner inputs, and a local replay can produce different digests.
+
+To replay the image jobs in a disposable Linux environment, give a dedicated unprivileged `room-builder` user two independent checkouts of the same commit, the pinned Rust toolchain, a native linker and binutils. Use separate, trusted checkouts of the same commit for the root image commands. The build user must have no sudo access and no write access to those trusted checkouts. Transfer only the two built executables into the image stage. Run the kernel probe in a private mount and network namespace.
 
 ```bash
-sudo bash scripts/room-image.sh build /tmp/room-a
-sudo bash scripts/room-image.sh build /tmp/room-b
-bash scripts/room-image.sh compare /tmp/room-a /tmp/room-b
-sudo unshare --mount --net --propagation private bash scripts/room-image-probe.sh /tmp/room-a
+sudo -H -u room-builder bash -lc 'cd /path/to/build-a && bash scripts/room-image-supervisor.sh /tmp/supervisor-a'
+sudo -H -u room-builder bash -lc 'cd /path/to/build-b && bash scripts/room-image-supervisor.sh /tmp/supervisor-b'
+staging=$(mktemp -d)
+cp -P -- /tmp/supervisor-a/hatchling-room "$staging/room-a"
+cp -P -- /tmp/supervisor-b/hatchling-room "$staging/room-b"
+(cd /path/to/trusted-image-a && sudo bash scripts/room-image.sh build /tmp/room-a "$staging/room-a")
+(cd /path/to/trusted-image-b && sudo bash scripts/room-image.sh build /tmp/room-b "$staging/room-b")
+(cd /path/to/trusted-image-a &&
+    bash scripts/room-image.sh compare /tmp/room-a /tmp/room-b &&
+    sudo unshare --mount --net --propagation private bash scripts/room-image-probe.sh /tmp/room-a)
 ```
 
-The probe mounts the image read-only with `nodev` and `nosuid`, runs tools and Python libraries from it, and verifies refusal of tampered and missing images. The installer and room launcher will consume these artifacts in their integration slices. In the room, libraries that use `sendmsg` can terminate with `SIGSYS` under its syscall filter.
+The probe mounts the image read-only with `nodev` and `nosuid`, runs tools and Python libraries from it, and verifies refusal of tampered and missing images. It checks the installed supervisor's ownership, permissions and digest, then exercises the startup handshake as an unprivileged user in a fresh PID namespace. The installer and room launcher will consume these artifacts in their integration slices. In the room, libraries that use `sendmsg` terminate with `SIGSYS` under its syscall filter. The filter refuses `setsockopt`.
 
 ## Reproducing a build
 

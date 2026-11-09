@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 components = []
 for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
-    name, version, arch, source = line.split("\t")
+    name, version, arch, source, *digests = line.split("\t")
     encoded_version = quote(version, safe="")
     if source == "debian":
         purl = f"pkg:deb/debian/{name}@{encoded_version}?arch={arch}"
@@ -16,7 +16,14 @@ for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
         purl = f"pkg:pypi/{name}@{encoded_version}"
     else:
         purl = f"pkg:generic/{name}@{encoded_version}?arch={arch}"
-    components.append({"type": "library", "name": name, "version": version, "purl": purl})
+    component = {
+        "type": "application" if source == "hatchling" else "library",
+        "name": name, "version": version, "purl": purl,
+    }
+    if digests:
+        digest, = digests
+        component["hashes"] = [{"alg": "SHA-256", "content": digest}]
+    components.append(component)
 
 print(json.dumps({
     "bomFormat": "CycloneDX",
