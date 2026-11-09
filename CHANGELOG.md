@@ -13,6 +13,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 gives the room a mount plan.** The verified system image is read-only, the room refuses direct execution from the encrypted workspace, and each launch gets fresh 512 MiB scratch space. Production room launch follows separately.
 - **The verified room system image includes its supervisor (WO-034).** Both release builds compile the supervisor independently, record its digest, and compare the resulting images before release. Production room launch follows separately.
 - **WO-034 builds the x86_64 room system image in CI.** The release pipeline compares two independent builds and tests the read-only image through dm-verity before publishing it with a package inventory and provenance.
 - **WO-034 gives the agent’s room its own syscall policy.** The x86_64 profile permits Unix sockets and refuses other socket families, binding and listening on sockets, changing socket options, and `memfd_create`. Room launch integration follows separately.

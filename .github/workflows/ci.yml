@@ -249,12 +249,13 @@ jobs:
             sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$u"
           done
 
-      # The room disk's suite makes real LUKS2 images (0.9).
-      - name: cryptsetup and dm_crypt, for the room disk
+      # The room fixtures use real LUKS2/ext4 and a dm-verity SquashFS.
+      - name: Install the room kernel fixture tools
         run: |
           timeout 300 sudo apt-get update -qq
-          timeout 300 sudo apt-get install -y -qq cryptsetup-bin
+          timeout 300 sudo apt-get install -y -qq cryptsetup-bin squashfs-tools busybox-static
           timeout 30 sudo modprobe dm_crypt
+          timeout 30 sudo modprobe dm_verity
 
       - name: Run the cell suites as root
         run: HATCHLING_ROOT_PASS=1 bash scripts/check.sh

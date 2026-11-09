@@ -15,6 +15,8 @@
 #       done
 #   - optionally HATCHLING_TEST_BROWSER, a headless Chromium every user
 #     can read (not under your home), for the browser cells' suites.
+#   - cryptsetup-bin, busybox-static, and squashfs-tools for the live
+#     room mount fixture, plus dm-crypt, dm-verity and SquashFS.
 #
 # Every cell suite must run: HATCHLING_REQUIRE_CELL=1 turns a skip into a
 # failure, HATCHLING_REQUIRE_ROOT_MOUNTS=1 does for the suites that mount,
@@ -91,7 +93,15 @@ for suite in "${SUITES[@]}"; do
     cp "$exe" "$copy/deps/"
     crate_of[$(basename "$exe")]=$(echo "$suite" | awk '{print $2}')
 done
+room_mounts=$(cargo test --locked -p hatchling-sys --test room_mounts --no-run --message-format=json \
+    | grep -o '"executable":"[^"]*/deps/[^"]*"' | tail -1 | cut -d'"' -f4)
+test -n "$room_mounts"
+cp "$room_mounts" "$copy/room_mounts"
 chmod -R a+rX "$copy"
+
+echo "==> room mount plan, as single-threaded PID 1"
+sudo bash scripts/room-mount-proof.sh "$copy/room_mounts" full
+sudo bash scripts/room-mount-proof.sh "$copy/room_mounts" writable
 
 # The cells' resource limits: a cgroup of the pass's own, the tests in
 # one leaf and their cells' groups beside it.

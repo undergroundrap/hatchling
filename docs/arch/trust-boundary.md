@@ -20,8 +20,22 @@ socketpairs and refuses other families, `bind`, `listen` and `setsockopt`. Refus
 socket options prevents credential options from assigning an address to a
 Unix datagram socket without `bind`. The profile returns `ENOSYS` for
 `memfd_create` to prevent that route around writable mounts' `noexec` flags.
-The kernel probe installs the profile in a test process. Room launch still
-needs to select it and enforce the room's mount and namespace boundaries.
+The kernel probe installs the profile in a test process.
+
+The separate WO-034 room mount plan requires a single-threaded PID 1,
+makes its mount namespace private, and uses the verified system image
+as the executable, read-only root. Other tasks must not exist before the
+root switch: a sibling could retain the previous root through `/proc`.
+It mounts the encrypted workspace and 512 MiB session scratch with
+`nodev,nosuid,noexec`, and attaches the spawner's inbox read-only at
+`/workspace/inbox`. It refuses links in mount targets, leaves source
+submounts behind, and exposes a read-only PID-only `/proc` and just
+`null`, `zero`, and `urandom` under `/dev`. The production launcher
+still needs to authenticate the source descriptors, select the room
+filter, and own identity, resource limits, and cleanup.
+Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
+that filesystem limit, a job writing to scratch sees `ENOSPC` from the
+write. Reporting the job's failure belongs to the launcher.
 
 ## What's inside the boundary (trusted)
 
@@ -169,6 +183,7 @@ there is no degraded or unsandboxed fallback.
 
 Minimum: Linux 5.11+ (for `close_range` with `CLOSE_RANGE_CLOEXEC`)
 with unprivileged user namespaces enabled and seccomp-BPF available.
+The separate room mount plan also requires `mount_setattr` (Linux 5.12+).
 
 ## Defense in depth
 
