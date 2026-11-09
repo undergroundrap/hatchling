@@ -83,6 +83,9 @@ which the pass sets, make that a failure. Run it yourself before you push a chan
 - anything that branches on running as root.
 
 ```bash
+sudo apt-get install cryptsetup-bin squashfs-tools busybox-static
+sudo modprobe dm_crypt
+sudo modprobe dm_verity
 for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress; do
   sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$u"
 done
@@ -91,7 +94,9 @@ HATCHLING_ROOT_PASS=1 bash scripts/check.sh
 
 It builds as you, then runs each suite's test binary under `sudo`, from
 a copy in `/tmp` the cells' user can read. Those users are the README's,
-and the pass never makes them itself. Set `HATCHLING_TEST_BROWSER` to a
+and the pass never makes them itself. The room mount proof also needs
+kernel SquashFS support; it builds a minimal fixture image and exercises
+the real dm-verity, LUKS2 and mount paths. Set `HATCHLING_TEST_BROWSER` to a
 headless Chromium every user can read (not under your home) to run the
 browser cells' suites too. A test that can't apply to a root run says
 so, and the pass lists each one at the end with its reason.

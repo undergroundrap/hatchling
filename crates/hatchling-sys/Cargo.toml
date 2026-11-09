@@ -15,6 +15,11 @@ description = "The single crate allowed unsafe code: thin safe wrappers for Linu
 [lints]
 workspace = true
 
+# The privileged fixture must execute mount setup as the only thread of PID 1.
+[[test]]
+name = "room_mounts"
+harness = false
+
 [dependencies]
 # Raw fork/execve/prctl: the few syscalls rustix does not wrap.
 # Reviewed in docs/dependency-review.md.
