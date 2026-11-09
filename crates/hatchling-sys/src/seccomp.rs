@@ -819,6 +819,31 @@ impl SeccompProfile {
         Ok(profile)
     }
 
+    /// The room's `x86_64` syscall profile. Keep the CLI's process and file
+    /// operations, but restrict socket creation to Unix sockets and refuse
+    /// `bind` and `listen`. Refuse `memfd_create` so a job cannot create an
+    /// anonymous file to execute outside the room's `noexec` mounts.
+    ///
+    /// # Errors
+    ///
+    /// As [`SeccompProfile::agent`].
+    #[cfg(target_arch = "x86_64")]
+    pub fn room() -> Result<Self, Error> {
+        let mut profile = Self::harness_cli()?;
+        profile.allow_if(
+            "socket",
+            Check::OneOf {
+                arg: 0,
+                values: vec![AF_UNIX],
+            },
+            Refusal::Errno(EAFNOSUPPORT),
+        )?;
+        profile.refuse("bind", EPERM)?;
+        profile.refuse("listen", EPERM)?;
+        profile.refuse("memfd_create", ENOSYS)?;
+        Ok(profile)
+    }
+
     /// The allowed syscall numbers, sorted.
     #[must_use]
     pub fn allowed_numbers(&self) -> Vec<u32> {
@@ -1820,6 +1845,72 @@ mod tests {
                 "socketpair family {family}"
             );
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn room_refuses_network_listeners_and_anonymous_executable_files() {
+        let prog = SeccompProfile::room().unwrap().build();
+        let no = [0; 6];
+        let errno = |e| SECCOMP_RET_ERRNO + e;
+        for name in ["socket", "socketpair"] {
+            for family in [AF_UNIX, AF_INET, 10, 16, 17] {
+                let args = [u64::from(family), 1, 0, 0, 0, 0];
+                let expected = if family == AF_UNIX {
+                    SECCOMP_RET_ALLOW
+                } else {
+                    errno(EAFNOSUPPORT)
+                };
+                assert_eq!(call(&prog, name, args), expected, "{name} family {family}");
+            }
+        }
+        for name in ["bind", "listen"] {
+            assert_eq!(call(&prog, name, no), errno(EPERM), "{name}");
+        }
+        assert_eq!(call(&prog, "memfd_create", no), errno(ENOSYS));
+        for name in ["read", "vfork", "wait4"] {
+            assert_eq!(call(&prog, name, no), SECCOMP_RET_ALLOW, "{name}");
+        }
+        for nr in [libc::SYS_mount, libc::SYS_ptrace, libc::SYS_unshare] {
+            assert_eq!(
+                run(&prog, AUDIT_ARCH, u32::try_from(nr).unwrap(), no),
+                SECCOMP_RET_KILL_PROCESS,
+                "syscall {nr}"
+            );
+        }
+        assert_eq!(
+            call(&prog, "clone", [0x1000_0011, 0, 0, 0, 0, 0]),
+            SECCOMP_RET_KILL_PROCESS
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_kernel_returns_enosys_for_memfd_in_the_room_profile() {
+        use crate::process::{ForkResult, child_exit_code, exit_child, fork, set_no_new_privs};
+        use rustix::fs::{MemfdFlags, memfd_create};
+        use rustix::io::Errno;
+
+        // Prove the outer sandbox and kernel would have allowed the call.
+        drop(memfd_create(c"room-filter-probe", MemfdFlags::CLOEXEC).unwrap());
+        let profile = SeccompProfile::room().unwrap();
+        let child = match fork().expect("fork for room filter test") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                if set_no_new_privs().is_err() || install(&profile).is_err() {
+                    exit_child(20);
+                }
+                match memfd_create(c"room-filter-probe", MemfdFlags::CLOEXEC) {
+                    Err(Errno::NOSYS) => exit_child(42),
+                    Ok(_) => exit_child(21),
+                    Err(_) => exit_child(22),
+                }
+            }
+        };
+        let status = child
+            .wait_deadline(std::time::Duration::from_secs(30))
+            .expect("wait for room filter test");
+        assert_eq!(child_exit_code(status), 42, "expected an explicit ENOSYS");
     }
 
     #[cfg(target_arch = "x86_64")]

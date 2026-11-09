@@ -12,6 +12,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **The agent’s room has its own syscall policy in `hatchling-sys`.** The x86_64 profile permits Unix sockets and refuses other socket families, listeners and anonymous files created through `memfd_create`. The room runtime will select it when room launching is wired up.
 - **The vault's access log can name the spawner.** When the spawner asks the vault keeper for a room disk's key, which goes to cryptsetup and never to the spawner or the broker, the ask is a line of its own in `hatchling-broker vault-audit log`. Nothing asks yet: the room disk comes in 0.9.
   - **Breaking for `hatchling-broker`:** `Caller::Spawner` is new. The workspace is now 0.9.0.
 - **The agent's room disk is made, opened and closed with the service.** A broker run as root makes it at its first start, once the vault is unlocked: `disk.img` under `HATCHLING_ROOM_DISK_DIR`, sparse, so it takes little of the disk until it's used, and encrypted with a key the vault keeper derives. It's opened at each start and closed whenever the service stops (`hatchling-broker room-disk close`, which the service runs as it stops, and which an operator can run too); a broker that starts finds one left open and closes it before the vault is unlocked. One that can't be made or opened leaves the agent as it was, and the log says why. Nothing uses it yet: the agent's computer comes later in 0.9.
