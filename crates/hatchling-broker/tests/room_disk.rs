@@ -20,7 +20,7 @@ use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use hatchling_broker::room_disk::{self, RoomDisk, RoomDiskOp, RoomDiskState, Rotated};
@@ -29,11 +29,17 @@ use hatchling_core::framing::{read_frame, write_frame};
 /// A room disk's size here: the smallest there is.
 const SIZE: u64 = 64 * 1024 * 1024;
 
-/// Whether these run here: as root. Not as root, they're skipped, unless
-/// the run asked for them.
-fn as_root(test: &str) -> bool {
+/// Run the disk fixtures one at a time as root. The private namespace test
+/// must not clone a sibling's mount and keep its device busy. Without root,
+/// skip unless the run asked for real disk tests.
+fn as_root(test: &str) -> Option<MutexGuard<'static, ()>> {
+    static DISK_TESTS: Mutex<()> = Mutex::new(());
     if rustix::process::geteuid().is_root() {
-        return true;
+        return Some(
+            DISK_TESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
     }
     assert!(
         std::env::var("HATCHLING_REQUIRE_ROOM_DISK").as_deref() != Ok("1"),
@@ -43,7 +49,7 @@ fn as_root(test: &str) -> bool {
         &mut std::io::stderr(),
         format!("skipping: {test} makes a room disk, which needs root\n").as_bytes(),
     );
-    false
+    None
 }
 
 /// A directory of the test's own, root's and searchable, under `/var/lib`:
@@ -199,9 +205,9 @@ impl Drop for HeldBind {
 
 #[test]
 fn room_disk_refuses_a_substitute_with_the_right_flags() -> Result<(), Failed> {
-    if !as_root("workspace mount provenance") {
+    let Some(_disk_tests) = as_root("workspace mount provenance") else {
         return Ok(());
-    }
+    };
     let place = Place::new("workspace-provenance")?;
     let keeper = Keeper::start(&place, "keeper")?;
     let run = |op| room_disk::run(&place.disk, &keeper.spawner, op);
@@ -254,6 +260,100 @@ fn room_disk_refuses_a_substitute_with_the_right_flags() -> Result<(), Failed> {
         assert_eq!(room_disk::status(&place.disk)?.state, RoomDiskState::Open);
     }
     run(RoomDiskOp::Close)?;
+    Ok(())
+}
+
+#[test]
+fn room_disk_rolls_back_a_fresh_mount_of_the_wrong_device() -> Result<(), Failed> {
+    let Some(_disk_tests) = as_root("fresh workspace mount rollback") else {
+        return Ok(());
+    };
+    let namespace = std::fs::read_link("/proc/self/ns/mnt")?;
+    let parent = "HATCHLING_TEST_FRESH_MOUNT_PARENT";
+    let Some(parent_namespace) = std::env::var_os(parent) else {
+        // Device-name substitution must never propagate out of the test.
+        let child = Command::new("unshare")
+            .args(["--mount", "--propagation", "private", "--"])
+            .arg(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "room_disk_rolls_back_a_fresh_mount_of_the_wrong_device",
+                "--nocapture",
+            ])
+            .env(parent, namespace)
+            .status()?;
+        assert!(child.success(), "the private fresh-mount test failed");
+        return Ok(());
+    };
+    assert_ne!(namespace, PathBuf::from(parent_namespace));
+    assert!(
+        !std::fs::read_to_string("/proc/self/mountinfo")?
+            .split_ascii_whitespace()
+            .any(|field| field.starts_with("shared:")),
+        "the mount namespace can still propagate changes"
+    );
+
+    // Drop the target first on failure: the substitute can still be mounted
+    // there if a hand break prevents rollback.
+    let other = Place::new("fresh-mount-substitute")?;
+    let place = Place::new("fresh-mount")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let run = |op| room_disk::run(&place.disk, &keeper.spawner, op);
+    let mount = place.disk.mount_point();
+    run(RoomDiskOp::Create)?;
+    run(RoomDiskOp::Open)?;
+    std::fs::write(mount.join("kept"), b"expected room")?;
+    hatchling_sys::unmount_strict(&mount)?;
+    assert!(!hatchling_sys::is_mount_point(&mount)?);
+    assert_eq!(room_disk::status(&place.disk)?.state, RoomDiskState::Mapped);
+
+    room_disk::run(&other.disk, &keeper.spawner, RoomDiskOp::Create)?;
+    room_disk::run(&other.disk, &keeper.spawner, RoomDiskOp::Open)?;
+    let other_canary = other.disk.mount_point().join("kept");
+    std::fs::write(&other_canary, b"different room")?;
+    let node = |place: &Place| -> Result<PathBuf, Failed> {
+        let name = place.mapping().ok_or("the fixture has no mapping name")?;
+        Ok(std::fs::canonicalize(Path::new("/dev/mapper").join(name))?)
+    };
+    let (expected, substitute) = (node(&place)?, node(&other)?);
+    assert_ne!(expected, substitute);
+    assert!(
+        Command::new("mount")
+            .arg("--bind")
+            .arg(&substitute)
+            .arg(&expected)
+            .status()?
+            .success()
+    );
+    let redirected = HeldBind(expected.clone());
+    assert_eq!(
+        std::fs::metadata(&expected)?.rdev(),
+        std::fs::metadata(&substitute)?.rdev()
+    );
+
+    // The real mount takes the substitute device, but the authenticated
+    // sysfs mapping is unchanged. Only the post-mount check can refuse it.
+    let opened = run(RoomDiskOp::Open);
+    drop(redirected);
+    let refused = opened.expect_err("fresh open accepted the wrong ext4 device");
+    assert!(
+        refused.contains("expected encrypted ext4 volume"),
+        "fresh open did not reach the provenance check: {refused}"
+    );
+    assert!(
+        !hatchling_sys::is_mount_point(&mount)?,
+        "fresh refusal left the substitute mounted"
+    );
+    assert_eq!(
+        room_disk::status(&place.disk)?.state,
+        RoomDiskState::Closed,
+        "fresh refusal left the expected encrypted disk mapped"
+    );
+    assert_eq!(std::fs::read(&other_canary)?, b"different room");
+    run(RoomDiskOp::Open)?;
+    assert_eq!(std::fs::read(mount.join("kept"))?, b"expected room");
+    run(RoomDiskOp::Close)?;
+    room_disk::run(&other.disk, &keeper.spawner, RoomDiskOp::Close)?;
     Ok(())
 }
 
@@ -320,9 +420,9 @@ fn keys_tested(place: &Place) -> Result<(), Failed> {
 /// vault's key, and wiped, for real.
 #[test]
 fn a_room_disk_is_made_opened_closed_and_wiped_for_real() {
-    if !as_root("a_room_disk_is_made_opened_closed_and_wiped_for_real") {
+    let Some(_disk_tests) = as_root("a_room_disk_is_made_opened_closed_and_wiped_for_real") else {
         return;
-    }
+    };
     let place = Place::new("life").unwrap();
     let keeper = Keeper::start(&place, "keeper").unwrap();
     let run = |op| room_disk::run(&place.disk, &keeper.spawner, op);
@@ -421,9 +521,9 @@ fn a_room_disk_is_made_opened_closed_and_wiped_for_real() {
 /// working, and the first vault's key opens it again.
 #[test]
 fn a_room_disks_key_moves_with_the_vaults_for_real() {
-    if !as_root("a_room_disks_key_moves_with_the_vaults_for_real") {
+    let Some(_disk_tests) = as_root("a_room_disks_key_moves_with_the_vaults_for_real") else {
         return;
-    }
+    };
     let place = Place::new("rotate").unwrap();
     let keeper = Keeper::start(&place, "keeper").unwrap();
     let other = Keeper::start(&place, "other").unwrap();
@@ -474,9 +574,11 @@ fn moved_for_real(place: &Place, keeper: &Keeper, other: &Keeper) -> Result<(), 
 /// that would touch it, and the file is left exactly as it was.
 #[test]
 fn an_image_that_is_a_link_is_refused_and_what_it_names_untouched() {
-    if !as_root("an_image_that_is_a_link_is_refused_and_what_it_names_untouched") {
+    let Some(_disk_tests) =
+        as_root("an_image_that_is_a_link_is_refused_and_what_it_names_untouched")
+    else {
         return;
-    }
+    };
     let place = Place::new("link").unwrap();
     let keeper = Keeper::start(&place, "keeper").unwrap();
     let target = place.dir.join("target.bin");
