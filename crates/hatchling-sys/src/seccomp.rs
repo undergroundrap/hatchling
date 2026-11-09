@@ -821,8 +821,8 @@ impl SeccompProfile {
 
     /// The room's `x86_64` syscall profile. Keep the CLI's process and file
     /// operations, but restrict socket creation to Unix sockets and refuse
-    /// `bind` and `listen`. Refuse `memfd_create` so a job cannot create an
-    /// anonymous file to execute outside the room's `noexec` mounts.
+    /// `bind`, `listen`, and `setsockopt`. Refuse `memfd_create` so a job
+    /// cannot use it to bypass the room's `noexec` mounts.
     ///
     /// # Errors
     ///
@@ -840,6 +840,9 @@ impl SeccompProfile {
         )?;
         profile.refuse("bind", EPERM)?;
         profile.refuse("listen", EPERM)?;
+        // Credential options can give a Unix datagram socket a reachable
+        // address through autobind, even when bind and listen are refused.
+        profile.refuse("setsockopt", EPERM)?;
         profile.refuse("memfd_create", ENOSYS)?;
         Ok(profile)
     }
@@ -1850,13 +1853,30 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn room_refuses_network_listeners_and_anonymous_executable_files() {
-        let prog = SeccompProfile::room().unwrap().build();
+        let room = SeccompProfile::room().unwrap();
+        let cli = SeccompProfile::harness_cli().unwrap();
+        let refused = ["bind", "listen", "setsockopt", "memfd_create"]
+            .map(|name| syscall_number(name).unwrap());
+        let mut expected = cli.allowed_numbers();
+        expected.retain(|nr| !refused.contains(nr));
+        assert_eq!(room.allowed_numbers(), expected, "room narrows the CLI");
+        let socket = syscall_number("socket").unwrap();
+        let inherited_rules = |profile: &SeccompProfile| {
+            profile
+                .effective_rules()
+                .into_iter()
+                .filter(|rule| rule.nr != socket && !refused.contains(&rule.nr))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(inherited_rules(&room), inherited_rules(&cli));
+
+        let prog = room.build();
         let no = [0; 6];
         let errno = |e| SECCOMP_RET_ERRNO + e;
         for name in ["socket", "socketpair"] {
-            for family in [AF_UNIX, AF_INET, 10, 16, 17] {
-                let args = [u64::from(family), 1, 0, 0, 0, 0];
-                let expected = if family == AF_UNIX {
+            for family in (0..=255).chain([u64::from(u32::MAX)]) {
+                let args = [family, 1, 0, 0, 0, 0];
+                let expected = if family == u64::from(AF_UNIX) {
                     SECCOMP_RET_ALLOW
                 } else {
                     errno(EAFNOSUPPORT)
@@ -1864,7 +1884,7 @@ mod tests {
                 assert_eq!(call(&prog, name, args), expected, "{name} family {family}");
             }
         }
-        for name in ["bind", "listen"] {
+        for name in ["bind", "listen", "setsockopt"] {
             assert_eq!(call(&prog, name, no), errno(EPERM), "{name}");
         }
         assert_eq!(call(&prog, "memfd_create", no), errno(ENOSYS));
@@ -1882,35 +1902,156 @@ mod tests {
             call(&prog, "clone", [0x1000_0011, 0, 0, 0, 0, 0]),
             SECCOMP_RET_KILL_PROCESS
         );
+        assert_eq!(call(&prog, "clone", [17, 0, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
     }
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn the_kernel_returns_enosys_for_memfd_in_the_room_profile() {
-        use crate::process::{ForkResult, child_exit_code, exit_child, fork, set_no_new_privs};
+    fn the_kernel_enforces_the_room_profile() {
+        use crate::process::exit_child;
+
+        const PROBE: &str = "HATCHLING_TEST_ROOM_FILTER_PROBE";
+        if std::env::var_os(PROBE).is_some() {
+            probe_room_filter(true);
+            // Distinguish a completed probe from libtest selecting zero tests.
+            exit_child(42);
+        }
+
+        probe_room_filter(false);
+        // Install the filter in a fresh process. Installing allocates, which
+        // would be unsafe in a fork of the multithreaded test runner.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "seccomp::tests::the_kernel_enforces_the_room_profile",
+                "--nocapture",
+            ])
+            .env(PROBE, "1")
+            .output()
+            .expect("start room filter probe");
+        assert_eq!(
+            output.status.code(),
+            Some(42),
+            "room filter probe failed: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn probe_room_filter(filtered: bool) {
+        use crate::process::set_no_new_privs;
         use rustix::fs::{MemfdFlags, memfd_create};
         use rustix::io::Errno;
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, bind_unix, listen, socket};
+        use std::io::{Read, Write};
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::{SocketAddr, UnixStream};
 
-        // Prove the outer sandbox and kernel would have allowed the call.
-        drop(memfd_create(c"room-filter-probe", MemfdFlags::CLOEXEC).unwrap());
-        let profile = SeccompProfile::room().unwrap();
-        let child = match fork().expect("fork for room filter test") {
-            ForkResult::Parent { child } => child,
-            ForkResult::Child => {
-                if set_no_new_privs().is_err() || install(&profile).is_err() {
-                    exit_child(20);
-                }
-                match memfd_create(c"room-filter-probe", MemfdFlags::CLOEXEC) {
-                    Err(Errno::NOSYS) => exit_child(42),
-                    Ok(_) => exit_child(21),
-                    Err(_) => exit_child(22),
-                }
-            }
+        let name = format!("hatchling-room-{}", std::process::id());
+        let listener_addr = SocketAddrUnix::new_abstract_name(name.as_bytes()).unwrap();
+        let bind_name = format!("{name}-bind");
+        let bind_addr = SocketAddrUnix::new_abstract_name(bind_name.as_bytes()).unwrap();
+        let missing_name = format!("{name}-missing");
+        let missing = SocketAddr::from_abstract_name(missing_name.as_bytes()).unwrap();
+        // Prepare a socket that the kernel could listen on even if bind is denied.
+        let listener = socket(AddressFamily::UNIX, SocketType::STREAM, None).unwrap();
+        bind_unix(&listener, &listener_addr).unwrap();
+
+        if filtered {
+            set_no_new_privs().unwrap();
+            install(&SeccompProfile::room().unwrap()).unwrap();
+        }
+
+        let local = socket(AddressFamily::UNIX, SocketType::STREAM, None).unwrap();
+        let (mut send, mut receive) = UnixStream::pair().unwrap();
+        send.write_all(b"x").unwrap();
+        let mut received = [0];
+        receive.read_exact(&mut received).unwrap();
+        assert_eq!(received, *b"x", "Unix socketpair");
+
+        let ipv4 = socket(AddressFamily::INET, SocketType::STREAM, None);
+        let ipv6 = socket(AddressFamily::INET6, SocketType::STREAM, None);
+        let bound = bind_unix(&local, &bind_addr);
+        let listening = listen(&listener, 1);
+        let memfd = memfd_create(c"room-filter-probe", MemfdFlags::CLOEXEC);
+        if filtered {
+            assert_eq!(ipv4.unwrap_err(), Errno::AFNOSUPPORT, "IPv4 socket");
+            assert_eq!(ipv6.unwrap_err(), Errno::AFNOSUPPORT, "IPv6 socket");
+            assert_eq!(bound, Err(Errno::PERM), "bind");
+            assert_eq!(listening, Err(Errno::PERM), "listen");
+            assert_eq!(memfd.unwrap_err(), Errno::NOSYS, "memfd_create");
+        } else {
+            ipv4.expect("IPv4 control");
+            // Some test hosts disable IPv6 at boot.
+            assert!(
+                matches!(ipv6, Ok(_) | Err(Errno::AFNOSUPPORT)),
+                "IPv6 control failed: {ipv6:?}"
+            );
+            bound.expect("bind control");
+            listening.expect("listen control");
+            memfd.expect("memfd_create control");
+        }
+
+        for option in [libc::SO_PASSCRED, libc::SO_PASSPIDFD] {
+            probe_room_autobind(option, &missing, filtered);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn probe_room_autobind(
+        option: libc::c_int,
+        missing: &std::os::unix::net::SocketAddr,
+        filtered: bool,
+    ) {
+        use std::io::{Error, ErrorKind};
+        use std::os::fd::AsRawFd;
+        use std::os::linux::net::SocketAddrExt;
+        use std::os::unix::net::UnixDatagram;
+
+        let receiver = UnixDatagram::unbound().unwrap();
+        receiver.set_nonblocking(true).unwrap();
+        let enable: libc::c_int = 1;
+        // SAFETY: both options take a C int, and receiver owns the live fd.
+        let status = unsafe {
+            libc::setsockopt(
+                receiver.as_raw_fd(),
+                libc::SOL_SOCKET,
+                option,
+                std::ptr::addr_of!(enable).cast(),
+                libc::socklen_t::try_from(size_of_val(&enable)).unwrap(),
+            )
         };
-        let status = child
-            .wait_deadline(std::time::Duration::from_secs(30))
-            .expect("wait for room filter test");
-        assert_eq!(child_exit_code(status), 42, "expected an explicit ENOSYS");
+        let error = if status == 0 {
+            None
+        } else {
+            Error::last_os_error().raw_os_error()
+        };
+        // SO_PASSPIDFD is unavailable on older kernels. SO_PASSCRED still
+        // exercises the full attack there, and the filter denies both options.
+        if !filtered && option == libc::SO_PASSPIDFD && error == Some(libc::ENOPROTOOPT) {
+            return;
+        }
+        assert_eq!(
+            receiver.connect_addr(missing).unwrap_err().kind(),
+            ErrorKind::ConnectionRefused
+        );
+        let address = receiver.local_addr().unwrap();
+        if filtered {
+            assert!(
+                address.is_unnamed(),
+                "socket option {option} enabled Unix datagram autobind"
+            );
+            assert_eq!(error, Some(libc::EPERM), "setsockopt({option})");
+        } else {
+            assert_eq!(error, None, "setsockopt({option}) control");
+            assert!(address.as_abstract_name().is_some());
+            let sender = UnixDatagram::unbound().unwrap();
+            assert_eq!(sender.send_to_addr(b"x", &address).unwrap(), 1);
+            let mut payload = [0];
+            assert_eq!(receiver.recv(&mut payload).unwrap(), 1);
+            assert_eq!(payload, *b"x");
+        }
     }
 
     #[cfg(target_arch = "x86_64")]

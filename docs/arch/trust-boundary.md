@@ -15,6 +15,14 @@ distrust: code inside a cell is assumed hostile until proven
 otherwise, and the isolation mechanisms don't depend on the
 code behaving well.
 
+The x86_64 room syscall profile under WO-034 permits Unix sockets and
+socketpairs and refuses other families, `bind`, `listen` and `setsockopt`. Refusing
+socket options prevents credential options from assigning an address to a
+Unix datagram socket without `bind`. The profile returns `ENOSYS` for
+`memfd_create` to prevent that route around writable mounts' `noexec` flags.
+The kernel probe installs the profile in a test process. Room launch still
+needs to select it and enforce the room's mount and namespace boundaries.
+
 ## What's inside the boundary (trusted)
 
 - **The broker.** The central coordinator. It spawns cells,
