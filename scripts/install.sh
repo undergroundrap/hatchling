@@ -379,6 +379,13 @@ fi
 say "starting the broker"
 systemctl daemon-reload
 systemctl enable hatchling.service > /dev/null
+TOKEN=/var/lib/hatchling/ui.sock.token
+OPERATOR_TOKEN=/var/lib/hatchling/operator.sock.token
+token_stamp() {
+  [ ! -L "$1" ] && [ -f "$1" ] && [ -s "$1" ] && stat -c '%u:%d:%i:%z' -- "$1" 2> /dev/null
+}
+previous_ui=$(token_stamp "$TOKEN") || previous_ui=
+previous_operator=$(token_stamp "$OPERATOR_TOKEN") || previous_operator=
 # Straight after a stop, its control group can still be going, which fails the
 # start. systemd tries again by itself, so give that time before saying so.
 if ! systemctl restart hatchling.service; then
@@ -389,6 +396,20 @@ if ! systemctl restart hatchling.service; then
     sleep 1
   done
   say "the broker started on its second try"
+fi
+
+# The service becomes active at exec. The host needs both tokens, written
+# and handed to the owner by this broker start, before it can serve.
+if [ -z "$KEYED" ]; then
+  tries=0
+  until ui=$(token_stamp "$TOKEN") && operator=$(token_stamp "$OPERATOR_TOKEN") \
+    && [ "${ui%%:*}" = "$OWNER" ] && [ "${operator%%:*}" = "$OWNER" ] \
+    && [ "$ui" != "$previous_ui" ] && [ "$operator" != "$previous_operator" ]; do
+    tries=$((tries + 1))
+    [ "$tries" -ne 1 ] || say "waiting for the broker's app tokens"
+    [ "$tries" -le 30 ] || fail "the broker didn't prepare the app tokens: see journalctl -u hatchling, and sudo hatchling-broker doctor"
+    sleep 1
+  done
 fi
 
 say "starting the app's host as $OWNER_NAME"
@@ -416,13 +437,6 @@ if [ -n "$KEYED" ]; then
   exit 0
 fi
 
-TOKEN=/var/lib/hatchling/ui.sock.token
-tries=0
-until [ -s "$TOKEN" ]; do
-  tries=$((tries + 1))
-  [ "$tries" -le 30 ] || fail "the broker didn't start: see journalctl -u hatchling, and sudo hatchling-broker doctor"
-  sleep 1
-done
 echo
 echo "Hatchling is running, and starts at boot."
 echo "Open the app in a browser on this machine (the address is a key to your agent: don't share it):"
