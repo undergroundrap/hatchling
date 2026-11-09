@@ -1909,30 +1909,51 @@ mod tests {
     #[test]
     fn the_kernel_enforces_the_room_profile() {
         use crate::process::exit_child;
+        use std::os::unix::process::ExitStatusExt;
 
         const PROBE: &str = "HATCHLING_TEST_ROOM_FILTER_PROBE";
-        if std::env::var_os(PROBE).is_some() {
-            probe_room_filter(true);
-            // Distinguish a completed probe from libtest selecting zero tests.
-            exit_child(42);
+        match std::env::var(PROBE).as_deref() {
+            Ok("room") => {
+                probe_room_filter(true);
+                // Distinguish a completed probe from libtest selecting zero tests.
+                exit_child(42);
+            }
+            Ok("credentials") => {
+                probe_room_sendmsg_credentials(true);
+                exit_child(42);
+            }
+            _ => {}
         }
 
         probe_room_filter(false);
+        probe_room_sendmsg_credentials(false);
         // Install the filter in a fresh process. Installing allocates, which
         // would be unsafe in a fork of the multithreaded test runner.
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "seccomp::tests::the_kernel_enforces_the_room_profile",
-                "--nocapture",
-            ])
-            .env(PROBE, "1")
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "seccomp::tests::the_kernel_enforces_the_room_profile",
+            "--nocapture",
+        ]);
+        let output = command
+            .env(PROBE, "room")
             .output()
             .expect("start room filter probe");
         assert_eq!(
             output.status.code(),
             Some(42),
             "room filter probe failed: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let output = command
+            .env(PROBE, "credentials")
+            .output()
+            .expect("start room sendmsg probe");
+        assert_eq!(
+            output.status.signal(),
+            Some(libc::SIGSYS),
+            "sendmsg with SCM_CREDENTIALS must be killed: {}\n{}",
             output.status,
             String::from_utf8_lossy(&output.stderr),
         );
@@ -1946,7 +1967,7 @@ mod tests {
         use rustix::net::{AddressFamily, SocketAddrUnix, SocketType, bind_unix, listen, socket};
         use std::io::{Read, Write};
         use std::os::linux::net::SocketAddrExt;
-        use std::os::unix::net::{SocketAddr, UnixStream};
+        use std::os::unix::net::{SocketAddr, UnixDatagram, UnixStream};
 
         let name = format!("hatchling-room-{}", std::process::id());
         let listener_addr = SocketAddrUnix::new_abstract_name(name.as_bytes()).unwrap();
@@ -1957,6 +1978,10 @@ mod tests {
         // Prepare a socket that the kernel could listen on even if bind is denied.
         let listener = socket(AddressFamily::UNIX, SocketType::STREAM, None).unwrap();
         bind_unix(&listener, &listener_addr).unwrap();
+        let peer_name = format!("{name}-datagram");
+        let peer_addr = SocketAddr::from_abstract_name(peer_name.as_bytes()).unwrap();
+        let datagram_peer = UnixDatagram::bind_addr(&peer_addr).unwrap();
+        datagram_peer.set_nonblocking(true).unwrap();
 
         if filtered {
             set_no_new_privs().unwrap();
@@ -1969,6 +1994,15 @@ mod tests {
         let mut received = [0];
         receive.read_exact(&mut received).unwrap();
         assert_eq!(received, *b"x", "Unix socketpair");
+
+        let datagram_sender = UnixDatagram::unbound().unwrap();
+        assert_eq!(datagram_sender.send_to_addr(b"d", &peer_addr).unwrap(), 1);
+        assert!(
+            datagram_sender.local_addr().unwrap().is_unnamed(),
+            "sendto autobound the sender"
+        );
+        assert_eq!(datagram_peer.recv(&mut received).unwrap(), 1);
+        assert_eq!(received, *b"d", "plain sendto reached its peer");
 
         let ipv4 = socket(AddressFamily::INET, SocketType::STREAM, None);
         let ipv6 = socket(AddressFamily::INET6, SocketType::STREAM, None);
@@ -1996,6 +2030,49 @@ mod tests {
         for option in [libc::SO_PASSCRED, libc::SO_PASSPIDFD] {
             probe_room_autobind(option, &missing, filtered);
         }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn probe_room_sendmsg_credentials(filtered: bool) {
+        use crate::process::set_no_new_privs;
+        use rustix::net::{
+            SendAncillaryBuffer, SendAncillaryMessage, SendFlags, SocketAddrUnix, UCred, bind_unix,
+            sendmsg_unix,
+        };
+        use rustix::process::{getgid, getpid, getuid};
+        use std::io::IoSlice;
+        use std::os::unix::net::UnixDatagram;
+
+        let name = format!("hatchling-room-{}-credentials", std::process::id());
+        let addr = SocketAddrUnix::new_abstract_name(name.as_bytes()).unwrap();
+        let peer = UnixDatagram::unbound().unwrap();
+        bind_unix(&peer, &addr).unwrap();
+        peer.set_nonblocking(true).unwrap();
+        let sender = UnixDatagram::unbound().unwrap();
+        let mut space = [0; rustix::cmsg_space!(ScmCredentials(1))];
+        let mut control = SendAncillaryBuffer::new(&mut space);
+        assert!(control.push(SendAncillaryMessage::ScmCredentials(UCred {
+            pid: getpid(),
+            uid: getuid(),
+            gid: getgid(),
+        })));
+        let payload = [IoSlice::new(b"c")];
+        if filtered {
+            set_no_new_privs().unwrap();
+            install(&SeccompProfile::room().unwrap()).unwrap();
+        }
+
+        assert_eq!(
+            sendmsg_unix(&sender, &addr, &payload, &mut control, SendFlags::DONTWAIT).unwrap(),
+            1
+        );
+        assert!(
+            sender.local_addr().unwrap().is_unnamed(),
+            "SCM_CREDENTIALS autobound the sender"
+        );
+        let mut received = [0];
+        assert_eq!(peer.recv(&mut received).unwrap(), 1);
+        assert_eq!(received, *b"c", "credentialed sendmsg reached its peer");
     }
 
     #[cfg(target_arch = "x86_64")]
