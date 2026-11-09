@@ -316,11 +316,47 @@ jobs:
 
       - name: Install, and ask the agent, before and after a restart
         run: |
+          set -o pipefail
           python3 docs/examples/stand-in-model.py 18089 > "$RUNNER_TEMP/model.log" 2>&1 &
           # Run from elsewhere, as a person who downloaded it would.
           cp "$RUNNER_TEMP/release/get-hatchling.sh" "$HOME/get-hatchling.sh"
           grep -q "^VERSION=v0.0.0-ci$" "$HOME/get-hatchling.sh"
-          (cd "$HOME" && sh get-hatchling.sh --from-url "file://$RUNNER_TEMP/release" --model-endpoint http://localhost:18089/v1 --model stand-in) | tee "$RUNNER_TEMP/install.log"
+          # Type=exec reports the fixture shell active while the broker and its tokens are still held.
+          dropin=/run/systemd/system/hatchling.service.d/ci-delay.conf
+          release_broker=/run/hatchling-ci-release-broker
+          cleanup_delay() {
+            sudo touch "$release_broker"
+            sudo rm -f -- "$dropin"
+            sudo systemctl daemon-reload
+          }
+          trap cleanup_delay EXIT
+          sudo install -d "${dropin%/*}"
+          sudo tee "$dropin" >/dev/null <<'EOF'
+          [Service]
+          ExecStart=
+          ExecStart=/bin/sh -ec 'until test -e /run/hatchling-ci-release-broker; do sleep 0.1; done; exec /usr/local/bin/hatchling-broker'
+          EOF
+          : > "$RUNNER_TEMP/install.log"
+          (cd "$HOME" && sh get-hatchling.sh --from-url "file://$RUNNER_TEMP/release" --model-endpoint http://localhost:18089/v1 --model stand-in) | tee "$RUNNER_TEMP/install.log" &
+          install_pid=$!
+          for _ in $(seq 120); do
+            grep -Fq "waiting for the broker's app tokens" "$RUNNER_TEMP/install.log" && break
+            kill -0 "$install_pid" 2>/dev/null || { wait "$install_pid"; exit 1; }
+            sleep 1
+          done
+          grep -Fq "waiting for the broker's app tokens" "$RUNNER_TEMP/install.log"
+          systemctl is-active --quiet hatchling.service
+          [ ! -e /var/lib/hatchling/ui.sock.token ]
+          [ ! -e /var/lib/hatchling/operator.sock.token ]
+          if systemctl is-active --quiet "hatchling-host@$USER.service"; then
+            echo "the app host started before the broker could write its tokens" >&2
+            exit 1
+          fi
+          sudo touch "$release_broker"
+          wait "$install_pid"
+          cleanup_delay
+          trap - EXIT
+          sudo rm -f -- "$release_broker"
           grep -q "checking every file against the release's SHA256SUMS" "$RUNNER_TEMP/install.log"
           grep -q "http://127.0.0.1:7340/#hatchling-ui=" "$RUNNER_TEMP/install.log"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock

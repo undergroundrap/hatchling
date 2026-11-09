@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- A fresh service install waits for the broker's chat and operator tokens before starting the app, so a slow broker start no longer interrupts setup.
 - **An update in another chat keeps your reading position.** A reply arriving elsewhere no longer snaps the conversation you are reading to the bottom. New replies in the current chat still follow when you are near the bottom.
 
 ### Added

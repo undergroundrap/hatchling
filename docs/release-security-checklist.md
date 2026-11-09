@@ -10,6 +10,8 @@ An item that finds something new either shows it holds to the rule below, with t
 
 **The standing rule.** A security claim is only as verified as the realest component it was tested against. Tests against a stand-in prove the logic, not the protection. Any claim that something can never happen names what it was tested against: real keeper, real cell, real install. A claim tested only against a stand-in is recorded as unverified.
 
+**Service readiness with a physical key.** On a disposable install from the release candidate, enroll a real hardware key and run an upgrade with the normal installer. Confirm the installer returns with unlock instructions while the vault is locked. Unlock with the key, then open chat and the Machine view and confirm both connect. Record the installer identity, platform, and result in the release PR without recording a token or PIN. CI covers delayed broker startup with a fixture and the real service install. Run the physical-key check for v0.9 before tagging.
+
 ## 1. Every listener has a gate
 
 Each place the broker accepts a connection, who may connect, and what proves it. A new bind in non-test code that isn't in this table fails this item. "The owner" is who `owner.rs` works out: `HATCHLING_OWNER_UID`, or for a root broker whoever ran `sudo` (`SUDO_UID`), or else the broker's own user. Each socket is made for that user and given to it.
