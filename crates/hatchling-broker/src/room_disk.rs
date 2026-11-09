@@ -391,12 +391,12 @@ impl RoomDisk {
         header_id(&head)
     }
 
-    /// Whether the mapping named `name` is there: `false` if not, `true`
-    /// if it's this image's, and refused if it's anything else's.
-    fn mapped(&self, image: &RoomImageId, name: &str) -> Result<bool, String> {
-        match self.mapping_uuid(name)? {
-            None => Ok(false),
-            Some(found) if found == dm_uuid(image, name) => Ok(true),
+    /// The kernel's device directory for this image's mapping, if present.
+    /// Refuse a mapping with that name whose UUID belongs to another image.
+    fn mapped(&self, image: &RoomImageId, name: &str) -> Result<Option<PathBuf>, String> {
+        match self.mapping(name)? {
+            None => Ok(None),
+            Some((path, found)) if found == dm_uuid(image, name) => Ok(Some(path)),
             Some(_) => Err(format!(
                 "a mapping named {name} is there, and it isn't this room disk's"
             )),
@@ -406,6 +406,11 @@ impl RoomDisk {
     /// The device-mapper UUID of the mapping named `name`, if there's one,
     /// as the kernel lists it.
     fn mapping_uuid(&self, name: &str) -> Result<Option<String>, String> {
+        Ok(self.mapping(name)?.map(|(_, uuid)| uuid))
+    }
+
+    /// The kernel's block-device directory and UUID for the same mapping.
+    fn mapping(&self, name: &str) -> Result<Option<(PathBuf, String)>, String> {
         let listed = match std::fs::read_dir(&self.sys_block) {
             Ok(listed) => listed,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -420,10 +425,21 @@ impl RoomDisk {
             if named.trim_end() == name {
                 let uuid = std::fs::read_to_string(dm.join("uuid"))
                     .map_err(|error| format!("{name}'s uuid can't be read: {error}"))?;
-                return Ok(Some(uuid.trim_end().to_owned()));
+                return Ok(Some((entry.path(), uuid.trim_end().to_owned())));
             }
         }
         Ok(None)
+    }
+
+    /// Pin the workspace in the caller's mount namespace. The mapping
+    /// directory was authenticated against this disk's LUKS UUID. Check
+    /// the mount reached by the descriptor, so a substitute with the same
+    /// flags (including a bind of a subtree on this disk) is refused.
+    fn pin_workspace(&self, mapping: &Path) -> Result<OwnedFd, String> {
+        let device = std::fs::read_to_string(mapping.join("dev"))
+            .map_err(|error| format!("the room mapping's device can't be read: {error}"))?;
+        hatchling_sys::locked_mount::pin_locked_ext4_root(&self.mount_point(), device.trim_end())
+            .map_err(|error| error.to_string())
     }
 
     /// The mount point, made if absent, and whether it's mounted on: it
@@ -831,15 +847,14 @@ impl RoomDisk {
         let mapped = self.mapped(&image, &name)?;
         let mount = self.mount_point();
         if self.mount_point_mounted()? {
-            if mapped {
-                return hatchling_sys::verify_locked_down(&mount)
-                    .map_err(|error| error.to_string());
+            if let Some(mapping) = mapped {
+                return self.pin_workspace(&mapping).map(drop);
             }
             return Err(String::from(
                 "something else is mounted at the room disk's mount point",
             ));
         }
-        if !mapped {
+        if mapped.is_none() {
             self.run_tool(
                 &self.cryptsetup,
                 &open_args(&self.image(), &name),
@@ -853,7 +868,21 @@ impl RoomDisk {
             let _ = self.close_mapping(&name);
             return Err(format!("the room disk can't be mounted: {error}"));
         }
-        Ok(())
+        let verified = self
+            .mapped(&image, &name)
+            .and_then(|mapping| {
+                mapping.ok_or_else(|| String::from("the room disk's mapping went away"))
+            })
+            .and_then(|mapping| self.pin_workspace(&mapping));
+        match verified {
+            Ok(_) => Ok(()),
+            Err(reason) => {
+                if hatchling_sys::unmount_strict(&mount).is_ok() {
+                    let _ = self.close_mapping(&name);
+                }
+                Err(reason)
+            }
+        }
     }
 
     /// Unmounts the room disk and closes its mapping. A disk in use is
@@ -875,7 +904,7 @@ impl RoomDisk {
         }
         let image = self.image_id()?;
         let name = mapping_name(&image);
-        if self.mapped(&image, &name)? {
+        if self.mapped(&image, &name)?.is_some() {
             self.trusted_program(&self.cryptsetup)?;
             self.close_mapping(&name)?;
         }
@@ -927,14 +956,17 @@ impl RoomDisk {
             && hatchling_sys::is_mount_point(&mount).map_err(|error| error.to_string())?;
         // A mapping is looked for whether or not it's mounted: one a close
         // left is decrypted all the same, and is never said to be closed.
-        if !self.mapped(&image, &mapping_name(&image))? {
+        let Some(mapping) = self.mapped(&image, &mapping_name(&image))? else {
             return Ok(status);
-        }
+        };
         if !mounted {
             status.state = RoomDiskState::Mapped;
             return Ok(status);
         }
-        let space = hatchling_sys::space(&mount).map_err(|error| error.to_string())?;
+        self.check_record(&image)?;
+        let workspace = self.pin_workspace(&mapping)?;
+        let space = hatchling_sys::locked_mount::space_at(workspace.as_fd())
+            .map_err(|error| error.to_string())?;
         status.state = RoomDiskState::Open;
         status.used = Some(space.size.saturating_sub(space.free));
         status.free = Some(space.available);
