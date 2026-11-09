@@ -13,6 +13,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 builds the x86_64 room system image in CI.** The release pipeline compares two independent builds and tests the read-only image through dm-verity before publishing it with a package inventory and provenance.
 - **WO-034 gives the agent’s room its own syscall policy.** The x86_64 profile permits Unix sockets and refuses other socket families, binding and listening on sockets, changing socket options, and `memfd_create`. Room launch integration follows separately.
 - **The vault's access log can name the spawner.** When the spawner asks the vault keeper for a room disk's key, which goes to cryptsetup and never to the spawner or the broker, the ask is a line of its own in `hatchling-broker vault-audit log`. Nothing asks yet: the room disk comes in 0.9.
   - **Breaking for `hatchling-broker`:** `Caller::Spawner` is new. The workspace is now 0.9.0.
