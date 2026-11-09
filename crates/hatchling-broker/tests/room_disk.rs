@@ -16,7 +16,7 @@
 //! the test's own in `/var/lib`, never anywhere else.
 
 use std::os::fd::{AsFd as _, AsRawFd as _};
-use std::os::unix::fs::PermissionsExt as _;
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -195,6 +195,66 @@ impl Drop for HeldBind {
             .stderr(Stdio::null())
             .status();
     }
+}
+
+#[test]
+fn room_disk_refuses_a_substitute_with_the_right_flags() -> Result<(), Failed> {
+    if !as_root("workspace mount provenance") {
+        return Ok(());
+    }
+    let place = Place::new("workspace-provenance")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let run = |op| room_disk::run(&place.disk, &keeper.spawner, op);
+    run(RoomDiskOp::Create)?;
+    run(RoomDiskOp::Open)?;
+    run(RoomDiskOp::Open)?;
+    let mount = place.disk.mount_point();
+    let dev = std::fs::metadata(&mount)?.dev();
+    let device = format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+    let pinned = hatchling_sys::locked_mount::pin_locked_ext4_root(&mount, &device)?;
+    assert!(rustix::fs::fcntl_getfl(&pinned)?.contains(rustix::fs::OFlags::PATH));
+    assert!(rustix::io::fcntl_getfd(&pinned)?.contains(rustix::io::FdFlags::CLOEXEC));
+    drop(pinned);
+    let alias = place.dir.join("workspace-alias");
+    std::os::unix::fs::symlink(&mount, &alias)?;
+    assert!(hatchling_sys::locked_mount::pin_locked_ext4_root(&alias, &device).is_err());
+    let nested = mount.join("nested");
+    std::fs::create_dir(&nested)?;
+    std::fs::write(mount.join("kept"), b"real encrypted workspace")?;
+
+    for same_disk in [false, true] {
+        let mut command = Command::new("mount");
+        if same_disk {
+            command.arg("--bind").arg(&nested);
+        } else {
+            command.args(["-t", "tmpfs", "-o", "nodev,nosuid,noexec", "tmpfs"]);
+        }
+        assert!(command.arg(&mount).status()?.success());
+        let covering = HeldBind(mount.clone());
+        assert!(
+            place.mapped(),
+            "the expected encrypted mapping must still exist"
+        );
+        hatchling_sys::verify_locked_down(&mount)?;
+        let refused = run(RoomDiskOp::Open).unwrap_err();
+        assert!(
+            refused.contains("expected encrypted ext4 volume"),
+            "{refused}"
+        );
+        let refused = room_disk::status(&place.disk).unwrap_err();
+        assert!(
+            refused.contains("expected encrypted ext4 volume"),
+            "{refused}"
+        );
+        drop(covering);
+        assert_eq!(
+            std::fs::read(mount.join("kept"))?,
+            b"real encrypted workspace"
+        );
+        assert_eq!(room_disk::status(&place.disk)?.state, RoomDiskState::Open);
+    }
+    run(RoomDiskOp::Close)?;
+    Ok(())
 }
 
 /// A second bind of the open room disk, as a cell's would be, holds it: the

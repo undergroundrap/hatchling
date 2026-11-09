@@ -595,7 +595,7 @@ fn an_open_never_formats() {
     let bench = Bench::new("open");
     bench.run(RoomDiskOp::Create).unwrap();
     bench.forget_runs();
-    let said = bench.run(RoomDiskOp::Open).unwrap_err();
+    let said = bench.disk.open(&bench.keeper).unwrap_err();
     assert!(said.contains("can't be mounted"), "{said}");
     let image = bench.image_id();
     let name = mapping_name(&image);
@@ -738,7 +738,7 @@ fn a_close_closes_the_mapping_and_confirms_it_gone() {
     let bench = Bench::new("close");
     bench.run(RoomDiskOp::Create).unwrap();
     bench.forget_runs();
-    bench.run(RoomDiskOp::Close).unwrap();
+    bench.disk.close().unwrap();
     assert!(
         bench.ran().is_empty(),
         "a close ran a program with nothing open"
@@ -768,7 +768,7 @@ fn a_close_closes_the_mapping_and_confirms_it_gone() {
 #[test]
 fn the_status_says_how_it_is_in_numbers() {
     let bench = Bench::new("status");
-    let absent = bench.run(RoomDiskOp::Status).unwrap().unwrap();
+    let absent = bench.disk.status().unwrap();
     assert_eq!(absent.state, RoomDiskState::Absent);
     assert_eq!(absent.cap, MIN_SIZE);
     assert_eq!((absent.image_bytes, absent.used), (None, None));
@@ -1017,6 +1017,36 @@ fn what_cant_be_looked_at_is_refused_and_what_isnt_there_is_none() {
         bench.run(RoomDiskOp::Status).unwrap().unwrap().state,
         RoomDiskState::Mapped,
         "a disk mapped but not mounted was said to be open, or closed"
+    );
+}
+
+#[test]
+fn workspace_pin_uses_the_expected_mapping_and_requires_a_mount_root() {
+    let bench = Bench::new("workspace-pin");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let name = bench.list_own_mapping();
+    let mapping = bench.root.join("sys/dm-7");
+    assert_eq!(bench.disk.mapping(&name).unwrap().unwrap().0, mapping);
+    assert_eq!(
+        bench.disk.mapped(&bench.image_id(), &name).unwrap(),
+        Some(mapping.clone())
+    );
+    assert!(
+        bench
+            .disk
+            .pin_workspace(&mapping)
+            .unwrap_err()
+            .contains("device")
+    );
+    std::fs::write(mapping.join("dev"), b"253:7\n").unwrap();
+    std::fs::create_dir(bench.disk.mount_point()).unwrap();
+    assert!(
+        bench
+            .disk
+            .pin_workspace(&mapping)
+            .unwrap_err()
+            .contains("mount root"),
+        "an ordinary directory was treated as a mount root"
     );
 }
 

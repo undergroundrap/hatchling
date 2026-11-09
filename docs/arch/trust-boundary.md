@@ -37,6 +37,13 @@ Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
 write. Reporting the job's failure belongs to the launcher.
 
+The spawner's room-disk open and status checks pin the workspace mount
+and match its kernel mount record to the expected LUKS2 mapping. They
+require the root of the encrypted ext4 filesystem with the locked-down
+flags. A substitute mount with matching flags, including a bind of a
+directory on the same volume, fails this check. The launcher must use
+the authenticated descriptor in its own mount namespace at admission.
+
 ## What's inside the boundary (trusted)
 
 - **The broker.** The central coordinator. It spawns cells,

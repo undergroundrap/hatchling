@@ -10,6 +10,7 @@
 //!
 //! Where to mount, and what, is the caller's: these say how.
 
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use rustix::fs::StatVfsMountFlags;
@@ -120,6 +121,81 @@ pub fn verify_locked_down(target: &Path) -> Result<(), Error> {
     }
 }
 
+/// Pin the root of a locked-down ext4 filesystem in this mount namespace.
+///
+/// The caller supplies the trusted device's kernel major:minor string
+/// and must secure the directory chain to the target.
+///
+/// # Errors
+///
+/// A mount error if the target can't be pinned or isn't the expected
+/// filesystem root with the locked-down flags.
+pub fn pin_locked_ext4_root(target: &Path, device: &str) -> Result<OwnedFd, Error> {
+    use rustix::fs::{AtFlags, Mode, OFlags, StatxFlags};
+
+    let source = rustix::fs::open(
+        target,
+        OFlags::PATH
+            .union(OFlags::DIRECTORY)
+            .union(OFlags::NOFOLLOW)
+            .union(OFlags::CLOEXEC),
+        Mode::empty(),
+    )
+    .map_err(failed("pin room workspace"))?;
+    let seen = rustix::fs::statx(source.as_fd(), "", AtFlags::EMPTY_PATH, StatxFlags::MNT_ID)
+        .map_err(failed("look at pinned room workspace"))?;
+    // An ordinary directory reports the same mount ID as the mount root.
+    if !StatxFlags::from_bits_retain(seen.stx_mask).contains(StatxFlags::MNT_ID)
+        || seen.stx_attributes & STATX_ATTR_MOUNT_ROOT == 0
+    {
+        return Err(refused(
+            "check pinned room workspace",
+            String::from("the room workspace isn't a known mount root"),
+        ));
+    }
+    let mounts = std::fs::read("/proc/self/mountinfo").map_err(|source| Error::Mount {
+        operation: "read room workspace mounts",
+        source,
+    })?;
+    check_workspace_mount(&mounts, seen.stx_mnt_id, device)?;
+    Ok(source)
+}
+
+/// Match the descriptor's mount ID against the current namespace's kernel
+/// record. The device number identifies the filesystem, and the root field
+/// distinguishes a whole volume from a bind of a directory on that volume.
+fn check_workspace_mount(mounts: &[u8], id: u64, device: &str) -> Result<(), Error> {
+    let why = |reason: &str| refused("check room workspace mount", reason.to_owned());
+    let id = id.to_string();
+    let Some(mut fields) = mounts.split(|&byte| byte == b'\n').find_map(|line| {
+        let mut fields = line.split(|&byte| byte == b' ');
+        (fields.next()? == id.as_bytes()).then_some(fields)
+    }) else {
+        return Err(why("the pinned room workspace mount isn't listed"));
+    };
+    let _parent = fields.next();
+    let actual_device = fields.next();
+    let root = fields.next();
+    let _target = fields.next();
+    let options = fields.next();
+    let fstype = fields.skip_while(|field| *field != b"-").nth(1);
+    if actual_device != Some(device.as_bytes()) || root != Some(b"/") || fstype != Some(b"ext4") {
+        return Err(why(
+            "the room workspace isn't the root of the expected encrypted ext4 volume",
+        ));
+    }
+    let options = options.unwrap_or_default();
+    for needed in [b"nodev".as_slice(), b"nosuid", b"noexec"] {
+        if !options
+            .split(|&byte| byte == b',')
+            .any(|option| option == needed)
+        {
+            return Err(why("the room workspace mount isn't locked down"));
+        }
+    }
+    Ok(())
+}
+
 /// The names of `flags`, of those a locked-down mount needs.
 fn flag_names(flags: StatVfsMountFlags) -> String {
     [
@@ -172,12 +248,26 @@ pub struct Space {
 /// [`Error::Mount`] when it can't be looked at.
 pub fn space(path: &Path) -> Result<Space, Error> {
     let seen = rustix::fs::statvfs(path).map_err(failed("look at a file system's space"))?;
+    Ok(space_from(&seen))
+}
+
+/// The size and free space of the filesystem pinned by the descriptor, in bytes.
+///
+/// # Errors
+///
+/// A mount error when the pinned filesystem can't be inspected.
+pub fn space_at(fd: BorrowedFd<'_>) -> Result<Space, Error> {
+    let seen = rustix::fs::fstatvfs(fd).map_err(failed("look at a pinned file system's space"))?;
+    Ok(space_from(&seen))
+}
+
+fn space_from(seen: &rustix::fs::StatVfs) -> Space {
     let bytes = |blocks: u64| blocks.saturating_mul(seen.f_frsize);
-    Ok(Space {
+    Space {
         size: bytes(seen.f_blocks),
         free: bytes(seen.f_bfree),
         available: bytes(seen.f_bavail),
-    })
+    }
 }
 
 /// Whether `path` is the root of a mount.
@@ -207,6 +297,54 @@ pub fn is_mount_point(path: &Path) -> Result<bool, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_mount_requires_the_pinned_id_full_volume_and_all_flags() {
+        let good = b"10 5 253:7 / /room/mnt rw,nosuid,nodev,noexec shared:1 - ext4 /dev/dm-7 rw\n";
+        assert!(check_workspace_mount(good, 10, "253:7").is_ok());
+        assert!(
+            check_workspace_mount(good, 11, "253:7")
+                .unwrap_err()
+                .to_string()
+                .contains("isn't listed")
+        );
+        assert!(
+            check_workspace_mount(good, 10, "253:8")
+                .unwrap_err()
+                .to_string()
+                .contains("expected encrypted ext4")
+        );
+        for bad in [
+            b"10 5 253:7 /nested /room/mnt rw,nosuid,nodev,noexec - ext4 /dev/dm-7 rw\n".as_slice(),
+            b"10 5 253:7 / /room/mnt rw,nosuid,nodev,noexec - xfs /dev/dm-7 rw\n",
+            b"10 5 253:7 / /room/mnt rw,nosuid,nodev,noexec shared:1 ext4 /dev/dm-7 rw\n",
+        ] {
+            assert!(
+                check_workspace_mount(bad, 10, "253:7")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("expected encrypted ext4")
+            );
+        }
+        for options in ["rw,nodev,noexec", "rw,nosuid,noexec", "rw,nosuid,nodev"] {
+            let row = format!("10 5 253:7 / /room/mnt {options} - ext4 /dev/dm-7 rw\n");
+            assert!(
+                check_workspace_mount(row.as_bytes(), 10, "253:7")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("isn't locked down")
+            );
+        }
+        let mut stacked = good.to_vec();
+        stacked
+            .extend_from_slice(b"11 10 0:55 / /room/mnt rw,nosuid,nodev,noexec - tmpfs none rw\n");
+        assert!(
+            check_workspace_mount(&stacked, 11, "253:7")
+                .unwrap_err()
+                .to_string()
+                .contains("expected encrypted ext4")
+        );
+    }
 
     /// A scratch directory of a test's own.
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -246,6 +384,21 @@ mod tests {
             "the free space doesn't add up"
         );
         assert!(space(&dir.join("none")).is_err());
+        let fd = std::fs::File::open(&dir).unwrap();
+        assert_eq!(space_at(fd.as_fd()).unwrap().size, seen.size);
+        let mut stat = rustix::fs::fstatvfs(&fd).unwrap();
+        stat.f_frsize = 1024;
+        stat.f_blocks = u64::MAX;
+        stat.f_bfree = 10;
+        stat.f_bavail = 4;
+        assert_eq!(
+            space_from(&stat),
+            Space {
+                size: u64::MAX,
+                free: 10_240,
+                available: 4_096,
+            }
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -268,6 +421,12 @@ mod tests {
     fn a_mount_point_is_told_from_a_directory() {
         let dir = scratch("point");
         assert!(!is_mount_point(&dir).unwrap());
+        assert!(
+            pin_locked_ext4_root(&dir, "0:0")
+                .unwrap_err()
+                .to_string()
+                .contains("mount root")
+        );
         let link = dir.join("link");
         std::os::unix::fs::symlink("/", &link).unwrap();
         assert!(!is_mount_point(&link).unwrap(), "a link was followed");
