@@ -36,13 +36,14 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
      - each target twice, on separate runners, from different checkout paths and `CARGO_HOME`s; the release goes out only if the two builds are byte-identical.
    - **It builds the app** (`scripts/release-artifacts.sh ui`) twice, from different paths, into `hatchling-ui.tar.gz`, and refuses to release unless the two are byte-identical.
    - **It builds the Windows setup** from the first x86_64 build and the app, and scans it with Microsoft Defender: a build it flags goes no further.
+   - **It builds the x86_64 room system image** twice on separate runners, compares the outputs byte for byte, and exercises a read-only dm-verity mount.
    - **It describes them:** a CycloneDX SBOM per program and target, `SHA256SUMS` of every file, and a build-provenance attestation of each file, SBOMs and `SHA256SUMS` included.
    - **It publishes:**
      - the GitHub release, with those files and the version's changelog section as its notes;
      - every crate on crates.io: each is packaged and built from its package in a job with no token, then a short-lived token through trusted publishing, and [`scripts/publish-crates.sh --existing-only --no-verify`](../scripts/publish-crates.sh), which publishes each crate in dependency order without building it, and skips any already there at this version.
 
    No crates.io token is stored anywhere, and no job that builds, or runs a dependency's build script or macro, holds a token that can write, sign or publish. Watch the run under Actions.
-5. **Check:** the release has its 27 files (10 programs, 10 SBOMs, 2 build infos, the app, the installer, `get-hatchling.sh`, the Windows setup and `SHA256SUMS`); one binary verifies as [below](#verifying-a-release); each crate shows the new version on crates.io, and docs.rs builds its docs. A warning on the crates.io job means a crate new to crates.io was skipped; see [Adding a crate](#adding-a-crate).
+5. **Check** that the release has its 32 files, including the five room image assets and `SHA256SUMS`. Verify one binary as [below](#verifying-a-release) and check that each crate shows the new version on crates.io and builds on docs.rs. A warning on the crates.io job means a crate new to crates.io was skipped. See [Adding a crate](#adding-a-crate).
 
 If the workflow fails before the GitHub release, nothing was published: fix the cause on `main`, delete the tag (`git push origin :vX.Y.Z`, then `git tag -d vX.Y.Z`) and tag the fixed commit. If it fails in the crates.io job, the crates it already published stay published (crates.io never deletes a version): fix the cause, then re-run the job; the script skips what's already there and publishes the rest. A bad version can be **yanked** on crates.io (`cargo yank --version X.Y.Z <crate>`), which stops new projects from picking it up without breaking existing lockfiles; then release a fixed version.
 
@@ -75,6 +76,23 @@ It checks the file's SHA-256 against an attestation signed for this repository's
 ```bash
 cargo audit bin hatchling-broker-x86_64-unknown-linux-gnu
 ```
+
+### Room system image
+
+From 0.9, the x86_64 room image is released as `room-system-x86_64.squashfs` with its `.verity` hash tree, `.root-hash`, `.contents.txt` package inventory, and CycloneDX `.sbom.json`. The image uses SquashFS gzip compression for WSL compatibility. `SHA256SUMS` and the release attestations cover all five. Verify the image and its root hash against the release's attestation before using that root to authenticate data. The root hash is the trust anchor for dm-verity. The format uses SHA-256, 4096-byte data and hash blocks, verity format 1 without a superblock, and the image SHA-256 as salt.
+
+The builder uses signed Debian 13 archives from a dated snapshot, the hash-pinned upstream Node LTS binary, and the hash-pinned Python wheels in `scripts/room-image-wheels.lock`. It checks the exact signed indexes used by APT before running package scripts. APT checks the package digests through those indexes. Debian supplies the remaining libraries and retains their package and copyright records. The package inventory records both Debian's Pillow package and the newer wheel used by the Python interpreter for `pdfplumber`. Refresh the snapshot and upstream hashes with release updates. The build requires x86_64 Ubuntu 26.04 with `mmdebstrap`, `debian-archive-keyring`, `squashfs-tools`, and `cryptsetup-bin`. CI logs their versions.
+
+To replay the image jobs in a disposable Linux environment, build in two empty output paths and run the kernel probe in a private mount namespace.
+
+```bash
+sudo bash scripts/room-image.sh build /tmp/room-a
+sudo bash scripts/room-image.sh build /tmp/room-b
+bash scripts/room-image.sh compare /tmp/room-a /tmp/room-b
+sudo unshare --mount --net --propagation private bash scripts/room-image-probe.sh /tmp/room-a
+```
+
+The probe mounts the image read-only with `nodev` and `nosuid`, runs tools and Python libraries from it, and verifies refusal of tampered and missing images. The installer and room launcher will consume these artifacts in their integration slices. In the room, libraries that use `sendmsg` can terminate with `SIGSYS` under its syscall filter.
 
 ## Reproducing a build
 

@@ -9,6 +9,8 @@ name: release
 #   - the app, built twice from different paths, released only if the two
 #     builds are byte-identical: what hatchling-host serves;
 #   - a CycloneDX SBOM per program and target, and SHA256SUMS;
+#   - the x86_64 room system image, built twice with its verity tree,
+#     contents manifest and SBOM, and verified in a kernel mount;
 #   - the installer (scripts/install.sh and packaging/) and
 #     get-hatchling.sh, pinned to the tag, so a person installs with curl
 #     alone (scripts/release-installer.sh; CI's service job installs with
@@ -42,6 +44,7 @@ on:
       - .github/workflows/release.yml
       - installer/windows/**
       - scripts/release-*.sh
+      - scripts/room-image*
       - scripts/test_release_notes.py
       - scripts/publish-crates.sh
       - Cargo.toml
@@ -243,6 +246,68 @@ jobs:
           fi
           exit $status
 
+  room-image:
+    name: room image (${{ matrix.copy }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: room-image-${{ matrix.copy }}
+          persist-credentials: false
+      - name: Install image tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends mmdebstrap debian-archive-keyring squashfs-tools cryptsetup-bin
+      - name: Build the room system image
+        working-directory: room-image-${{ matrix.copy }}
+        run: |
+          dpkg-query -W mmdebstrap squashfs-tools cryptsetup-bin debian-archive-keyring zlib1g
+          sudo bash scripts/room-image.sh build "$RUNNER_TEMP/room-output"
+      - name: Upload the build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: room-build-${{ matrix.copy }}
+          path: ${{ runner.temp }}/room-output/
+          if-no-files-found: error
+          compression-level: 0
+
+  room-image-verified:
+    name: reproducible room image and kernel proof
+    needs: room-image
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Download both builds
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: room-build-*
+          path: builds
+      - name: Install verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cryptsetup-bin
+      - name: Compare, mount and exercise the verity image
+        run: |
+          bash scripts/room-image.sh compare builds/room-build-a builds/room-build-b
+          sudo unshare --mount --net --propagation private bash scripts/room-image-probe.sh builds/room-build-a
+      - name: Upload the verified release candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: room-image-verified
+          path: builds/room-build-a/
+          if-no-files-found: error
+          compression-level: 0
+
   sbom:
     name: SBOMs
     runs-on: ubuntu-24.04
@@ -387,7 +452,7 @@ jobs:
   release:
     name: GitHub release
     if: github.ref_type == 'tag'
-    needs: [notes, reproducible, sbom, crates, windows-setup]
+    needs: [notes, reproducible, sbom, crates, windows-setup, room-image-verified]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -396,7 +461,7 @@ jobs:
       attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
 
@@ -435,17 +500,26 @@ jobs:
           name: notes
           path: downloads/notes
 
+      - name: Download the verified room system image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: room-image-verified
+          path: downloads/room-image
+
       - name: Gather the release's files, and their SHA256SUMS
         env:
           TAG: ${{ github.ref_name }}
         run: |
           mkdir dist
           cp downloads/build-*-a/* downloads/sbom/* downloads/ui/* downloads/windows/* dist/
+          for suffix in squashfs verity root-hash contents.txt sbom.json; do
+            cp "downloads/room-image/room-system-x86_64.$suffix" dist/
+          done
           # The installer and get-hatchling.sh, pinned to this tag: what a
           # person installs with, with no clone.
           scripts/release-installer.sh dist "$TAG"
           (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
-          [ "$(wc -l < dist/SHA256SUMS)" = 26 ] || { echo "expected 26 files: 10 programs, 10 SBOMs, 2 build infos, the app, the Windows setup, the installer, get-hatchling.sh"; exit 1; }
+          [ "$(wc -l < dist/SHA256SUMS)" = 31 ] || { echo "expected 31 files: 26 existing release assets and 5 room image assets"; exit 1; }
 
       - name: Attest every file's provenance
         # actions/attest-build-provenance v4.2.2
