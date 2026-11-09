@@ -130,6 +130,28 @@ jobs:
           echo $$ | sudo tee /sys/fs/cgroup/hatchling-ci/runner/cgroup.procs > /dev/null
           bash scripts/check.sh
 
+      - name: Run the static room supervisor prototype under its filter
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          set -o pipefail
+          target=x86_64-unknown-linux-gnu
+          cargo tree --locked --target "$target" -p hatchling-browser \
+            --features room-supervisor --edges normal,build --prefix none > "$RUNNER_TEMP/room-graph"
+          if grep -E '^hatchling-(broker|vault|egress|isolation|fido2|runtime) ' "$RUNNER_TEMP/room-graph"; then
+            echo 'The room supervisor reaches the trusted side' >&2
+            exit 1
+          fi
+          cargo test --locked --release --target "$target" -p hatchling-browser \
+            --features room-supervisor --bin hatchling-room --test room_supervisor
+          binary="target/$target/release/hatchling-room"
+          readelf -h "$binary" | grep -F 'Advanced Micro Devices X86-64'
+          readelf -l -d "$binary" > "$RUNNER_TEMP/room-elf"
+          if grep -E 'INTERP|NEEDED' "$RUNNER_TEMP/room-elf"; then
+            echo 'The room supervisor must be static' >&2
+            exit 1
+          fi
+
       # A cell killed by seccomp hands no core to a host crash handler
       # (WO-011). The check needs a real kernel's pipe core_pattern, which it
       # sets for the while as root and puts back: a plain process's SIGSYS

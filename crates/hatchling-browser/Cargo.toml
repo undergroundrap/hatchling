@@ -5,12 +5,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish = false
+default-run = "hatchling-browser"
 authors.workspace = true
 repository.workspace = true
-description = "The controller a Hatchling browser cell runs: a headless Chromium driven over its DevTools pipe."
+description = "Cell-side controllers for Hatchling's browser and room."
 
 [lints]
 workspace = true
+
+[features]
+room-supervisor = []
+
+[[bin]]
+name = "hatchling-room"
+path = "src/bin/hatchling-room.rs"
+required-features = ["room-supervisor"]
+
+[[test]]
+name = "room_supervisor"
+harness = false
+required-features = ["room-supervisor"]
 
 [dependencies]
 # The browser cell's protocol, and its framing.
