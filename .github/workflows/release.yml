@@ -45,6 +45,10 @@ on:
       - installer/windows/**
       - scripts/release-*.sh
       - scripts/room-image*
+      - crates/hatchling-browser/**
+      - crates/hatchling-core/**
+      - crates/hatchling-sys/**
+      - .cargo/config.toml
       - scripts/test_release_notes.py
       - scripts/publish-crates.sh
       - Cargo.toml
@@ -246,8 +250,47 @@ jobs:
           fi
           exit $status
 
+  room-supervisor:
+    name: static room supervisor (${{ matrix.copy }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        copy: [a, b]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: room-supervisor-${{ matrix.copy }}
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      - name: Build the static room supervisor
+        working-directory: room-supervisor-${{ matrix.copy }}
+        env:
+          CARGO_HOME: ${{ runner.temp }}/room-cargo-${{ matrix.copy }}
+        run: |
+          rustc -vV
+          dpkg-query -W binutils libc6-dev
+          cc --version
+          ld --version
+          for input in libc.a crt1.o Scrt1.o rcrt1.o crti.o crtn.o crtbeginS.o crtendS.o libgcc.a libgcc_eh.a; do
+            sha256sum "$(cc -print-file-name="$input")"
+          done
+          bash scripts/room-image-supervisor.sh "$RUNNER_TEMP/room-supervisor"
+      - name: Upload only the supervisor
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: room-supervisor-${{ matrix.copy }}
+          path: ${{ runner.temp }}/room-supervisor/hatchling-room
+          if-no-files-found: error
+
   room-image:
     name: room image (${{ matrix.copy }})
+    needs: room-supervisor
     runs-on: ubuntu-26.04
     timeout-minutes: 45
     strategy:
@@ -260,15 +303,20 @@ jobs:
         with:
           path: room-image-${{ matrix.copy }}
           persist-credentials: false
+      - name: Download the corresponding supervisor
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: room-supervisor-${{ matrix.copy }}
+          path: ${{ runner.temp }}/room-supervisor
       - name: Install image tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends mmdebstrap debian-archive-keyring squashfs-tools cryptsetup-bin
+          sudo apt-get install --yes --no-install-recommends mmdebstrap debian-archive-keyring squashfs-tools cryptsetup-bin binutils
       - name: Build the room system image
         working-directory: room-image-${{ matrix.copy }}
         run: |
-          dpkg-query -W mmdebstrap squashfs-tools cryptsetup-bin debian-archive-keyring zlib1g
-          sudo bash scripts/room-image.sh build "$RUNNER_TEMP/room-output"
+          dpkg-query -W mmdebstrap squashfs-tools cryptsetup-bin debian-archive-keyring zlib1g binutils
+          sudo bash scripts/room-image.sh build "$RUNNER_TEMP/room-output" "$RUNNER_TEMP/room-supervisor/hatchling-room"
       - name: Upload the build
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

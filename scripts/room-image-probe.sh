@@ -18,10 +18,21 @@ mapping=hatchling-room-probe-${tmp##*/}
 mounted=false
 dev_mounted=false
 opened=false
+unmount_after_drain() {
+    local mountpoint=$1
+    # A timed-out namespace init may still be reaping a dying process.
+    # Use ordinary unmount so a live holder can never look like closure.
+    for _ in {1..40}; do
+        if umount "$mountpoint" 2>/dev/null; then return 0; fi
+        sleep 0.05
+    done
+    umount "$mountpoint"
+}
+
 cleanup() {
     local status=$?
-    if "$dev_mounted"; then umount "$tmp/mount/dev" || exit 1; fi
-    if "$mounted"; then umount "$tmp/mount" || exit 1; fi
+    if "$dev_mounted"; then unmount_after_drain "$tmp/mount/dev" || exit 1; fi
+    if "$mounted"; then unmount_after_drain "$tmp/mount" || exit 1; fi
     if "$opened"; then veritysetup close "$mapping" || exit 1; fi
     rm -rf -- "$tmp"
     exit "$status"
@@ -77,6 +88,59 @@ PY
 run_image /usr/bin/git --version
 run_image /usr/bin/rg --version
 [[ $(run_image /usr/bin/sqlite3 :memory: 'select 42;') == 42 ]]
+
+# Exercise the executable from the kernel-verified image, as an unprivileged
+# user. The PID namespace's trusted init retains its death signal and exits
+# with chroot, so a candidate's descendants cannot hold the mount open.
+python3 -I - "$tmp/mount" "$dir" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import socket
+import stat
+import subprocess
+import sys
+
+root, artifacts = map(Path, sys.argv[1:])
+path = "/usr/local/libexec/hatchling-room"
+binary = root / path.lstrip("/")
+info = binary.lstat()
+assert stat.S_ISREG(info.st_mode) and info.st_uid == info.st_gid == 0
+assert stat.S_IMODE(info.st_mode) == 0o755
+digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+inventory = (artifacts / "room-system-x86_64.contents.txt").read_text().splitlines()
+rows = [row.split("\t") for row in inventory if row.startswith("hatchling-room\t")]
+assert len(rows) == 1 and rows[0][4:] == [digest]
+sbom = json.loads((artifacts / "room-system-x86_64.sbom.json").read_text())
+entries = [entry for entry in sbom["components"] if entry["name"] == "hatchling-room"]
+assert len(entries) == 1 and entries[0]["type"] == "application"
+assert entries[0]["hashes"] == [{"alg": "SHA-256", "content": digest}]
+
+peer, endpoint = socket.socketpair()
+with peer, endpoint:
+    fd = endpoint.fileno()
+    process = subprocess.Popen(
+        ["unshare", "--pid", "--fork", "--kill-child", "bash", "-c",
+         'fd=$1; shift; exec 3<&"$fd"; if [[ $fd != 3 ]]; then exec {fd}<&-; fi; '
+         'setpriv --no-new-privs chroot --userspec=65534:65534 --groups="" "$@"; status=$?; exit "$status"',
+         "room-image-probe", str(fd), str(root), path],
+        env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL": "C"},
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        pass_fds=(fd,),
+    )
+    try:
+        endpoint.close()
+        peer.settimeout(4)
+        with peer.makefile("rb") as frames:
+            assert frames.read(9) == b"\0\0\0\x05ready"
+        peer.close()
+        assert process.wait(timeout=4) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+print(f"Supervisor ready and both inventories match SHA-256 {digest}")
+PY
 umount "$tmp/mount/dev"
 dev_mounted=false
 umount "$tmp/mount"
