@@ -16,7 +16,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rustix::process::{Pid, PidfdFlags, Signal, WaitId, WaitidOptions, WaitidStatus};
 
@@ -568,26 +568,57 @@ pub fn stop_pidfd_and_confirm_exit(pidfd: BorrowedFd<'_>) -> io::Result<()> {
     use rustix::event::{PollFd, PollFlags, poll};
 
     let mut status = [PollFd::new(&pidfd, PollFlags::IN)];
-    let exited = |status: &[PollFd<'_>]| {
-        status
-            .first()
-            .is_some_and(|fd| fd.revents().contains(PollFlags::IN))
-    };
-    poll(&mut status, 0)?;
-    if !exited(&status) {
-        match rustix::process::pidfd_send_signal(pidfd, Signal::Kill) {
-            Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+    stop_pidfd_with(
+        |timeout| {
+            poll(&mut status, timeout)?;
+            Ok(status
+                .first()
+                .is_some_and(|fd| fd.revents().contains(PollFlags::IN)))
+        },
+        || rustix::process::pidfd_send_signal(pidfd, Signal::Kill),
+        Instant::now,
+    )
+}
+
+fn stop_pidfd_with(
+    mut ready: impl FnMut(i32) -> rustix::io::Result<bool>,
+    kill: impl FnOnce() -> rustix::io::Result<()>,
+    mut now: impl FnMut() -> Instant,
+) -> io::Result<()> {
+    use rustix::io::Errno;
+
+    match ready(0) {
+        Ok(true) => return Ok(()),
+        // An interrupted probe confirms nothing. The pidfd still names the
+        // only process we may signal, and SRCH means it exited in the meantime.
+        Ok(false) | Err(Errno::INTR) => {}
+        Err(error) => return Err(error.into()),
+    }
+    match kill() {
+        Ok(()) | Err(Errno::SRCH) => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    // Retry an interrupted wait using the original deadline. The mapper can
+    // only be released when the pidfd actually confirms the process exited.
+    let deadline = now() + Duration::from_secs(5);
+    loop {
+        let remaining = deadline.saturating_duration_since(now());
+        let timeout = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        if timeout == 0 {
+            break;
+        }
+        match ready(timeout) {
+            Ok(true) => return Ok(()),
+            Ok(false) => break,
+            Err(Errno::INTR) => {}
             Err(error) => return Err(error.into()),
         }
-        poll(&mut status, 5_000)?;
     }
-    if !exited(&status) {
-        return Err(io::Error::new(
-            io::ErrorKind::TimedOut,
-            "pidfd did not confirm exit",
-        ));
-    }
-    Ok(())
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "pidfd did not confirm exit",
+    ))
 }
 
 /// A helper's watch on the broker that spawned it (WO-012): a pidfd on
@@ -2905,10 +2936,97 @@ fn stop_pidfd_and_confirm_exit_stops_a_live_process() {
     let pid = Pid::from_raw(i32::try_from(process.id()).unwrap()).unwrap();
     let pidfd = rustix::process::pidfd_open(pid, PidfdFlags::empty()).unwrap();
     let stopped = stop_pidfd_and_confirm_exit(pidfd.as_fd());
-    if stopped.is_err() {
+    let status = process.try_wait().unwrap();
+    if status.is_none() {
         let _ = process.kill();
+        let _ = process.wait();
     }
-    assert_eq!(process.wait().unwrap().signal(), Some(9));
     stopped.unwrap();
+    assert_eq!(
+        status.expect("the helper must confirm exit").signal(),
+        Some(9)
+    );
     stop_pidfd_and_confirm_exit(pidfd.as_fd()).unwrap();
+}
+
+#[test]
+fn stop_pidfd_retries_an_interrupted_wait_with_the_remaining_budget() {
+    use rustix::io::Errno;
+
+    let start = Instant::now();
+    let mut elapsed_ms = [0, 0, 250].into_iter();
+    let mut polls = [
+        (0, Err(Errno::INTR)),
+        (5000, Err(Errno::INTR)),
+        (4750, Ok(true)),
+    ]
+    .into_iter();
+    stop_pidfd_with(
+        |timeout| {
+            let (expected, result) = polls.next().expect("unexpected poll");
+            assert_eq!(timeout, expected);
+            result
+        },
+        || Ok(()),
+        || start + Duration::from_millis(elapsed_ms.next().expect("unexpected clock read")),
+    )
+    .unwrap();
+    assert!(polls.next().is_none());
+}
+
+#[test]
+fn stop_pidfd_interruptions_do_not_extend_the_deadline() {
+    use rustix::io::Errno;
+
+    let start = Instant::now();
+    let mut elapsed_ms = [0, 0, 1000, 5000].into_iter();
+    let mut expected = [0, 5000, 4000].into_iter();
+    let error = stop_pidfd_with(
+        |timeout| {
+            assert_eq!(Some(timeout), expected.next());
+            Err(Errno::INTR)
+        },
+        || Err(Errno::SRCH),
+        || start + Duration::from_millis(elapsed_ms.next().expect("unexpected clock read")),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert!(expected.next().is_none());
+}
+
+#[test]
+fn stop_pidfd_only_succeeds_after_observing_exit() {
+    use rustix::io::Errno;
+    use std::cell::Cell;
+
+    let start = Instant::now();
+    let clock_used = Cell::new(false);
+    let no_wait = || {
+        clock_used.set(true);
+        start
+    };
+    stop_pidfd_with(|_| Ok(true), || Err(Errno::INVAL), no_wait).unwrap();
+    let error = stop_pidfd_with(|_| Err(Errno::BADF), || Err(Errno::INVAL), no_wait).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+
+    let error = stop_pidfd_with(|_| Ok(false), || Err(Errno::PERM), no_wait).unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+    assert!(!clock_used.get());
+
+    let error = stop_pidfd_with(
+        |timeout| {
+            if timeout == 0 {
+                Ok(false)
+            } else {
+                Err(Errno::IO)
+            }
+        },
+        || Ok(()),
+        || start,
+    )
+    .unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::EIO));
+
+    let error = stop_pidfd_with(|_| Ok(false), || Ok(()), || start).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 }
