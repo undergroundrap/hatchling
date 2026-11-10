@@ -22,6 +22,14 @@ use crate::Error;
 /// 5.11 has no `CLOSE_RANGE_CLOEXEC`). The caller must fail closed: never
 /// exec with inherited fds.
 pub fn cloexec_fds_above_stderr() -> Result<(), Error> {
+    seal_inherited_fds().map_err(|source| Error::Process {
+        operation: "close_range(3.., CLOSE_RANGE_CLOEXEC)",
+        source,
+    })
+}
+
+/// The descriptor syscall alone, safe to run in a pre-exec hook.
+pub(crate) fn seal_inherited_fds() -> std::io::Result<()> {
     let first: libc::c_uint = 3;
     // SAFETY: with CLOSE_RANGE_CLOEXEC, close_range closes nothing; it only
     // sets FD_CLOEXEC on the range, which invalidates no descriptor this
@@ -37,10 +45,7 @@ pub fn cloexec_fds_above_stderr() -> Result<(), Error> {
     if ret == 0 {
         Ok(())
     } else {
-        Err(Error::Process {
-            operation: "close_range(3.., CLOSE_RANGE_CLOEXEC)",
-            source: std::io::Error::last_os_error(),
-        })
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -638,7 +643,7 @@ mod tests {
             ForkResult::Parent { child } => child,
             ForkResult::Child => {
                 let fd = inheritable();
-                if cloexec_fds_above_stderr().is_err() {
+                if seal_inherited_fds().is_err() {
                     exit_child(99);
                 }
                 if fd_flags(fd) != Some(libc::FD_CLOEXEC) {

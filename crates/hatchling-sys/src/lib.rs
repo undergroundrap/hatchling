@@ -40,6 +40,7 @@ pub mod net;
 pub mod ownership;
 pub mod peercred;
 pub mod process;
+pub mod room_image;
 pub mod room_mounts;
 pub mod seccomp;
 pub mod subid;

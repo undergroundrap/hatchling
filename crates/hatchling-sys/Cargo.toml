@@ -29,6 +29,8 @@ libc = "0.2"
 # `net`: SCM_RIGHTS fd passing for a cell's relay listener.
 # `pipe`: a helper's stdio, made by the broker for the spawner to hand on.
 rustix = { version = "0.38", features = ["event", "fs", "mount", "net", "pipe", "process", "stdio", "termios", "thread"] }
+# Bind the whole pinned room image to its attested digest before dm-verity.
+sha2 = "0.10"
 thiserror = "2"
 
 [dev-dependencies]

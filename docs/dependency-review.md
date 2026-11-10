@@ -253,7 +253,10 @@ rule.
 
 SHA-256 implementation. Used by `hatchling-egress` as the hash
 function for the surrogate HMAC, and by `hatchling-broker` for the
-audit log's HMAC tags (WO-011).
+audit log's HMAC tags (WO-011). WO-034 also uses the same locked version
+in `hatchling-sys` to bind the pinned room image's exact bytes to the
+attested digest. Verity verification alone can accept different geometry
+under the same root if a hash-tree block is supplied as a data block.
 
 ## base64
 
