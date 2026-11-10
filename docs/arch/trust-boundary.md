@@ -36,13 +36,16 @@ as the executable, read-only root. Other tasks must not exist before the
 root switch: a sibling could retain the previous root through `/proc`.
 The verified entry pins the mapper in that namespace and checks that the
 detached SquashFS mount belongs to its device before attaching it.
+The encrypted-volume entry pins the expected ext4 root, then resolves the
+fixed workspace and inbox siblings on that same mount. Root controls the
+volume root and inbox. A symlink or nested mount cannot supply either source.
 It mounts the encrypted workspace and 512 MiB session scratch with
 `nodev,nosuid,noexec`, and attaches the spawner's inbox read-only at
 `/workspace/inbox`. It refuses links in mount targets, leaves source
 submounts behind, and exposes a read-only PID-only `/proc` and just
 `null`, `zero`, and `urandom` under `/dev`. The production launcher
-still needs to authenticate the workspace and inbox, select the room
-filter, and own identity, resource limits, and cleanup.
+must supply the device from the authenticated LUKS mapping, select the
+room filter, and own identity, resource limits, and cleanup.
 Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
 write. Reporting the job's failure belongs to the launcher.

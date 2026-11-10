@@ -83,8 +83,12 @@ fn room_mount_verified_view() {
         Err(RoomImageActivationError::BeforeActivation(_)) => None,
     };
     if let Some(name) = name {
-        fs::write(fixture.join("verified-mapper"), name)
-            .expect("record mapper for fixture cleanup");
+        let mut names = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(fixture.join("verified-mapper"))
+            .expect("open mapper cleanup record");
+        writeln!(names, "{name}").expect("record mapper for fixture cleanup");
     }
     let mapper = activated.expect("activate verified image");
     // Device-mapper's udev rendezvous runs before room IPC isolation.
@@ -93,16 +97,31 @@ fn room_mount_verified_view() {
     let expected_device = fs::metadata(mapper.device())
         .expect("identify verified mapper")
         .rdev();
-    RoomMounts::enter_verified(
+    let device =
+        std::env::var("HATCHLING_ROOM_PROOF_WORKSPACE_DEVICE").expect("fixture volume device");
+    let volume = if std::env::var_os("HATCHLING_ROOM_PROOF_SUBSTITUTE_VOLUME").is_some() {
+        fixture.join("substitute")
+    } else {
+        fixture.join("disk")
+    };
+    let entered = RoomMounts::enter_verified_volume(
         namespace,
         &mapper,
-        pin(&fixture.join("disk/workspace")).expect("pin fixture workspace"),
-        pin(&fixture.join("disk/incoming")).expect("pin fixture inbox"),
+        &volume,
+        &device,
         pin(&fixture.join("stage")).expect("pin staging directory"),
         65534,
         65534,
-    )
-    .expect("enter with verified image");
+    );
+    if let Ok(expected) = std::env::var("HATCHLING_ROOM_PROOF_SOURCE_ERROR") {
+        let error = entered.expect_err("reject the substituted room source before entry");
+        assert!(
+            matches!(error, hatchling_sys::Error::Mount { operation, .. } if operation == expected),
+            "{error}"
+        );
+        return;
+    }
+    entered.expect("enter with verified image and encrypted sources");
     assert_eq!(
         fs::metadata("/").expect("inspect room root").dev(),
         expected_device
@@ -110,6 +129,10 @@ fn room_mount_verified_view() {
     old_root_is_not_reachable(fixture);
     hatchling_sys::clear_groups().expect("drop inherited groups");
     hatchling_sys::drop_to(65534, 65534).expect("drop to fixture room user");
+    assert_eq!(
+        fs::read_to_string("/workspace/inbox/fixture").expect("read verified inbox"),
+        "inbox-content"
+    );
     assert!(
         Command::new("/bin/sh")
             .args(["-c", "exit 0"])
@@ -128,7 +151,7 @@ fn room_mount_view() {
     let plan = RoomMounts {
         image: pin(&fixture.join("image")).expect("pin fixture image"),
         workspace: pin(&fixture.join("disk/workspace")).expect("pin fixture workspace"),
-        inbox: pin(&fixture.join("disk/incoming")).expect("pin fixture inbox"),
+        inbox: pin(&fixture.join("disk/inbox")).expect("pin fixture inbox"),
         staging: pin(&fixture.join("stage")).expect("pin staging directory"),
         uid: 65534,
         gid: 65534,

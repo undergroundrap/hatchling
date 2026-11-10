@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn encrypted_sources_refuse_a_path_that_is_not_a_volume_root() {
+    assert!(pin_encrypted_sources(Path::new("/proc/self"), "0:0").is_err());
+}
+
+#[test]
+fn root_control_refuses_a_directory_other_users_can_write() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = std::env::temp_dir().join(format!("hatchling-room-control-{}", std::process::id()));
+    std::fs::create_dir(&path).expect("create room ownership fixture");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o770))
+        .expect("allow group writes on the fixture");
+    let temporary = std::fs::File::open(&path).expect("pin temporary directory");
+    let result = require_root_control(temporary.as_fd(), "verify test directory");
+    std::fs::remove_dir(path).expect("remove room ownership fixture");
+    assert!(matches!(
+        result,
+        Err(Error::Mount { operation: "verify test directory", source })
+            if source.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+}
+
+#[test]
 fn room_root_requires_both_the_verified_device_and_squashfs() {
     assert!(validate_image_mount(17, 17, true).is_ok());
     assert!(validate_image_mount(18, 17, true).is_err());

@@ -17,6 +17,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 - **WO-034 adds the room image admission helper.** It verifies a pinned system image against the expected digest and verity root before opening a read-only kernel mapper. The installed launcher will supply those values from attested release data.
 - **WO-034 binds the room root to its verified device.** The room mount entry point checks the mounted filesystem against the authenticated mapper before entering the room.
+- **WO-034 binds the workspace and inbox to the encrypted volume.** The room mount entry point checks both sources before exposing them inside the room.
 
 - **WO-034 gives the room a mount plan.** The verified system image is read-only, the room refuses direct execution from the encrypted workspace, and each launch gets fresh 512 MiB scratch space. Production room launch follows separately.
 - **The verified room system image includes its supervisor (WO-034).** Both release builds compile the supervisor independently, record its digest, and compare the resulting images before release. Production room launch follows separately.
