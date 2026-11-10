@@ -8,7 +8,7 @@
 use std::fs::{self, File};
 use std::io::{self, Read as _};
 use std::os::fd::{AsRawFd as _, BorrowedFd, OwnedFd};
-use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -97,7 +97,7 @@ impl PinnedRoomImage {
             return Err(PendingRoomImageMapper(mapper).rollback(failure.source));
         }
         let mapper = RoomImageMapper(mapper);
-        if let Err(error) = mapper.0.check_device() {
+        if let Err(error) = mapper.pin_device() {
             return Err(mapper.rollback(error));
         }
         Ok(mapper)
@@ -172,6 +172,10 @@ pub enum RoomImageActivationError {
 pub struct RoomImageMapper(Mapper);
 
 impl RoomImageMapper {
+    pub(crate) fn pin_device(&self) -> io::Result<(OwnedFd, u64)> {
+        self.0.pin_device()
+    }
+
     /// The device path for the launcher's private read-only mount.
     /// The launch child must check its mounted device before entering.
     #[must_use]
@@ -270,19 +274,25 @@ impl Mapper {
         find_mapper(Path::new("/sys/block"), &self.name)
     }
 
-    fn check_device(&self) -> io::Result<()> {
+    fn pin_device(&self) -> io::Result<(OwnedFd, u64)> {
         let kernel = self
             .sysfs()?
             .ok_or_else(|| refuse("room image mapper is absent"))?;
-        let node = fs::metadata(&self.device)?;
-        let rdev = node.rdev();
+        let node = rustix::fs::open(
+            &self.device,
+            OFlags::PATH.union(OFlags::CLOEXEC),
+            Mode::empty(),
+        )?;
+        let stat = rustix::fs::fstat(&node)?;
+        let rdev = stat.st_rdev;
         let device = format!("{}:{}", rustix::fs::major(rdev), rustix::fs::minor(rdev));
         validate_mapper_device(
-            node.file_type().is_block_device(),
+            FileType::from_raw_mode(stat.st_mode) == FileType::BlockDevice,
             &device,
             fs::read_to_string(kernel.join("dev"))?.trim(),
             fs::read_to_string(kernel.join("ro"))?.trim(),
-        )
+        )?;
+        Ok((node, rdev))
     }
 }
 
@@ -606,7 +616,7 @@ mod tests {
         assert!(mapper.sysfs().unwrap().is_none());
         assert!(
             mapper
-                .check_device()
+                .pin_device()
                 .unwrap_err()
                 .to_string()
                 .contains("absent")

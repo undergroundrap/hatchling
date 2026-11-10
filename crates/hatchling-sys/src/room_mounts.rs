@@ -13,6 +13,7 @@ use rustix::mount::{
 };
 
 use crate::Error;
+use crate::room_image::RoomImageMapper;
 
 const IMAGE: MountAttrFlags = MountAttrFlags::MOUNT_ATTR_RDONLY
     .union(MountAttrFlags::MOUNT_ATTR_NODEV)
@@ -25,6 +26,8 @@ const DEVICE: MountAttrFlags = MountAttrFlags::MOUNT_ATTR_NOEXEC
     .union(MountAttrFlags::MOUNT_ATTR_NOSUID)
     .union(MountAttrFlags::MOUNT_ATTR_RDONLY);
 const SESSION_BYTES: &str = "536870912";
+// Linux UAPI <linux/magic.h>.
+const SQUASHFS_MAGIC: rustix::fs::FsWord = 0x7371_7368;
 
 /// Proof that the single-threaded launch child prepared its mount namespace.
 pub struct RoomMountNamespace(std::marker::PhantomData<*mut ()>);
@@ -92,16 +95,79 @@ impl RoomMounts {
     /// On any error the child must exit before running an untrusted program.
     pub fn enter(self, _namespace: RoomMountNamespace) -> Result<(), Error> {
         let root = clone_mount(self.image.as_fd())?;
-        attach(root.as_fd(), self.staging.as_fd(), IMAGE)?;
+        let Self {
+            image,
+            workspace,
+            inbox,
+            staging,
+            uid,
+            gid,
+        } = self;
+        drop(image);
+        Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
+    }
+
+    /// Mount the authenticated image in the prepared launch namespace,
+    /// then enter the room. The caller owns the verified mapper until all
+    /// room processes exit. Workspace, inbox and staging are pinned in
+    /// this namespace under the same contract as [`Self::enter`].
+    ///
+    /// # Errors
+    ///
+    /// Refuses an invalid mapper or mount source and returns any setup error.
+    /// The launch child must exit on failure.
+    pub fn enter_verified(
+        _namespace: RoomMountNamespace,
+        image: &RoomImageMapper,
+        workspace: OwnedFd,
+        inbox: OwnedFd,
+        staging: OwnedFd,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Error> {
+        let (block, expected_device) = image.pin_device().map_err(|source| Error::Mount {
+            operation: "pin verified room image device",
+            source,
+        })?;
+        let context = mount::fsopen("squashfs", FsOpenFlags::FSOPEN_CLOEXEC)
+            .map_err(failed("open verified room filesystem"))?;
+        // Resolve the pinned block inode when the kernel opens its source.
+        mount::fsconfig_set_string(
+            context.as_fd(),
+            "source",
+            format!("/proc/self/fd/{}", block.as_raw_fd()),
+        )
+        .map_err(failed("set verified room filesystem source"))?;
+        mount::fsconfig_set_flag(context.as_fd(), "ro")
+            .map_err(failed("set verified room filesystem read-only"))?;
+        mount::fsconfig_create(context.as_fd())
+            .map_err(failed("create verified room filesystem"))?;
+        let root = mount::fsmount(context.as_fd(), FsMountFlags::FSMOUNT_CLOEXEC, IMAGE)
+            .map_err(failed("mount verified room filesystem"))?;
+        verify_image_mount(root.as_fd(), expected_device)?;
+        drop(context);
+        drop(block);
+        Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
+    }
+
+    fn enter_with_root(
+        root: OwnedFd,
+        workspace_source: OwnedFd,
+        inbox_source: OwnedFd,
+        staging: OwnedFd,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Error> {
+        attach(root.as_fd(), staging.as_fd(), IMAGE)?;
         let workspace_at = directory_at(root.as_fd(), "workspace")?;
-        let workspace = clone_mount(self.workspace.as_fd())?;
+        let workspace = clone_mount(workspace_source.as_fd())?;
         attach(workspace.as_fd(), workspace_at.as_fd(), DATA)?;
         let inbox_at = directory_at(workspace.as_fd(), "inbox")?;
-        let inbox = clone_mount(self.inbox.as_fd())?;
+        let inbox = clone_mount(inbox_source.as_fd())?;
         attach(inbox.as_fd(), inbox_at.as_fd(), READ_ONLY_DATA)?;
 
-        let uid = self.uid.to_string();
-        let gid = self.gid.to_string();
+        let uid = uid.to_string();
+        let gid = gid.to_string();
         let session = filesystem(
             "tmpfs",
             &[
@@ -137,7 +203,9 @@ impl RoomMounts {
         )?;
 
         // Release descriptors that refer to host paths before pivoting.
-        drop(self);
+        drop(staging);
+        drop(workspace_source);
+        drop(inbox_source);
         drop(workspace_at);
         drop(inbox_at);
         drop(workspace);
@@ -146,6 +214,22 @@ impl RoomMounts {
         drop(root);
         verify_view()
     }
+}
+
+fn verify_image_mount(root: BorrowedFd<'_>, expected_device: u64) -> Result<(), Error> {
+    let stat = rustix::fs::fstat(root).map_err(failed("identify verified room mount device"))?;
+    let fs = rustix::fs::fstatfs(root).map_err(failed("identify verified room filesystem"))?;
+    validate_image_mount(stat.st_dev, expected_device, fs.f_type == SQUASHFS_MAGIC)
+}
+
+fn validate_image_mount(actual: u64, expected: u64, squashfs: bool) -> Result<(), Error> {
+    if actual != expected || !squashfs {
+        return Err(refused(
+            "verify room root mount",
+            "root must be SquashFS on the verified room image device",
+        ));
+    }
+    Ok(())
 }
 
 fn single_threaded_init() -> Result<bool, Error> {

@@ -15,15 +15,34 @@ proof=$(mktemp -d /var/tmp/hatchling-room-mount-proof.XXXXXXXX)
 tag=${proof##*.}
 verity=hatchling-mount-proof-verity-$tag
 luks=hatchling-mount-proof-luks-$tag
+mapper_exists() {
+    local name
+    for name in /sys/block/dm-*/dm/name; do
+        if [[ -r "$name" && $(<"$name") == "$1" ]]; then return 0; fi
+    done
+    return 1
+}
 cleanup() {
     local rc=$?
+    local verified_removed=1
     trap - EXIT
     # Close devices from outside the test namespace, after unshare has
     # exited and the kernel has dropped all its mount references, even
     # if a broken private-mount guard propagated mounts inside it.
     if test -b "/dev/mapper/$luks"; then cryptsetup close "$luks" || rc=1; fi
     if test -b "/dev/mapper/$verity"; then veritysetup close "$verity" || rc=1; fi
-    if ! test -b "/dev/mapper/$luks" && ! test -b "/dev/mapper/$verity"; then
+    if [[ -f "$proof/verified-mapper" ]]; then
+        local verified
+        verified=$(cat "$proof/verified-mapper")
+        if [[ "$verified" =~ ^hatchling-room-verity-[0-9a-f]{32}$ ]]; then
+            if mapper_exists "$verified"; then veritysetup close "$verified" || rc=1; fi
+            if mapper_exists "$verified"; then verified_removed=0; rc=1; fi
+        else
+            verified_removed=0
+            rc=1
+        fi
+    fi
+    if (( verified_removed )) && ! test -b "/dev/mapper/$luks" && ! test -b "/dev/mapper/$verity"; then
         rm -rf --one-file-system -- "$proof" || rc=1
     fi
     exit "$rc"
@@ -66,6 +85,9 @@ else
     veritysetup verify "${opts[@]}" --salt "$digest" "$prefix.squashfs" "$prefix.verity" "$root_hash"
     veritysetup open "${opts[@]}" --salt "$digest" "$prefix.squashfs" "$verity" "$prefix.verity" "$root_hash"
     mount -t squashfs -o ro,nodev,nosuid "/dev/mapper/$verity" "$proof/image"
+    mkdir "$proof/install"
+    cp "$prefix.squashfs" "$proof/install/room-system-x86_64.squashfs"
+    cp "$prefix.verity" "$proof/install/room-system-x86_64.verity"
 fi
 truncate -s 96M "$proof/fixture.luks"
 head -c 32 /dev/urandom > "$proof/key"
@@ -91,7 +113,9 @@ export HATCHLING_ROOM_MOUNT_FIXTURE=$proof HATCHLING_REQUIRE_ROOM_MOUNTS=1
 # The room must make its cloned namespace private before pivoting.
 mount --make-rshared /
 run_probe() {
-    HATCHLING_ROOM_MOUNT_MODE=$1 timeout 60 unshare --pid --fork --kill-child --net --ipc "$probe"
+    local ipc=(--ipc)
+    if [[ $1 == verified ]]; then ipc=(); fi
+    HATCHLING_ROOM_MOUNT_MODE=$1 timeout 60 unshare --pid --fork --kill-child --net "${ipc[@]}" "$probe"
 }
 run_probe threads
 if [[ $mode == writable ]]; then
@@ -115,5 +139,8 @@ test "$(cat "$proof/disk/workspace/marker")" = persistent
 test "$(cat "$proof/disk/workspace/host-mount/canary")" = host-only
 test ! -e "$proof/disk/incoming/refused"
 if [[ $mode == full ]]; then run_probe view; fi
+HATCHLING_ROOM_PROOF_ROOT=$root_hash HATCHLING_ROOM_PROOF_DIGEST=$digest run_probe verified
+test -s "$proof/verified-mapper"
+echo 'Room entered and ran a program from its verified mapper'
 echo "Room mount proof passed ($mode)"
 PROOF
