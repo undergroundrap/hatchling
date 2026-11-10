@@ -40,7 +40,7 @@ use crate::egress_authority::{EGRESS_AUTHORITY_SUBCOMMAND, egress_authority_main
 use crate::harness_tree::{HARNESS_TREE_SUBCOMMAND, harness_tree_main};
 use crate::keeper::{VAULT_KEEPER_SUBCOMMAND, vault_keeper_main};
 use crate::skill_run::{SKILL_CELL_SUBCOMMAND, skill_cell_main};
-use crate::spawner::{SPAWNER_SUBCOMMAND, spawner_main};
+use crate::spawner::{ROOM_MOUNT_SUBCOMMAND, SPAWNER_SUBCOMMAND, spawner_main};
 use crate::vault_keyring::run_keyring;
 use crate::{AGENT_RUN_SUBCOMMAND, agent_run_main, run_operator};
 use crate::{Config, Error, run_migrate_vault, run_rekey_vault, run_serve};
@@ -84,6 +84,9 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some(VAULT_KEEPER_SUBCOMMAND) => return vault_keeper_main(),
         Some(EGRESS_AUTHORITY_SUBCOMMAND) => return egress_authority_main(),
         Some(SPAWNER_SUBCOMMAND) => return spawner_main(),
+        Some(ROOM_MOUNT_SUBCOMMAND) => {
+            return crate::room_launch::helper_main(hatchling_sys::take_stdin);
+        }
         // It reads the settings itself, and reports one that doesn't
         // parse rather than stopping at it.
         Some("doctor") => return crate::doctor::doctor_main(args.get(1..).unwrap_or_default()),
@@ -213,9 +216,12 @@ fn valid_args(args: &[String]) -> bool {
         | ["secret", "add", _, _]
         | ["secret", "add", "--for", _, "--replace" | "--if-missing"]
         | [HARNESS_TREE_SUBCOMMAND, "give" | "reclaim", _, ..] => true,
-        [VAULT_KEEPER_SUBCOMMAND | EGRESS_AUTHORITY_SUBCOMMAND | SPAWNER_SUBCOMMAND] => {
-            args.len() == 1
-        }
+        [
+            VAULT_KEEPER_SUBCOMMAND
+            | EGRESS_AUTHORITY_SUBCOMMAND
+            | SPAWNER_SUBCOMMAND
+            | ROOM_MOUNT_SUBCOMMAND,
+        ] => args.len() == 1,
         ["vault-audit", "log", count] => count.parse::<usize>().is_ok(),
         [
             SKILL_CELL_SUBCOMMAND | AGENT_RUN_SUBCOMMAND | BROWSER_CELL_SUBCOMMAND,
@@ -356,6 +362,7 @@ mod tests {
             args(&["doctor"]),
             args(&["doctor", "--env", "/etc/hatchling/hatchling.env"]),
             args(&[SKILL_CELL_SUBCOMMAND]),
+            args(&[ROOM_MOUNT_SUBCOMMAND]),
             args(&[AGENT_RUN_SUBCOMMAND, "/spec"]),
             args(&[BROWSER_DIGEST_SUBCOMMAND, "/opt/chrome/chrome"]),
         ] {

@@ -1093,6 +1093,29 @@ fn unmount_refusal(error: &hatchling_sys::Error) -> String {
 /// whoever asks.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
+/// Keep disk operations out while the spawner checks the installed room mount.
+pub(crate) fn with_open_volume<T>(
+    disk: &RoomDisk,
+    check: impl FnOnce(&Path, &str) -> Result<T, String>,
+) -> Result<T, String> {
+    let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    disk.check_dir()?;
+    if disk.image_at(&disk.image())?.is_none() {
+        return Err(String::from("there's no room disk"));
+    }
+    let image = disk.image_id()?;
+    disk.check_record(&image)?;
+    let mapping = disk
+        .mapped(&image, &mapping_name(&image))?
+        .ok_or_else(|| String::from("the room disk isn't mapped"))?;
+    let device = std::fs::read_to_string(mapping.join("dev"))
+        .map_err(|error| format!("the room mapping's device can't be read: {error}"))?;
+    let mount = disk.mount_point();
+    let _pin = hatchling_sys::locked_mount::pin_locked_ext4_root(&mount, device.trim_end())
+        .map_err(|error| error.to_string())?;
+    check(&mount, device.trim_end())
+}
+
 /// Does the room disk's `op`, one at a time however many connections ask:
 /// a status, or nothing.
 ///
@@ -1109,9 +1132,13 @@ pub fn run(
     let done = match op {
         RoomDiskOp::Create => disk.create(keeper).map(|()| None),
         RoomDiskOp::Open => disk.open(keeper).map(|()| None),
-        RoomDiskOp::Close => disk.close().map(|()| None),
+        RoomDiskOp::Close => crate::room_launch::retry_pending()
+            .and_then(|()| disk.close())
+            .map(|()| None),
         RoomDiskOp::Status => disk.status().map(Some),
-        RoomDiskOp::Wipe => disk.wipe().map(|()| None),
+        RoomDiskOp::Wipe => crate::room_launch::retry_pending()
+            .and_then(|()| disk.wipe())
+            .map(|()| None),
     };
     drop(turn);
     done
@@ -1207,7 +1234,7 @@ pub fn here() -> Result<RoomDisk, Error> {
 /// Why not: a check that failed, or a disk in use (busy).
 pub fn close(disk: &RoomDisk) -> Result<(), String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-    let closed = disk.close();
+    let closed = crate::room_launch::retry_pending().and_then(|()| disk.close());
     drop(turn);
     closed
 }
@@ -1219,7 +1246,7 @@ pub fn close(disk: &RoomDisk) -> Result<(), String> {
 /// As [`close`], and why the image or its record can't be removed.
 pub fn wipe(disk: &RoomDisk) -> Result<(), String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-    let wiped = disk.wipe();
+    let wiped = crate::room_launch::retry_pending().and_then(|()| disk.wipe());
     drop(turn);
     wiped
 }

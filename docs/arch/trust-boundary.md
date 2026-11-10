@@ -41,6 +41,18 @@ device number on the spawner's private launch socket. It checks both
 before mounting, closes the socket before entering the room, and
 checks the detached SquashFS against the same device. The spawner
 retains the mapper and owns its cleanup after the child exits.
+The spawner has a private mount-admission request for an open room.
+The request carries no image path or digests. The spawner requires a
+root-controlled `/etc/hatchling/room-image.admission` record with two lines,
+the expected verity root and then the image SHA-256, from independently
+attested release data. It pins the image under
+`/usr/local/share/hatchling/room` and refuses admission if either input
+fails verification. The trusted helper receives the private socket as
+stdin and takes it out of stdio. The spawner requires a pidfd for the
+namespace helper before sending the volume and mapper. It confirms that
+process has exited before closing the mapper. If cleanup is incomplete,
+the spawner retains the handle and retries before closing or wiping the
+disk. The installer must still supply the attested record and image.
 The encrypted-volume entry pins the expected ext4 root, then resolves the
 fixed workspace and inbox siblings on that same mount. Root controls the
 volume root and inbox. A symlink or nested mount cannot supply either source.
