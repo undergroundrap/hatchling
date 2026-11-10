@@ -5,6 +5,7 @@
 //! plan is separate from the ordinary agent cell's tmpfs root.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::path::Path;
 
 use rustix::fs::{FileType, Mode, OFlags, ResolveFlags, StatVfsMountFlags};
 use rustix::mount::{
@@ -150,6 +151,29 @@ impl RoomMounts {
         Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
     }
 
+    /// Enter with the verified image and the data directories from the
+    /// authenticated encrypted volume. The spawner supplies the device number
+    /// from its verified LUKS mapping and secures the chain to `volume`.
+    /// The volume root and its inbox are controlled by root. The workspace and
+    /// inbox are fixed sibling directories and may not cross a mount boundary.
+    ///
+    /// # Errors
+    ///
+    /// Refuses the wrong volume, unexpected directory ownership or permissions,
+    /// and any failed mount operation. The launch child must exit on failure.
+    pub fn enter_verified_volume(
+        namespace: RoomMountNamespace,
+        image: &RoomImageMapper,
+        volume: &Path,
+        device: &str,
+        staging: OwnedFd,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Error> {
+        let (workspace, inbox) = pin_encrypted_sources(volume, device)?;
+        Self::enter_verified(namespace, image, workspace, inbox, staging, uid, gid)
+    }
+
     fn enter_with_root(
         root: OwnedFd,
         workspace_source: OwnedFd,
@@ -214,6 +238,25 @@ impl RoomMounts {
         drop(root);
         verify_view()
     }
+}
+
+fn pin_encrypted_sources(volume: &Path, device: &str) -> Result<(OwnedFd, OwnedFd), Error> {
+    let disk = crate::locked_mount::pin_locked_ext4_root(volume, device)?;
+    require_root_control(disk.as_fd(), "verify room volume root ownership")?;
+    let workspace = directory_at(disk.as_fd(), "workspace")?;
+    let inbox = directory_at(disk.as_fd(), "inbox")?;
+    require_root_control(inbox.as_fd(), "verify room inbox ownership")?;
+    Ok((workspace, inbox))
+}
+
+fn require_root_control(directory: BorrowedFd<'_>, operation: &'static str) -> Result<(), Error> {
+    let stat = rustix::fs::fstat(directory).map_err(failed(operation))?;
+    // A root-controlled parent keeps the room user from replacing either
+    // source directory. The inbox itself must also refuse untrusted writers.
+    if stat.st_uid != 0 || stat.st_mode & 0o022 != 0 {
+        return Err(refused(operation, "directory must be controlled by root"));
+    }
+    Ok(())
 }
 
 fn verify_image_mount(root: BorrowedFd<'_>, expected_device: u64) -> Result<(), Error> {

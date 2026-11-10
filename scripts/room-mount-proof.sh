@@ -33,14 +33,15 @@ cleanup() {
     if test -b "/dev/mapper/$verity"; then veritysetup close "$verity" || rc=1; fi
     if [[ -f "$proof/verified-mapper" ]]; then
         local verified
-        verified=$(cat "$proof/verified-mapper")
-        if [[ "$verified" =~ ^hatchling-room-verity-[0-9a-f]{32}$ ]]; then
-            if mapper_exists "$verified"; then veritysetup close "$verified" || rc=1; fi
-            if mapper_exists "$verified"; then verified_removed=0; rc=1; fi
-        else
-            verified_removed=0
-            rc=1
-        fi
+        while IFS= read -r verified; do
+            if [[ "$verified" =~ ^hatchling-room-verity-[0-9a-f]{32}$ ]]; then
+                if mapper_exists "$verified"; then veritysetup close "$verified" || rc=1; fi
+                if mapper_exists "$verified"; then verified_removed=0; rc=1; fi
+            else
+                verified_removed=0
+                rc=1
+            fi
+        done < "$proof/verified-mapper"
     fi
     if (( verified_removed )) && ! test -b "/dev/mapper/$luks" && ! test -b "/dev/mapper/$verity"; then
         rm -rf --one-file-system -- "$proof" || rc=1
@@ -98,13 +99,13 @@ rm -- "$proof/key"
 mkfs.ext4 -q "/dev/mapper/$luks"
 # Deliberately no noexec here: inherited noexec would mask a broken room flag.
 mount -o nodev,nosuid "/dev/mapper/$luks" "$proof/disk"
-mkdir -m 0755 "$proof/disk/workspace" "$proof/disk/incoming"
+mkdir -m 0755 "$proof/disk/workspace" "$proof/disk/inbox"
 mkdir "$proof/disk/workspace/"{host-mount,shadow}
-chown 65534:65534 "$proof/disk/workspace" "$proof/disk/incoming"
+chown 65534:65534 "$proof/disk/workspace"
 mount -t tmpfs -o size=64K tmpfs "$proof/disk/workspace/host-mount"
 printf 'host-only\n' > "$proof/disk/workspace/host-mount/canary"
-printf inbox-content > "$proof/disk/incoming/fixture"
-chmod 0644 "$proof/disk/incoming/fixture"
+printf inbox-content > "$proof/disk/inbox/fixture"
+chmod 0644 "$proof/disk/inbox/fixture"
 if [[ $mode != writable ]]; then
     install -m 0755 "$proof/image/bin/sh" "$proof/disk/workspace/payload"
 fi
@@ -137,10 +138,31 @@ else
 fi
 test "$(cat "$proof/disk/workspace/marker")" = persistent
 test "$(cat "$proof/disk/workspace/host-mount/canary")" = host-only
-test ! -e "$proof/disk/incoming/refused"
+test ! -e "$proof/disk/inbox/refused"
 if [[ $mode == full ]]; then run_probe view; fi
-HATCHLING_ROOM_PROOF_ROOT=$root_hash HATCHLING_ROOM_PROOF_DIGEST=$digest run_probe verified
+mount -o remount,nodev,nosuid,noexec "$proof/disk"
+export HATCHLING_ROOM_PROOF_ROOT=$root_hash HATCHLING_ROOM_PROOF_DIGEST=$digest
+HATCHLING_ROOM_PROOF_WORKSPACE_DEVICE=$(stat -Lc '%Hr:%Lr' "/dev/mapper/$luks")
+export HATCHLING_ROOM_PROOF_WORKSPACE_DEVICE
+mkdir "$proof/substitute"
+mount --bind "$proof/disk/workspace" "$proof/substitute"
+HATCHLING_ROOM_PROOF_SUBSTITUTE_VOLUME=1 \
+    HATCHLING_ROOM_PROOF_SOURCE_ERROR='check room workspace mount' run_probe verified
+umount "$proof/substitute"
+mount --bind "$proof/disk" "$proof/disk/inbox"
+HATCHLING_ROOM_PROOF_SOURCE_ERROR='pin room mount target' run_probe verified
+umount "$proof/disk/inbox"
+chmod 0775 "$proof/disk/inbox"
+HATCHLING_ROOM_PROOF_SOURCE_ERROR='verify room inbox ownership' run_probe verified
+chmod 0755 "$proof/disk/inbox"
+chown 65534:65534 "$proof/disk/inbox"
+HATCHLING_ROOM_PROOF_SOURCE_ERROR='verify room inbox ownership' run_probe verified
+chown 0:0 "$proof/disk/inbox"
+chmod 0777 "$proof/disk"
+HATCHLING_ROOM_PROOF_SOURCE_ERROR='verify room volume root ownership' run_probe verified
+chmod 0755 "$proof/disk"
+run_probe verified
 test -s "$proof/verified-mapper"
-echo 'Room entered and ran a program from its verified mapper'
+echo 'Room refused substituted sources and ran a program with its verified image and encrypted volume'
 echo "Room mount proof passed ($mode)"
 PROOF
