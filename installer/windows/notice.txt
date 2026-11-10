@@ -2,7 +2,7 @@ Hatchling is free software, under the GNU Affero General Public License, version
 
 What this setup does:
 
-- Makes a WSL distro of its own, hatchling-wsl, and installs Hatchling there.
+- Installs Hatchling and its bundled Room image into your prepared hatchling-wsl distro.
 - Adds Hatchling to your Start menu.
 - If you choose, keeps it running while you're logged in.
 

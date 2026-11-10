@@ -1,12 +1,34 @@
 # Hatchling on Windows
 
-The Windows setup installs Hatchling for you, with no administrator rights and no commands to type. This page explains what it put on your PC, what each item does, and what to do if you'd rather use a terminal.
+Windows Setup installs Hatchling into a prepared WSL distro. Verify Setup independently before you run it. This page also describes what Setup adds to Windows and how to use it after installation.
 
 Hatchling is Linux software: it needs Linux's kernel to keep your agent's work apart from your machine. So it runs in WSL, Windows' own Linux, in a distro of its own called `hatchling-wsl`. You don't need to know any Linux to use it.
 
+## Verify Setup before running it
+
+Windows Setup is unsigned in v0.9. Install the [GitHub CLI](https://cli.github.com/) independently. Download Setup from the [matching release](https://github.com/undergroundrap/hatchling/releases), then run this in PowerShell from the download directory. For other releases, use their exact filename and tag.
+
+```powershell
+gh attestation verify .\Hatchling-0.9.0-Setup.exe --repo undergroundrap/hatchling --signer-workflow undergroundrap/hatchling/.github/workflows/release.yml --source-ref refs/tags/v0.9.0 --deny-self-hosted-runners
+```
+
+**Stop if verification fails.** Run the same file only after the command succeeds. The attestation covers the Setup file and its embedded Room checksum manifest. WSL checks the image, verity tree and expected root against that manifest before it writes the Room admission record.
+
+### Prepare WSL for an offline install
+
+Before going offline, prepare an x86_64 Ubuntu WSL2 distro named `hatchling-wsl` with systemd running and `cryptsetup-bin` installed. If the distro is already there, use it and skip the first line.
+
+```powershell
+wsl --install Ubuntu --name hatchling-wsl --no-launch
+wsl -d hatchling-wsl -u root -- apt-get update
+wsl -d hatchling-wsl -u root -- apt-get install cryptsetup-bin
+```
+
+For a fresh local-model install, have Ollama running with `qwen3.5:9b` already available. An update keeps the existing model. Hosted model use needs its own network access. Setup includes the Room image and installs it without a download.
+
 ## Do I need a terminal, or sudo?
 
-**No.** If you used this setup, you never need `sudo`, and you don't need to know any Linux. The Start menu covers everyday use.
+After verification and installation, the Start menu covers everyday use. You won't need `sudo` inside Hatchling's distro.
 
 A few advanced commands, such as switching to a hosted model, are in Settings for you to copy. They go in PowerShell, which is on every Windows PC: open the Start menu, type `PowerShell`, press Enter, then paste the command and press Enter again.
 
@@ -116,7 +138,7 @@ Nothing runs while you're logged out or your computer is off. If you use a secur
 
 ## Updating
 
-Download the new setup and run it. It finds your install, leaves your settings, model and data as they are, and offers a backup first. Hatchling restarts during an update, so anything it's working on stops. If you use a security key, it's locked afterwards, and opening Hatchling asks for your key.
+Download the new Setup and [verify it](#verify-setup-before-running-it) before running it. It finds your install, leaves your settings, model and data as they are, and offers a backup first. Hatchling restarts during an update, so anything it's working on stops. If you use a security key, it's locked afterwards, and opening Hatchling asks for your key.
 
 Hatchling never checks for updates by itself, because it sends nothing out on its own. New versions are on [the releases page](https://github.com/undergroundrap/hatchling/releases).
 
@@ -144,4 +166,4 @@ Uninstall Hatchling from Windows' Settings, under Apps. It asks whether to delet
 
 ## If Windows warns you
 
-Hatchling's setup isn't code-signed yet, so Windows may show "The publisher could not be verified", or a blue "Windows protected your PC" box. Choose **Run**, or **More info** and then **Run anyway**. You don't have to take my word for it: [each release can be checked](releasing.md#verifying-a-release).
+Windows may warn that it couldn't verify Setup's publisher. Complete the [independent attestation check](#verify-setup-before-running-it) before choosing **Run** or **Run anyway**.

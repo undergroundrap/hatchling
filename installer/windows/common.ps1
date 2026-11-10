@@ -10,7 +10,7 @@ function Stop-Setup([string] $Message) {
     Write-Host ''
     Write-Host $Message -ForegroundColor Yellow
     Write-Host ''
-    Read-Host 'Press Enter to close'
+    if (-not $script:Unattended) { Read-Host 'Press Enter to close' }
     exit 1
 }
 
@@ -33,6 +33,40 @@ function Get-FromWsl([string] $Distro, [string[]] $Command) {
     $said = & wsl.exe -d $Distro -u root --exec @Command 2>$null
     if ($null -eq $said) { return '' }
     return (@($said) -join "`n").Trim()
+}
+
+# Send the exact bytes to WSL root. The distro's default user may be unable
+# to write the private staging directory through the Windows file share.
+function Copy-BundledRelease([string] $Distro, [string] $Release, [string] $Destination) {
+    if ($Distro -notmatch '^[A-Za-z0-9._-]+$' -or $Destination -notmatch '^/root/hatchling-release\.[A-Za-z0-9]{8}$') {
+        throw 'Invalid WSL release destination.'
+    }
+    foreach ($file in Get-ChildItem -LiteralPath $Release -File -ErrorAction Stop) {
+        if ($file.Name -notmatch '^[A-Za-z0-9._-]+$' -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unexpected file in the bundled release: $($file.Name)"
+        }
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = Join-Path $env:WINDIR 'System32\wsl.exe'
+        $start.Arguments = "-d $Distro -u root --exec /usr/bin/dd of=$Destination/$($file.Name) status=none"
+        $start.UseShellExecute = $false
+        $start.RedirectStandardInput = $true
+        $start.CreateNoWindow = $true
+        $inputFile = [IO.File]::OpenRead($file.FullName)
+        try {
+            $process = [Diagnostics.Process]::Start($start)
+            try {
+                $pipe = $process.StandardInput.BaseStream
+                try { $inputFile.CopyTo($pipe) }
+                finally {
+                    $pipe.Dispose()
+                    $process.WaitForExit()
+                }
+                if ($process.ExitCode -ne 0) { throw "WSL couldn't receive $($file.Name)." }
+            }
+            finally { $process.Dispose() }
+        }
+        finally { $inputFile.Dispose() }
+    }
 }
 
 # Waits for the broker to finish starting, so its address is this start's.

@@ -6,6 +6,7 @@ export const YOUR_SECURITY = [
     "",
     "- With a security key set up, only your key or a backup code opens your vault. Until then, a stolen disk opens it.",
     "- The agent works in locked rooms the operating system's kernel enforces, and uses your API keys without seeing them.",
+    "- Windows Setup is unsigned in v0.9. [Verify its release attestation](https://github.com/undergroundrap/hatchling/blob/main/docs/windows.md#verify-setup-before-running-it) before running it. Stop if verification fails.",
     "- What it puts in a web address, a search, a page or a coding tool's task is checked for your secrets first, and a run caught with one ends.",
     "- With the web and the browser on, some acts on a site stop for your yes. Many don't, and the wall below says which.",
     "- The biggest limits: malware running as you, a browser that's been taken over, and what isn't sealed on disk.",
