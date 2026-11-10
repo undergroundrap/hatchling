@@ -24,6 +24,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use hatchling_broker::room_disk::{self, RoomDisk, RoomDiskOp, RoomDiskState, Rotated};
+use hatchling_broker::spawner::Spawner;
 use hatchling_core::framing::{read_frame, write_frame};
 
 /// A room disk's size here: the smallest there is.
@@ -396,6 +397,98 @@ fn operators_close(place: &Place, mount: &Path) -> Result<(), Failed> {
     assert!(!hatchling_sys::is_mount_point(mount)?);
     assert!(!place.mapped(), "an operator's close left the mapping");
     room_disk::close(&place.disk)?;
+    Ok(())
+}
+
+#[test]
+fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Failed> {
+    struct CloseDisk(Spawner);
+    impl Drop for CloseDisk {
+        fn drop(&mut self) {
+            // Close synchronously before Place removes the fixture files.
+            // Disconnecting alone starts the spawner's close asynchronously.
+            let _ = self.0.room_disk(RoomDiskOp::Close);
+        }
+    }
+
+    let Some(_disk_tests) = as_root("the_spawner_prepares_layout_only_on_the_verified_room_disk")
+    else {
+        return Ok(());
+    };
+    let place = Place::new("layout")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    command
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin")
+        .env("TMPDIR", place.dir.join("keeper/tmp"))
+        .env(
+            "HATCHLING_BROKER_SOCKET",
+            place.dir.join("keeper/sock/broker.sock"),
+        )
+        .env("HATCHLING_VAULT_DIR", place.dir.join("keeper/vault"))
+        .env("HATCHLING_AGENT_UID", "4242")
+        .env("HATCHLING_ROOM_DISK_DIR", place.disk.dir())
+        .env("HATCHLING_ROOM_DISK_SIZE", "64M");
+    let spawner = CloseDisk(Spawner::start_with(
+        command,
+        Some(&keeper.spawner.lock().unwrap()),
+    )?);
+    let run = |op| spawner.0.room_disk(op);
+    run(RoomDiskOp::Create)?;
+    run(RoomDiskOp::Open)?;
+
+    let mount = place.disk.mount_point();
+    let inbox = mount.join("inbox");
+    let workspace = mount.join("workspace");
+    let attachment = workspace.join("inbox");
+    for directory in [&inbox, &workspace, &attachment] {
+        let meta = std::fs::symlink_metadata(directory)?;
+        assert!(meta.is_dir(), "room layout lacks {}", directory.display());
+        assert_eq!((meta.uid(), meta.mode() & 0o777), (0, 0o700));
+    }
+
+    let canary = workspace.join("canary");
+    std::fs::write(&canary, b"existing work")?;
+    run(RoomDiskOp::Open)?;
+    assert_eq!(std::fs::read(&canary)?, b"existing work");
+
+    let outside = place.dir.join("outside");
+    std::fs::create_dir(&outside)?;
+    let outside_canary = outside.join("canary");
+    std::fs::write(&outside_canary, b"outside")?;
+    std::fs::remove_dir(&attachment)?;
+    std::os::unix::fs::symlink(&outside, &attachment)?;
+    let refused = run(RoomDiskOp::Open).unwrap_err();
+    assert!(refused.contains("pin room mount target"), "{refused}");
+    assert!(hatchling_sys::is_mount_point(&mount)?);
+    assert_eq!(std::fs::read_link(&attachment)?, outside);
+    assert_eq!(std::fs::read(&outside_canary)?, b"outside");
+    std::fs::remove_file(&attachment)?;
+    run(RoomDiskOp::Open)?;
+    assert!(std::fs::symlink_metadata(&attachment)?.is_dir());
+
+    let root_mode = std::fs::metadata(&mount)?.permissions();
+    std::fs::set_permissions(&mount, std::fs::Permissions::from_mode(0o770))?;
+    let refused = run(RoomDiskOp::Open);
+    std::fs::set_permissions(&mount, root_mode)?;
+    let refused = refused.unwrap_err();
+    assert!(
+        refused.contains("verify room volume root ownership"),
+        "{refused}"
+    );
+
+    std::fs::set_permissions(&inbox, std::fs::Permissions::from_mode(0o770))?;
+    run(RoomDiskOp::Close)?;
+    let refused = run(RoomDiskOp::Open).unwrap_err();
+    assert!(refused.contains("verify room inbox ownership"), "{refused}");
+    assert!(!hatchling_sys::is_mount_point(&mount)?);
+    assert!(!place.mapped(), "layout refusal left its new mapping open");
+    assert_eq!(
+        run(RoomDiskOp::Status)?.unwrap().state,
+        RoomDiskState::Closed
+    );
+    assert_eq!(std::fs::read(&outside_canary)?, b"outside");
     Ok(())
 }
 

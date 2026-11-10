@@ -56,6 +56,11 @@ require the root of the encrypted ext4 filesystem with the locked-down
 flags. A substitute mount with matching flags, including a bind of a
 directory on the same volume, fails this check. The launcher must use
 the authenticated descriptor in its own mount namespace at admission.
+Opening the disk also prepares the workspace and inbox siblings and the
+inbox attachment point under the workspace. The spawner creates these
+relative to the authenticated volume, refuses links and nested mounts at
+those names, and leaves existing directory contents in place. Newly made
+directories are private to root until the launcher provisions room access.
 
 ## What's inside the boundary (trusted)
 
