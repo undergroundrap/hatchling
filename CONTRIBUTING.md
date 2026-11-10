@@ -86,7 +86,7 @@ which the pass sets, make that a failure. Run it yourself before you push a chan
 sudo apt-get install cryptsetup-bin squashfs-tools busybox-static
 sudo modprobe dm_crypt
 sudo modprobe dm_verity
-for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress; do
+for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress hatchling-room; do
   sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$u"
 done
 HATCHLING_ROOT_PASS=1 bash scripts/check.sh

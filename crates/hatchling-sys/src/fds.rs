@@ -78,6 +78,37 @@ pub fn take_stdin() -> Result<OwnedFd, Error> {
     Ok(taken)
 }
 
+/// Replaces stdin, stdout and stderr with the current root's `/dev/null`.
+/// Call after entering the new root and before exec. This discards any
+/// authority carried by the original stdio descriptors.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the device cannot be opened or any
+/// descriptor cannot be replaced. The caller must refuse the exec.
+pub fn null_stdio() -> Result<(), Error> {
+    let failed = |operation| {
+        move |source: rustix::io::Errno| Error::Process {
+            operation,
+            source: std::io::Error::from_raw_os_error(source.raw_os_error()),
+        }
+    };
+    let null = rustix::fs::open(
+        "/dev/null",
+        rustix::fs::OFlags::RDWR.union(rustix::fs::OFlags::CLOEXEC),
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(failed("open /dev/null"))?;
+    let source = rustix::io::fcntl_dupfd_cloexec(&null, 3)
+        .map_err(failed("fcntl(/dev/null, F_DUPFD_CLOEXEC)"))?;
+    // If a stdio slot was empty, open may have claimed it. Drop that
+    // handle before replacing any slot so it cannot close the new fd.
+    drop(null);
+    rustix::stdio::dup2_stdin(&source).map_err(failed("dup2(/dev/null, 0)"))?;
+    rustix::stdio::dup2_stdout(&source).map_err(failed("dup2(/dev/null, 1)"))?;
+    rustix::stdio::dup2_stderr(&source).map_err(failed("dup2(/dev/null, 2)"))
+}
+
 /// Lets `fd` cross the next exec: clears its `FD_CLOEXEC` flag, and
 /// nothing else.
 ///
@@ -586,6 +617,29 @@ mod tests {
         unsafe {
             libc::close(fd);
         }
+    }
+
+    #[test]
+    fn null_stdio_replaces_open_and_closed_slots() {
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                close(0);
+                let replaced = null_stdio().is_ok()
+                    && [
+                        rustix::stdio::stdin(),
+                        rustix::stdio::stdout(),
+                        rustix::stdio::stderr(),
+                    ]
+                    .into_iter()
+                    .all(|fd| stdio_kind(fd).ok() == Some(StdioKind::Null));
+                exit_child(i32::from(!replaced));
+            }
+        };
+        assert_eq!(
+            child_exit_code(child.wait_deadline(Duration::from_secs(5)).unwrap()),
+            0
+        );
     }
 
     #[test]

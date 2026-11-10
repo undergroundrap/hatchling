@@ -15,6 +15,7 @@
 //! then a skip is a failure. Everything here is made under a directory of
 //! the test's own in `/var/lib`, never anywhere else.
 
+use std::io::Write as _;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixStream;
@@ -511,6 +512,13 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
 fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Result<(), Failed> {
     const TEST: &str = "the_installed_spawner_hands_the_verified_image_to_its_mount_helper";
     const PARENT: &str = "HATCHLING_TEST_ROOM_ADMISSION_PARENT";
+    if !cfg!(target_arch = "x86_64") {
+        writeln!(
+            std::io::stderr().lock(),
+            "skipped: installed Room supervisor requires x86_64 Linux"
+        )?;
+        return Ok(());
+    }
     let Some(_disk_tests) = as_root(TEST) else {
         return Ok(());
     };
@@ -534,8 +542,12 @@ fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Resul
             .any(|field| field.starts_with("shared:"))
     );
 
+    // This required root fixture also covers mapper reconciliation, the
+    // spawner connection, and dispatch of RoomMount in the mutation audit.
+    let supervisor = std::env::var_os("HATCHLING_TEST_ROOM_SUPERVISOR")
+        .ok_or("root Room proof requires the static image supervisor")?;
     let fixture = Place::new("installed-image")?;
-    let (root, digest, _binds) = room_admission_fixture(&fixture)?;
+    let (root, digest, binds) = room_admission_fixture(&fixture, Path::new(&supervisor))?;
     let broker = Path::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     for (tag, program) in [
         ("installed-broker-admission", broker.to_owned()),
@@ -551,6 +563,139 @@ fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Resul
         );
         check_installed_room_mount(tag, &program, &root, &digest)?;
     }
+    drop(binds);
+    for mode in 0..=2 {
+        check_supervisor_boundary(broker, mode)?;
+    }
+    Ok(())
+}
+
+fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
+    let fixture = Place::new("supervisor-boundary")?;
+    let probe = fixture.dir.join("probe");
+    let source = fixture.dir.join("probe.c");
+    std::fs::write(&source, include_str!("fixtures/room-admission-probe.c"))?;
+    let (uid, gid) = hatchling_sys::subid::local_account("hatchling-room")?
+        .ok_or("the root fixture requires the hatchling-room account")?;
+    let compiled = Command::new("cc")
+        .args(["-static", "-Wall", "-Wextra", "-Werror"])
+        .arg(format!("-DROOM_UID={uid}"))
+        .arg(format!("-DROOM_GID={gid}"))
+        .arg(format!("-DROOM_PROBE_MODE={mode}"))
+        .arg(&source)
+        .arg("-o")
+        .arg(&probe)
+        .status()?;
+    assert!(
+        compiled.success(),
+        "could not build the Room boundary probe"
+    );
+    let (root, digest, _binds) = room_admission_fixture(&fixture, &probe)?;
+    let system = Path::new("/usr/bin/unshare");
+    let real = fixture.dir.join("unshare-real");
+    let shim = fixture.dir.join("unshare-probe");
+    std::fs::copy(system, &real)?;
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/bash\nset -eu\nexec 57</dev/null\nexec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )?;
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700))?;
+    assert!(
+        Command::new("mount")
+            .arg("--bind")
+            .arg(&shim)
+            .arg(system)
+            .status()?
+            .success()
+    );
+    let _shim = HeldBind(system.to_owned());
+    let place = Place::new("installed-supervisor-boundary")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let delegation = std::env::var_os("HATCHLING_TEST_CGROUP").ok_or("missing root test cgroup")?;
+    let spawner = installed_spawner(&place, &keeper, program, Some(Path::new(&delegation)))?;
+    spawner.0.room_disk(RoomDiskOp::Create)?;
+    spawner.0.room_disk(RoomDiskOp::Open)?;
+    std::fs::write(
+        "/etc/hatchling/room-image.admission",
+        format!("{root}\n{digest}\n"),
+    )?;
+    let before = mapper_names()?;
+    let group = |path| {
+        std::fs::read_dir(path)?
+            .map(|item| item.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<std::collections::BTreeSet<_>>>()
+    };
+    let groups_before = group(Path::new(&delegation))?;
+    if mode == 0 {
+        check_supervisor_identity_refusals(&spawner.0, gid, &before)?;
+    }
+    let started = std::time::Instant::now();
+    let admission = spawner.0.check_room_mount();
+    if mode == 0 {
+        admission?;
+    } else {
+        let reason = admission
+            .err()
+            .ok_or("Room accepted a supervisor that did not exit")?;
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(25) && elapsed < Duration::from_secs(50),
+            "mode {mode} took {elapsed:?}: {reason}"
+        );
+        assert!(
+            reason.contains("deadline") || reason.contains("timed out"),
+            "mode {mode}: {reason}"
+        );
+    }
+    assert_eq!(mapper_names()?, before);
+    assert_eq!(group(Path::new(&delegation))?, groups_before);
+    spawner.0.room_disk(RoomDiskOp::Close)?;
+    assert!(!place.mapped());
+    Ok(())
+}
+
+fn check_supervisor_identity_refusals(
+    spawner: &Spawner,
+    gid: u32,
+    before: &std::collections::BTreeSet<String>,
+) -> Result<(), Failed> {
+    let passwd = std::fs::read_to_string("/etc/passwd")?;
+    let without_room = passwd
+        .lines()
+        .filter(|line| !line.starts_with("hatchling-room:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write("/etc/passwd", format!("{without_room}\n"))?;
+    let missing = spawner
+        .check_room_mount()
+        .err()
+        .ok_or("Room admitted without its account")?;
+    assert!(missing.contains("account is missing"), "{missing}");
+    assert_eq!(&mapper_names()?, before);
+    std::fs::write(
+        "/etc/passwd",
+        format!("{without_room}\nhatchling-room:x:65534:{gid}::/nonexistent:/usr/sbin/nologin\n"),
+    )?;
+    let shared = spawner
+        .check_room_mount()
+        .err()
+        .ok_or("Room admitted a shared account")?;
+    assert!(shared.contains("dedicated uid and gid"), "{shared}");
+    assert_eq!(&mapper_names()?, before);
+    std::fs::write(
+        "/etc/passwd",
+        format!("{without_room}\nhatchling-room:x:4242:{gid}::/nonexistent:/usr/sbin/nologin\n"),
+    )?;
+    let agent = spawner
+        .check_room_mount()
+        .err()
+        .ok_or("Room admitted the configured agent UID")?;
+    assert!(agent.contains("dedicated uid and gid"), "{agent}");
+    assert_eq!(&mapper_names()?, before);
+    std::fs::write("/etc/passwd", passwd)?;
     Ok(())
 }
 
@@ -940,7 +1085,10 @@ fn check_substituted_mount(spawner: &Spawner, mount: &Path) -> Result<(), Failed
 
 /// Stage ordinary room artifacts and inject a record in the private
 /// namespace. Only the record publisher is a fixture here.
-fn room_admission_fixture(place: &Place) -> Result<(String, String, [HeldBind; 2]), Failed> {
+fn room_admission_fixture(
+    place: &Place,
+    supervisor: &Path,
+) -> Result<(String, String, [HeldBind; 2]), Failed> {
     let fixture_etc = place.dir.join("etc");
     let fixture_share = place.dir.join("share");
     let system = place.dir.join("system");
@@ -956,6 +1104,9 @@ fn room_admission_fixture(place: &Place) -> Result<(String, String, [HeldBind; 2
     for name in ["workspace", "session", "proc", "dev"] {
         std::fs::create_dir_all(system.join(name))?;
     }
+    let libexec = system.join("usr/local/libexec");
+    std::fs::create_dir_all(&libexec)?;
+    std::fs::copy(supervisor, libexec.join("hatchling-room"))?;
     // Give verity a data image with more than one block.
     let mut data = vec![0_u8; 8192];
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut data)?;

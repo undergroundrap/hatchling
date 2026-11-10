@@ -10,7 +10,7 @@
 #
 #   - sudo, and a kernel that builds cells (see CONTRIBUTING);
 #   - the README's users, which it never makes itself:
-#       for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress; do
+#       for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress hatchling-room; do
 #         sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$u"
 #       done
 #   - optionally HATCHLING_TEST_BROWSER, a headless Chromium every user
@@ -52,6 +52,9 @@ SUITES=(
 )
 
 USERS=(hatchling-cell hatchling-broker hatchling-keeper hatchling-egress)
+if [ "$(uname -m)" = x86_64 ]; then
+    USERS+=(hatchling-room)
+fi
 missing=()
 for user in "${USERS[@]}"; do
     id -u "$user" > /dev/null 2>&1 || missing+=("$user")
@@ -77,6 +80,14 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir "$copy/deps"
+if [ "$(uname -m)" = x86_64 ]; then
+    supervisor=${HATCHLING_TEST_ROOM_SUPERVISOR:-}
+    if [ -z "$supervisor" ]; then
+        bash scripts/room-image-supervisor.sh "$copy/room-supervisor-build"
+        supervisor="$copy/room-supervisor-build/hatchling-room"
+    fi
+    install -m 755 -- "$supervisor" "$copy/room-supervisor"
+fi
 target=$(cargo metadata --format-version 1 --no-deps | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
 for binary in "$target"/debug/*; do
     if [ -f "$binary" ] && [ -x "$binary" ]; then
@@ -125,6 +136,7 @@ for exe in "$copy"/deps/*; do
     # map's base, and must run (no skip).
     if sudo env HATCHLING_REQUIRE_CELL=1 HATCHLING_REQUIRE_CGROUP=1 HATCHLING_REQUIRE_ROOT_MOUNTS=1 \
         HATCHLING_REQUIRE_ROOM_DISK=1 \
+        HATCHLING_TEST_ROOM_SUPERVISOR="$copy/room-supervisor" \
         HATCHLING_TEST_CGROUP="$cg/cells" HATCHLING_CELL_UID_BASE="$cell_uid" \
         "${browser[@]}" PATH="$PATH" \
         bash -c 'echo $$ > "$1/job/cgroup.procs" && cd "crates/$2" && exec "$3"' \

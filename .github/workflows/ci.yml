@@ -245,7 +245,7 @@ jobs:
 
       - name: The README's users
         run: |
-          for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress; do
+          for u in hatchling-cell hatchling-broker hatchling-keeper hatchling-egress hatchling-room; do
             sudo useradd --system --user-group --no-create-home --shell /usr/sbin/nologin "$u"
           done
 
