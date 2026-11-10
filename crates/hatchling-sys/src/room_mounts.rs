@@ -5,6 +5,7 @@
 //! plan is separate from the ordinary agent cell's tmpfs root.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use rustix::fs::{FileType, Mode, OFlags, ResolveFlags, StatVfsMountFlags};
@@ -69,8 +70,9 @@ impl RoomMounts {
     /// Create the room's private mount namespace in a disposable launch child.
     /// The caller must be the sole task in its new PID namespace and must not
     /// create threads or children before the root switch completes.
-    /// Open all mount sources after this succeeds. The kernel refuses to clone
-    /// mount descriptors opened in the previous mount namespace.
+    /// Open the directory sources to be cloned after this succeeds. The kernel
+    /// refuses to clone mount descriptors opened in the previous mount namespace.
+    /// A handed-off block pin identifies a device, so it may be opened earlier.
     ///
     /// # Errors
     ///
@@ -145,24 +147,7 @@ impl RoomMounts {
             operation: "pin verified room image device",
             source,
         })?;
-        let context = mount::fsopen("squashfs", FsOpenFlags::FSOPEN_CLOEXEC)
-            .map_err(failed("open verified room filesystem"))?;
-        // Resolve the pinned block inode when the kernel opens its source.
-        mount::fsconfig_set_string(
-            context.as_fd(),
-            "source",
-            format!("/proc/self/fd/{}", block.as_raw_fd()),
-        )
-        .map_err(failed("set verified room filesystem source"))?;
-        mount::fsconfig_set_flag(context.as_fd(), "ro")
-            .map_err(failed("set verified room filesystem read-only"))?;
-        mount::fsconfig_create(context.as_fd())
-            .map_err(failed("create verified room filesystem"))?;
-        let root = mount::fsmount(context.as_fd(), FsMountFlags::FSMOUNT_CLOEXEC, IMAGE)
-            .map_err(failed("mount verified room filesystem"))?;
-        verify_image_mount(root.as_fd(), expected_device)?;
-        drop(context);
-        drop(block);
+        let root = mount_verified_image(block, expected_device)?;
         Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
     }
 
@@ -187,6 +172,31 @@ impl RoomMounts {
     ) -> Result<(), Error> {
         let (workspace, inbox) = pin_encrypted_sources(volume, device)?;
         Self::enter_verified(namespace, image, workspace, inbox, staging, uid, gid)
+    }
+
+    /// Enter from a mapper pin received over the spawner's dedicated private
+    /// socket. The launch child checks the pin and reauthenticates the data
+    /// sources under the same contract as [`Self::enter_verified_volume`].
+    /// The spawner retains the mapper and must drain the room before closing it.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a missing or invalid descriptor, a mismatched filesystem or
+    /// volume, or any failed mount operation. The child must exit on failure.
+    pub fn enter_handed_off_volume(
+        _namespace: RoomMountNamespace,
+        control: UnixStream,
+        volume: &Path,
+        device: &str,
+        staging: OwnedFd,
+        uid: u32,
+        gid: u32,
+    ) -> Result<(), Error> {
+        let (block, expected_device) = crate::room_image::receive_launcher_device(&control)?;
+        drop(control);
+        let (workspace, inbox) = pin_encrypted_sources(volume, device)?;
+        let root = mount_verified_image(block, expected_device)?;
+        Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
     }
 
     fn enter_with_root(
@@ -253,6 +263,26 @@ impl RoomMounts {
         drop(root);
         verify_view()
     }
+}
+
+fn mount_verified_image(block: OwnedFd, expected_device: u64) -> Result<OwnedFd, Error> {
+    let context = mount::fsopen("squashfs", FsOpenFlags::FSOPEN_CLOEXEC)
+        .map_err(failed("open verified room filesystem"))?;
+    // Resolve the pinned block inode when the kernel opens its source.
+    mount::fsconfig_set_string(
+        context.as_fd(),
+        "source",
+        format!("/proc/self/fd/{}", block.as_raw_fd()),
+    )
+    .map_err(failed("set verified room filesystem source"))?;
+    mount::fsconfig_set_flag(context.as_fd(), "ro")
+        .map_err(failed("set verified room filesystem read-only"))?;
+    mount::fsconfig_create(context.as_fd()).map_err(failed("create verified room filesystem"))?;
+    let root = mount::fsmount(context.as_fd(), FsMountFlags::FSMOUNT_CLOEXEC, IMAGE)
+        .map_err(failed("mount verified room filesystem"))?;
+    verify_image_mount(root.as_fd(), expected_device)?;
+    drop(block);
+    Ok(root)
 }
 
 fn pin_encrypted_sources(volume: &Path, device: &str) -> Result<(OwnedFd, OwnedFd), Error> {
