@@ -24,7 +24,7 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 - **Run as root, the trusted side is four processes, each under its own user** (WO-017). `hatchling-broker` starts each from its own binary:
   - **the vault keeper** (`keeper.rs`, `hatchling-keeper`) holds the master key, the secrets store's key and the sign-ins' (WO-031), and releases only what the configuration gives each purpose. It answers each agent cell's vault ops on the cell's own vault channel, and fills a signed-in profile's sign-ins into its browser on that browser's own. The spawner hands it each channel, and the broker holds no end of one: it names a fill to the browser by its nonce alone (WO-031);
   - **the egress authority** (`egress_authority.rs`, `hatchling-egress`) alone reads the credentials of the requests it makes: the egress swap, harness relays and search;
-  - **the spawner** (`spawner.rs`, root) starts every cell's helper, holds each spec to its own policy, makes each cell's group, gives and takes back harness trees, and writes approved deliveries as the owner's;
+  - **the spawner** (`spawner.rs`, root) starts every cell's helper, holds each spec to its own policy, makes each cell's group, gives and takes back harness trees, and writes approved deliveries as the owner's. Its trusted room helper (`room_launch.rs`) checks mount admission and exits before running any image program;
   - **the broker** drops to `hatchling-broker` once its start is done (`broker_user.rs`) and confines its own file access with Landlock (`confine.rs`, `hatchling_sys::landlock`).
 
   The owner's sockets admit the owner recorded at start (`owner.rs`). Without root, all four run as the owner, and the broker is still confined.

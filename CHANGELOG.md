@@ -15,6 +15,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 connects room mount admission to the spawner.** The spawner authenticates the open workspace, verifies the installed image against the admission record, and hands its mapper pin to a trusted child for the mount check.
+
 - **WO-034 adds the verified image handoff for room launch.** The trusted launcher can mount the checked block descriptor passed by the spawner, which retains control of mapper cleanup.
 
 - **WO-034 prepares room directories when the encrypted disk opens.** The spawner creates missing workspace and inbox directories on the verified disk and refuses substituted paths.

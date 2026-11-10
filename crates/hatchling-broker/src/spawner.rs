@@ -70,6 +70,9 @@ use crate::{Config, Error, RedactionConfig};
 /// the broker.
 pub const SPAWNER_SUBCOMMAND: &str = "spawner";
 
+/// The spawner's internal command for the trusted room mount helper.
+pub const ROOM_MOUNT_SUBCOMMAND: &str = "room-mount-helper";
+
 /// The setting that names the agent's program: one a cell may be given.
 const AGENT_BIN: &str = crate::environment::HATCHLING_AGENT_BIN.name;
 
@@ -560,6 +563,8 @@ enum Request {
     },
     /// The room disk's `op`, by name alone (0.9).
     RoomDisk { op: crate::room_disk::RoomDiskOp },
+    /// Check admission using only the spawner's installed room sources.
+    RoomMount,
 }
 
 /// What the spawner answers.
@@ -860,6 +865,26 @@ impl Spawner {
             Reply::RoomDisk { status } => Ok(Some(status)),
             Reply::Refused { reason } => Err(reason),
             Reply::Started { .. } | Reply::Exited { .. } => {
+                Err(String::from("the spawner answered out of step"))
+            }
+        }
+    }
+
+    /// Ask the installed spawner to check the room's trusted mount admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal or why the spawner could not be reached.
+    pub fn check_room_mount(&self) -> Result<(), String> {
+        let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        send(&stream, &Request::RoomMount).map_err(|error| error.to_string())?;
+        match receive(&stream).map_err(|error| error.to_string())? {
+            Reply::Done => Ok(()),
+            Reply::Refused { reason } => Err(reason),
+            Reply::RoomDisk { .. } | Reply::Started { .. } | Reply::Exited { .. } => {
                 Err(String::from("the spawner answered out of step"))
             }
         }
@@ -1300,6 +1325,19 @@ fn serve_connection(
             send(stream, &reply)
         }
         Request::RoomDisk { op } => send(stream, &room_disk_reply(policy, keeper, op)),
+        Request::RoomMount => {
+            let result = match (&policy.room, keeper) {
+                (Some(room), Some(_)) => HelperDir::make().and_then(|staging| {
+                    crate::room_launch::check_installed(program, room, staging.0.clone())
+                }),
+                _ => Err(String::from(crate::room_disk::NOT_HERE)),
+            };
+            let reply = match result {
+                Ok(()) => Reply::Done,
+                Err(reason) => Reply::Refused { reason },
+            };
+            send(stream, &reply)
+        }
     }
 }
 

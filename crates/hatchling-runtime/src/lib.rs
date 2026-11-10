@@ -27,7 +27,7 @@ use hatchling_broker::egress_authority::EGRESS_AUTHORITY_SUBCOMMAND;
 use hatchling_broker::harness_tree::HARNESS_TREE_SUBCOMMAND;
 use hatchling_broker::keeper::VAULT_KEEPER_SUBCOMMAND;
 use hatchling_broker::skill_run::SKILL_CELL_SUBCOMMAND;
-use hatchling_broker::spawner::SPAWNER_SUBCOMMAND;
+use hatchling_broker::spawner::{ROOM_MOUNT_SUBCOMMAND, SPAWNER_SUBCOMMAND};
 use hatchling_isolation::PROGRAM;
 
 /// Usage, printed for `--help` on stdout and for a usage error on stderr.
@@ -91,7 +91,8 @@ pub fn route<'a>(argv0: &str, args: &'a [String]) -> Route<'a> {
             | HARNESS_TREE_SUBCOMMAND
             | VAULT_KEEPER_SUBCOMMAND
             | EGRESS_AUTHORITY_SUBCOMMAND
-            | SPAWNER_SUBCOMMAND,
+            | SPAWNER_SUBCOMMAND
+            | ROOM_MOUNT_SUBCOMMAND,
         ) => Route::Broker(args),
         Some("--help" | "-h" | "help") if args.len() == 1 => Route::Help,
         Some("--version" | "-V") if args.len() == 1 => Route::Version,
@@ -135,6 +136,7 @@ mod tests {
             VAULT_KEEPER_SUBCOMMAND,
             EGRESS_AUTHORITY_SUBCOMMAND,
             SPAWNER_SUBCOMMAND,
+            ROOM_MOUNT_SUBCOMMAND,
         ] {
             let given = args(&[helper, "/run/spec"]);
             assert_eq!(

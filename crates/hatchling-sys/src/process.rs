@@ -555,6 +555,41 @@ pub fn self_pidfd() -> Result<OwnedFd, Error> {
     })
 }
 
+/// Stop a process named by a trusted pidfd and confirm its exit.
+///
+/// The process need not be our direct child. The pidfd becomes readable
+/// only when that process has exited. Its own parent still reaps it.
+///
+/// # Errors
+///
+/// Reports an error if signalling fails or exit cannot be confirmed
+/// within five seconds. The caller must then retain any owned resources.
+pub fn stop_pidfd_and_confirm_exit(pidfd: BorrowedFd<'_>) -> io::Result<()> {
+    use rustix::event::{PollFd, PollFlags, poll};
+
+    let mut status = [PollFd::new(&pidfd, PollFlags::IN)];
+    let exited = |status: &[PollFd<'_>]| {
+        status
+            .first()
+            .is_some_and(|fd| fd.revents().contains(PollFlags::IN))
+    };
+    poll(&mut status, 0)?;
+    if !exited(&status) {
+        match rustix::process::pidfd_send_signal(pidfd, Signal::Kill) {
+            Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+            Err(error) => return Err(error.into()),
+        }
+        poll(&mut status, 5_000)?;
+    }
+    if !exited(&status) {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "pidfd did not confirm exit",
+        ));
+    }
+    Ok(())
+}
+
 /// A helper's watch on the broker that spawned it (WO-012): a pidfd on
 /// its parent, taken while that is still its parent.
 ///
@@ -2858,4 +2893,22 @@ mod tests {
         // Drop reaps the exited child (bounded 1 s grace); under the
         // get() mutant the asserts above already failed fast.
     }
+}
+#[test]
+fn stop_pidfd_and_confirm_exit_stops_a_live_process() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let mut process = std::process::Command::new("/bin/sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let pid = Pid::from_raw(i32::try_from(process.id()).unwrap()).unwrap();
+    let pidfd = rustix::process::pidfd_open(pid, PidfdFlags::empty()).unwrap();
+    let stopped = stop_pidfd_and_confirm_exit(pidfd.as_fd());
+    if stopped.is_err() {
+        let _ = process.kill();
+    }
+    assert_eq!(process.wait().unwrap().signal(), Some(9));
+    stopped.unwrap();
+    stop_pidfd_and_confirm_exit(pidfd.as_fd()).unwrap();
 }

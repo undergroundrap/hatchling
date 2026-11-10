@@ -108,4 +108,7 @@ fn the_brokers_spawner_helpers_reach_the_broker() {
             "{helper}: {err}"
         );
     }
+    let out = hatchling(None, &["room-mount-helper"]).expect("hatchling runs");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).starts_with("hatchling room mount helper:"));
 }

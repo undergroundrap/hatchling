@@ -26,6 +26,14 @@ fn mode(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
+#[test]
+fn with_open_volume_requires_the_authenticated_device() {
+    let bench = Bench::new("admission-device");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let reason = with_open_volume(&bench.disk, |_, _| Ok(())).unwrap_err();
+    assert!(reason.contains("isn't mapped"), "{reason}");
+}
+
 /// One program's run, as the stand-in recorded it.
 #[derive(Debug)]
 pub(crate) struct Ran {

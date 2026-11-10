@@ -26,6 +26,7 @@ use std::time::Duration;
 use hatchling_broker::room_disk::{self, RoomDisk, RoomDiskOp, RoomDiskState, Rotated};
 use hatchling_broker::spawner::Spawner;
 use hatchling_core::framing::{read_frame, write_frame};
+use sha2::{Digest as _, Sha256};
 
 /// A room disk's size here: the smallest there is.
 const SIZE: u64 = 64 * 1024 * 1024;
@@ -400,24 +401,17 @@ fn operators_close(place: &Place, mount: &Path) -> Result<(), Failed> {
     Ok(())
 }
 
-#[test]
-fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Failed> {
-    struct CloseDisk(Spawner);
-    impl Drop for CloseDisk {
-        fn drop(&mut self) {
-            // Close synchronously before Place removes the fixture files.
-            // Disconnecting alone starts the spawner's close asynchronously.
-            let _ = self.0.room_disk(RoomDiskOp::Close);
-        }
+struct CloseDisk(Spawner);
+impl Drop for CloseDisk {
+    fn drop(&mut self) {
+        // Close synchronously before Place removes the fixture files.
+        // Disconnecting alone starts the spawner's close asynchronously.
+        let _ = self.0.room_disk(RoomDiskOp::Close);
     }
+}
 
-    let Some(_disk_tests) = as_root("the_spawner_prepares_layout_only_on_the_verified_room_disk")
-    else {
-        return Ok(());
-    };
-    let place = Place::new("layout")?;
-    let keeper = Keeper::start(&place, "keeper")?;
-    let mut command = Command::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+fn installed_spawner(place: &Place, keeper: &Keeper, program: &Path) -> Result<CloseDisk, Failed> {
+    let mut command = Command::new(program);
     command
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin")
@@ -430,10 +424,23 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
         .env("HATCHLING_AGENT_UID", "4242")
         .env("HATCHLING_ROOM_DISK_DIR", place.disk.dir())
         .env("HATCHLING_ROOM_DISK_SIZE", "64M");
-    let spawner = CloseDisk(Spawner::start_with(
-        command,
-        Some(&keeper.spawner.lock().unwrap()),
-    )?);
+    let channel = keeper
+        .spawner
+        .lock()
+        .map_err(|_| "test keeper lock poisoned")?;
+    Ok(CloseDisk(Spawner::start_with(command, Some(&channel))?))
+}
+
+#[test]
+fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Failed> {
+    let Some(_disk_tests) = as_root("the_spawner_prepares_layout_only_on_the_verified_room_disk")
+    else {
+        return Ok(());
+    };
+    let place = Place::new("layout")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let program = Path::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    let spawner = installed_spawner(&place, &keeper, program)?;
     let run = |op| spawner.0.room_disk(op);
     run(RoomDiskOp::Create)?;
     run(RoomDiskOp::Open)?;
@@ -490,6 +497,369 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
     );
     assert_eq!(std::fs::read(&outside_canary)?, b"outside");
     Ok(())
+}
+
+#[test]
+fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Result<(), Failed> {
+    const TEST: &str = "the_installed_spawner_hands_the_verified_image_to_its_mount_helper";
+    const PARENT: &str = "HATCHLING_TEST_ROOM_ADMISSION_PARENT";
+    let Some(_disk_tests) = as_root(TEST) else {
+        return Ok(());
+    };
+    let namespace = std::fs::read_link("/proc/self/ns/mnt")?;
+    let Some(parent) = std::env::var_os(PARENT) else {
+        assert!(
+            Command::new("unshare")
+                .args(["--mount", "--propagation", "private", "--"])
+                .arg(std::env::current_exe()?)
+                .args(["--exact", TEST, "--nocapture"])
+                .env(PARENT, namespace)
+                .status()?
+                .success()
+        );
+        return Ok(());
+    };
+    assert_ne!(namespace, PathBuf::from(parent));
+    assert!(
+        !std::fs::read_to_string("/proc/self/mountinfo")?
+            .split_ascii_whitespace()
+            .any(|field| field.starts_with("shared:"))
+    );
+
+    let fixture = Place::new("installed-image")?;
+    let (root, digest, _binds) = room_admission_fixture(&fixture)?;
+    let broker = Path::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    for (tag, program) in [
+        ("installed-broker-admission", broker.to_owned()),
+        (
+            "installed-runtime-admission",
+            broker.with_file_name("hatchling"),
+        ),
+    ] {
+        assert!(
+            program.is_file(),
+            "build {} before the root pass",
+            program.display()
+        );
+        check_installed_room_mount(tag, &program, &root, &digest)?;
+    }
+    Ok(())
+}
+
+fn check_installed_room_mount(
+    tag: &str,
+    program: &Path,
+    root: &str,
+    digest: &str,
+) -> Result<(), Failed> {
+    let place = Place::new(tag)?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let spawner = installed_spawner(&place, &keeper, program)?;
+    let refusal = || {
+        spawner
+            .0
+            .check_room_mount()
+            .err()
+            .ok_or("the spawner accepted an invalid room mount")
+    };
+    spawner.0.room_disk(RoomDiskOp::Create)?;
+    let closed = refusal()?;
+    assert!(closed.contains("isn't mapped"), "{closed}");
+    spawner.0.room_disk(RoomDiskOp::Open)?;
+    let mount = place.disk.mount_point();
+    let canary = mount.join("workspace/kept");
+    std::fs::write(&canary, b"kept in the encrypted room")?;
+    let before = mapper_names()?;
+    let record = Path::new("/etc/hatchling/room-image.admission");
+    check_admission_record(&refusal, record, root, digest)?;
+    assert_eq!(mapper_names()?, before);
+
+    check_substituted_mount(&spawner.0, &mount)?;
+    assert_eq!(mapper_names()?, before);
+    let inbox = mount.join("inbox");
+    std::fs::set_permissions(&inbox, std::fs::Permissions::from_mode(0o770))?;
+    let refused = refusal()?;
+    assert!(
+        refused.contains("trusted room mount helper failed"),
+        "{refused}"
+    );
+    assert_eq!(mapper_names()?, before, "refusal left an image mapper");
+    std::fs::set_permissions(inbox, std::fs::Permissions::from_mode(0o700))?;
+    spawner.0.check_room_mount()?;
+    assert_eq!(mapper_names()?, before, "success left an image mapper");
+    assert_eq!(std::fs::read(&canary)?, b"kept in the encrypted room");
+    check_pending_image_cleanup(&spawner.0, &place)?;
+    assert!(!place.mapped());
+    std::fs::remove_file(record)?;
+    Ok(())
+}
+
+fn mapper_names() -> Result<std::collections::BTreeSet<String>, Failed> {
+    let mut names = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir("/sys/block")? {
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with("dm-") {
+            let name = std::fs::read_to_string(entry.path().join("dm/name"))?;
+            if name.starts_with("hatchling-room-verity-") {
+                names.insert(name.trim_end().to_owned());
+            }
+        }
+    }
+    Ok(names)
+}
+
+fn check_admission_record(
+    refusal: &impl Fn() -> Result<String, &'static str>,
+    record: &Path,
+    root: &str,
+    digest: &str,
+) -> Result<(), Failed> {
+    let missing = refusal()?;
+    assert!(
+        missing.contains("cannot read the installed room image admission record"),
+        "{missing}"
+    );
+    let short_root = root.get(..63).ok_or("missing verity root")?;
+    std::fs::write(record, format!("{short_root}\n{digest}\n"))?;
+    let short = refusal()?;
+    assert!(short.contains("admission record is invalid"), "{short}");
+    for bad in [
+        format!("{root} {digest}\n"),
+        format!("{short_root}\n0{digest}\n"),
+    ] {
+        std::fs::write(record, bad)?;
+        let malformed = refusal()?;
+        assert!(
+            malformed.contains("admission record is malformed"),
+            "{malformed}"
+        );
+    }
+    let wrong = if root.starts_with('0') { '1' } else { '0' };
+    let suffix = root.get(1..).ok_or("missing verity root")?;
+    std::fs::write(record, format!("{wrong}{suffix}\n{digest}\n"))?;
+    let mismatched = refusal()?;
+    assert!(mismatched.contains("verify"), "{mismatched}");
+    let valid = format!("{root}\n{digest}\n");
+    let other = record.with_extension("fixture-target");
+    std::fs::write(&other, &valid)?;
+    std::fs::remove_file(record)?;
+    std::os::unix::fs::symlink(&other, record)?;
+    let linked = refusal()?;
+    assert!(linked.contains("admission record is invalid"), "{linked}");
+    std::fs::remove_file(record)?;
+    std::fs::hard_link(&other, record)?;
+    let linked = refusal()?;
+    assert!(linked.contains("admission record is invalid"), "{linked}");
+    std::fs::remove_file(record)?;
+    std::fs::remove_file(other)?;
+    std::fs::write(record, valid)?;
+    std::fs::set_permissions(record, std::fs::Permissions::from_mode(0o600))?;
+    assert!(
+        Command::new("/usr/bin/chown")
+            .arg("+4242")
+            .arg(record)
+            .status()?
+            .success()
+    );
+    assert_eq!(std::fs::metadata(record)?.uid(), 4242);
+    let unowned = refusal()?;
+    assert!(unowned.contains("admission record is invalid"), "{unowned}");
+    rustix::fs::chown(record, Some(rustix::process::Uid::ROOT), None)?;
+    std::fs::set_permissions(record, std::fs::Permissions::from_mode(0o666))?;
+    let writable = refusal()?;
+    assert!(
+        writable.contains("admission record is invalid"),
+        "{writable}"
+    );
+    std::fs::set_permissions(record, std::fs::Permissions::from_mode(0o600))?;
+    Ok(())
+}
+
+fn check_pending_image_cleanup(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    // The private namespace sees a real veritysetup except that close
+    // deliberately fails. The genuine image mapper stays in the kernel.
+    let system = Path::new("/usr/sbin/veritysetup");
+    let real = place.dir.join("veritysetup-real");
+    let shim = place.dir.join("veritysetup-fail-close");
+    std::fs::copy(system, &real)?;
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = close ]; then exit 1; fi\nexec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )?;
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700))?;
+    let before = mapper_names()?;
+    assert!(
+        Command::new("mount")
+            .arg("--bind")
+            .arg(&shim)
+            .arg(system)
+            .status()?
+            .success()
+    );
+    let held = HeldBind(system.to_owned());
+    let admission = spawner.check_room_mount();
+    let after = mapper_names()?;
+    let close = spawner.room_disk(RoomDiskOp::Close);
+    let status = spawner.room_disk(RoomDiskOp::Status);
+    drop(held);
+    let retry = spawner.room_disk(RoomDiskOp::Close);
+    let remaining = mapper_names()?;
+    let admission = admission
+        .err()
+        .ok_or("admission ignored the failed mapper close")?;
+    let name = admission
+        .strip_prefix("cannot remove room mapper /dev/mapper/")
+        .and_then(|detail| detail.split_once(':'))
+        .map(|(name, _)| name)
+        .ok_or_else(|| format!("admission did not report its pending mapper: {admission}"))?;
+    let nonce = name
+        .strip_prefix("hatchling-room-verity-")
+        .ok_or("unexpected mapper name")?;
+    assert!(nonce.len() == 32 && nonce.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    if !before.contains(name) && after.contains(name) && remaining.contains(name) {
+        // Clean up only the new mapper named by this request, even if a
+        // deliberate guard break loses its retry handle.
+        let _ = Command::new(&real).args(["close", name]).status()?;
+    }
+    assert!(
+        !before.contains(name) && after.contains(name),
+        "fixture left no mapper to retry"
+    );
+    let close = close
+        .err()
+        .ok_or("disk closed before pending image cleanup succeeded")?;
+    assert!(close.contains("cannot remove room mapper"), "{close}");
+    let state = status?
+        .ok_or("missing room disk status after refused close")?
+        .state;
+    assert_eq!(state, RoomDiskState::Open);
+    retry?;
+    assert_eq!(remaining, before, "retry left the image mapper open");
+    Ok(())
+}
+
+fn check_substituted_mount(spawner: &Spawner, mount: &Path) -> Result<(), Failed> {
+    let view = || -> Result<(String, String, String, String), Failed> {
+        // Match the opened mount by ID. A path lookup in findmnt can
+        // describe the hidden lower mount when mounts share that path.
+        let opened = std::fs::File::open(mount)?;
+        let fdinfo = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", opened.as_raw_fd()))?;
+        let id = fdinfo
+            .lines()
+            .find_map(|line| line.strip_prefix("mnt_id:").map(str::trim))
+            .ok_or("missing open mount ID")?;
+        let info = std::fs::read_to_string("/proc/self/mountinfo")?;
+        let (head, tail) = info
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(id))
+            .and_then(|line| line.split_once(" - "))
+            .ok_or("missing mount record for the open descriptor")?;
+        let mut fields = head.split_whitespace().skip(2).map(str::to_owned);
+        let device = fields.next().ok_or("missing device number")?;
+        let root = fields.next().ok_or("missing filesystem root")?;
+        let flags = fields.nth(1).ok_or("missing mount flags")?;
+        let filesystem = tail
+            .split_whitespace()
+            .next()
+            .ok_or("missing filesystem type")?;
+        Ok((device, filesystem.to_owned(), root, flags))
+    };
+    let (device, filesystem, original_root, flags) = view()?;
+    assert_eq!(original_root, "/");
+    assert!(
+        Command::new("mount")
+            .arg("--bind")
+            .arg(mount.join("workspace"))
+            .arg(mount)
+            .status()?
+            .success()
+    );
+    let _substitution = HeldBind(mount.to_owned());
+    assert_eq!(view()?, (device, filesystem, "/workspace".into(), flags));
+    let substituted = spawner
+        .check_room_mount()
+        .err()
+        .ok_or("spawner accepted the workspace subtree")?;
+    assert!(
+        substituted.contains("expected encrypted ext4 volume"),
+        "spawner did not reject the subtree before launching the helper: {substituted}"
+    );
+    Ok(())
+}
+
+/// Stage ordinary room artifacts and inject a record in the private
+/// namespace. Only the record publisher is a fixture here.
+fn room_admission_fixture(place: &Place) -> Result<(String, String, [HeldBind; 2]), Failed> {
+    let fixture_etc = place.dir.join("etc");
+    let fixture_share = place.dir.join("share");
+    let system = place.dir.join("system");
+    let image_dir = fixture_share.join("hatchling/room");
+    std::fs::create_dir_all(fixture_etc.join("hatchling"))?;
+    std::fs::create_dir_all(&image_dir)?;
+    for name in ["passwd", "group", "nsswitch.conf", "ld.so.cache"] {
+        let source = Path::new("/etc").join(name);
+        if source.is_file() {
+            std::fs::copy(source, fixture_etc.join(name))?;
+        }
+    }
+    for name in ["workspace", "session", "proc", "dev"] {
+        std::fs::create_dir_all(system.join(name))?;
+    }
+    // Give verity a data image with more than one block.
+    let mut data = vec![0_u8; 8192];
+    std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut data)?;
+    std::fs::write(system.join("fixture"), data)?;
+    let image = image_dir.join("room-system-x86_64.squashfs");
+    let tree = image_dir.join("room-system-x86_64.verity");
+    let root_path = image_dir.join("room-system-x86_64.root-hash");
+    assert!(
+        Command::new("mksquashfs")
+            .arg(&system)
+            .arg(&image)
+            .args(["-noappend", "-all-root", "-no-progress", "-processors", "1"])
+            .status()?
+            .success()
+    );
+    let digest = format!("{:x}", Sha256::digest(std::fs::read(&image)?));
+    assert!(
+        Command::new("/usr/sbin/veritysetup")
+            .args([
+                "format",
+                "--no-superblock",
+                "--format=1",
+                "--hash=sha256",
+                "--data-block-size=4096",
+                "--hash-block-size=4096",
+                "--salt"
+            ])
+            .arg(&digest)
+            .arg("--root-hash-file")
+            .arg(&root_path)
+            .arg(&image)
+            .arg(tree)
+            .status()?
+            .success()
+    );
+    let root = std::fs::read_to_string(root_path)?.trim().to_owned();
+    let bind = |from: &Path, to: &str| -> Result<HeldBind, Failed> {
+        assert!(
+            Command::new("mount")
+                .arg("--bind")
+                .arg(from)
+                .arg(to)
+                .status()?
+                .success()
+        );
+        Ok(HeldBind(PathBuf::from(to)))
+    };
+    let binds = [
+        bind(&fixture_etc, "/etc")?,
+        bind(&fixture_share, "/usr/local/share")?,
+    ];
+    Ok((root, digest, binds))
 }
 
 /// A restore's test of a vault's key, for real: its own vault's (the
