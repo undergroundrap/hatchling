@@ -1,0 +1,64 @@
+/* Benign kernel observations at the actual Room supervisor exec boundary. */
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
+
+int main(int argc, char **argv, char **environment) {
+    (void)argc;
+    (void)argv;
+    if (getpid() != 2 || getppid() != 1)
+        return 31;
+
+    uid_t uid, effective_uid, saved_uid;
+    gid_t gid, effective_gid, saved_gid;
+    if (getresuid(&uid, &effective_uid, &saved_uid) || uid != ROOM_UID ||
+        effective_uid != uid || saved_uid != uid ||
+        getresgid(&gid, &effective_gid, &saved_gid) || gid != ROOM_GID ||
+        effective_gid != gid || saved_gid != gid || getgroups(0, NULL) != 0)
+        return 32;
+
+    struct stat info;
+    if (stat("/session", &info) || info.st_uid != uid || info.st_gid != gid ||
+        (info.st_mode & 0777) != 0700 || *environment != NULL)
+        return 33;
+
+    for (int fd = 0; fd < 3; ++fd) {
+        if (fstat(fd, &info) || !S_ISCHR(info.st_mode) || info.st_rdev != makedev(1, 3))
+            return 34;
+    }
+    if (fstat(3, &info) || !S_ISSOCK(info.st_mode))
+        return 35;
+    if (fcntl(57, F_GETFD) != -1 || errno != EBADF)
+        return 36;
+
+    /* The Room policy specifically reports ENOSYS for this call. */
+    if (memfd_create("room-filter-witness", MFD_CLOEXEC) != -1 || errno != ENOSYS)
+        return 37;
+
+    char status[4096] = {0};
+    int status_fd = open("/proc/self/status", O_RDONLY);
+    if (status_fd < 0 || read(status_fd, status, sizeof status - 1) <= 0 || close(status_fd) ||
+        !strstr(status, "NoNewPrivs:\t1\n") ||
+        !strstr(status, "CapPrm:\t0000000000000000\n") ||
+        !strstr(status, "CapEff:\t0000000000000000\n") ||
+        !strstr(status, "CapAmb:\t0000000000000000\n"))
+        return 38;
+
+    static const char ready[] = "\0\0\0\x05ready";
+    if (ROOM_PROBE_MODE == 1) {
+        sleep(120);
+        return 40;
+    }
+    if (write(3, ready, sizeof ready - 1) != (ssize_t)(sizeof ready - 1))
+        return 39;
+    if (ROOM_PROBE_MODE == 2) {
+        sleep(120);
+        return 41;
+    }
+    return 0;
+}

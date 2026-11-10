@@ -1333,6 +1333,18 @@ fn serve_connection(
                         room,
                         staging.0.clone(),
                         policy.cgroup.as_deref(),
+                        || {
+                            let read = |path| {
+                                std::fs::read_to_string(path)
+                                    .map_err(|error| format!("cannot read {path}: {error}"))
+                            };
+                            parse_room_identity(
+                                &read("/etc/passwd")?,
+                                &read("/etc/group")?,
+                                policy.owner,
+                                [policy.agent.identity, policy.skill.identity],
+                            )
+                        },
                     )
                 }),
                 _ => Err(String::from(crate::room_disk::NOT_HERE)),
@@ -1344,6 +1356,98 @@ fn serve_connection(
             send(stream, &reply)
         }
     }
+}
+
+fn parse_room_identity(
+    passwd: &str,
+    group: &str,
+    owner: u32,
+    cells: [CellIdentity; 2],
+) -> Result<(u32, u32), String> {
+    const NAME: &str = "hatchling-room";
+    let accounts = passwd.lines().filter_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let uid = fields.nth(1)?.parse::<u32>().ok()?;
+        let gid = fields.next()?.parse::<u32>().ok()?;
+        Some((name, uid, gid))
+    });
+    let (_, uid, gid) = accounts
+        .clone()
+        .find(|(name, _, _)| *name == NAME)
+        .ok_or("the hatchling-room account is missing")?;
+    let mut shared = [0, 65_534, u32::MAX].contains(&uid)
+        || [0, 65_534, u32::MAX].contains(&gid)
+        || uid == owner
+        || accounts
+            .filter(|(name, other_uid, other_gid)| {
+                *name == NAME || *other_uid == uid || *other_gid == gid
+            })
+            .count()
+            != 1;
+    for cell in cells {
+        shared |= uid
+            .checked_sub(cell.principal)
+            .is_some_and(|offset| offset < cell.count)
+            || gid
+                .checked_sub(cell.group)
+                .is_some_and(|offset| offset < cell.count);
+    }
+    let mut groups = group
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(':');
+            let name = fields.next()?;
+            let id = fields.nth(1)?.parse::<u32>().ok()?;
+            Some((name, id, fields.next()?))
+        })
+        .filter(|(name, id, _)| *name == NAME || *id == gid);
+    shared |= groups.next() != Some((NAME, gid, "")) || groups.next().is_some();
+    if shared {
+        return Err(String::from(
+            "the hatchling-room account must have a dedicated uid and gid",
+        ));
+    }
+    Ok((uid, gid))
+}
+
+#[cfg(test)]
+#[test]
+fn room_identity_requires_its_own_local_account_and_group() {
+    let passwd = "hatchling-room:x:982:982::/nonexistent:/usr/sbin/nologin\n";
+    let group = "hatchling-room:x:982:\n";
+    let cells = [CellIdentity::direct(4000, 8), CellIdentity::direct(5000, 4)];
+    let check = |passwd: &str, group: &str| parse_room_identity(passwd, group, 1000, cells);
+    assert_eq!(check(passwd, group), Ok((982, 982)));
+    let with_other_user = format!("{passwd}other:x:1001:1001::/home/other:/bin/bash\n");
+    let with_other_group = format!("{group}other:x:1001:\n");
+    assert_eq!(check(&with_other_user, &with_other_group), Ok((982, 982)));
+    assert!(check("", group).is_err());
+    let duplicate_login = format!("{passwd}other:x:982:1000::/home/other:/bin/bash\n");
+    let borrowed_group = format!("{passwd}other:x:1000:982::/home/other:/bin/bash\n");
+    let aliased_group = format!("{group}other:x:982:\n");
+    assert!(check(&duplicate_login, group).is_err());
+    assert!(check(&borrowed_group, group).is_err());
+    assert!(check(passwd, &aliased_group).is_err());
+    assert!(check(passwd, "hatchling-room:x:982:other\n").is_err());
+    assert!(check(&passwd.replace("982:982", "4007:982"), group).is_err());
+    assert!(check(&passwd.replace("982:982", "4008:982"), group).is_ok());
+    assert!(
+        check(
+            &passwd.replace("982:982", "982:5003"),
+            &group.replace("982", "5003")
+        )
+        .is_err()
+    );
+    assert!(
+        check(
+            &passwd.replace("982:982", "982:5004"),
+            &group.replace("982", "5004")
+        )
+        .is_ok()
+    );
+    assert!(check(&passwd.replace("982:982", "1000:982"), group).is_err());
+    assert!(check(&passwd.replace("982:982", "65534:982"), group).is_err());
 }
 
 /// The answer to the broker's room disk `op`: done, its status, or why not.

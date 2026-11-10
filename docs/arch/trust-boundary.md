@@ -20,7 +20,8 @@ socketpairs and refuses other families, `bind`, `listen` and `setsockopt`. Refus
 socket options prevents credential options from assigning an address to a
 Unix datagram socket without `bind`. The profile returns `ENOSYS` for
 `memfd_create` to prevent that route around writable mounts' `noexec` flags.
-The kernel probe installs the profile in a test process.
+The installed launcher applies the profile before executing the Room
+supervisor. Its kernel fixture also checks the profile at that exec boundary.
 
 The room image admission helper takes the expected verity root and image SHA-256
 from a trusted caller. It pins both installer-owned regular files, verifies
@@ -69,9 +70,15 @@ It mounts the encrypted workspace and 512 MiB session scratch with
 `nodev,nosuid,noexec`, and attaches the spawner's inbox read-only at
 `/workspace/inbox`. It refuses links in mount targets, leaves source
 submounts behind, and exposes a read-only PID-only `/proc` and just
-`null`, `zero`, and `urandom` under `/dev`. The production launcher
-must supply the device from the authenticated LUKS mapping, select the
-room filter, and own identity, resource limits, and cleanup.
+`null`, `zero`, and `urandom` under `/dev`. After the root switch, the
+trusted PID 1 forks the image supervisor as PID 2. The supervisor runs
+as the dedicated `hatchling-room` account with empty supplementary groups,
+no new privileges, null stdio, and an empty environment. Only its own
+socket crosses exec. The spawner receives the fixed readiness frame and
+closes that socket, and the trusted init reaps the supervisor. Readiness
+and exit share one deadline. The frame does not grant authority. Room
+admission requires x86_64 Linux. Workload and session controls have
+separate proof.
 Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
 write. Reporting the job's failure belongs to the launcher.

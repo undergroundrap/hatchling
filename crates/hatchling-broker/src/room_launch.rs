@@ -1,15 +1,15 @@
-//! One-shot mount admission through the installed spawner. The trusted
-//! helper enters the room view and exits before any image program can run.
+//! One-shot Room admission through the installed spawner. A trusted init
+//! mounts the view and reaps the confined image supervisor after readiness.
 
 use std::fs::{self, File};
-use std::io::{self, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_sys::cgroup::{CellCgroup, CgroupLimits};
@@ -25,6 +25,10 @@ use crate::spawner::ROOM_MOUNT_SUBCOMMAND;
 const RECORD: &str = "/etc/hatchling/room-image.admission";
 const IMAGE_DIR: &str = "/usr/local/share/hatchling/room";
 const UNSHARE: &str = "/usr/bin/unshare";
+const SUPERVISOR: &str = "/usr/local/libexec/hatchling-room";
+const SUPERVISOR_FD: i32 = 3;
+const READY: &[u8; 9] = b"\0\0\0\x05ready";
+const UNSUPPORTED_ARCH: &str = "the Room supervisor requires x86_64 Linux";
 const DEADLINE: Duration = Duration::from_secs(30);
 
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
@@ -44,6 +48,8 @@ struct MountSpec {
     volume: PathBuf,
     device: String,
     staging: PathBuf,
+    uid: u32,
+    gid: u32,
 }
 
 /// The installer must publish this record from separately attested
@@ -157,8 +163,12 @@ pub(crate) fn check_installed(
     disk: &RoomDisk,
     staging: PathBuf,
     cgroup_parent: Option<&Path>,
+    identity: impl FnOnce() -> Result<(u32, u32), String>,
 ) -> Result<(), String> {
     crate::room_disk::with_open_volume(disk, |volume, device| {
+        if !cfg!(target_arch = "x86_64") {
+            return Err(UNSUPPORTED_ARCH.into());
+        }
         let mut pending = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
         reconcile(&mut pending)?;
         let (root, digest) = read_admission(Path::new(RECORD))?;
@@ -167,6 +177,7 @@ pub(crate) fn check_installed(
         let directory = File::open(image_dir).map_err(|error| error.to_string())?;
         let image = PinnedRoomImage::pin(directory.as_fd()).map_err(|error| error.to_string())?;
         let group = room_group(cgroup_parent)?;
+        let (uid, gid) = identity()?;
         let mapper = image
             .activate(&root, &digest)
             .map_err(|error| remember(error, &mut pending))?;
@@ -174,6 +185,8 @@ pub(crate) fn check_installed(
             volume: volume.to_owned(),
             device: device.to_owned(),
             staging,
+            uid,
+            gid,
         };
         let mut launcher = None;
         let result = check_mount(program, &spec, &group, &mut launcher, |owner| {
@@ -198,6 +211,7 @@ fn check_mount(
     handoff: impl FnOnce(&UnixStream) -> Result<(), hatchling_sys::Error>,
 ) -> Result<(), String> {
     let (owner, launcher) = UnixStream::pair().map_err(|error| error.to_string())?;
+    let (supervisor, endpoint) = UnixStream::pair().map_err(|error| error.to_string())?;
     owner
         .set_write_timeout(Some(DEADLINE))
         .map_err(|error| error.to_string())?;
@@ -234,20 +248,61 @@ fn check_mount(
         *launcher_pidfd =
             Some(hatchling_sys::net::recv_fd(owner.as_fd()).map_err(|error| error.to_string())?);
         write_frame(&owner, &bytes).map_err(|error| error.to_string())?;
+        hatchling_sys::net::send_fd(owner.as_fd(), endpoint.as_fd())
+            .map_err(|error| error.to_string())?;
         handoff(&owner).map_err(|error| error.to_string())
     })();
-    drop(owner);
+    drop((owner, endpoint));
+    let deadline = Instant::now() + DEADLINE;
+    let ready = sent.and_then(|()| {
+        wait_for_ready(deadline, |bytes, remaining| {
+            supervisor.set_read_timeout(Some(remaining))?;
+            (&supervisor).read(bytes)
+        })
+    });
+    // After ready the supervisor waits for EOF before it exits.
+    drop(supervisor);
     let status = child
-        .wait_deadline(DEADLINE)
+        .wait_deadline(deadline.saturating_duration_since(Instant::now()))
         .map_err(|error| error.to_string())?;
-    sent?;
     if status != 0 {
         return Err(format!(
             "the trusted room mount helper failed (status {})",
             hatchling_sys::child_exit_code(status)
         ));
     }
-    Ok(())
+    ready
+}
+
+fn wait_for_ready(
+    deadline: Instant,
+    mut read: impl FnMut(&mut [u8], Duration) -> io::Result<usize>,
+) -> Result<(), String> {
+    let mut bytes = [0; READY.len()];
+    let mut unread = bytes.as_mut_slice();
+    while !unread.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(String::from(
+                "the Room supervisor did not become ready in time",
+            ));
+        }
+        match read(unread, remaining) {
+            Ok(0) => return Err(String::from("the Room supervisor closed before readiness")),
+            Ok(count) => {
+                unread = unread
+                    .get_mut(count..)
+                    .ok_or("invalid Room readiness length")?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(format!("cannot read Room supervisor readiness: {error}")),
+        }
+    }
+    if &bytes == READY {
+        Ok(())
+    } else {
+        Err(String::from("the Room supervisor sent invalid readiness"))
+    }
 }
 
 fn mount_command(program: &Path, launcher: UnixStream) -> Command {
@@ -275,6 +330,10 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
     drop(pidfd);
     let bytes = read_frame(&channel).map_err(|error| error.to_string())?;
     let spec: MountSpec = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let endpoint =
+        hatchling_sys::net::recv_fd(channel.as_fd()).map_err(|error| error.to_string())?;
+    let profile = room_profile()?;
+    hatchling_sys::hold_core_dumps_off().map_err(|error| error.to_string())?;
     let staging = File::open(spec.staging).map_err(|error| error.to_string())?;
     RoomMounts::enter_handed_off_volume(
         namespace,
@@ -282,10 +341,51 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
         &spec.volume,
         &spec.device,
         staging.into(),
-        0,
-        0,
+        spec.uid,
+        spec.gid,
     )
-    .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?;
+    match hatchling_sys::fork().map_err(|error| error.to_string())? {
+        hatchling_sys::ForkResult::Parent { child } => {
+            drop(endpoint);
+            let status = hatchling_sys::reap_as_init(&child);
+            if status != 0 {
+                return Err(format!("the Room supervisor exited with status {status}"));
+            }
+            Ok(())
+        }
+        hatchling_sys::ForkResult::Child => {
+            let result = (|| -> Result<(), hatchling_sys::Error> {
+                hatchling_sys::fds::null_stdio()?;
+                // No host descriptors cross exec. Only the separate,
+                // untrusted supervisor socket is installed on its fixed number.
+                hatchling_sys::cloexec_fds_above_stderr()?;
+                hatchling_sys::place_across_exec(&[endpoint.as_fd()], SUPERVISOR_FD)?;
+                hatchling_sys::drop_to(spec.uid, spec.gid)?;
+                Err(hatchling_sys::exec(
+                    Path::new(SUPERVISOR),
+                    &[SUPERVISOR],
+                    &[],
+                    || hatchling_sys::seccomp::install(&profile),
+                ))
+            })();
+            if let Err(error) = result {
+                let _ = writeln!(io::stderr().lock(), "hatchling Room supervisor: {error}");
+            }
+            hatchling_sys::exit_child(1);
+        }
+    }
+}
+
+fn room_profile() -> Result<hatchling_sys::SeccompProfile, String> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        hatchling_sys::SeccompProfile::room().map_err(|error| error.to_string())
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        Err(UNSUPPORTED_ARCH.into())
+    }
 }
 
 pub(crate) fn helper_main(
@@ -323,6 +423,7 @@ mod tests {
             &bench.disk,
             bench.root.clone(),
             None,
+            || unreachable!("a closed disk is refused before identity lookup"),
         )
         .unwrap_err();
         assert!(reason.contains("isn't mapped"), "{reason}");
@@ -380,9 +481,11 @@ mod tests {
             volume: "/missing/volume".into(),
             device: "0:0".into(),
             staging: "/missing/staging".into(),
+            uid: 123,
+            gid: 123,
         };
         let mut launcher = None;
-        let started = std::time::Instant::now();
+        let started = Instant::now();
         assert!(
             check_mount(
                 Path::new("/bin/false"),
@@ -420,6 +523,77 @@ mod tests {
             );
         }
         drop((command, owner));
+    }
+
+    #[test]
+    fn room_supervisor_requires_the_complete_readiness_frame() {
+        let read = |bytes: &[u8]| {
+            let (peer, mut endpoint) = UnixStream::pair().unwrap();
+            endpoint.write_all(bytes).unwrap();
+            drop(endpoint);
+            wait_for_ready(
+                Instant::now() + Duration::from_secs(2),
+                |bytes, remaining| {
+                    peer.set_read_timeout(Some(remaining))?;
+                    (&peer).read(bytes)
+                },
+            )
+        };
+        assert_eq!(read(READY), Ok(()));
+        assert_eq!(
+            read(b"\0\0\0\x05other"),
+            Err("the Room supervisor sent invalid readiness".into())
+        );
+        assert_eq!(
+            read(b"\0\0\0\x05read"),
+            Err("the Room supervisor closed before readiness".into())
+        );
+        assert_eq!(
+            wait_for_ready(Instant::now(), |_, _| Err(io::Error::other(
+                "expired readiness attempted a read"
+            ))),
+            Err("the Room supervisor did not become ready in time".into())
+        );
+    }
+
+    #[test]
+    fn room_profile_is_available_only_on_its_supported_architecture() {
+        assert_eq!(room_profile().is_ok(), cfg!(target_arch = "x86_64"));
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            room_profile().unwrap().allowed_numbers(),
+            hatchling_sys::SeccompProfile::room()
+                .unwrap()
+                .allowed_numbers()
+        );
+    }
+
+    #[test]
+    fn room_readiness_retries_interruptions_and_preserves_other_errors() {
+        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::WouldBlock] {
+            let mut reads = 0;
+            let received = wait_for_ready(
+                Instant::now() + Duration::from_secs(2),
+                |bytes, remaining| {
+                    reads += 1;
+                    assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs(2));
+                    if reads == 1 {
+                        return Err(io::Error::from(kind));
+                    }
+                    bytes.copy_from_slice(READY);
+                    Ok(READY.len())
+                },
+            );
+            assert_eq!(received.is_ok(), kind == io::ErrorKind::Interrupted);
+            assert_eq!(
+                reads,
+                if kind == io::ErrorKind::Interrupted {
+                    2
+                } else {
+                    1
+                }
+            );
+        }
     }
 
     #[test]
