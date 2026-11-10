@@ -1,6 +1,48 @@
 use super::*;
 
 #[test]
+fn room_root_requires_both_the_verified_device_and_squashfs() {
+    assert!(validate_image_mount(17, 17, true).is_ok());
+    assert!(validate_image_mount(18, 17, true).is_err());
+    assert!(validate_image_mount(17, 17, false).is_err());
+}
+
+#[test]
+fn room_root_refuses_a_real_non_squashfs_descriptor() {
+    let proc = std::fs::File::open("/proc").expect("pin proc");
+    let device = rustix::fs::fstat(&proc)
+        .expect("inspect proc device")
+        .st_dev;
+    assert!(matches!(
+        verify_image_mount(proc.as_fd(), device),
+        Err(Error::Mount {
+            operation: "verify room root mount",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn room_mount_plan_rejects_a_non_mount_root_before_attachment() {
+    let (pipe, _write) = rustix::pipe::pipe().expect("make pipe");
+    let duplicate = || pipe.try_clone().expect("clone pipe");
+    assert!(matches!(
+        RoomMounts::enter_with_root(
+            duplicate(),
+            duplicate(),
+            duplicate(),
+            duplicate(),
+            65534,
+            65534
+        ),
+        Err(Error::Mount {
+            operation: "set room mount flags",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn errors_keep_the_operation_and_failure_cause() {
     let kernel = failed("mount test")(rustix::io::Errno::NOSPC);
     let refused = refused("mount test", "wrong mount");

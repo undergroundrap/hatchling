@@ -6,11 +6,12 @@
 
 use std::fs;
 use std::io::Write;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::process::Command;
 
+use hatchling_sys::room_image::{PinnedRoomImage, RoomImageActivationError};
 use hatchling_sys::room_mounts::RoomMounts;
 use rustix::fs::{Mode, OFlags};
 
@@ -18,6 +19,7 @@ use rustix::fs::{Mode, OFlags};
 fn main() {
     match std::env::var("HATCHLING_ROOM_MOUNT_MODE").as_deref() {
         Ok("view") => room_mount_view(),
+        Ok("verified") => room_mount_verified_view(),
         Ok("threads") => rejects_namespace_preparation_with_another_thread(),
         Err(std::env::VarError::NotPresent) => {
             assert!(std::env::var_os("HATCHLING_REQUIRE_ROOM_MOUNTS").is_none());
@@ -60,6 +62,61 @@ fn pin(path: &Path) -> rustix::io::Result<OwnedFd> {
             .union(OFlags::NOFOLLOW),
         Mode::empty(),
     )
+}
+
+#[allow(clippy::expect_used, reason = "a failed mount probe must exit PID 1")]
+fn room_mount_verified_view() {
+    let fixture = std::env::var_os("HATCHLING_ROOM_MOUNT_FIXTURE").expect("mount fixture path");
+    let fixture = Path::new(&fixture);
+    let install = pin(&fixture.join("install")).expect("pin fixture install");
+    let image = PinnedRoomImage::pin(install.as_fd()).expect("pin fixture image and tree");
+    drop(install);
+    let root = std::env::var("HATCHLING_ROOM_PROOF_ROOT").expect("fixture root hash");
+    let digest = std::env::var("HATCHLING_ROOM_PROOF_DIGEST").expect("fixture image digest");
+    let activated = image.activate(&root, &digest);
+    let name = match &activated {
+        Ok(mapper) => mapper
+            .device()
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str),
+        Err(RoomImageActivationError::StartupCleanup { mapper, .. }) => Some(mapper.name()),
+        Err(RoomImageActivationError::BeforeActivation(_)) => None,
+    };
+    if let Some(name) = name {
+        fs::write(fixture.join("verified-mapper"), name)
+            .expect("record mapper for fixture cleanup");
+    }
+    let mapper = activated.expect("activate verified image");
+    // Device-mapper's udev rendezvous runs before room IPC isolation.
+    hatchling_sys::unshare_ipc().expect("enter the room IPC namespace");
+    let namespace = RoomMounts::prepare_namespace().expect("prepare private room namespace");
+    let expected_device = fs::metadata(mapper.device())
+        .expect("identify verified mapper")
+        .rdev();
+    RoomMounts::enter_verified(
+        namespace,
+        &mapper,
+        pin(&fixture.join("disk/workspace")).expect("pin fixture workspace"),
+        pin(&fixture.join("disk/incoming")).expect("pin fixture inbox"),
+        pin(&fixture.join("stage")).expect("pin staging directory"),
+        65534,
+        65534,
+    )
+    .expect("enter with verified image");
+    assert_eq!(
+        fs::metadata("/").expect("inspect room root").dev(),
+        expected_device
+    );
+    old_root_is_not_reachable(fixture);
+    hatchling_sys::clear_groups().expect("drop inherited groups");
+    hatchling_sys::drop_to(65534, 65534).expect("drop to fixture room user");
+    assert!(
+        Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .expect("execute from the verified mount")
+            .success()
+    );
 }
 
 #[allow(clippy::expect_used, reason = "a failed mount probe must exit PID 1")]

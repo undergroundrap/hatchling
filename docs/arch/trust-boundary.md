@@ -34,12 +34,14 @@ The separate WO-034 room mount plan requires a single-threaded PID 1,
 makes its mount namespace private, and uses the verified system image
 as the executable, read-only root. Other tasks must not exist before the
 root switch: a sibling could retain the previous root through `/proc`.
+The verified entry pins the mapper in that namespace and checks that the
+detached SquashFS mount belongs to its device before attaching it.
 It mounts the encrypted workspace and 512 MiB session scratch with
 `nodev,nosuid,noexec`, and attaches the spawner's inbox read-only at
 `/workspace/inbox`. It refuses links in mount targets, leaves source
 submounts behind, and exposes a read-only PID-only `/proc` and just
 `null`, `zero`, and `urandom` under `/dev`. The production launcher
-still needs to authenticate the source descriptors, select the room
+still needs to authenticate the workspace and inbox, select the room
 filter, and own identity, resource limits, and cleanup.
 Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
