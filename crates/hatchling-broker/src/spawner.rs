@@ -1328,7 +1328,12 @@ fn serve_connection(
         Request::RoomMount => {
             let result = match (&policy.room, keeper) {
                 (Some(room), Some(_)) => HelperDir::make().and_then(|staging| {
-                    crate::room_launch::check_installed(program, room, staging.0.clone())
+                    crate::room_launch::check_installed(
+                        program,
+                        room,
+                        staging.0.clone(),
+                        policy.cgroup.as_deref(),
+                    )
                 }),
                 _ => Err(String::from(crate::room_disk::NOT_HERE)),
             };

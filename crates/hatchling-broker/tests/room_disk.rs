@@ -410,7 +410,12 @@ impl Drop for CloseDisk {
     }
 }
 
-fn installed_spawner(place: &Place, keeper: &Keeper, program: &Path) -> Result<CloseDisk, Failed> {
+fn installed_spawner(
+    place: &Place,
+    keeper: &Keeper,
+    program: &Path,
+    cgroup: Option<&Path>,
+) -> Result<CloseDisk, Failed> {
     let mut command = Command::new(program);
     command
         .env_clear()
@@ -424,6 +429,9 @@ fn installed_spawner(place: &Place, keeper: &Keeper, program: &Path) -> Result<C
         .env("HATCHLING_AGENT_UID", "4242")
         .env("HATCHLING_ROOM_DISK_DIR", place.disk.dir())
         .env("HATCHLING_ROOM_DISK_SIZE", "64M");
+    if let Some(cgroup) = cgroup {
+        command.env("HATCHLING_CELL_CGROUP", cgroup);
+    }
     let channel = keeper
         .spawner
         .lock()
@@ -440,7 +448,7 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
     let place = Place::new("layout")?;
     let keeper = Keeper::start(&place, "keeper")?;
     let program = Path::new(env!("CARGO_BIN_EXE_hatchling-broker"));
-    let spawner = installed_spawner(&place, &keeper, program)?;
+    let spawner = installed_spawner(&place, &keeper, program, None)?;
     let run = |op| spawner.0.room_disk(op);
     run(RoomDiskOp::Create)?;
     run(RoomDiskOp::Open)?;
@@ -554,7 +562,12 @@ fn check_installed_room_mount(
 ) -> Result<(), Failed> {
     let place = Place::new(tag)?;
     let keeper = Keeper::start(&place, "keeper")?;
-    let spawner = installed_spawner(&place, &keeper, program)?;
+    let delegation = std::env::var_os("HATCHLING_TEST_CGROUP").ok_or("missing root test cgroup")?;
+    let parent = hatchling_sys::cgroup::CellCgroup::create(
+        Path::new(&delegation),
+        hatchling_sys::cgroup::CgroupLimits::default(),
+    )?;
+    let spawner = installed_spawner(&place, &keeper, program, Some(parent.path()))?;
     let refusal = || {
         spawner
             .0
@@ -574,6 +587,21 @@ fn check_installed_room_mount(
     check_admission_record(&refusal, record, root, digest)?;
     assert_eq!(mapper_names()?, before);
 
+    {
+        let other = Place::new(&format!("{tag}-undelegated"))?;
+        let keeper = Keeper::start(&other, "keeper")?;
+        let undelegated = installed_spawner(&other, &keeper, program, None)?;
+        undelegated.0.room_disk(RoomDiskOp::Create)?;
+        undelegated.0.room_disk(RoomDiskOp::Open)?;
+        let reason = undelegated
+            .0
+            .check_room_mount()
+            .err()
+            .ok_or("room admission ran without cgroup delegation")?;
+        assert!(reason.contains("requires a delegated cgroup"), "{reason}");
+        assert_eq!(mapper_names()?, before, "refusal activated an image mapper");
+    }
+
     check_substituted_mount(&spawner.0, &mount)?;
     assert_eq!(mapper_names()?, before);
     let inbox = mount.join("inbox");
@@ -585,12 +613,132 @@ fn check_installed_room_mount(
     );
     assert_eq!(mapper_names()?, before, "refusal left an image mapper");
     std::fs::set_permissions(inbox, std::fs::Permissions::from_mode(0o700))?;
-    spawner.0.check_room_mount()?;
+    check_room_cgroup(&place, &spawner.0, parent.path())?;
     assert_eq!(mapper_names()?, before, "success left an image mapper");
     assert_eq!(std::fs::read(&canary)?, b"kept in the encrypted room");
     check_pending_image_cleanup(&spawner.0, &place)?;
     assert!(!place.mapped());
     std::fs::remove_file(record)?;
+    Ok(())
+}
+
+fn check_room_cgroup(place: &Place, spawner: &Spawner, parent: &Path) -> Result<(), Failed> {
+    // Observe the wrapper before it runs the genuine unshare. This fixture
+    // alone has a private mount namespace and substitutes the executable.
+    let system = Path::new("/usr/bin/unshare");
+    let real = place.dir.join("room-unshare-real");
+    let shim = place.dir.join("room-unshare-observer");
+    let observed = place.dir.join("room-cgroup-observed");
+    let block_drain = place.dir.join("block-room-cgroup-drain");
+    let parent_name = parent.strip_prefix("/sys/fs/cgroup")?;
+    std::fs::copy(system, &real)?;
+    std::fs::write(
+        &shim,
+        format!(
+            r#"#!/bin/sh
+set -eu
+group=$(/bin/sed -n 's/^0:://p' /proc/self/cgroup)
+test -n "$group"
+{{
+    printf '%s\n' "$group"
+    for limit in pids.max memory.max memory.swap.max cpu.max; do
+        /bin/cat "/sys/fs/cgroup$group/$limit"
+    done
+}} > '{}'
+if [ -e '{}' ]; then
+    case "$group" in '/{}'/cell-*) ;; *) exit 1 ;; esac
+    # This bind is visible only in the fixture's private mount namespace.
+    /usr/bin/mount --bind /dev/full "/sys/fs/cgroup$group/cgroup.kill"
+else
+    # This benign child stays outside the inner PID namespace. Only the
+    # spawner's cgroup drain owns it once the launcher has exited.
+    /bin/sleep 8 </dev/null >/dev/null 2>&1 &
+    kill -0 "$!"
+fi
+exec '{}' "$@"
+"#,
+            observed.display(),
+            block_drain.display(),
+            parent_name.display(),
+            real.display(),
+        ),
+    )?;
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700))?;
+    assert!(
+        Command::new("mount")
+            .arg("--bind")
+            .arg(&shim)
+            .arg(system)
+            .status()?
+            .success()
+    );
+    let _observer = HeldBind(system.to_owned());
+    spawner.check_room_mount()?;
+    let (path, limits) = observed_room_cgroup(&observed, parent)?;
+    assert_room_limits(&limits)?;
+    assert!(!path.exists(), "room cgroup survived the result");
+
+    let before = mapper_names()?;
+    std::fs::remove_file(&observed)?;
+    std::fs::write(block_drain, [])?;
+    let failed = spawner.check_room_mount();
+    let (path, _) = observed_room_cgroup(&observed, parent)?;
+    let held = HeldBind(path.join("cgroup.kill"));
+    let reason = failed
+        .err()
+        .ok_or("room admission ignored the failed cgroup drain")?;
+    assert!(reason.contains("cgroup.kill"), "{reason}");
+    let retained = mapper_names()?;
+    assert_eq!(retained.difference(&before).count(), 1);
+    for op in [RoomDiskOp::Close, RoomDiskOp::Wipe] {
+        let reason = spawner
+            .room_disk(op)
+            .err()
+            .ok_or("disk maintenance ignored the failed cgroup drain")?;
+        assert!(reason.contains("cgroup.kill"), "{reason}");
+        assert_eq!(mapper_names()?, retained);
+        assert!(place.mapped(), "failed drain allowed disk maintenance");
+    }
+    drop(held);
+    spawner.room_disk(RoomDiskOp::Close)?;
+    assert!(!path.exists(), "retry left the Room cgroup behind");
+    assert_eq!(mapper_names()?, before);
+    assert!(!place.mapped());
+    spawner.room_disk(RoomDiskOp::Open)?;
+    Ok(())
+}
+
+fn observed_room_cgroup(observed: &Path, parent: &Path) -> Result<(PathBuf, String), Failed> {
+    let report = std::fs::read_to_string(observed)?;
+    let (name, limits) = report
+        .split_once('\n')
+        .ok_or("launcher did not report its cgroup")?;
+    let path = Path::new("/sys/fs/cgroup").join(name.trim_start_matches('/'));
+    assert_eq!(
+        path.parent(),
+        Some(parent),
+        "launcher ran outside its Room group"
+    );
+    Ok((path, limits.to_owned()))
+}
+
+fn assert_room_limits(limits: &str) -> Result<(), Failed> {
+    let mut lines = limits.lines();
+    assert_eq!(lines.next(), Some("512"));
+    let memory = (hatchling_sys::cgroup::default_memory()? / 2).min(4 << 30);
+    let page_size = Command::new("/usr/bin/getconf").arg("PAGESIZE").output()?;
+    assert!(page_size.status.success());
+    let page_size: u64 = std::str::from_utf8(&page_size.stdout)?.trim().parse()?;
+    assert!(page_size > 0);
+    let effective_memory = memory - memory % page_size;
+    assert_eq!(lines.next(), Some(effective_memory.to_string().as_str()));
+    assert_eq!(lines.next(), Some("0"));
+    let cores = std::thread::available_parallelism()?.get();
+    assert_eq!(
+        lines.next(),
+        Some(format!("{} 100000", cores * 50_000).as_str())
+    );
+    assert!(lines.next().is_none());
     Ok(())
 }
 

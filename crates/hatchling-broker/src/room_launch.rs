@@ -12,6 +12,7 @@ use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use hatchling_core::framing::{read_frame, write_frame};
+use hatchling_sys::cgroup::{CellCgroup, CgroupLimits};
 use hatchling_sys::room_image::{
     PendingRoomImageMapper, PinnedRoomImage, RoomImageActivationError, RoomImageMapper,
 };
@@ -33,6 +34,7 @@ enum Pending {
     Mount {
         mapper: RoomImageMapper,
         launcher: Option<OwnedFd>,
+        group: CellCgroup,
     },
 }
 
@@ -77,15 +79,23 @@ fn reconcile(pending: &mut Option<Pending>) -> Result<(), String> {
         Some(Pending::Activation(mapper)) => mapper
             .close()
             .map_err(|error| format!("cannot remove room mapper {}: {error}", mapper.name()))?,
-        Some(Pending::Mount { mapper, launcher }) => {
-            after_launcher_exit(launcher.as_ref().map(OwnedFd::as_fd), || {
-                mapper.close().map_err(|error| {
-                    format!(
-                        "cannot remove room mapper {}: {error}",
-                        mapper.device().display()
-                    )
-                })
-            })?;
+        Some(Pending::Mount {
+            mapper,
+            launcher,
+            group,
+        }) => {
+            after_launcher_exit(
+                launcher.as_ref().map(OwnedFd::as_fd),
+                || group.finish().map_err(|error| error.to_string()),
+                || {
+                    mapper.close().map_err(|error| {
+                        format!(
+                            "cannot remove room mapper {}: {error}",
+                            mapper.device().display()
+                        )
+                    })
+                },
+            )?;
         }
         None => {}
     }
@@ -95,12 +105,16 @@ fn reconcile(pending: &mut Option<Pending>) -> Result<(), String> {
 
 fn after_launcher_exit(
     launcher: Option<BorrowedFd<'_>>,
+    drain: impl FnOnce() -> Result<(), String>,
     close: impl FnOnce() -> Result<(), String>,
 ) -> Result<(), String> {
     if let Some(launcher) = launcher {
         hatchling_sys::stop_pidfd_and_confirm_exit(launcher)
             .map_err(|error| format!("cannot confirm room mount helper exit: {error}"))?;
     }
+    // An exited launcher is not proof that every descendant has left.
+    // Failed drain leaves the mapper owned for a later cleanup attempt.
+    drain()?;
     close()
 }
 
@@ -121,10 +135,28 @@ fn remember(error: RoomImageActivationError, pending: &mut Option<Pending>) -> S
     reason
 }
 
+fn room_limits(half_memory: u64, available_cores: u64) -> CgroupLimits {
+    CgroupLimits {
+        processes: Some(512),
+        memory: Some((half_memory / 2).min(4 << 30)),
+        cpu_millis: Some(available_cores.saturating_mul(500)),
+    }
+}
+
+fn room_group(parent: Option<&Path>) -> Result<CellCgroup, String> {
+    let parent = parent.ok_or("room launch requires a delegated cgroup v2 parent")?;
+    let memory = hatchling_sys::cgroup::default_memory().map_err(|error| error.to_string())?;
+    let cores = std::thread::available_parallelism().map_err(|error| error.to_string())?;
+    let cores = u64::try_from(cores.get()).map_err(|error| error.to_string())?;
+    CellCgroup::create_without_swap(parent, room_limits(memory, cores))
+        .map_err(|error| format!("cannot create the room cgroup: {error}"))
+}
+
 pub(crate) fn check_installed(
     program: &Path,
     disk: &RoomDisk,
     staging: PathBuf,
+    cgroup_parent: Option<&Path>,
 ) -> Result<(), String> {
     crate::room_disk::with_open_volume(disk, |volume, device| {
         let mut pending = PENDING.lock().unwrap_or_else(PoisonError::into_inner);
@@ -134,6 +166,7 @@ pub(crate) fn check_installed(
         hatchling_sys::trusted_dir_chain(image_dir, &[0]).map_err(|error| error.to_string())?;
         let directory = File::open(image_dir).map_err(|error| error.to_string())?;
         let image = PinnedRoomImage::pin(directory.as_fd()).map_err(|error| error.to_string())?;
+        let group = room_group(cgroup_parent)?;
         let mapper = image
             .activate(&root, &digest)
             .map_err(|error| remember(error, &mut pending))?;
@@ -143,10 +176,14 @@ pub(crate) fn check_installed(
             staging,
         };
         let mut launcher = None;
-        let result = check_mount(program, &spec, &mut launcher, |owner| {
+        let result = check_mount(program, &spec, &group, &mut launcher, |owner| {
             mapper.send_to_launcher(owner)
         });
-        *pending = Some(Pending::Mount { mapper, launcher });
+        *pending = Some(Pending::Mount {
+            mapper,
+            launcher,
+            group,
+        });
         reconcile(&mut pending)?;
         drop(pending);
         result
@@ -156,6 +193,7 @@ pub(crate) fn check_installed(
 fn check_mount(
     program: &Path,
     spec: &MountSpec,
+    group: &CellCgroup,
     launcher_pidfd: &mut Option<OwnedFd>,
     handoff: impl FnOnce(&UnixStream) -> Result<(), hatchling_sys::Error>,
 ) -> Result<(), String> {
@@ -167,9 +205,16 @@ fn check_mount(
         .set_read_timeout(Some(DEADLINE))
         .map_err(|error| error.to_string())?;
     let bytes = serde_json::to_vec(spec).map_err(|error| error.to_string())?;
-    let mut process = mount_command(program, launcher)
+    let mut command = mount_command(program, launcher);
+    group
+        .join_on_exec(&mut command)
+        .map_err(|error| error.to_string())?;
+    let mut process = command
         .spawn()
         .map_err(|error| format!("cannot start the room mount helper: {error}"))?;
+    // The command holds its own copy of the launch end. Drop it so a
+    // helper that exits early delivers EOF instead of a handshake timeout.
+    drop(command);
     let child = i32::try_from(process.id())
         .ok()
         .and_then(hatchling_sys::ChildPid::new)
@@ -273,9 +318,36 @@ mod tests {
     fn room_mount_admission_requires_an_open_disk() {
         let bench = Bench::new("admission-needs-open-disk");
         bench.run(RoomDiskOp::Create).unwrap();
-        let reason =
-            check_installed(Path::new("/bin/false"), &bench.disk, bench.root.clone()).unwrap_err();
+        let reason = check_installed(
+            Path::new("/bin/false"),
+            &bench.disk,
+            bench.root.clone(),
+            None,
+        )
+        .unwrap_err();
         assert!(reason.contains("isn't mapped"), "{reason}");
+    }
+
+    #[test]
+    fn room_limits_bound_memory_and_cpu_independently() {
+        for (memory, cores, expected_memory, cpu) in
+            [(3 << 30, 1, 1536 << 20, 500), (12 << 30, 7, 4 << 30, 3500)]
+        {
+            let limits = room_limits(memory, cores);
+            assert_eq!(limits.memory, Some(expected_memory));
+            assert_eq!(limits.processes, Some(512));
+            assert_eq!(limits.cpu_millis, Some(cpu));
+        }
+        assert!(
+            room_group(None)
+                .unwrap_err()
+                .contains("requires a delegated")
+        );
+        assert!(
+            room_group(Some(Path::new("/tmp")))
+                .unwrap_err()
+                .contains("not cgroup v2")
+        );
     }
 
     #[test]
@@ -296,14 +368,36 @@ mod tests {
 
     #[test]
     fn room_mount_check_refuses_a_helper_that_exits_unsuccessfully() {
+        let Some(parent) = std::env::var_os("HATCHLING_TEST_CGROUP") else {
+            assert_ne!(
+                std::env::var("HATCHLING_REQUIRE_CGROUP").as_deref(),
+                Ok("1")
+            );
+            return;
+        };
+        let group = room_group(Some(Path::new(&parent))).unwrap();
         let spec = MountSpec {
             volume: "/missing/volume".into(),
             device: "0:0".into(),
             staging: "/missing/staging".into(),
         };
         let mut launcher = None;
-        assert!(check_mount(Path::new("/bin/false"), &spec, &mut launcher, |_| Ok(())).is_err());
+        let started = std::time::Instant::now();
+        assert!(
+            check_mount(
+                Path::new("/bin/false"),
+                &spec,
+                &group,
+                &mut launcher,
+                |_| Ok(())
+            )
+            .is_err()
+        );
         assert!(launcher.is_none());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "launcher exit did not deliver EOF promptly"
+        );
     }
 
     #[test]
@@ -334,20 +428,39 @@ mod tests {
         let pid = rustix::process::Pid::from_raw(i32::try_from(launcher.id()).unwrap()).unwrap();
         let pidfd = rustix::process::pidfd_open(pid, rustix::process::PidfdFlags::empty()).unwrap();
         let mut closed = false;
-        let cleaned = after_launcher_exit(Some(pidfd.as_fd()), || {
-            closed = true;
-            let status = launcher.try_wait().map_err(|error| error.to_string())?;
-            if status.and_then(|status| status.signal()) != Some(9) {
-                return Err(String::from("mapper close reached before launcher exit"));
-            }
-            Ok(())
-        });
+        let cleaned = after_launcher_exit(
+            Some(pidfd.as_fd()),
+            || Ok(()),
+            || {
+                closed = true;
+                let status = launcher.try_wait().map_err(|error| error.to_string())?;
+                if status.and_then(|status| status.signal()) != Some(9) {
+                    return Err(String::from("mapper close reached before launcher exit"));
+                }
+                Ok(())
+            },
+        );
         if cleaned.is_err() || !closed {
             let _ = launcher.kill();
             let _ = launcher.wait();
         }
         cleaned.unwrap();
         assert!(closed, "cleanup skipped mapper close");
+    }
+
+    #[test]
+    fn room_mapper_close_requires_a_confirmed_cgroup_drain() {
+        let reached = std::cell::Cell::new(false);
+        let close = || {
+            reached.set(true);
+            Ok(())
+        };
+        let reason =
+            after_launcher_exit(None, || Err("room remains populated".into()), close).unwrap_err();
+        assert_eq!(reason, "room remains populated");
+        assert!(!reached.get(), "mapper close ran before the cgroup drained");
+        after_launcher_exit(None, || Ok(()), close).unwrap();
+        assert!(reached.get());
     }
 
     #[test]
