@@ -2,13 +2,13 @@
 ; with no administrator rights; setup.ps1 does the rest, in a console the owner
 ; can see. Nothing here asks for a key, a PIN or a code.
 ;
-;   ISCC.exe /DReleaseDir=<dir> /DAppVersion=0.8.0 installer\windows\hatchling.iss
+;   ISCC.exe /DReleaseDir=<dir> /DAppVersion=0.9.0 installer\windows\hatchling.iss
 ;
 ; <dir> holds what a release publishes: the programs, hatchling-ui.tar.gz,
-; hatchling-installer.tar.gz and SHA256SUMS.
+; hatchling-installer.tar.gz, the verified Room artifacts and SHA256SUMS.
 #define AppName "Hatchling"
 #ifndef AppVersion
-  #define AppVersion "0.8.0"
+  #define AppVersion "0.9.0"
 #endif
 #ifndef ReleaseDir
   #error Pass /DReleaseDir=<dir>, a directory of release files.
@@ -60,12 +60,13 @@ WelcomeLabel2=Secure infrastructure for always-on AI agents you own.%n%nCreated 
 
 [Files]
 Source: "common.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "setup.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "common.ps1"; DestDir: "{tmp}"; Flags: ignoreversion
+Source: "setup.ps1"; DestDir: "{tmp}"; Flags: ignoreversion
 Source: "open.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "broker.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\frontend\public\favicon.ico"; DestDir: "{app}"; DestName: "hatchling.ico"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
-Source: "{#ReleaseDir}\*"; DestDir: "{app}\release"; Flags: ignoreversion
+Source: "{#ReleaseDir}\*"; DestDir: "{tmp}\release"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Hatchling"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\open.ps1"" -Distro {#Distro}"; IconFilename: "{app}\hatchling.ico"; Comment: "Open Hatchling"
@@ -81,8 +82,7 @@ Name: "keeprunning"; Description: "Keep Hatchling running while I'm logged in (r
 Name: "backupfirst"; Description: "Make a backup before updating (recommended). With a security key, it asks for your PIN and a touch"; Check: Updating
 
 [Run]
-Filename: "{#Script}"; Parameters: "{#Run} ""{app}\setup.ps1"" -Distro {#Distro} -Version {#AppVersion} {code:SetupArguments}"; StatusMsg: "Setting Hatchling up in WSL. Follow the console window."; Flags: waituntilterminated
-Filename: "{#Script}"; Parameters: "{#Run} ""{app}\open.ps1"" -Distro {#Distro}"; Description: "Open Hatchling"; Flags: postinstall nowait skipifsilent
+Filename: "{#Script}"; Parameters: "{#Run} ""{app}\open.ps1"" -Distro {#Distro}"; Description: "Open Hatchling"; Check: WslSetupSucceeded; Flags: postinstall nowait skipifsilent
 
 [UninstallRun]
 Filename: "wsl.exe"; Parameters: "--terminate {#Distro}"; Flags: runhidden; RunOnceId: "StopDistro"
@@ -91,11 +91,20 @@ Filename: "wsl.exe"; Parameters: "--terminate {#Distro}"; Flags: runhidden; RunO
 var
   ModelPage: TInputOptionWizardPage;
   WasInstalled: Boolean;
+  WslInstalled: Boolean;
 
-// Asked once, before anything is copied: afterwards, the files are always there.
+// The wizard's files can exist after a refusal. A fresh hosted install can also
+// leave an environment with both model fields empty before a key is supplied.
 function InitializeSetup: Boolean;
+var
+  Code: Integer;
 begin
-  WasInstalled := FileExists(ExpandConstant('{autopf}\Hatchling\setup.ps1'));
+  Code := -1;
+  WasInstalled := Exec(ExpandConstant('{sys}\wsl.exe'),
+    '-d {#Distro} -u root --exec sh -c "p=/etc/hatchling/hatchling.env; test -f $p && ! (' +
+    'grep -qx HATCHLING_SCHEDULER_MODEL_ENDPOINT= $p && grep -qx HATCHLING_SCHEDULER_MODEL_NAME= $p && ' +
+    'test $(grep -cE ''^[[:space:]]*HATCHLING_SCHEDULER_MODEL_(ENDPOINT|NAME)[[:space:]]*='' $p) = 2)"', '',
+    SW_HIDE, ewWaitUntilTerminated, Code) and (Code = 0);
   Result := True;
 end;
 
@@ -119,13 +128,46 @@ begin
   Result := Updating and (PageID = ModelPage.ID);
 end;
 
-function SetupArguments(Param: String): String;
+function SetupArguments: String;
 begin
   if Updating then begin
     if WizardIsTaskSelected('backupfirst') then Result := '-Backup' else Result := '';
   end
   else if ModelPage.Values[1] then Result := '-Hosted'
   else Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Args: String;
+  Code: Integer;
+begin
+  if CurStep <> ssPostInstall then Exit;
+  WizardForm.StatusLabel.Caption := 'Setting Hatchling up in WSL. Follow the console window.';
+  Args := ExpandConstant('{#Run} "{tmp}\setup.ps1" -Distro {#Distro} -Version {#AppVersion} -BundledRoom') + ' ' + SetupArguments;
+  if WizardSilent then Args := Args + ' -Unattended';
+  Code := -1;
+  WslInstalled := Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    Args, '', SW_SHOW, ewWaitUntilTerminated, Code) and (Code = 0);
+  Log(Format('WSL setup exit code: %d', [Code]));
+end;
+
+function WslSetupSucceeded: Boolean;
+begin
+  Result := WslInstalled;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (CurPageID = wpFinished) and not WslInstalled then begin
+    WizardForm.FinishedHeadingLabel.Caption := 'Hatchling setup did not finish';
+    WizardForm.FinishedLabel.Caption := 'Check the WSL setup message, fix the problem, and run this Setup again.';
+  end;
+end;
+
+function GetCustomSetupExitCode: Integer;
+begin
+  if WslInstalled then Result := 0 else Result := 1;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

@@ -34,7 +34,7 @@ Either way, the other kind is one command after (`use-hosted` or `use-local`, [b
 
 ## Windows
 
-The Windows setup installs all of this with no commands to type, and you won't need `sudo` or any Linux afterwards: [Hatchling on Windows](windows.md) explains what it adds. The `sudo` commands on this page are for installing from a Linux or WSL terminal instead.
+[Hatchling on Windows](windows.md) shows how to verify the unsigned Setup and prepare WSL for an offline install. The `sudo` commands on this page are for installing from a Linux or WSL terminal instead.
 
 ## Keep it running on Windows
 

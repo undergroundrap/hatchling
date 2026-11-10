@@ -58,7 +58,7 @@ usage() {
 fail() { echo "install.sh: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 
-FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED= KEEP_MODEL=
+FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED= KEEP_MODEL= WINDOWS_ROOM_BUNDLE=
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) FROM=${2:-}; shift 2 || usage ;;
@@ -68,6 +68,7 @@ while [ $# -gt 0 ]; do
     --ollama-context) OLLAMA_CONTEXT=${2:-}; shift 2 || usage ;;
     --force) FORCE=1; shift ;;
     --keep-model) KEEP_MODEL=1; shift ;;
+    --windows-room-bundle) WINDOWS_ROOM_BUNDLE=1; shift ;;
     *) usage ;;
   esac
 done
@@ -130,6 +131,11 @@ case "$(uname -m)" in
   *) fail "no release for $(uname -m)" ;;
 esac
 FROM=$(cd "$FROM" && pwd -P) || fail "no directory $FROM"
+if [ -n "$WINDOWS_ROOM_BUNDLE" ]; then
+  . "$PACKAGING/install-room-image.sh"
+  say "checking the bundled Room image offline"
+  room_prepare
+fi
 found() { # program
   for name in "$1-$TARGET" "$1"; do
     if [ -f "$FROM/$name" ]; then echo "$FROM/$name"; return; fi
@@ -212,6 +218,16 @@ keep_up() {
   done
   say "added what this version keeps for you:$added (the old configuration is $backup)"
 }
+# A fresh hosted install writes empty model fields before prompting for a key.
+# If the user comes back to Windows Setup and chooses a local model instead,
+# complete the model configuration without replacing their settings or vault.
+RESUME_LOCAL=
+if [ -n "$WINDOWS_ROOM_BUNDLE" ] && [ -z "$HOSTED$KEEP_MODEL" ] && [ -f "$ENV" ] \
+  && grep -qx 'HATCHLING_SCHEDULER_MODEL_ENDPOINT=' "$ENV" \
+  && grep -qx 'HATCHLING_SCHEDULER_MODEL_NAME=' "$ENV" \
+  && [ "$(grep -cE '^[[:space:]]*HATCHLING_SCHEDULER_MODEL_(ENDPOINT|NAME)[[:space:]]*=' "$ENV")" = 2 ]; then
+  RESUME_LOCAL=1
+fi
 if [ -f "$ENV" ] && [ -z "$FORCE" ]; then
   say "keeping the configuration in $ENV (--force writes it again)"
   keep_up
@@ -252,6 +268,11 @@ if [ -z "$(ls -A /var/lib/hatchling/vault)" ]; then
   (set -a; . "$ENV"; set +a; /usr/local/bin/hatchling-broker migrate-vault)
 fi
 
+if [ -n "$RESUME_LOCAL" ]; then
+  /usr/local/bin/hatchling-broker use-local --model "$MODEL" --endpoint "$ENDPOINT" --no-restart \
+    || fail "the local model wasn't set up, and nothing was started: run this again"
+fi
+
 # A hosted model: its settings, all agreeing, and its key in the vault,
 # asked for here, by use-hosted. A configuration kept from a local install
 # keeps its local model, to switch back to in the app.
@@ -277,7 +298,7 @@ DROP_IN=/etc/systemd/system/ollama.service.d/zz-hatchling-context.conf
 # asked and the first answer doesn't wait for it.
 load_model() {
   command -v curl > /dev/null || return 1
-  curl -fsS -m 300 -o /dev/null "http://$HOSTPORT/api/generate" -H 'Content-Type: application/json' \
+  curl -q --noproxy '*' -fsS -m 300 -o /dev/null "http://$HOSTPORT/api/generate" -H 'Content-Type: application/json' \
     -d "{\"model\":\"$MODEL\",\"keep_alive\":\"10m\"}" 2> /dev/null
 }
 # Gives Ollama a window of $1 tokens, through the drop-in, and waits for it
@@ -359,7 +380,7 @@ fi
 # The agent's room disk is encrypted with cryptsetup: cryptsetup-bin, not
 # cryptsetup, which adds boot-time hooks Hatchling doesn't use. Without it
 # the agent's computer is off here, and doctor says so; the rest works.
-if [ -x /usr/sbin/cryptsetup ]; then
+if [ -n "$WINDOWS_ROOM_BUNDLE" ] || [ -x /usr/sbin/cryptsetup ]; then
   :
 elif command -v apt-get > /dev/null; then
   say "adding cryptsetup-bin, for the agent's encrypted room disk"
@@ -374,6 +395,10 @@ fi
 say "checking it can work here"
 if ! /usr/local/bin/hatchling-broker doctor --env "$ENV"; then
   fail "fix what doctor found, then run this again: it keeps your configuration"
+fi
+if [ -n "$WINDOWS_ROOM_BUNDLE" ]; then
+  say "installing the verified Room image"
+  room_publish
 fi
 
 say "starting the broker"

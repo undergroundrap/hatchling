@@ -15,7 +15,7 @@ name: release
 #     get-hatchling.sh, pinned to the tag, so a person installs with curl
 #     alone (scripts/release-installer.sh; CI's service job installs with
 #     them on every change);
-#   - a Windows setup holding x86_64's programs, the app and the installer,
+#   - a Windows setup holding x86_64's programs, the app, installer and verified Room image,
 #     scanned with Microsoft Defender (installer/windows; it isn't compared
 #     twice like the rest, and what it holds is);
 #   - a build-provenance attestation for every file, so
@@ -43,8 +43,11 @@ on:
     paths:
       - .github/workflows/release.yml
       - installer/windows/**
+      - packaging/install-room-image.sh
+      - scripts/install.sh
       - scripts/release-*.sh
       - scripts/room-image*
+      - scripts/room-installer-proof.sh
       - crates/hatchling-browser/**
       - crates/hatchling-core/**
       - crates/hatchling-sys/**
@@ -348,6 +351,8 @@ jobs:
         run: |
           bash scripts/room-image.sh compare builds/room-build-a builds/room-build-b
           sudo unshare --mount --net --propagation private bash scripts/room-image-probe.sh builds/room-build-a
+      - name: Check offline Room publication from the Setup manifest
+        run: sudo bash scripts/room-installer-proof.sh builds/room-build-a
       - name: Upload the verified release candidate
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
@@ -419,7 +424,7 @@ jobs:
     # What it holds has already been compared, byte for byte. It compiles
     # our own script over those files, with no token, and only the job that
     # releases attests it.
-    needs: [reproducible]
+    needs: [reproducible, room-image-verified]
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -443,6 +448,12 @@ jobs:
           name: ui-a
           path: downloads/ui
 
+      - name: Download the verified Room candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: room-image-verified
+          path: downloads/room-image
+
       - name: Name the setup's version
         shell: bash
         # The tag's, or on a dry run, the version a release would be.
@@ -461,8 +472,11 @@ jobs:
           done
           cp downloads/ui/hatchling-ui.tar.gz setup-files/
           scripts/release-installer.sh setup-files "$TAG"
+          for suffix in squashfs verity root-hash contents.txt sbom.json; do
+            cp "downloads/room-image/room-system-x86_64.$suffix" setup-files/
+          done
           (cd setup-files && sha256sum --text -- * | sed 's/ \*/  /' > SHA256SUMS && cat SHA256SUMS)
-          [ "$(wc -l < setup-files/SHA256SUMS)" = 7 ] || { echo "expected 7 files"; exit 1; }
+          [ "$(wc -l < setup-files/SHA256SUMS)" = 12 ] || { echo "expected 12 files, including the five Room artifacts"; exit 1; }
 
       - name: Install Inno Setup
         run: choco install innosetup --version=6.7.1 --no-progress -y

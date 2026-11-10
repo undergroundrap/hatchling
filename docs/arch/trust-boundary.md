@@ -52,7 +52,11 @@ stdin and takes it out of stdio. The spawner requires a pidfd for the
 namespace helper before sending the volume and mapper. It confirms that
 process has exited before closing the mapper. If cleanup is incomplete,
 the spawner retains the handle and retries before closing or wiping the
-disk. The installer must still supply the attested record and image.
+disk. Windows Setup supplies the record and image after the owner verifies
+the exact Setup executable through GitHub's independent attestation route.
+WSL checks the bundled files against Setup's embedded manifest and publishes
+the record last. Linux installation from a separate release directory
+requires its own manifest attestation path.
 The encrypted-volume entry pins the expected ext4 root, then resolves the
 fixed workspace and inbox siblings on that same mount. Root controls the
 volume root and inbox. A symlink or nested mount cannot supply either source.
