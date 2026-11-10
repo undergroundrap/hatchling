@@ -4,6 +4,7 @@
 //! or provisions a delegation. The cell must not see the host cgroup mount.
 
 use std::fs::{self, OpenOptions};
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -143,6 +144,18 @@ impl CellCgroup {
         Ok(group)
     }
 
+    /// Creates a leaf whose tasks cannot use swap.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the leaf or any limit, including the swap limit,
+    /// cannot be configured before placement.
+    pub fn create_without_swap(parent: &Path, limits: CgroupLimits) -> Result<Self, Error> {
+        let group = Self::create(parent, limits)?;
+        write(&group.path, "memory.swap.max", "0")?;
+        Ok(group)
+    }
+
     /// The owner's diagnostic path. It is never mounted inside the cell.
     #[must_use]
     pub fn path(&self) -> &Path {
@@ -156,6 +169,32 @@ impl CellCgroup {
     /// Fails closed if delegation or a process limit prevents placement.
     pub fn place(&self, pid: i32) -> Result<(), Error> {
         write(&self.path, "cgroup.procs", &pid.to_string())
+    }
+
+    /// Places a command in this leaf before it can exec or fork descendants.
+    /// The owned leaf must stay live until the command and its descendants end.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if placement cannot be prepared. A placement failure
+    /// in the child makes `Command::spawn` fail before the program runs.
+    pub fn join_on_exec(&self, command: &mut std::process::Command) -> Result<(), Error> {
+        let procs = OpenOptions::new()
+            .write(true)
+            .open(self.path.join("cgroup.procs"))
+            .map_err(|source| failed("open cgroup.procs", &self.path, source))?;
+        // Keep the pinned fd outside the stdio slots Command may replace.
+        let procs = rustix::io::fcntl_dupfd_cloexec(procs, 3)
+            .map_err(|source| failed("pin cgroup.procs", &self.path, source.into()))?;
+        // SAFETY: the closure only writes a fixed byte through the pinned fd.
+        // Zero places the calling child without looking up a numeric PID.
+        unsafe {
+            command.pre_exec(move || match rustix::io::write(&procs, b"0")? {
+                1 => Ok(()),
+                _ => Err(std::io::Error::from_raw_os_error(libc::EIO)),
+            });
+        }
+        Ok(())
     }
 
     /// Kills all remaining tasks, waits for emptiness, and removes this leaf.
@@ -370,6 +409,39 @@ mod tests {
             let _ = self.0.kill();
             let _ = self.0.wait();
         }
+    }
+
+    #[test]
+    fn a_swapless_command_joins_before_exec_and_refuses_a_removed_leaf() {
+        let Some(parent) = test_parent() else {
+            return;
+        };
+        let mut group = CellCgroup::create_without_swap(&parent, CgroupLimits::default()).unwrap();
+        let leaf = group
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(read(group.path(), "memory.swap.max").unwrap().trim(), "0");
+        let mut command = std::process::Command::new("/bin/cat");
+        command.arg("/proc/self/cgroup");
+        group.join_on_exec(&mut command).unwrap();
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let membership = std::str::from_utf8(&output.stdout).unwrap();
+        assert!(
+            membership.trim_end().ends_with(&format!("/{leaf}")),
+            "{membership}"
+        );
+
+        let mut late = std::process::Command::new("/bin/true");
+        group.join_on_exec(&mut late).unwrap();
+        group.finish().unwrap();
+        assert!(late.status().is_err(), "a command entered a removed leaf");
+        assert!(group.join_on_exec(&mut command).is_err());
+        fs::remove_dir(parent).unwrap();
     }
 
     #[test]

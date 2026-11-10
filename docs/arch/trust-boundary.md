@@ -49,8 +49,13 @@ attested release data. It pins the image under
 `/usr/local/share/hatchling/room` and refuses admission if either input
 fails verification. The trusted helper receives the private socket as
 stdin and takes it out of stdio. The spawner requires a pidfd for the
-namespace helper before sending the volume and mapper. It confirms that
-process has exited before closing the mapper. If cleanup is incomplete,
+namespace helper before sending the volume and mapper. The launcher joins
+its own required cgroup before its first exec, so the namespace helper
+inherits the limits. The group allows 512 tasks, no swap, memory up to
+the smaller of 4 GiB and one quarter of physical memory, and CPU time
+equal to half the cores available to the spawner. Admission fails if the
+group cannot be configured or joined. The spawner confirms helper exit
+and drains the whole group before closing the mapper. If cleanup is incomplete,
 the spawner retains the handle and retries before closing or wiping the
 disk. Windows Setup supplies the record and image after the owner verifies
 the exact Setup executable through GitHub's independent attestation route.

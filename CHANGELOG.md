@@ -16,6 +16,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 gives the Room launcher its own required cgroup.** It starts with bounded memory and CPU, a 512-task limit and no swap. The spawner waits for the group to drain before removing the image mapper.
 - **WO-034 bundles the verified Room image in Windows Setup.** After independently verifying Setup, install on a prepared WSL target without downloading the image. WSL verifies the bundled files before enabling mount admission.
 
 - **WO-034 connects room mount admission to the spawner.** The spawner authenticates the open workspace, verifies the installed image against the admission record, and hands its mapper pin to a trusted child for the mount check.
