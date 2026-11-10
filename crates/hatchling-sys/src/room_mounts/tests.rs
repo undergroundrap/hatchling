@@ -98,6 +98,7 @@ fn room_root_refuses_a_real_non_squashfs_descriptor() {
 fn room_mount_plan_rejects_a_non_mount_root_before_attachment() {
     let (pipe, _write) = rustix::pipe::pipe().expect("make pipe");
     let duplicate = || pipe.try_clone().expect("clone pipe");
+    assert!(mount_verified_image(duplicate(), 0).is_err());
     assert!(matches!(
         RoomMounts::enter_with_root(
             duplicate(),

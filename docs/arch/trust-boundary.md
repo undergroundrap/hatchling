@@ -36,6 +36,11 @@ as the executable, read-only root. Other tasks must not exist before the
 root switch: a sibling could retain the previous root through `/proc`.
 The verified entry pins the mapper in that namespace and checks that the
 detached SquashFS mount belongs to its device before attaching it.
+The handoff entry receives an `O_PATH` block descriptor and its expected
+device number on the spawner's private launch socket. It checks both
+before mounting, closes the socket before entering the room, and
+checks the detached SquashFS against the same device. The spawner
+retains the mapper and owns its cleanup after the child exits.
 The encrypted-volume entry pins the expected ext4 root, then resolves the
 fixed workspace and inbox siblings on that same mount. Root controls the
 volume root and inbox. A symlink or nested mount cannot supply either source.

@@ -6,9 +6,10 @@
 //! checking blocks after activation.
 
 use std::fs::{self, File};
-use std::io::{self, Read as _};
-use std::os::fd::{AsRawFd as _, BorrowedFd, OwnedFd};
+use std::io::{self, Read as _, Write as _};
+use std::os::fd::{AsFd as _, AsRawFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::MetadataExt as _;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -176,6 +177,25 @@ impl RoomImageMapper {
         self.0.pin_device()
     }
 
+    /// Send the verified block pin to the trusted launcher over a dedicated
+    /// private socket. The spawner keeps this mapper and closes it only once
+    /// all room processes have exited.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the mapper cannot be pinned or the handoff cannot be sent.
+    /// The caller must terminate the launch on error.
+    pub fn send_to_launcher(&self, mut control: &UnixStream) -> Result<(), crate::Error> {
+        let (block, expected) = self.pin_device().map_err(handoff_error)?;
+        control
+            .set_write_timeout(Some(DEADLINE))
+            .map_err(handoff_error)?;
+        control
+            .write_all(&expected.to_le_bytes())
+            .map_err(handoff_error)?;
+        crate::net::send_fd(control.as_fd(), block.as_fd())
+    }
+
     /// The device path for the launcher's private read-only mount.
     /// The launch child must check its mounted device before entering.
     #[must_use]
@@ -200,6 +220,36 @@ impl RoomImageMapper {
     /// confirm that it is gone.
     pub fn close(&mut self) -> io::Result<()> {
         self.0.close()
+    }
+}
+
+pub(crate) fn receive_launcher_device(
+    mut control: &UnixStream,
+) -> Result<(OwnedFd, u64), crate::Error> {
+    control
+        .set_read_timeout(Some(DEADLINE))
+        .map_err(handoff_error)?;
+    let mut device = [0; 8];
+    control.read_exact(&mut device).map_err(handoff_error)?;
+    let expected = u64::from_le_bytes(device);
+    let block = crate::net::recv_fd(control.as_fd())?;
+    let stat = rustix::fs::fstat(&block).map_err(|error| handoff_error(error.into()))?;
+    let flags = rustix::fs::fcntl_getfl(&block).map_err(|error| handoff_error(error.into()))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::BlockDevice
+        || !flags.contains(OFlags::PATH)
+        || stat.st_rdev != expected
+    {
+        return Err(handoff_error(refuse(
+            "descriptor is not the pinned room block device",
+        )));
+    }
+    Ok((block, expected))
+}
+
+const fn handoff_error(source: io::Error) -> crate::Error {
+    crate::Error::Mount {
+        operation: "hand off verified room image",
+        source,
     }
 }
 
@@ -490,10 +540,56 @@ fn run_tool(
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::AsFd as _;
     use std::os::unix::fs::DirBuilderExt as _;
 
     use super::*;
+
+    #[test]
+    fn launcher_device_refuses_a_non_block_pin_with_the_claimed_identity() {
+        let (owner, launcher) = UnixStream::pair().unwrap();
+        let null = rustix::fs::open("/dev/null", OFlags::PATH, Mode::empty()).unwrap();
+        let expected = rustix::fs::fstat(&null).unwrap().st_rdev;
+        (&owner).write_all(&expected.to_le_bytes()).unwrap();
+        crate::net::send_fd(owner.as_fd(), null.as_fd()).unwrap();
+        assert!(matches!(
+            receive_launcher_device(&launcher),
+            Err(crate::Error::Mount { operation: "hand off verified room image", source })
+                if source.kind() == io::ErrorKind::PermissionDenied
+        ));
+    }
+
+    #[test]
+    fn launcher_device_refuses_an_incomplete_handoff() {
+        let (owner, launcher) = UnixStream::pair().unwrap();
+        (&owner).write_all(&[0; 7]).unwrap();
+        drop(owner);
+        assert!(matches!(
+            receive_launcher_device(&launcher),
+            Err(crate::Error::Mount { operation: "hand off verified room image", source })
+                if source.kind() == io::ErrorKind::UnexpectedEof
+        ));
+
+        let (owner, launcher) = UnixStream::pair().unwrap();
+        (&owner).write_all(&[0; 8]).unwrap();
+        drop(owner);
+        assert!(matches!(
+            receive_launcher_device(&launcher),
+            Err(crate::Error::Net {
+                operation: "receive fd",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn handoff_error_preserves_the_underlying_io_failure() {
+        let error = handoff_error(io::Error::from_raw_os_error(libc::EPIPE));
+        assert!(matches!(
+            error,
+            crate::Error::Mount { operation: "hand off verified room image", source }
+                if source.raw_os_error() == Some(libc::EPIPE)
+        ));
+    }
 
     #[test]
     fn expected_hashes_use_the_exact_lowercase_sha256_encoding() {

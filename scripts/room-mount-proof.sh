@@ -162,7 +162,11 @@ chmod 0777 "$proof/disk"
 HATCHLING_ROOM_PROOF_SOURCE_ERROR='verify room volume root ownership' run_probe verified
 chmod 0755 "$proof/disk"
 run_probe verified
+HATCHLING_ROOM_PROOF_DIRECT_ENTRY=1 run_probe verified
 test -s "$proof/verified-mapper"
 echo 'Room refused substituted sources and ran a program with its verified image and encrypted volume'
+mount --bind "$proof/disk/workspace" "$proof/substitute"
+HATCHLING_ROOM_MOUNT_MODE=handoff-owner timeout 60 "$probe"
+umount "$proof/substitute"
 echo "Room mount proof passed ($mode)"
 PROOF
