@@ -15,6 +15,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 adds the room image admission helper.** It verifies a pinned system image against the expected digest and verity root before opening a read-only kernel mapper. The installed launcher will supply those values from attested release data.
+
 - **WO-034 gives the room a mount plan.** The verified system image is read-only, the room refuses direct execution from the encrypted workspace, and each launch gets fresh 512 MiB scratch space. Production room launch follows separately.
 - **The verified room system image includes its supervisor (WO-034).** Both release builds compile the supervisor independently, record its digest, and compare the resulting images before release. Production room launch follows separately.
 - **WO-034 builds the x86_64 room system image in CI.** The release pipeline compares two independent builds and tests the read-only image through dm-verity before publishing it with a package inventory and provenance.

@@ -230,6 +230,11 @@ const REAP_GRACE: Duration = Duration::from_secs(5);
 const DROP_REAP_GRACE: Duration = Duration::from_secs(1);
 
 impl Child {
+    /// Whether this handle has already reaped its child.
+    pub(crate) fn is_reaped(&self) -> bool {
+        self.reaped.load(Ordering::SeqCst)
+    }
+
     /// Takes supervision ownership of a child pid: opens a pidfd for
     /// it.
     ///

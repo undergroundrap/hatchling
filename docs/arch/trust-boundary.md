@@ -22,6 +22,14 @@ Unix datagram socket without `bind`. The profile returns `ENOSYS` for
 `memfd_create` to prevent that route around writable mounts' `noexec` flags.
 The kernel probe installs the profile in a test process.
 
+The room image admission helper takes the expected verity root and image SHA-256
+from a trusted caller. It pins both installer-owned regular files, verifies
+the image's exact SHA-256 and verity root, and activates dm-verity with the
+same descriptors. The kernel continues checking reads through the read-only
+mapper. The spawner must keep it until the room exits and confirm removal.
+Failed startup returns a handle for cleanup only. It waits for any active
+verity helper to exit before confirming absence or retrying removal.
+
 The separate WO-034 room mount plan requires a single-threaded PID 1,
 makes its mount namespace private, and uses the verified system image
 as the executable, read-only root. Other tasks must not exist before the

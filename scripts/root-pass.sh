@@ -47,6 +47,7 @@ SUITES=(
     "-p hatchling-isolation --lib"
     "-p hatchling-sys --test locked_mount"
     "-p hatchling-sys --test process_groups"
+    "-p hatchling-sys --test room_image"
     "-p hatchling-sys --test seccomp_startup"
 )
 
