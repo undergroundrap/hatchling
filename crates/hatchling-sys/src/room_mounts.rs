@@ -51,6 +51,21 @@ pub struct RoomMounts {
 }
 
 impl RoomMounts {
+    /// Prepare the fixed room mount sources and inbox attachment point.
+    /// The spawner passes the pinned root of its authenticated encrypted
+    /// volume while it holds the disk-operation lock.
+    ///
+    /// # Errors
+    /// Refuses an untrusted volume root or inbox, links or mount crossings
+    /// at the fixed names, and any failed directory operation.
+    pub fn prepare_volume(volume: BorrowedFd<'_>) -> Result<(), Error> {
+        require_root_control(volume, "verify room volume root ownership")?;
+        let inbox = ensure_directory_at(volume, "inbox")?;
+        require_root_control(inbox.as_fd(), "verify room inbox ownership")?;
+        let workspace = ensure_directory_at(volume, "workspace")?;
+        ensure_directory_at(workspace.as_fd(), "inbox").map(drop)
+    }
+
     /// Create the room's private mount namespace in a disposable launch child.
     /// The caller must be the sole task in its new PID namespace and must not
     /// create threads or children before the root switch completes.
@@ -317,6 +332,13 @@ fn directory_at(parent: BorrowedFd<'_>, name: &str) -> Result<OwnedFd, Error> {
             .union(ResolveFlags::NO_XDEV),
     )
     .map_err(failed("pin room mount target"))
+}
+
+fn ensure_directory_at(parent: BorrowedFd<'_>, name: &str) -> Result<OwnedFd, Error> {
+    match rustix::fs::mkdirat(parent, name, Mode::from_raw_mode(0o700)) {
+        Ok(()) | Err(rustix::io::Errno::EXIST) => directory_at(parent, name),
+        Err(source) => Err(failed("create room directory")(source)),
+    }
 }
 
 fn clone_mount(source: BorrowedFd<'_>) -> Result<OwnedFd, Error> {

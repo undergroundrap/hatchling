@@ -1048,6 +1048,14 @@ fn workspace_pin_uses_the_expected_mapping_and_requires_a_mount_root() {
             .contains("mount root"),
         "an ordinary directory was treated as a mount root"
     );
+    assert!(
+        bench
+            .disk
+            .prepare_workspace(&mapping)
+            .unwrap_err()
+            .contains("mount root")
+    );
+    assert!(!bench.disk.mount_point().join("inbox").exists());
 }
 
 /// An operator's command tests a vault's key against the image: the key it

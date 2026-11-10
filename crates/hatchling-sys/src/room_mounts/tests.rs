@@ -1,6 +1,55 @@
 use super::*;
 
 #[test]
+fn prepare_volume_refuses_a_writable_parent_before_creating_children() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let parent = std::env::temp_dir().join(format!("hatchling-room-parent-{}", std::process::id()));
+    std::fs::create_dir(&parent).expect("create parent");
+    std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o770))
+        .expect("make parent writable by others");
+    let pin = std::fs::File::open(&parent).expect("pin parent");
+    let result = RoomMounts::prepare_volume(pin.as_fd());
+    let empty = parent.read_dir().expect("list parent").next().is_none();
+    std::fs::remove_dir_all(&parent).expect("remove parent");
+    assert!(matches!(
+        result,
+        Err(Error::Mount {
+            operation: "verify room volume root ownership",
+            source,
+        }) if source.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    assert!(empty);
+}
+
+#[test]
+fn ensure_directory_at_creates_once_and_refuses_non_directories() {
+    let parent = std::env::temp_dir().join(format!("hatchling-room-create-{}", std::process::id()));
+    std::fs::create_dir(&parent).expect("create parent");
+    let pin = std::fs::File::open(&parent).expect("pin parent");
+    let make = || ensure_directory_at(pin.as_fd(), "child");
+    let first = make().expect("create and pin child");
+    let second = make().expect("pin existing child");
+    assert_eq!(
+        rustix::fs::fstat(first).unwrap().st_ino,
+        rustix::fs::fstat(second).unwrap().st_ino
+    );
+    std::fs::write(parent.join("file"), "keep").expect("create file");
+    std::os::unix::fs::symlink("child", parent.join("link")).expect("create link");
+    for name in ["file", "link"] {
+        assert!(ensure_directory_at(pin.as_fd(), name).is_err());
+    }
+    assert!(matches!(
+        ensure_directory_at(pin.as_fd(), "missing/child"),
+        Err(Error::Mount {
+            operation: "create room directory",
+            ..
+        })
+    ));
+    std::fs::remove_dir_all(&parent).expect("remove parent");
+}
+
+#[test]
 fn encrypted_sources_refuse_a_path_that_is_not_a_volume_root() {
     assert!(pin_encrypted_sources(Path::new("/proc/self"), "0:0").is_err());
 }

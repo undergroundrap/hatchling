@@ -442,6 +442,12 @@ impl RoomDisk {
             .map_err(|error| error.to_string())
     }
 
+    fn prepare_workspace(&self, mapping: &Path) -> Result<(), String> {
+        let volume = self.pin_workspace(mapping)?;
+        hatchling_sys::room_mounts::RoomMounts::prepare_volume(volume.as_fd())
+            .map_err(|error| format!("the room directories can't be prepared: {error}"))
+    }
+
     /// The mount point, made if absent, and whether it's mounted on: it
     /// must be a private directory of a trusted user's, and empty when it
     /// isn't mounted on.
@@ -848,7 +854,7 @@ impl RoomDisk {
         let mount = self.mount_point();
         if self.mount_point_mounted()? {
             if let Some(mapping) = mapped {
-                return self.pin_workspace(&mapping).map(drop);
+                return self.prepare_workspace(&mapping);
             }
             return Err(String::from(
                 "something else is mounted at the room disk's mount point",
@@ -873,9 +879,9 @@ impl RoomDisk {
             .and_then(|mapping| {
                 mapping.ok_or_else(|| String::from("the room disk's mapping went away"))
             })
-            .and_then(|mapping| self.pin_workspace(&mapping));
+            .and_then(|mapping| self.prepare_workspace(&mapping));
         match verified {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(reason) => {
                 if hatchling_sys::unmount_strict(&mount).is_ok() {
                     let _ = self.close_mapping(&name);
@@ -1391,10 +1397,10 @@ pub(crate) fn open_at_start(spawner: Option<&crate::spawner::Spawner>) -> AtStar
             return off(reason);
         }
     }
-    if state != RoomDiskState::Open {
-        if let Err(reason) = spawner.room_disk(RoomDiskOp::Open) {
-            return off(reason);
-        }
+    // Status describes the mount, including one a busy stale close left
+    // behind. Open must still validate and prepare the room layout.
+    if let Err(reason) = spawner.room_disk(RoomDiskOp::Open) {
+        return off(reason);
     }
     tracing::info!(made, "the room disk is open");
     if made { AtStart::Made } else { AtStart::Opened }

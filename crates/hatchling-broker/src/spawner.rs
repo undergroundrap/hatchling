@@ -2068,6 +2068,60 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         );
     }
 
+    #[test]
+    fn startup_asks_the_spawner_to_open_even_a_mounted_room_disk() {
+        use crate::room_disk::{AtStart, RoomDiskOp, RoomDiskState, RoomDiskStatus, open_at_start};
+
+        let reason = "unsafe room layout";
+        for (reply, expected) in [
+            (Reply::Done, AtStart::Opened),
+            (
+                Reply::Refused {
+                    reason: reason.into(),
+                },
+                AtStart::Off(reason.into()),
+            ),
+        ] {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            theirs
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let served = std::thread::spawn(move || {
+                for (op, reply) in [
+                    (
+                        RoomDiskOp::Status,
+                        Reply::RoomDisk {
+                            status: RoomDiskStatus {
+                                state: RoomDiskState::Open,
+                                cap: 64 * 1024 * 1024,
+                                image_bytes: None,
+                                on_disk: None,
+                                used: None,
+                                free: None,
+                                host_free: None,
+                            },
+                        },
+                    ),
+                    (RoomDiskOp::Open, reply),
+                ] {
+                    let peer =
+                        UnixStream::from(hatchling_sys::net::recv_fd(theirs.as_fd()).unwrap());
+                    peer.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                    let frame = read_frame_or_eof(&peer).unwrap().unwrap();
+                    assert!(
+                        matches!(serde_json::from_slice(&frame), Ok(Request::RoomDisk { op: actual }) if actual == op)
+                    );
+                    send(&peer, &reply).unwrap();
+                }
+            });
+            let spawner = Spawner::over(ours);
+            let result = open_at_start(Some(&spawner));
+            drop(spawner);
+            assert_eq!(result, expected);
+            served.join().unwrap();
+        }
+    }
+
     /// The paths of a broker with nothing configured: only its run
     /// directories.
     fn paths() -> Paths {

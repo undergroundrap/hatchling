@@ -15,6 +15,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 prepares room directories when the encrypted disk opens.** The spawner creates missing workspace and inbox directories on the verified disk and refuses substituted paths.
 - **WO-034 adds the room image admission helper.** It verifies a pinned system image against the expected digest and verity root before opening a read-only kernel mapper. The installed launcher will supply those values from attested release data.
 - **WO-034 binds the room root to its verified device.** The room mount entry point checks the mounted filesystem against the authenticated mapper before entering the room.
 - **WO-034 binds the workspace and inbox to the encrypted volume.** The room mount entry point checks both sources before exposing them inside the room.
