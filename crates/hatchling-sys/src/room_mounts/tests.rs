@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn workspace_access_accepts_only_private_or_assigned_root_directories() {
+    assert!(validate_workspace_access(0, 0, 0o40700, 982).is_ok());
+    assert!(validate_workspace_access(0, 982, 0o41770, 982).is_ok());
+    for (uid, gid, mode, room_gid) in [
+        (982, 0, 0o40700, 982),
+        (0, 0, 0o40700, 0),
+        (0, 0, 0o40700, u32::MAX),
+        (0, 982, 0o40770, 982),
+        (0, 982, 0o41777, 982),
+        (0, 983, 0o41770, 982),
+    ] {
+        assert!(validate_workspace_access(uid, gid, mode, room_gid).is_err());
+    }
+}
+
+#[test]
+fn workspace_write_grant_refuses_a_non_directory_descriptor() {
+    let (pipe, _write) = rustix::pipe::pipe().expect("create non-directory fixture");
+    assert!(grant_workspace_write(pipe.as_fd(), 982).is_err());
+}
+
+#[test]
 fn prepare_volume_refuses_a_writable_parent_before_creating_children() {
     use std::os::unix::fs::PermissionsExt as _;
 

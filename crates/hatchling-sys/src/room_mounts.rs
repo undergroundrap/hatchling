@@ -28,6 +28,7 @@ const DEVICE: MountAttrFlags = MountAttrFlags::MOUNT_ATTR_NOEXEC
     .union(MountAttrFlags::MOUNT_ATTR_NOSUID)
     .union(MountAttrFlags::MOUNT_ATTR_RDONLY);
 const SESSION_BYTES: &str = "536870912";
+const WORKSPACE_MODE: u32 = 0o1770;
 // Linux UAPI <linux/magic.h>.
 const SQUASHFS_MAGIC: rustix::fs::FsWord = 0x7371_7368;
 
@@ -178,6 +179,11 @@ impl RoomMounts {
     /// socket. The launch child checks the pin and reauthenticates the data
     /// sources under the same contract as [`Self::enter_verified_volume`].
     /// The spawner retains the mapper and must drain the room before closing it.
+    /// The workspace starts root-private or already assigned to `gid`.
+    /// After authenticating both sources, the launcher grants the dedicated
+    /// room group write access while keeping the workspace and its inbox
+    /// attachment point root-owned. The caller must validate the room group
+    /// and exclude other writers throughout admission.
     ///
     /// # Errors
     ///
@@ -196,6 +202,7 @@ impl RoomMounts {
         drop(control);
         let (workspace, inbox) = pin_encrypted_sources(volume, device)?;
         let root = mount_verified_image(block, expected_device)?;
+        grant_workspace_write(workspace.as_fd(), gid)?;
         Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
     }
 
@@ -302,6 +309,57 @@ fn require_root_control(directory: BorrowedFd<'_>, operation: &'static str) -> R
         return Err(refused(operation, "directory must be controlled by root"));
     }
     Ok(())
+}
+
+fn grant_workspace_write(workspace: BorrowedFd<'_>, gid: u32) -> Result<(), Error> {
+    const OPERATION: &str = "grant room workspace write access";
+    let directory = rustix::fs::openat(
+        workspace,
+        ".",
+        OFlags::RDONLY
+            .union(OFlags::DIRECTORY)
+            .union(OFlags::CLOEXEC),
+        Mode::empty(),
+    )
+    .map_err(failed(OPERATION))?;
+    let stat = rustix::fs::fstat(&directory).map_err(failed(OPERATION))?;
+    validate_workspace_access(stat.st_uid, stat.st_gid, stat.st_mode, gid)?;
+
+    // A named access ACL can give a different principal write access when
+    // chmod expands its mask. Accept the workspace's mode bits alone.
+    match rustix::fs::fgetxattr(&directory, "system.posix_acl_access", &mut []) {
+        Err(rustix::io::Errno::NODATA) => (),
+        Ok(_) => return Err(refused(OPERATION, "workspace has a POSIX access ACL")),
+        Err(source) => return Err(failed(OPERATION)(source)),
+    }
+
+    let anchor = directory_at(directory.as_fd(), "inbox")?;
+    require_root_control(anchor.as_fd(), "verify room inbox attachment ownership")?;
+    if stat.st_mode & 0o7777 == WORKSPACE_MODE {
+        return Ok(());
+    }
+
+    // The sticky, root-owned parent prevents the Room from replacing the
+    // root-owned inbox attachment. Its group can create and manage its files.
+    // Set the group while a legacy directory is still private. A failed chmod
+    // leaves it private and the next launch can retry.
+    let (_, group) = crate::ownership::ids(0, gid);
+    rustix::fs::fchown(&directory, None, Some(group)).map_err(failed(OPERATION))?;
+    rustix::fs::fchmod(&directory, Mode::from_raw_mode(WORKSPACE_MODE)).map_err(failed(OPERATION))
+}
+
+fn validate_workspace_access(uid: u32, gid: u32, mode: u32, room_gid: u32) -> Result<(), Error> {
+    let permissions = mode & 0o7777;
+    if uid == 0
+        && ![0, u32::MAX].contains(&room_gid)
+        && (permissions == 0o700 || (permissions == WORKSPACE_MODE && gid == room_gid))
+    {
+        return Ok(());
+    }
+    Err(refused(
+        "grant room workspace write access",
+        "workspace must be root-private or assigned to the dedicated room group",
+    ))
 }
 
 fn verify_image_mount(root: BorrowedFd<'_>, expected_device: u64) -> Result<(), Error> {

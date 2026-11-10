@@ -165,6 +165,9 @@ run_probe verified
 HATCHLING_ROOM_PROOF_DIRECT_ENTRY=1 run_probe verified
 test -s "$proof/verified-mapper"
 echo 'Room refused substituted sources and ran a program with its verified image and encrypted volume'
+# The installed handoff starts from the root-private layout of existing disks.
+chown 0:0 "$proof/disk/workspace"
+chmod 0700 "$proof/disk/workspace"
 mount --bind "$proof/disk/workspace" "$proof/substitute"
 HATCHLING_ROOM_MOUNT_MODE=handoff-owner timeout 60 "$probe"
 umount "$proof/substitute"

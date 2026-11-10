@@ -631,11 +631,17 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
     let groups_before = group(Path::new(&delegation))?;
     if mode == 0 {
         check_supervisor_identity_refusals(&spawner.0, gid, &before)?;
+        check_workspace_refusals(
+            &spawner.0,
+            &place.disk.mount_point().join("workspace"),
+            &before,
+        )?;
     }
     let started = std::time::Instant::now();
     let admission = spawner.0.check_room_mount();
     if mode == 0 {
         admission?;
+        check_workspace_persists(&spawner.0, &place, gid)?;
     } else {
         let reason = admission
             .err()
@@ -654,6 +660,83 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
     assert_eq!(group(Path::new(&delegation))?, groups_before);
     spawner.0.room_disk(RoomDiskOp::Close)?;
     assert!(!place.mapped());
+    Ok(())
+}
+
+fn check_workspace_refusals(
+    spawner: &Spawner,
+    workspace: &Path,
+    before: &std::collections::BTreeSet<String>,
+) -> Result<(), Failed> {
+    let anchor = workspace.join("inbox");
+    // A masked named entry must not acquire write access when admission
+    // widens the mode. Encode a Linux POSIX ACL with its mask set to zero.
+    let mut acl = 2_u32.to_le_bytes().to_vec();
+    for (tag, permissions, id) in [
+        (1_u16, 7_u16, u32::MAX),
+        (2, 7, 4242),
+        (4, 0, u32::MAX),
+        (16, 0, u32::MAX),
+        (32, 0, u32::MAX),
+    ] {
+        acl.extend(tag.to_le_bytes());
+        acl.extend(permissions.to_le_bytes());
+        acl.extend(id.to_le_bytes());
+    }
+    rustix::fs::setxattr(
+        workspace,
+        "system.posix_acl_access",
+        &acl,
+        rustix::fs::XattrFlags::empty(),
+    )?;
+    let refusal = spawner
+        .check_room_mount()
+        .err()
+        .ok_or("accepted a workspace ACL")?;
+    assert!(refusal.contains("room mount helper failed"), "{refusal}");
+    assert_eq!(std::fs::metadata(workspace)?.mode() & 0o7777, 0o700);
+    assert_eq!(&mapper_names()?, before);
+    rustix::fs::removexattr(workspace, "system.posix_acl_access")?;
+
+    std::fs::set_permissions(&anchor, std::fs::Permissions::from_mode(0o770))?;
+    let refusal = spawner
+        .check_room_mount()
+        .err()
+        .ok_or("accepted a writable inbox attachment")?;
+    assert!(refusal.contains("room mount helper failed"), "{refusal}");
+    assert_eq!(std::fs::metadata(workspace)?.mode() & 0o7777, 0o700);
+    assert_eq!(&mapper_names()?, before);
+    std::fs::set_permissions(&anchor, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::write(workspace.join("root-owned-marker"), b"protected")?;
+    Ok(())
+}
+
+fn check_workspace_persists(spawner: &Spawner, place: &Place, gid: u32) -> Result<(), Failed> {
+    let workspace = place.disk.mount_point().join("workspace");
+    let marker = workspace.join("admission-marker");
+    let permissions = std::fs::metadata(&workspace)?;
+    assert_eq!(
+        (
+            permissions.uid(),
+            permissions.gid(),
+            permissions.mode() & 0o7777
+        ),
+        (0, gid, 0o1770)
+    );
+    assert_eq!(std::fs::metadata(workspace.join("inbox"))?.uid(), 0);
+    let workspace_ctime = (permissions.ctime(), permissions.ctime_nsec());
+    assert_eq!(std::fs::read(&marker)?, b"first");
+    spawner.room_disk(RoomDiskOp::Close)?;
+    assert!(!place.mapped());
+    spawner.room_disk(RoomDiskOp::Open)?;
+    spawner.check_room_mount()?;
+    assert_eq!(std::fs::read(&marker)?, b"firstsecond");
+    assert_eq!(
+        std::fs::read(workspace.join("root-owned-marker"))?,
+        b"protected"
+    );
+    let reopened = std::fs::metadata(&workspace)?;
+    assert_eq!((reopened.ctime(), reopened.ctime_nsec()), workspace_ctime);
     Ok(())
 }
 
