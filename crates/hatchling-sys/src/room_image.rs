@@ -487,7 +487,9 @@ mod tests {
 
     #[test]
     fn expected_hashes_use_the_exact_lowercase_sha256_encoding() {
-        assert!(valid_digest(&"a0".repeat(32)));
+        // The input below is /dev/null, so its digest is the SHA-256 of empty data.
+        let valid = format!("{:x}", Sha256::digest([]));
+        assert!(valid_digest(&valid));
         for refused in [
             "a".repeat(63),
             "a".repeat(65),
@@ -496,8 +498,8 @@ mod tests {
         ] {
             assert!(!valid_digest(&refused));
         }
-        let valid = "a".repeat(64);
-        for (root, digest) in [("x", valid.as_str()), (valid.as_str(), "x")] {
+        let malformed = valid.get(..63).unwrap();
+        for (root, digest) in [(malformed, valid.as_str()), (valid.as_str(), malformed)] {
             let pinned = PinnedRoomImage {
                 image: File::open("/dev/null").unwrap().into(),
                 tree: File::open("/dev/null").unwrap().into(),
