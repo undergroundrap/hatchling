@@ -1081,6 +1081,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     "Concealed": {
         "type": "string"
     },
+    "ConfirmationClosure": {
+        "oneOf": [
+            {
+                "const": "expired",
+                "type": "string"
+            },
+            {
+                "const": "withdrawn",
+                "type": "string"
+            }
+        ]
+    },
     "ConfirmationField": {
         "properties": {
             "label": {
@@ -5276,6 +5288,31 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "confirmation_id",
                     "revision",
                     "decision"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "confirmation_id": {
+                        "type": "string"
+                    },
+                    "kind": {
+                        "const": "confirmation_closed",
+                        "type": "string"
+                    },
+                    "reason": {
+                        "$ref": "#/$defs/ConfirmationClosure"
+                    },
+                    "revision": {
+                        "minimum": 0,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "kind",
+                    "confirmation_id",
+                    "revision",
+                    "reason"
                 ],
                 "type": "object"
             },

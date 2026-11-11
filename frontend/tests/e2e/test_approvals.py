@@ -159,6 +159,21 @@ class ApprovalTests(unittest.TestCase):
         expect(self.page.locator('.task-approval-record')).to_contain_text('Allowed once')
         expect(self.page.locator('.task-approval-card')).to_have_count(0)
 
+    def test_08b_answer_to_a_lapsed_request_says_nothing_was_decided(self):
+        self.scenario('lapsed')
+        self.page.locator('[id^="approval-deny-"]').click()
+        expect(self.page.locator('.task-approval-card')).to_have_count(0)
+        notice = self.page.locator('.task-approval-notice')
+        expect(notice).to_contain_text('Answer not taken')
+        expect(notice).to_contain_text('nothing was decided')
+        expect(notice).to_contain_text('expired before the decision arrived')
+        expect(notice).to_contain_text('Nothing will be done for it')
+        expect(self.page.locator('.task-approval-record')).to_contain_text('Timed out')
+        self.capture('09b-lapsed-answer')
+        self.assert_no_overflow()
+        notice.get_by_role('button', name='Dismiss', exact=True).click()
+        expect(self.page.locator('.task-approval-notice')).to_have_count(0)
+
     def test_08_expired_request_has_history_but_no_active_decision_buttons(self):
         self.scenario('expired')
         expect(self.page.locator('.task-approval-card')).to_have_count(0)

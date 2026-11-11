@@ -2540,6 +2540,21 @@
       "description": "A secret the user types into the app for the broker to keep (WO-030):\na site's username or password. It travels as a plain string and is\nnever shown: its `Debug` hides it, and it's wiped when dropped.",
       "type": "string"
     },
+    "ConfirmationClosure": {
+      "description": "Why a confirmation stopped waiting without the owner's decision.",
+      "oneOf": [
+        {
+          "const": "expired",
+          "description": "The owner didn't decide in time.",
+          "type": "string"
+        },
+        {
+          "const": "withdrawn",
+          "description": "The broker took it back: nothing is left to act on an answer.",
+          "type": "string"
+        }
+      ]
+    },
     "ConfirmationField": {
       "description": "One field of what a confirmation asks.",
       "properties": {
@@ -12296,6 +12311,36 @@
             "confirmation_id",
             "revision",
             "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A confirmation stopped waiting without a decision. Nothing can be\ndecided on it any more, and it is never presented as waiting again.",
+          "properties": {
+            "confirmation_id": {
+              "description": "The confirmation closed.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "confirmation_closed",
+              "type": "string"
+            },
+            "reason": {
+              "$ref": "#/$defs/ConfirmationClosure",
+              "description": "Why it stopped waiting."
+            },
+            "revision": {
+              "description": "The revision that was waiting.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "confirmation_id",
+            "revision",
+            "reason"
           ],
           "type": "object"
         },

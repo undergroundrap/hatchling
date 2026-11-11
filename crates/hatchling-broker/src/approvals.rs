@@ -20,11 +20,16 @@
 //!   before its outcome is recorded leaves the request `outcome_unknown`,
 //!   never to be run again: whether its effect happened isn't known.
 //! - **Asking is bounded.** At most [`MAX_PENDING`] requests wait, one per
-//!   task, each for [`DECIDE_SECS`], and at most [`MAX_REQUESTS_PER_HOUR`]
-//!   are made in an hour. An identical pending proposal gets the request
-//!   that's already waiting. A task's waiting requests are withdrawn when
-//!   its session ends ([`Approvals::withdraw_task`]), so one that's gone
-//!   holds no place.
+//!   task, each for as long as its proposal says ([`DECIDE_SECS`] while a
+//!   session waits on the answer, [`UNWAITED_DECIDE_SECS`] when nothing
+//!   does), and at most [`MAX_REQUESTS_PER_HOUR`] are made in an hour. An
+//!   identical pending proposal gets the request that's already waiting. A
+//!   task's waiting requests are withdrawn when its session ends
+//!   ([`Approvals::withdraw_task`]), so one that's gone holds no place.
+//! - **A request that stops waiting says so.** One that lapses or is
+//!   withdrawn while it waited for the owner is kept for whoever shows
+//!   requests to the owner ([`Approvals::take_closed`]): the owner is never
+//!   left looking at a request nothing can be decided on.
 //! - **A denial sticks.** Its fingerprint (the effect, without request ids,
 //!   timestamps or a rationale) is refused for the broker's life, however
 //!   it's worded and from whichever cell, and the task it denied waits out
@@ -39,15 +44,19 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use hatchling_core::action::{self, CanonicalError};
-use hatchling_core::ui::{Decision, DecisionRejection};
+use hatchling_core::ui::{ConfirmationClosure, Decision, DecisionRejection};
 use serde_json::Value;
 
 /// Most requests waiting for the owner at once.
 pub const MAX_PENDING: usize = 5;
 /// Most requests one task has waiting at once.
 pub const MAX_PENDING_PER_TASK: usize = 1;
-/// How long the owner has to decide, in seconds.
+/// How long the owner has to decide while a session waits on the answer,
+/// in seconds.
 pub const DECIDE_SECS: i64 = 15 * 60;
+/// How long the owner has to decide on what nothing waits for, in seconds:
+/// something the broker's worker does once it's approved, whenever that is.
+pub const UNWAITED_DECIDE_SECS: i64 = 24 * 60 * 60;
 /// Most requests made in any hour.
 pub const MAX_REQUESTS_PER_HOUR: usize = 20;
 /// How long a task waits after a denial of its own, in seconds.
@@ -70,11 +79,24 @@ pub struct Proposal<A> {
     pub fingerprint: Value,
     /// The task that proposed it, as the broker knows it.
     pub task: String,
+    /// How long the owner has to decide, in seconds.
+    pub decide_secs: i64,
     /// Whether the owner may approve it for the rest of the session
     /// ([`Decision::ApproveSession`]) as well as once.
     pub session: bool,
     /// Whether the owner may approve it always ([`Decision::ApproveAlways`]).
     pub always: bool,
+}
+
+/// A request that stopped waiting for the owner without their decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Closed {
+    /// The request's id.
+    pub id: String,
+    /// The revision that was waiting.
+    pub revision: u64,
+    /// Why it stopped waiting.
+    pub why: ConfirmationClosure,
 }
 
 /// Where a request is.
@@ -183,6 +205,8 @@ struct Ledger<A> {
     /// Until when each task denied is paused.
     paused: BTreeMap<String, i64>,
     made: VecDeque<i64>,
+    /// Requests that stopped waiting without a decision, not yet told.
+    closed: Vec<Closed>,
 }
 
 impl<A: Clone> Default for Approvals<A> {
@@ -202,6 +226,7 @@ impl<A: Clone> Approvals<A> {
                 denied: BTreeSet::new(),
                 paused: BTreeMap::new(),
                 made: VecDeque::new(),
+                closed: Vec::new(),
             }),
         }
     }
@@ -238,6 +263,19 @@ impl<A: Clone> Approvals<A> {
         now: i64,
     ) -> Result<State, DecisionRejection> {
         self.ledger().decide(id, revision, digest, decision, now)
+    }
+
+    /// Lapses every waiting request whose time is up at `now`. Proposing
+    /// and deciding do it too; this is for when nothing else is asked.
+    pub fn lapse(&self, now: i64) {
+        self.ledger().expire(now);
+    }
+
+    /// The requests that stopped waiting for the owner without a decision
+    /// since this was last asked, each given once.
+    #[must_use]
+    pub fn take_closed(&self) -> Vec<Closed> {
+        std::mem::take(&mut self.ledger().closed)
     }
 
     /// Claims approved request `id` for its one run: the action to run,
@@ -379,7 +417,7 @@ impl<A: Clone> Ledger<A> {
             return Err(Refusal::Paused);
         }
         let id = crate::approval::random_hex(REQUEST_PREFIX).map_err(|_| Refusal::Entropy)?;
-        let expires_at = now.saturating_add(DECIDE_SECS);
+        let expires_at = now.saturating_add(proposal.decide_secs);
         ledger.made.push_back(now);
         ledger.requests.insert(
             id.clone(),
@@ -491,6 +529,15 @@ impl<A: Clone> Ledger<A> {
         if !matches!(request.state, State::Pending | State::Approved) {
             return false;
         }
+        // Only a request the owner was still being asked about is one
+        // they need telling of: an approved one already has its answer.
+        if request.state == State::Pending {
+            self.closed.push(Closed {
+                id: request.id.clone(),
+                revision: request.revision,
+                why: ConfirmationClosure::Withdrawn,
+            });
+        }
         request.state = State::Withdrawn;
         self.keep_decided(id);
         true
@@ -507,6 +554,11 @@ impl<A: Clone> Ledger<A> {
         for id in lapsed {
             if let Some(request) = self.requests.get_mut(&id) {
                 request.state = State::Expired;
+                self.closed.push(Closed {
+                    id: request.id.clone(),
+                    revision: request.revision,
+                    why: ConfirmationClosure::Expired,
+                });
             }
             self.keep_decided(&id);
         }
@@ -574,6 +626,7 @@ mod tests {
             action: json!({ "op": "activate", "effect": effect, "task": task }),
             fingerprint: json!({ "op": "activate", "effect": effect }),
             task: task.to_owned(),
+            decide_secs: DECIDE_SECS,
             session: false,
             always: false,
         }
@@ -804,6 +857,100 @@ mod tests {
                 .propose(proposal("two", "t1"), 10 + DENIAL_COOLDOWN_SECS)
                 .unwrap()
                 .new
+        );
+    }
+
+    /// A request that stops waiting for the owner without their decision,
+    /// by lapsing or by being withdrawn, is told once to whoever shows the
+    /// owner requests. One the owner decided isn't, and neither is one
+    /// withdrawn after they approved it: they have their answer.
+    #[test]
+    fn a_request_that_lapses_or_is_withdrawn_is_told_once() {
+        let ledger = Approvals::new();
+        assert!(ledger.take_closed().is_empty());
+        let lapsing = ledger.propose(proposal("one", "t1"), 0).unwrap();
+        let withdrawn = ledger.propose(proposal("two", "t2"), 0).unwrap();
+        let approved = ledger.propose(proposal("three", "t3"), 0).unwrap();
+        let denied = ledger.propose(proposal("four", "t4"), 0).unwrap();
+        assert_eq!(approve(&ledger, &approved, 1), Ok(State::Approved));
+        assert_eq!(
+            ledger.decide(&denied.id, 1, &denied.digest, Decision::Deny, 1),
+            Ok(State::Denied)
+        );
+        assert!(ledger.withdraw(&approved.id), "approved but unclaimed");
+        assert!(
+            ledger.take_closed().is_empty(),
+            "a decided request was told as closed"
+        );
+        assert!(ledger.withdraw(&withdrawn.id));
+        ledger.lapse(DECIDE_SECS - 1);
+        assert_eq!(
+            ledger.take_closed(),
+            [Closed {
+                id: withdrawn.id,
+                revision: 1,
+                why: ConfirmationClosure::Withdrawn,
+            }]
+        );
+        ledger.lapse(DECIDE_SECS);
+        assert_eq!(ledger.get(&lapsing.id).unwrap().state, State::Expired);
+        assert_eq!(
+            ledger.take_closed(),
+            [Closed {
+                id: lapsing.id,
+                revision: 1,
+                why: ConfirmationClosure::Expired,
+            }]
+        );
+        ledger.lapse(DECIDE_SECS + 1);
+        assert!(ledger.take_closed().is_empty(), "told twice");
+    }
+
+    /// The owner has as long as the proposal says: a quarter of an hour
+    /// while a session waits on the answer, a day when nothing does. A
+    /// decision that comes later is refused as expired, and its request is
+    /// told as closed.
+    #[test]
+    fn a_request_waits_for_as_long_as_its_proposal_says() {
+        assert_eq!(DECIDE_SECS, 15 * 60);
+        assert_eq!(UNWAITED_DECIDE_SECS, 24 * 60 * 60);
+        let unwaited = |effect: &str, task: &str| Proposal {
+            decide_secs: UNWAITED_DECIDE_SECS,
+            ..proposal(effect, task)
+        };
+        let ledger = Approvals::new();
+        let waited = ledger.propose(proposal("one", "t1"), 100).unwrap();
+        let kept = ledger.propose(unwaited("two", "t2"), 100).unwrap();
+        let late = ledger.propose(unwaited("three", "t3"), 100).unwrap();
+        assert_eq!(waited.expires_at, 100 + DECIDE_SECS);
+        assert_eq!(kept.expires_at, 100 + UNWAITED_DECIDE_SECS);
+        assert_eq!(
+            approve(&ledger, &waited, 100 + DECIDE_SECS),
+            Err(DecisionRejection::Expired)
+        );
+        assert_eq!(
+            ledger.take_closed(),
+            [Closed {
+                id: waited.id,
+                revision: 1,
+                why: ConfirmationClosure::Expired,
+            }],
+            "a decision that came too late left its request untold"
+        );
+        assert_eq!(
+            ledger.decide(
+                &kept.id,
+                1,
+                &kept.digest,
+                Decision::Deny,
+                100 + UNWAITED_DECIDE_SECS - 1
+            ),
+            Ok(State::Denied),
+            "a day wasn't given"
+        );
+        assert_eq!(
+            approve(&ledger, &late, 100 + UNWAITED_DECIDE_SECS),
+            Err(DecisionRejection::Expired)
         );
     }
 

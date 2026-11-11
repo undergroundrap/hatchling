@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { LiveAdapter } from '../../dist/app/adapters/live/adapter.js';
+import { expiryWords } from '../../dist/app/adapters/live/approvals.js';
 import { LiveClient } from '../../dist/app/adapters/live/client.js';
 import { HOSTILE_TEXT, SAMPLE_EVENTS, SAMPLE_RUN, SAMPLE_WELCOME, sampleActivity, sampleEvent, sampleTime } from '../../dist/app/adapters/live/fixtures.js';
 import { conforms } from '../../dist/app/adapters/live/protocol/conform.js';
@@ -634,7 +635,7 @@ test('confirmation UI: typed approve and deny, through the existing approval rev
     const [card] = adapter.taskApprovals.getSnapshot();
     assert.deepEqual(card, {
         id: 'confirm-1', revision: 2, chatId: 'main', threadId: '', kind: 'tool', title: 'Hatchling asks before it continues',
-        description: 'Post the shorter sample summary to the sample team space?', resource: 'This request expires at 09:10 UTC.',
+        description: 'Post the shorter sample summary to the sample team space?', resource: 'This request waits for your answer until 09:10.',
         detail: 'Allow once answers this request as described, and only this version of it. Your answer is recorded once.',
         scopes: ['once'], status: 'pending', time: '09:00', report: ['Operation: Post a summary', 'From the agent, Text: The shorter sample summary.'].join(String.fromCharCode(10)), fields: [{ label: 'Operation', value: 'Post a summary', source: 'broker' }, { label: 'Text', value: 'The shorter sample summary.', source: 'agent' }],
     });
@@ -925,6 +926,67 @@ test('the broker\'s answers to a decision map to what the person sees', async ()
         }
     }
 });
+test('a request the broker closes leaves the queue for good, and says how it ended', async () => {
+    const closedEvent = (seq, reason) => sampleEvent(seq, seq, { kind: 'confirmation_closed', confirmation_id: 'confirm-1', revision: 1, reason });
+    const decides = transport => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'decide');
+    for (const [reason, status] of [['expired', 'expired'], ['withdrawn', 'cancelled']]) {
+        const { transport, adapter } = connected();
+        transport.deliver(confirmation(1, 1));
+        assert.equal(adapter.taskApprovals.getSnapshot()[0].status, 'pending');
+        transport.deliver(closedEvent(2, reason));
+        assert.equal(adapter.taskApprovals.getSnapshot()[0].status, status);
+        // An answer to it is never sent: the person is told it is no longer waiting.
+        const late = await adapter.taskApprovals.respond({ id: 'late', requestId: 'confirm-1', revision: 1, decision: 'deny' });
+        assert.equal(late.state, 'rejected');
+        assert.match(late.detail, /no longer waiting/);
+        assert.deepEqual(decides(transport), []);
+        // Its request replayed after is not a new question.
+        transport.deliver(confirmation(3, 2));
+        assert.equal(adapter.taskApprovals.getSnapshot()[0].status, status);
+    }
+    // A fresh page replaying the stream ends in the same place: it is not waiting again.
+    const fresh = connected();
+    fresh.transport.deliver(confirmation(1, 1));
+    fresh.transport.deliver(closedEvent(2, 'expired'));
+    assert.deepEqual(fresh.adapter.taskApprovals.getSnapshot().map(item => item.status), ['expired']);
+});
+test('an answer to a request the broker closed under it is told as undecided, whichever word arrives first', async () => {
+    const closedEvent = sampleEvent(2, 2, { kind: 'confirmation_closed', confirmation_id: 'confirm-1', revision: 1, reason: 'expired' });
+    for (const eventFirst of [true, false]) {
+        const { transport, adapter } = connected();
+        transport.deliver(confirmation(1, 1));
+        const review = new ApprovalReview(adapter.taskApprovals, () => { }, 60000);
+        const [card] = adapter.taskApprovals.getSnapshot();
+        const answering = review.respond(card, 'deny');
+        await flush();
+        const sent = transport.last();
+        assert.equal(sent.action.decision, 'deny');
+        if (eventFirst)
+            transport.deliver(closedEvent);
+        answer(transport, sent.request_id, { result: 'decision_rejected', confirmation_id: 'confirm-1', reason: 'expired' });
+        if (!eventFirst)
+            transport.deliver(closedEvent);
+        await answering;
+        assert.equal(review.pending('main').length, 0, 'the request left the queue');
+        assert.deepEqual(review.notices('main').map(item => item.detail), ['This request expired before the decision arrived, so nothing was decided.']);
+        assert.equal(adapter.taskApprovals.getSnapshot()[0].status, 'expired');
+        review.dispose();
+    }
+});
+test('a request says until when it waits, in the words of the day it was offered', () => {
+    assert.equal(expiryWords('2026-10-07T09:10:00Z', '2026-10-07T09:00:00Z'), '09:10');
+    assert.equal(expiryWords('2026-10-08T09:00:00Z', '2026-10-07T09:00:00Z'), 'tomorrow at 09:00');
+    assert.equal(expiryWords('2026-10-09T09:05:00Z', '2026-10-07T09:00:00Z'), '2026-10-09 at 09:05');
+    assert.equal(expiryWords('2026-10-07T09:10:00Z', 'no time'), '09:10', 'an offer with no time is read as the same day');
+    const card = body => {
+        const { transport, adapter } = connected();
+        transport.deliver(sampleEvent(1, 0, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Remember this about you?', digest: 'digest-1', fields: [], ...body }));
+        return adapter.taskApprovals.getSnapshot()[0].resource;
+    };
+    assert.equal(card({ expires_at: sampleTime(24 * 60 * 60) }), 'This request waits for your answer until tomorrow at 09:00.');
+    assert.equal(card({ expires_at: 'never' }), 'This request does not expire.', 'a time that cannot be read is not shown');
+    assert.equal(card({ expires_at: null }), 'This request does not expire.');
+});
 test('approvals reconcile without resending, and an older revision never replaces a newer one', async () => {
     const { transport, adapter } = connected();
     transport.deliver(confirmation(1, 2));
@@ -932,7 +994,8 @@ test('approvals reconcile without resending, and an older revision never replace
     assert.equal(adapter.taskApprovals.getSnapshot()[0].revision, 2);
     // A confirmation that names no chat belongs to the main one.
     transport.deliver(sampleEvent(3, 3, { kind: 'confirmation', confirmation_id: 'confirm-2', revision: 1, summary: 'A general question.', digest: 'digest-q', fields: [] }));
-    assert.deepEqual(adapter.taskApprovals.getSnapshot().map(item => [item.id, item.chatId]), [['confirm-1', 'main'], ['confirm-2', 'main']]);
+    // The newest leads.
+    assert.deepEqual(adapter.taskApprovals.getSnapshot().map(item => [item.id, item.chatId]), [['confirm-2', 'main'], ['confirm-1', 'main']]);
     await adapter.taskApprovals.refresh('confirm-1');
     assert.deepEqual(transport.last(), { type: 'subscribe', after_seq: 3 });
     transport.drop();

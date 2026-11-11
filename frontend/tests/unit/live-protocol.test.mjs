@@ -83,6 +83,26 @@ test('a decided confirmation is never presented again, however it is replayed', 
         fresh.apply(event);
     assert.deepEqual(fresh.pending().map(item => item.confirmation_id), ['k2']);
 });
+test('a confirmation the broker closed is never offered or decided again', () => {
+    const closed = (seq, id, reason = 'expired') => at(seq, { kind: 'confirmation_closed', confirmation_id: id, revision: 1, reason });
+    const ledger = new EventLedger();
+    ledger.apply(offer(1, 'k1'));
+    ledger.apply(offer(2, 'k2'));
+    assert.equal(ledger.apply(closed(3, 'k1')), 'applied');
+    assert.deepEqual(ledger.pending().map(item => item.confirmation_id), ['k2']);
+    assert.equal(ledger.decision('k1'), undefined, 'closed is not decided');
+    assert.equal(ledger.decide('k1', 'deny'), undefined, 'nothing is sent to a closed request');
+    // Its request replayed later is not a new question.
+    assert.equal(ledger.apply(offer(4, 'k1', 2)), 'applied');
+    assert.deepEqual(ledger.pending().map(item => item.confirmation_id), ['k2']);
+    ledger.apply(closed(5, 'k2', 'withdrawn'));
+    assert.deepEqual(ledger.pending(), []);
+    // A fresh client replaying the whole history ends in the same place.
+    const fresh = new EventLedger();
+    for (const event of [offer(1, 'k1'), offer(2, 'k2'), closed(3, 'k1'), offer(4, 'k1', 2)])
+        fresh.apply(event);
+    assert.deepEqual(fresh.pending().map(item => item.confirmation_id), ['k2']);
+});
 test('a confirmation shows its newest revision, and a decision names it', () => {
     const ledger = new EventLedger();
     ledger.apply(offer(1, 'k1', 2));

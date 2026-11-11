@@ -105,6 +105,7 @@ export class Surfaces {
             case 'schedule':
             case 'confirmation':
             case 'confirmation_decided':
+            case 'confirmation_closed':
             case 'attachment':
                 return undefined;
         }
