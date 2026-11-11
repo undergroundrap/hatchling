@@ -257,6 +257,17 @@ mod tests {
         serde_json::to_vec(&(nonce, payload)).unwrap()
     }
 
+    fn different_nonce(nonce: &str) -> String {
+        let digit = if nonce.starts_with('0') { '1' } else { '0' };
+        let suffix = nonce.get(1..).unwrap();
+        format!("{digit}{suffix}")
+    }
+
+    fn dispatched_nonce(peer: &UnixStream) -> String {
+        let mut dispatch: Vec<String> = serde_json::from_slice(&read_frame(peer).unwrap()).unwrap();
+        dispatch.pop().unwrap()
+    }
+
     #[test]
     fn validate_command_requires_bounded_absolute_argv() {
         let mut args = vec![String::from("/bin/true"); 64];
@@ -274,22 +285,21 @@ mod tests {
 
     #[test]
     fn decode_result_checks_both_output_bounds_and_termination() {
-        let base = decode_result(&result_frame("nonce", EXITED), "nonce").unwrap();
+        let nonce = crate::approval::random_hex("").unwrap();
+        let base = decode_result(&result_frame(&nonce, EXITED), &nonce).unwrap();
         assert_eq!(base.status, RoomForegroundStatus::Exited(23));
         assert_eq!(base.stdout, [255]);
         let mut value: serde_json::Value = serde_json::from_slice(EXITED).unwrap();
         for stream in ["stdout", "stderr"] {
             let mut over = value.clone();
             *over.get_mut(stream).unwrap() = serde_json::json!(vec![255_u8; 4097]);
-            assert!(
-                decode_result(&serde_json::to_vec(&("nonce", over)).unwrap(), "nonce").is_err()
-            );
+            assert!(decode_result(&serde_json::to_vec(&(&nonce, over)).unwrap(), &nonce).is_err());
             let mut wrong_marker = value.clone();
             *wrong_marker.get_mut(format!("{stream}_truncated")).unwrap() = true.into();
             assert!(
                 decode_result(
-                    &serde_json::to_vec(&("nonce", wrong_marker)).unwrap(),
-                    "nonce"
+                    &serde_json::to_vec(&(&nonce, wrong_marker)).unwrap(),
+                    &nonce
                 )
                 .is_err()
             );
@@ -302,11 +312,12 @@ mod tests {
         ] {
             *value.get_mut("status").unwrap() = status;
             assert!(
-                decode_result(&serde_json::to_vec(&("nonce", &value)).unwrap(), "nonce").is_err()
+                decode_result(&serde_json::to_vec(&(&nonce, &value)).unwrap(), &nonce).is_err()
             );
         }
-        assert!(decode_result(b"bad", "nonce").is_err());
-        assert!(decode_result(&result_frame("old", EXITED), "nonce").is_err());
+        assert!(decode_result(b"bad", &nonce).is_err());
+        let earlier = different_nonce(&nonce);
+        assert!(decode_result(&result_frame(&earlier, EXITED), &nonce).is_err());
         let at_cap = RoomForegroundResult {
             status: RoomForegroundStatus::Signaled(15),
             stdout: vec![255; 4096],
@@ -314,8 +325,8 @@ mod tests {
             stdout_truncated: true,
             stderr_truncated: false,
         };
-        let encoded = serde_json::to_vec(&("nonce", &at_cap)).unwrap();
-        assert_eq!(decode_result(&encoded, "nonce").unwrap(), at_cap);
+        let encoded = serde_json::to_vec(&(&nonce, &at_cap)).unwrap();
+        assert_eq!(decode_result(&encoded, &nonce).unwrap(), at_cap);
     }
 
     #[test]
@@ -377,8 +388,8 @@ mod tests {
         peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         std::thread::scope(|scope| {
             let task = scope.spawn(move || {
-                read_frame(&peer).unwrap();
-                write_frame(&peer, EXITED).unwrap();
+                let nonce = dispatched_nonce(&peer);
+                write_frame(&peer, &result_frame(&nonce, EXITED)).unwrap();
                 peer.write_all(b"!").unwrap();
             });
             let result = operation.exchange(&supervisor, Instant::now() + Duration::from_secs(2));
@@ -389,8 +400,8 @@ mod tests {
         peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         std::thread::scope(|scope| {
             let task = scope.spawn(move || {
-                read_frame(&peer).unwrap();
-                write_frame(&peer, &result_frame("previous-dispatch", EXITED)).unwrap();
+                let earlier = different_nonce(&dispatched_nonce(&peer));
+                write_frame(&peer, &result_frame(&earlier, EXITED)).unwrap();
             });
             let result = operation.exchange(&supervisor, Instant::now() + Duration::from_secs(2));
             task.join().unwrap();
