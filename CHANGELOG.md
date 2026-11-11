@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **WO-034 refuses key maintenance during Room work.** Rekey and tier enrollment acquire exclusive disk authority and confirm closure before changing keys or stores. Stop Hatchling and retry when maintenance reports a busy Room.
 - **WO-034 keeps Room cleanup going through an interrupted wait.** The spawner still needs to confirm the launcher exited before releasing the image and keeps its five-second wait limit.
 - **WO-034 verifies which filesystem is mounted at the room workspace.** Opening the disk and reporting it open now require the root of the expected encrypted volume with the workspace's safety flags. A different mount with the same flags is refused.
 

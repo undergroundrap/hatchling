@@ -990,6 +990,7 @@ fn check_room_foreground_disconnect(program: &Path, cgroup: &Path) -> Result<(),
             before,
             "the workload did not keep the image mapped"
         );
+        let (vault, keyring, old) = check_room_maintenance_refusals(&place, program)?;
         let started = std::time::Instant::now();
         drop(request);
         spawner.0.room_disk(RoomDiskOp::Close)?;
@@ -1005,11 +1006,227 @@ fn check_room_foreground_disconnect(program: &Path, cgroup: &Path) -> Result<(),
                 "disconnect left a Room cgroup"
             );
         }
+        check_operator_excludes_room(&spawner.0, &place, program, &vault, &keyring)?;
+        let mut rekey = room_operator_command(&place, program, &vault, &keyring)?;
+        let output = rekey.arg("rekey-vault").output()?;
+        assert!(
+            output.status.success(),
+            "drained Room refused operator rekey"
+        );
+        // The real CLI handed these files to the keeper account. Use the
+        // same root-operator acting API for readback, not relaxed checks.
+        let keyring_path = keyring.keyring.as_ref().ok_or("fixture has no keyring")?;
+        hatchling_vault::act_for(
+            std::fs::metadata(keyring_path)?.uid(),
+            &[
+                &vault.root,
+                vault.key_file.parent().ok_or("fixture key has no parent")?,
+                keyring_path
+                    .parent()
+                    .ok_or("fixture keyring has no parent")?,
+            ],
+        )?;
+        let new = hatchling_broker::vault_keyring::unlock(&vault, &keyring)?;
+        assert_eq!(room_disk::opens_with(&place.disk, &old)?, Some(false));
+        assert_eq!(room_disk::opens_with(&place.disk, &new)?, Some(true));
+        let name = "canary".parse()?;
+        let canary = hatchling_vault::SealedVault::open(&vault.root, &new)?.fetch(&name)?;
+        assert!(
+            canary.as_bytes() == b"operator canary",
+            "rekey lost the store's bytes"
+        );
+        assert!(!place.mapped(), "operator rekey left the Room mapped");
         Ok(())
     })();
     drop(control);
     assert!(child.wait()?.success());
     result
+}
+
+fn room_operator_command(
+    place: &Place,
+    program: &Path,
+    vault: &hatchling_broker::VaultConfig,
+    keyring: &hatchling_broker::vault_keyring::KeyringConfig,
+) -> Result<Command, Failed> {
+    let mut command = installed_spawner_command(place, program, None);
+    command
+        .env("HATCHLING_VAULT_DIR", &vault.root)
+        .env("HATCHLING_VAULT_KEY_FILE", &vault.key_file)
+        .env(
+            "HATCHLING_VAULT_KEYRING",
+            keyring.keyring.as_ref().ok_or("fixture has no keyring")?,
+        )
+        .stdin(Stdio::null());
+    Ok(command)
+}
+
+fn check_operator_excludes_room(
+    spawner: &Spawner,
+    place: &Place,
+    program: &Path,
+    vault: &hatchling_broker::VaultConfig,
+    keyring: &hatchling_broker::vault_keyring::KeyringConfig,
+) -> Result<(), Failed> {
+    let (mut prompt, stderr) = UnixStream::pair()?;
+    prompt.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut command = room_operator_command(place, program, vault, keyring)?;
+    let mut child = command
+        .args(["vault-keyring", "enroll-keys"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(std::os::fd::OwnedFd::from(stderr)))
+        .spawn()?;
+    drop(command);
+    let result = (|| -> Result<(), Failed> {
+        // The fixed first prompt proves the constructor finished. Probing
+        // the lock instead could win it, or see only a transient claim.
+        let expected = b"Enroll two security keys";
+        let mut prefix = vec![0; expected.len()];
+        std::io::Read::read_exact(&mut prompt, &mut prefix)?;
+        if prefix.as_slice() != expected {
+            return Err("operator did not reach its input prompt".into());
+        }
+        let reason = spawner
+            .check_room_mount()
+            .err()
+            .ok_or("Room admitted during maintenance")?;
+        if !reason.contains("in use by another process") {
+            return Err("the operator did not retain its Room claim while awaiting input".into());
+        }
+        let reason = spawner
+            .room_disk(RoomDiskOp::Open)
+            .err()
+            .ok_or("Room disk reopened during maintenance")?;
+        if !reason.contains("in use by another process") {
+            return Err("operator allowed the Room disk to reopen during maintenance".into());
+        }
+        Ok(())
+    })();
+    let _ = child.kill();
+    let status = child.wait()?;
+    result?;
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(9)
+    );
+    assert_eq!(room_disk::status(&place.disk)?.state, RoomDiskState::Closed);
+    Ok(())
+}
+
+/// Real operator entrypoints contend with the real installed spawner.
+/// A broken guard may offer a seed or recovery codes: assert fixed
+/// diagnostics instead of formatting the captured output buffers.
+fn check_room_maintenance_refusals(
+    place: &Place,
+    program: &Path,
+) -> Result<
+    (
+        hatchling_broker::VaultConfig,
+        hatchling_broker::vault_keyring::KeyringConfig,
+        hatchling_vault::MasterKey,
+    ),
+    Failed,
+> {
+    let root = place.dir.join("operator");
+    for name in ["", "vault", "vault.key", "keyring"] {
+        let dir = root.join(name);
+        std::fs::create_dir(&dir)?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    // The CLI hands the vault to the real keeper account; it must be able
+    // to search this parent, while the vault and key directories stay private.
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o711))?;
+    let vault = hatchling_broker::VaultConfig {
+        root: root.join("vault"),
+        key_file: root.join("vault.key/key"),
+        grants: Vec::new(),
+    };
+    // The operator and real keeper begin with the same master key.
+    std::fs::copy(place.dir.join("keeper/vault.key/key"), &vault.key_file)?;
+    let old = hatchling_vault::FileKey::new(vault.key_file.clone()).load()?;
+    let keyring = hatchling_broker::vault_keyring::KeyringConfig {
+        keyring: Some(root.join("keyring/keyring")),
+        ..Default::default()
+    };
+    let name = "canary".parse()?;
+    hatchling_vault::SealedVault::open(&vault.root, &old)?.store(
+        &name,
+        &hatchling_vault::Secret::new(b"operator canary".to_vec())?,
+    )?;
+    hatchling_broker::vault_keyring::init(&vault, &keyring)?;
+    let watched = [
+        root.join("keyring/keyring"),
+        root.join("vault.key/kek"),
+        root.join("vault/.store-key"),
+        root.join("vault/canary"),
+    ];
+    let before = watched
+        .iter()
+        .map(std::fs::read)
+        .collect::<Result<Vec<_>, _>>()?;
+    let header = Sha256::digest(hatchling_sys::read_file_head(
+        &place.disk.image(),
+        usize::try_from(room_disk::HEADER_BYTES)?,
+    )?);
+    for args in [
+        vec!["rekey-vault"],
+        vec!["vault-keyring", "enroll-totp"],
+        vec!["vault-keyring", "enroll-keys"],
+    ] {
+        let operation = args.join(" ");
+        let output = room_operator_command(place, program, &vault, &keyring)?
+            .args(args)
+            .output()?;
+        assert!(!output.status.success(), "operator mutated an active Room");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("in use by another process"),
+            "operator {operation} was refused for a different reason"
+        );
+    }
+    let replacement = root.join("replacement.key");
+    let output = room_operator_command(place, program, &vault, &keyring)?
+        .env_remove("HATCHLING_VAULT_KEYRING")
+        .args([std::ffi::OsStr::new("rekey-vault"), replacement.as_os_str()])
+        .output()?;
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("in use by another process"),
+        "file-key operator was refused for a different reason"
+    );
+    assert!(
+        !replacement.exists() && !vault.key_file.exists(),
+        "a refused operator created a key file"
+    );
+    let fresh = hatchling_vault::MasterKey::generate()?;
+    for reason in [
+        room_disk::close(&place.disk)
+            .err()
+            .ok_or("maintenance closed an active Room")?,
+        room_disk::wipe(&place.disk)
+            .err()
+            .ok_or("maintenance wiped an active Room")?,
+        room_disk::rotate(&place.disk, &old, &fresh)
+            .err()
+            .ok_or("maintenance rekeyed an active Room")?,
+    ] {
+        assert!(reason.contains("in use by another process"), "{reason}");
+    }
+    for (path, bytes) in watched.iter().zip(before) {
+        assert!(
+            std::fs::read(path)? == bytes,
+            "a refused operator changed vault state"
+        );
+    }
+    assert!(
+        Sha256::digest(hatchling_sys::read_file_head(
+            &place.disk.image(),
+            usize::try_from(room_disk::HEADER_BYTES)?
+        )?) == header,
+        "a refused operator changed the Room key slots"
+    );
+    assert!(place.mapped(), "maintenance interrupted the live Room");
+    Ok((vault, keyring, old))
 }
 
 fn check_room_cgroup(place: &Place, spawner: &Spawner, parent: &Path) -> Result<(), Failed> {
@@ -1569,12 +1786,15 @@ fn moved_for_real(place: &Place, keeper: &Keeper, other: &Keeper) -> Result<(), 
     room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Open)?;
     let mount = place.disk.mount_point();
     std::fs::write(mount.join("canary"), b"moved")?;
-    // Back again, with the disk open and mounted: it goes on working.
+    // Rotation closes the disk before changing a key slot, then its bytes
+    // are available only after the keeper with the new key reopens it.
     assert_eq!(room_disk::rotate(&place.disk, &two, &one)?, Rotated::Done);
+    assert!(!place.mapped(), "rotation left the room disk mapped");
+    assert!(room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Open).is_err());
+    room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Open)?;
     assert_eq!(std::fs::read(mount.join("canary"))?, b"moved");
     std::fs::write(mount.join("after"), b"still writable")?;
-    room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Close)?;
-    assert!(room_disk::run(&place.disk, &other.spawner, RoomDiskOp::Open).is_err());
+    room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Close)?;
     room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Open)?;
     assert_eq!(std::fs::read(mount.join("after"))?, b"still writable");
     room_disk::run(&place.disk, &keeper.spawner, RoomDiskOp::Close)?;

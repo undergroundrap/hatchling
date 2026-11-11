@@ -135,11 +135,13 @@ const SWAP: &str = "Now your second key. If you only have one port, unplug this 
 ///
 /// Why it stopped; run again, it carries on from there.
 pub fn run(setup: &mut Setup<'_>) -> Result<Done, Error> {
+    let room = crate::room_disk::here()?;
+    let maintenance = crate::room_disk::maintenance(&room)?;
     let path = setup.config.keyring_path()?.to_path_buf();
     if !path.exists() {
         ring::init(setup.vault, setup.config)?;
     }
-    finish_interrupted(setup, &path)?;
+    finish_interrupted(setup, &path, &maintenance)?;
     let keyring = Keyring::load(&path).map_err(ring::vault_error)?;
     if keyring.tier() == Tier::HardwareKey {
         // A setup that died just after the keyring was made never got to
@@ -147,12 +149,16 @@ pub fn run(setup: &mut Setup<'_>) -> Result<Done, Error> {
         ring::remove_key_file(&setup.vault.key_file)?;
         carry_on(setup, keyring, &path)
     } else {
-        protect(setup, keyring, &path)
+        protect(setup, keyring, &path, &maintenance)
     }
 }
 
 /// Finishes a change to the vault's key that was cut off, if one was.
-fn finish_interrupted(setup: &mut Setup<'_>, path: &Path) -> Result<(), Error> {
+fn finish_interrupted(
+    setup: &mut Setup<'_>,
+    path: &Path,
+    maintenance: &crate::room_disk::Maintenance<'_>,
+) -> Result<(), Error> {
     if !Keyring::load(path)
         .map_err(ring::vault_error)?
         .rotation_pending()
@@ -160,12 +166,13 @@ fn finish_interrupted(setup: &mut Setup<'_>, path: &Path) -> Result<(), Error> {
         return Ok(());
     }
     setup.say("A change to the vault's key was interrupted. Finishing it now.");
-    let (_, codes) = ring::rekey(
+    let (_, codes) = ring::rekey_claimed(
         setup.vault,
         setup.config,
         setup.stores,
         setup.ask,
         setup.devices,
+        maintenance,
     )?;
     if let Some(codes) = codes {
         recovery_kit(setup, path, &codes)?;
@@ -293,8 +300,9 @@ pub(crate) fn lost_key_with(
     setup: &mut Setup<'_>,
     room: &crate::room_disk::RoomDisk,
 ) -> Result<Done, Error> {
+    let maintenance = crate::room_disk::maintenance(room)?;
     let path = setup.config.keyring_path()?.to_path_buf();
-    finish_interrupted(setup, &path)?;
+    finish_interrupted(setup, &path, &maintenance)?;
     let mut keyring = Keyring::load(&path).map_err(ring::vault_error)?;
     let keys = keyring.hardware_keys();
     if keys.is_empty() {
@@ -318,16 +326,20 @@ pub(crate) fn lost_key_with(
     ));
     if stolen {
         setup.say("Changing the vault's key, so nothing the stolen key could open still works.");
-        let (_, codes) = ring::rekey(
+        let (_, codes) = ring::rekey_claimed(
             setup.vault,
             setup.config,
             setup.stores,
             setup.ask,
             setup.devices,
+            &maintenance,
         )?;
         if let Some(codes) = codes {
             recovery_kit(setup, &path, &codes)?;
         }
+    }
+    drop(maintenance);
+    if stolen {
         offer_room_reset(setup, room)?;
     }
     let keyring = Keyring::load(&path).map_err(ring::vault_error)?;
@@ -372,7 +384,12 @@ fn offer_room_reset(setup: &mut Setup<'_>, room: &crate::room_disk::RoomDisk) ->
 }
 
 /// Moves a vault below the hardware-key tier to its keys.
-fn protect(setup: &mut Setup<'_>, mut keyring: Keyring, path: &Path) -> Result<Done, Error> {
+fn protect(
+    setup: &mut Setup<'_>,
+    mut keyring: Keyring,
+    path: &Path,
+    maintenance: &crate::room_disk::Maintenance<'_>,
+) -> Result<Done, Error> {
     setup.say(
         "This protects Hatchling's vault with security keys: nothing opens it without one.\n\
          After each restart, you unlock it with a key and its PIN.\n\
@@ -416,11 +433,12 @@ fn protect(setup: &mut Setup<'_>, mut keyring: Keyring, path: &Path) -> Result<D
     let rotated = keyring
         .commit_key_enrollment(enrollment, risk)
         .map_err(ring::vault_error)?;
-    ring::finish(
+    ring::finish_claimed(
         &mut keyring,
         &rotated.rotation,
         setup.stores,
         &setup.config.kek_file(setup.vault),
+        maintenance,
     )?;
     // The vault's key just changed, so a plain key file a setup that died
     // inside `init` left opens nothing current: it goes now, not later.

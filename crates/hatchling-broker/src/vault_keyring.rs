@@ -508,6 +508,7 @@ fn kek_file_may_go(keyring: &Keyring) -> bool {
 /// old key to the new, the room disk's key slot moves with them, and the
 /// retiring key is dropped. Each step is safe to repeat, so `rekey-vault`
 /// resumes here after a crash.
+#[cfg(test)]
 pub(crate) fn finish(
     keyring: &mut Keyring,
     rotation: &Rotation,
@@ -521,6 +522,7 @@ pub(crate) fn finish(
 /// [`finish`], with the room disk `room`. A room disk whose key can't be
 /// moved leaves the rotation pending, so the vault isn't served until a
 /// rerun finishes it.
+#[cfg(test)]
 pub(crate) fn finish_with(
     keyring: &mut Keyring,
     rotation: &Rotation,
@@ -528,11 +530,23 @@ pub(crate) fn finish_with(
     kek_file: &Path,
     room: &crate::room_disk::RoomDisk,
 ) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
+    let maintenance = crate::room_disk::maintenance(room)?;
+    finish_claimed(keyring, rotation, stores, kek_file, &maintenance)
+}
+
+/// Finish under the claim acquired before the operator's first mutation.
+pub(crate) fn finish_claimed(
+    keyring: &mut Keyring,
+    rotation: &Rotation,
+    stores: &[(Store, PathBuf)],
+    kek_file: &Path,
+    maintenance: &crate::room_disk::Maintenance<'_>,
+) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
     if kek_file_may_go(keyring) {
         remove_key_file(kek_file)?;
     }
     let reports = crate::reseal_stores(stores, rotation.old(), rotation.new_key())?;
-    crate::room_disk::rotate_with_vault(room, rotation.old(), rotation.new_key())?;
+    crate::room_disk::rotate_with_vault(maintenance, rotation.old(), rotation.new_key())?;
     keyring.finish_rotation(rotation).map_err(vault_error)?;
     Ok(reports)
 }
@@ -559,6 +573,20 @@ pub fn rekey(
     stores: &[(Store, PathBuf)],
     ask: Ask<'_>,
     devices: &mut dyn Devices,
+) -> Result<Rekeyed, Error> {
+    let room = crate::room_disk::here()?;
+    let maintenance = crate::room_disk::maintenance(&room)?;
+    rekey_claimed(vault, config, stores, ask, devices, &maintenance)
+}
+
+/// Rekey under the claim held by the guided setup or this command.
+pub(crate) fn rekey_claimed(
+    vault: &VaultConfig,
+    config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
+    ask: Ask<'_>,
+    devices: &mut dyn Devices,
+    maintenance: &crate::room_disk::Maintenance<'_>,
 ) -> Result<Rekeyed, Error> {
     let mut keyring = Keyring::load(config.keyring_path()?).map_err(vault_error)?;
     if config.require_hardware_key && keyring.tier() != Tier::HardwareKey {
@@ -590,7 +618,13 @@ pub fn rekey(
             .map_err(vault_error)?;
         (rotated.rotation, rotated.codes)
     };
-    let reports = finish(&mut keyring, &rotation, stores, &config.kek_file(vault))?;
+    let reports = finish_claimed(
+        &mut keyring,
+        &rotation,
+        stores,
+        &config.kek_file(vault),
+        maintenance,
+    )?;
     Ok((reports, codes))
 }
 
@@ -605,8 +639,27 @@ pub fn run_rekey(
     config: &KeyringConfig,
     stores: &[(Store, PathBuf)],
 ) -> Result<Rekeyed, Error> {
+    let room = crate::room_disk::here()?;
+    let maintenance = crate::room_disk::maintenance(&room)?;
+    run_rekey_claimed(vault, config, stores, &maintenance)
+}
+
+/// Terminal rekey while the command dispatcher retains the Room claim.
+pub(crate) fn run_rekey_claimed(
+    vault: &VaultConfig,
+    config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
+    maintenance: &crate::room_disk::Maintenance<'_>,
+) -> Result<Rekeyed, Error> {
     let (mut asking, mut devices) = terminal_operator();
-    rekey(vault, config, stores, &mut asking, &mut devices)
+    rekey_claimed(
+        vault,
+        config,
+        stores,
+        &mut asking,
+        &mut devices,
+        maintenance,
+    )
 }
 
 /// Adopts a keyring (`vault-keyring init`).
@@ -674,6 +727,8 @@ pub fn enroll_totp(
     ask: Ask<'_>,
     devices: &mut dyn Devices,
 ) -> Result<Option<BackupCodes>, Error> {
+    let room = crate::room_disk::here()?;
+    let maintenance = crate::room_disk::maintenance(&room)?;
     if config.require_hardware_key {
         return Err(policy("TOTP is below it"));
     }
@@ -692,11 +747,12 @@ pub fn enroll_totp(
             }
             outcome => {
                 let rotated = outcome.map_err(vault_error)?;
-                finish(
+                finish_claimed(
                     &mut keyring,
                     &rotated.rotation,
                     stores,
                     &config.kek_file(vault),
+                    &maintenance,
                 )?;
                 return Ok(rotated.codes);
             }
@@ -1293,6 +1349,8 @@ pub fn enroll_keys(
     ask: Ask<'_>,
     devices: &mut dyn Devices,
 ) -> Result<(usize, Option<BackupCodes>), Error> {
+    let room = crate::room_disk::here()?;
+    let maintenance = crate::room_disk::maintenance(&room)?;
     crate::check_sealed_stores(stores)?;
     let mut keyring = Keyring::load(config.keyring_path()?).map_err(vault_error)?;
     if keyring.tier() == Tier::HardwareKey {
@@ -1322,11 +1380,12 @@ pub fn enroll_keys(
             let rotated = keyring
                 .enroll_hardware_keys_checked(&unlocked, &mut keys, config.key_check())
                 .map_err(vault_error)?;
-            finish(
+            finish_claimed(
                 &mut keyring,
                 &rotated.rotation,
                 stores,
                 &config.kek_file(vault),
+                &maintenance,
             )?;
             Ok((2, rotated.codes))
         }
@@ -1358,11 +1417,12 @@ pub fn enroll_keys(
                     config.key_check(),
                 )
                 .map_err(vault_error)?;
-            finish(
+            finish_claimed(
                 &mut keyring,
                 &rotated.rotation,
                 stores,
                 &config.kek_file(vault),
+                &maintenance,
             )?;
             Ok((1, rotated.codes))
         }
@@ -4343,14 +4403,19 @@ pub(crate) mod tests {
         })
         .unwrap();
         let sealed = std::fs::read(vault.root.join("token")).unwrap();
-        rekey(
-            &vault,
-            &config,
-            &secrets(&vault),
-            &mut |_| Ok(Zeroizing::new(app.code(30))),
-            &mut NoKeys,
-        )
-        .unwrap();
+        {
+            let room = crate::room_disk::here().unwrap();
+            let maintenance = crate::room_disk::maintenance(&room).unwrap();
+            rekey_claimed(
+                &vault,
+                &config,
+                &secrets(&vault),
+                &mut |_| Ok(Zeroizing::new(app.code(30))),
+                &mut NoKeys,
+                &maintenance,
+            )
+            .unwrap();
+        }
         assert_ne!(
             std::fs::read(vault.root.join("token")).unwrap(),
             sealed,
@@ -4582,14 +4647,17 @@ pub(crate) mod tests {
             "the room disk's key moved before the stores"
         );
         bench.switch("fail-luksAddKey", false);
-        finish_with(
-            &mut keyring,
-            &rotated.rotation,
-            &stores,
-            &kek_file,
-            &bench.disk,
-        )
-        .unwrap();
+        {
+            let maintenance = crate::room_disk::maintenance(&bench.disk).unwrap();
+            finish_claimed(
+                &mut keyring,
+                &rotated.rotation,
+                &stores,
+                &kek_file,
+                &maintenance,
+            )
+            .unwrap();
+        }
         assert!(!keyring.rotation_pending());
         assert_eq!(bench.slotted(), [room_key(rotated.rotation.new_key())]);
     }
@@ -4613,7 +4681,11 @@ pub(crate) mod tests {
         let (scratch, vault, config) = adopted("run-rekey");
         let old = unlock(&vault, &config).unwrap();
         let stores = two_stores(&scratch, &vault, &old);
-        let (reports, _) = run_rekey(&vault, &config, &stores).unwrap();
+        let (reports, _) = {
+            let room = crate::room_disk::here().unwrap();
+            let maintenance = crate::room_disk::maintenance(&room).unwrap();
+            run_rekey_claimed(&vault, &config, &stores, &maintenance).unwrap()
+        };
         assert_eq!(reports.len(), 2);
         assert!(opens_all(&stores, &unlock(&vault, &config).unwrap()));
         assert!(matches!(

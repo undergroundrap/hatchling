@@ -200,11 +200,22 @@ pub(crate) fn rekey_vault_with(
     new_key_file: &Path,
     room: &crate::room_disk::RoomDisk,
 ) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
+    let maintenance = crate::room_disk::maintenance(room)?;
+    rekey_vault_claimed(stores, old_key, new_key_file, &maintenance)
+}
+
+/// File-key rotation under the operator's already acquired Room claim.
+pub(crate) fn rekey_vault_claimed(
+    stores: &[(Store, PathBuf)],
+    old_key: &MasterKey,
+    new_key_file: &Path,
+    maintenance: &crate::room_disk::Maintenance<'_>,
+) -> Result<Vec<(&'static str, RekeyReport)>, Error> {
     let new_key = FileKey::new(new_key_file.to_path_buf())
         .load_or_create()
         .map_err(|source| Error::Vault { source })?;
     let reports = reseal_stores(stores, old_key, &new_key)?;
-    crate::room_disk::rotate_with_vault(room, old_key, &new_key)?;
+    crate::room_disk::rotate_with_vault(maintenance, old_key, &new_key)?;
     Ok(reports)
 }
 
@@ -305,13 +316,20 @@ pub fn run_rekey_vault(config: &Config, new_key_file: Option<&Path>) -> Result<(
     let keyring = KeyringConfig::from_env()?;
     let target = rekey_target(&keyring, new_key_file)?;
     let stores = sealed_stores(config, redaction_config(config)?.as_ref());
+    let room = crate::room_disk::here()?;
+    let maintenance = crate::room_disk::maintenance(&room)?;
     let (reports, codes) = match target {
-        None => crate::vault_keyring::run_rekey(&config.vault, &keyring, &stores)?,
+        None => {
+            crate::vault_keyring::run_rekey_claimed(&config.vault, &keyring, &stores, &maintenance)?
+        }
         Some(new_key_file) => {
             let old_key = load_master_key(&config.vault)?;
             // Old envelopes or plaintext stop it before any store is touched.
             check_sealed_stores(&stores)?;
-            (rekey_vault(&stores, &old_key, new_key_file)?, None)
+            (
+                rekey_vault_claimed(&stores, &old_key, new_key_file, &maintenance)?,
+                None,
+            )
         }
     };
     let mut stdout = std::io::stdout().lock();
@@ -690,6 +708,20 @@ mod tests {
         std::fs::create_dir(bench.root.join("slots")).unwrap();
         std::fs::write(bench.root.join("slots").join(room_key(&old)), b"").unwrap();
         let new_file = dir.0.join("new.key");
+        let envelope = stores.first().unwrap().1.join("record");
+        let old_envelope = std::fs::read(&envelope).unwrap();
+        let claim = hatchling_sys::claim_dir(&bench.root).unwrap();
+        let reason = rekey_vault_with(&stores, &old, &new_file, &bench.disk)
+            .unwrap_err()
+            .to_string();
+        assert!(reason.contains("in use by another process"), "{reason}");
+        assert!(!new_file.exists(), "busy rekey created the new key file");
+        assert!(
+            std::fs::read(&envelope).unwrap() == old_envelope,
+            "busy rekey changed a store"
+        );
+        assert_eq!(bench.slotted(), [room_key(&old)]);
+        drop(claim);
         bench.switch("fail-luksAddKey", true);
         let refused = rekey_vault_with(&stores, &old, &new_file, &bench.disk)
             .unwrap_err()
@@ -708,7 +740,10 @@ mod tests {
             "a rekey that failed took the old key out"
         );
         bench.switch("fail-luksAddKey", false);
-        rekey_vault_with(&stores, &old, &new_file, &bench.disk).unwrap();
+        {
+            let maintenance = crate::room_disk::maintenance(&bench.disk).unwrap();
+            rekey_vault_claimed(&stores, &old, &new_file, &maintenance).unwrap();
+        }
         assert_eq!(bench.slotted(), [room_key(&new)]);
     }
 
