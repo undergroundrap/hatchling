@@ -588,6 +588,288 @@ fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Resul
     Ok(())
 }
 
+#[test]
+fn an_installed_room_ends_when_its_spawner_is_killed() -> Result<(), Failed> {
+    const TEST: &str = "an_installed_room_ends_when_its_spawner_is_killed";
+    const PARENT: &str = "HATCHLING_TEST_ROOM_LOSS_PARENT";
+    if !cfg!(target_arch = "x86_64") {
+        writeln!(
+            std::io::stderr().lock(),
+            "skipped: installed Room supervisor requires x86_64 Linux"
+        )?;
+        return Ok(());
+    }
+    let Some(_disk_tests) = as_root(TEST) else {
+        return Ok(());
+    };
+    let namespace = std::fs::read_link("/proc/self/ns/mnt")?;
+    let Some(parent) = std::env::var_os(PARENT) else {
+        assert!(
+            Command::new("unshare")
+                .args(["--mount", "--propagation", "private", "--"])
+                .arg(std::env::current_exe()?)
+                .args(["--exact", TEST, "--nocapture"])
+                .env(PARENT, namespace)
+                .status()?
+                .success()
+        );
+        return Ok(());
+    };
+    assert_ne!(namespace, PathBuf::from(parent));
+    assert!(
+        !std::fs::read_to_string("/proc/self/mountinfo")?
+            .split_ascii_whitespace()
+            .any(|field| field.starts_with("shared:"))
+    );
+    let image = Place::new("loss-image")?;
+    let source = image.dir.join("foreground.c");
+    let probe = image.dir.join("foreground");
+    std::fs::write(&source, include_str!("fixtures/room-foreground-probe.c"))?;
+    assert!(
+        Command::new("cc")
+            .args(["-static", "-Wall", "-Wextra", "-Werror"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&probe)
+            .status()?
+            .success()
+    );
+    let supervisor = std::env::var_os("HATCHLING_TEST_ROOM_SUPERVISOR")
+        .ok_or("root Room proof requires the static image supervisor")?;
+    let (root, digest, _binds) =
+        room_admission_fixture(&image, Path::new(&supervisor), Some(&probe))?;
+    std::fs::write(
+        "/etc/hatchling/room-image.admission",
+        format!("{root}\n{digest}\n"),
+    )?;
+    let broker = Path::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    for program in [broker.to_owned(), broker.with_file_name("hatchling")] {
+        // Told why in a log that takes it; then ended all the same with
+        // a log that takes nothing more.
+        check_room_spawner_loss(&program, &image, false)?;
+        check_room_spawner_loss(&program, &image, true)?;
+    }
+    Ok(())
+}
+
+/// Fills a pipe until it takes not one byte more. The writes go through
+/// an open of their own, so no other holder's writes stop blocking.
+fn fill_pipe(writer: &std::os::fd::OwnedFd) -> Result<(), Failed> {
+    use rustix::fs::{Mode, OFlags};
+    let mut own = std::fs::File::from(rustix::fs::open(
+        format!("/proc/self/fd/{}", writer.as_raw_fd()),
+        OFlags::WRONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    for chunk in [&[0_u8; 4096][..], &[0_u8; 1][..]] {
+        loop {
+            match own.write(chunk) {
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A Room with silent work under way loses its spawner to a kill, and is
+/// gone soon after. Its first process says why in the log the spawner
+/// handed down; `stalled`, that log is a full pipe nobody reads, and the
+/// Room ends without being able to say so.
+fn check_room_spawner_loss(program: &Path, image: &Place, stalled: bool) -> Result<(), Failed> {
+    let place = Place::new("spawner-loss")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let delegation = std::env::var_os("HATCHLING_TEST_CGROUP").ok_or("missing root test cgroup")?;
+    let mut group = hatchling_sys::cgroup::CellCgroup::create(
+        Path::new(&delegation),
+        hatchling_sys::cgroup::CgroupLimits::default(),
+    )?;
+    let channel = keeper
+        .spawner
+        .lock()
+        .map_err(|_| "keeper lock poisoned")?
+        .try_clone()?;
+    let (control, inherited) = UnixStream::pair()?;
+    hatchling_sys::keep_across_exec(inherited.as_fd())?;
+    hatchling_sys::keep_across_exec(channel.as_fd())?;
+    // The mount helper inherits the spawner's stderr: what it says of
+    // its end is read back below, or has nowhere to go.
+    let said = place.dir.join("spawner.stderr");
+    let (log, pipe) = if stalled {
+        let (reader, writer) = hatchling_sys::fds::pipe()?;
+        (Stdio::from(writer.try_clone()?), Some((reader, writer)))
+    } else {
+        (Stdio::from(std::fs::File::create(&said)?), None)
+    };
+    let before = mapper_names()?;
+    let mut child = installed_spawner_command(&place, program, Some(group.path()))
+        .arg(hatchling_broker::spawner::SPAWNER_SUBCOMMAND)
+        .env("HATCHLING_SPAWNER_FD", inherited.as_raw_fd().to_string())
+        .env(
+            "HATCHLING_SPAWNER_KEEPER_FD",
+            channel.as_raw_fd().to_string(),
+        )
+        .stderr(log)
+        .spawn()?;
+    drop((channel, inherited));
+    let mut mapped = None;
+    let result = (|| -> Result<bool, Failed> {
+        let spawner = Spawner::over(control.try_clone()?);
+        spawner.room_disk(RoomDiskOp::Create)?;
+        spawner.room_disk(RoomDiskOp::Open)?;
+        let (request, endpoint) = UnixStream::pair()?;
+        hatchling_sys::net::send_fd(control.as_fd(), endpoint.as_fd())?;
+        drop(endpoint);
+        write_frame(
+            &request,
+            br#"{"request":"room-run","argv":["/bin/foreground","wait"]}"#,
+        )?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let marker = place.disk.mount_point().join("workspace/timeout-marker");
+        while !marker.is_file() {
+            if std::time::Instant::now() >= deadline {
+                return Err("the silent Room workload never started".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let during = mapper_names()?;
+        let added = during.difference(&before).cloned().collect::<Vec<_>>();
+        let [name] = added.as_slice() else {
+            return Err("the silent Room must own exactly one new image mapper".into());
+        };
+        mapped = Some(name.clone());
+        if !group_says(group.path(), "populated 1")? {
+            return Err("the silent Room isn't in its cgroup".into());
+        }
+        if let Some((_, writer)) = &pipe {
+            fill_pipe(writer)?;
+        }
+        // Keep both broker connections open. Kill only the owned spawner;
+        // neither request EOF nor service teardown can mask this witness.
+        child.kill()?;
+        if child.wait()?.success() {
+            return Err("the killed spawner reported success".into());
+        }
+        // Stalled, the Room's first process is held at its log until its
+        // grace is up.
+        let allowed = Duration::from_secs(if stalled { 6 } else { 3 });
+        let deadline = std::time::Instant::now() + allowed;
+        while !group_says(group.path(), "populated 0")? {
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Ok(true)
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(pipe);
+    let left = clear_spawner_loss(&mut group, mapped.as_deref(), image, &place.disk, &before);
+    let ended = result?;
+    assert!(left.is_empty(), "cleanup: {left:?}");
+    assert!(ended, "a silent Room workload outlived its killed spawner");
+    if stalled {
+        return Ok(());
+    }
+    // The helper names the real cause, not a supervisor's exit status.
+    let said = std::fs::read_to_string(said)?;
+    assert!(
+        said.contains("hatchling room mount helper: the Room was stopped: its spawner ended"),
+        "{said}"
+    );
+    assert!(!said.contains("supervisor exited"), "{said}");
+    Ok(())
+}
+
+/// Whether a cgroup's events file has `line`.
+fn group_says(group: &Path, line: &str) -> Result<bool, Failed> {
+    Ok(std::fs::read_to_string(group.join("cgroup.events"))?
+        .lines()
+        .any(|said| said == line))
+}
+
+/// Clears what a killed spawner left: the fixture owns cleanup after
+/// abrupt loss, and does not credit the dead spawner with removing its
+/// cgroup or read-only image mapper. Every step runs whatever came
+/// before it, so one failure doesn't leave the rest behind for the next
+/// test to trip on. Returns what couldn't be cleared.
+fn clear_spawner_loss(
+    group: &mut hatchling_sys::cgroup::CellCgroup,
+    mapped: Option<&str>,
+    image: &Place,
+    disk: &RoomDisk,
+    before: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut left = Vec::new();
+    if let Err(error) = group.finish() {
+        left.push(format!("cgroup: {error}"));
+    }
+    if let Some(name) = mapped {
+        // Only a mapper shown to be this fixture's is closed.
+        match validate_loss_mapper(name, image).and_then(|()| {
+            Ok(Command::new("/usr/sbin/veritysetup")
+                .args(["close", name])
+                .status()?)
+        }) {
+            Ok(status) if status.success() => {}
+            Ok(status) => left.push(format!("closing {name}: {status}")),
+            Err(error) => left.push(format!("mapper {name}: {error}")),
+        }
+    }
+    if let Err(error) = room_disk::close(disk) {
+        left.push(format!("room disk: {error}"));
+    }
+    match mapper_names() {
+        Ok(after) if after == *before => {}
+        Ok(after) => left.push(format!("mappers left: {after:?}, were {before:?}")),
+        Err(error) => left.push(format!("mappers: {error}")),
+    }
+    left
+}
+
+fn validate_loss_mapper(name: &str, image: &Place) -> Result<(), Failed> {
+    let nonce = name
+        .strip_prefix("hatchling-room-verity-")
+        .ok_or("unexpected image mapper")?;
+    if nonce.len() != 32 || !nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("unexpected image mapper name".into());
+    }
+    let images = image.dir.join("share/hatchling/room");
+    let expected = ["room-system-x86_64.squashfs", "room-system-x86_64.verity"]
+        .map(|name| std::fs::metadata(images.join(name)))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    for entry in std::fs::read_dir("/sys/block")? {
+        let path = entry?.path();
+        if std::fs::read_to_string(path.join("dm/name"))
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            != Some(name)
+        {
+            continue;
+        }
+        let slaves = std::fs::read_dir(path.join("slaves"))?.collect::<Result<Vec<_>, _>>()?;
+        if slaves.len() != 2 {
+            return Err("the image mapper isn't over two devices".into());
+        }
+        for slave in slaves {
+            let backing = std::fs::read_to_string(slave.path().join("loop/backing_file"))?;
+            let actual = std::fs::metadata(backing.trim())?;
+            if !expected
+                .iter()
+                .any(|e| e.dev() == actual.dev() && e.ino() == actual.ino())
+            {
+                return Err("the image mapper is over a file that isn't the fixture's".into());
+            }
+        }
+        return Ok(());
+    }
+    Err("the fixture's image mapper disappeared before cleanup".into())
+}
+
 fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
     let fixture = Place::new("supervisor-boundary")?;
     let probe = fixture.dir.join("probe");
