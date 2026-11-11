@@ -1156,18 +1156,43 @@ pub fn run(
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
     let _process = disk.claim_operation()?;
     let done = match op {
-        RoomDiskOp::Create => disk.create(keeper).map(|()| None),
-        RoomDiskOp::Open => disk.open(keeper).map(|()| None),
         RoomDiskOp::Close => crate::room_launch::retry_pending()
             .and_then(|()| disk.close())
             .map(|()| None),
-        RoomDiskOp::Status => disk.status().map(Some),
         RoomDiskOp::Wipe => crate::room_launch::retry_pending()
             .and_then(|()| disk.wipe())
             .map(|()| None),
+        op @ (RoomDiskOp::Create | RoomDiskOp::Open | RoomDiskOp::Status) => {
+            run_held(disk, keeper, op)
+        }
     };
     drop(turn);
     done
+}
+
+/// Why a Room's session can't close or wipe the disk under itself.
+const HELD: &str = "the room disk is held by a Room: the Room ends before its disk is closed";
+
+/// Does `op` for a caller that already holds the room disk's turn and its
+/// claim: a Room session, inside [`with_open_volume`], or [`run`].
+///
+/// A close or a wipe is refused. Each waits for a Room's cleanup, which
+/// a session is still in the middle of.
+///
+/// # Errors
+///
+/// As [`run`].
+pub(crate) fn run_held(
+    disk: &RoomDisk,
+    keeper: &Mutex<UnixStream>,
+    op: RoomDiskOp,
+) -> Result<Option<RoomDiskStatus>, String> {
+    match op {
+        RoomDiskOp::Create => disk.create(keeper).map(|()| None),
+        RoomDiskOp::Open => disk.open(keeper).map(|()| None),
+        RoomDiskOp::Status => disk.status().map(Some),
+        RoomDiskOp::Close | RoomDiskOp::Wipe => Err(String::from(HELD)),
+    }
 }
 
 /// Everything the room directory must stay apart from.

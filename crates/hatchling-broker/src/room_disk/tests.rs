@@ -34,6 +34,35 @@ fn with_open_volume_requires_the_authenticated_device() {
     assert!(reason.contains("isn't mapped"), "{reason}");
 }
 
+/// A Room session holds the disk's claim, and asks for the disk from
+/// inside that hold: a status and a create are answered there, where an
+/// ordinary request is refused, and a close or a wipe never is. Nothing
+/// is closed or wiped under a live Room.
+#[test]
+fn a_held_disk_answers_its_holder_and_is_not_closed_under_it() {
+    let bench = Bench::new("held-disk");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let _claim = bench.disk.claim_operation().unwrap().unwrap();
+    let reason = bench.run(RoomDiskOp::Status).unwrap_err();
+    assert!(reason.contains("in use by another process"), "{reason}");
+    let state = || {
+        run_held(&bench.disk, &bench.keeper, RoomDiskOp::Status)
+            .unwrap()
+            .unwrap()
+            .state
+    };
+    assert_eq!(state(), RoomDiskState::Closed);
+    let reason = run_held(&bench.disk, &bench.keeper, RoomDiskOp::Create).unwrap_err();
+    assert!(reason.contains("there already"), "{reason}");
+    for op in [RoomDiskOp::Close, RoomDiskOp::Wipe] {
+        assert_eq!(
+            run_held(&bench.disk, &bench.keeper, op),
+            Err(String::from(HELD))
+        );
+    }
+    assert_eq!(state(), RoomDiskState::Closed, "a held disk was wiped");
+}
+
 #[test]
 fn room_operations_share_the_kernel_claim() {
     let bench = Bench::new("operation-claim");

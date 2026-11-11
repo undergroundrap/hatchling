@@ -5,6 +5,7 @@
 //! anyone forgot to mark.
 
 use std::os::fd::{AsFd as _, AsRawFd, BorrowedFd, OwnedFd};
+use std::time::{Duration, Instant};
 
 use crate::Error;
 
@@ -417,13 +418,44 @@ pub fn pipe() -> Result<(OwnedFd, OwnedFd), Error> {
 ///
 /// Returns [`Error::Process`] if the wait fails.
 pub fn wait_readable(fds: &[BorrowedFd<'_>]) -> Result<Vec<bool>, Error> {
+    wait_readable_until(fds, None)
+}
+
+/// As [`wait_readable`], for no longer than `limit`.
+///
+/// When `limit` passes with none of `fds` ready, every flag is false. A
+/// wait a signal interrupts is waited again for what's left of `limit`.
+/// Part of a millisecond is waited as a whole one, so a short `limit`
+/// never spins.
+///
+/// # Errors
+///
+/// Returns [`Error::Process`] if the wait fails.
+pub fn wait_readable_for(fds: &[BorrowedFd<'_>], limit: Duration) -> Result<Vec<bool>, Error> {
+    wait_readable_until(fds, Some(Instant::now() + limit))
+}
+
+/// How long `poll` is told to wait for `left`: its milliseconds rounded
+/// up, and no more than `poll` can take.
+fn poll_millis(left: Duration) -> i32 {
+    let millis = left.as_nanos().div_ceil(1_000_000);
+    i32::try_from(millis).unwrap_or(i32::MAX)
+}
+
+fn wait_readable_until(
+    fds: &[BorrowedFd<'_>],
+    deadline: Option<Instant>,
+) -> Result<Vec<bool>, Error> {
     use rustix::event::{PollFd, PollFlags, poll};
     let mut polled: Vec<PollFd<'_>> = fds
         .iter()
         .map(|fd| PollFd::new(fd, PollFlags::IN))
         .collect();
     loop {
-        match poll(&mut polled, -1) {
+        let timeout = deadline.map_or(-1, |deadline| {
+            poll_millis(deadline.saturating_duration_since(Instant::now()))
+        });
+        match poll(&mut polled, timeout) {
             Ok(_) => break,
             Err(rustix::io::Errno::INTR) => {}
             Err(source) => {
@@ -1054,6 +1086,72 @@ mod tests {
             [true, false],
             "a hung-up end is ready"
         );
+    }
+
+    /// A timed wait gives up at its limit with nothing ready, not before
+    /// it and not long after, and still says at once what is ready. An
+    /// untimed wait goes on until something is.
+    #[test]
+    fn a_timed_wait_gives_up_at_its_limit_and_an_untimed_one_does_not() {
+        use std::io::Write as _;
+        use std::sync::mpsc;
+        let (read, write) = pipe().unwrap();
+        let mut writer = std::fs::File::from(write);
+        // A wait that never gives up is ended here, so it fails its
+        // check instead of holding the test.
+        let (finished, watching) = mpsc::channel::<()>();
+        let (late_read, late_write) = pipe().unwrap();
+        std::thread::scope(|scope| {
+            let mut rescue = writer.try_clone().unwrap();
+            scope.spawn(move || {
+                if watching.recv_timeout(Duration::from_secs(8)).is_err() {
+                    let _ = rescue.write_all(b"!");
+                }
+            });
+            let limit = Duration::from_millis(150);
+            let started = Instant::now();
+            let ready = wait_readable_for(&[read.as_fd()], limit).unwrap();
+            let waited = started.elapsed();
+            assert_eq!(ready, [false], "nothing was ready after {waited:?}");
+            assert!(waited >= limit, "gave up early, after {waited:?}");
+            assert!(waited < Duration::from_secs(5), "waited {waited:?}");
+
+            // Nothing is ready for a while: an untimed wait is still
+            // waiting when it comes.
+            scope.spawn(move || {
+                std::thread::sleep(Duration::from_millis(300));
+                std::fs::File::from(late_write).write_all(b"x").unwrap();
+            });
+            let started = Instant::now();
+            assert_eq!(wait_readable(&[late_read.as_fd()]).unwrap(), [true]);
+            assert!(started.elapsed() >= Duration::from_millis(250));
+
+            writer.write_all(b"x").unwrap();
+            let started = Instant::now();
+            assert_eq!(
+                wait_readable_for(&[read.as_fd()], Duration::from_secs(30)).unwrap(),
+                [true]
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
+            assert_eq!(
+                wait_readable_for(&[read.as_fd()], Duration::ZERO).unwrap(),
+                [true],
+                "no limit left still looks once"
+            );
+            let _ = finished.send(());
+        });
+    }
+
+    /// Part of a millisecond is a whole one to `poll`, so a wait with a
+    /// little left sleeps instead of spinning; a whole number stays itself,
+    /// nothing left is no wait, and more than `poll` takes is its most.
+    #[test]
+    fn poll_is_told_whole_milliseconds_rounded_up() {
+        assert_eq!(poll_millis(Duration::ZERO), 0);
+        assert_eq!(poll_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(poll_millis(Duration::from_millis(7)), 7);
+        assert_eq!(poll_millis(Duration::from_micros(7_001)), 8);
+        assert_eq!(poll_millis(Duration::from_secs(u64::MAX)), i32::MAX);
     }
 
     /// What a pipe's reading end holds now, without waiting.

@@ -103,6 +103,11 @@ mod room_foreground;
     reason = "the broker's CLI and spawner share these internal entry points"
 )]
 mod room_launch;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the spawner and the launcher share the kept session"
+)]
+mod room_session;
 pub mod secret_ops;
 pub use redactions::{FileAudit, FileOverrides, run_operator, run_redactions};
 pub mod broker_user;

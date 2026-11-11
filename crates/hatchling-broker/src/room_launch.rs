@@ -1,5 +1,7 @@
-//! One-shot Room admission and foreground execution through the installed
-//! spawner. A trusted init mounts the view and reaps the confined supervisor.
+//! Room admission and launch through the installed spawner. A trusted
+//! init mounts the view and reaps the confined supervisor. A launch is
+//! either a one-shot check that the installed Room works, or the start of
+//! a session that is held until it ends.
 
 use std::fs::{self, File};
 use std::io::{self, Read as _, Write as _};
@@ -20,7 +22,6 @@ use hatchling_sys::room_mounts::RoomMounts;
 use serde::{Deserialize, Serialize};
 
 use crate::room_disk::RoomDisk;
-use crate::room_foreground::{Operation, RoomForegroundResult};
 use crate::spawner::ROOM_MOUNT_SUBCOMMAND;
 
 const RECORD: &str = "/etc/hatchling/room-image.admission";
@@ -45,6 +46,20 @@ enum Pending {
         launcher: Option<OwnedFd>,
         group: CellCgroup,
     },
+}
+
+/// What holds a launched Room, from before its launch until it is down.
+pub(super) trait Session {
+    /// Whether the launch should go ahead at all. `Err` is why not.
+    fn begin(&mut self) -> Result<(), String>;
+    /// Holds the launched Room until it must end. `supervisor` is the
+    /// spawner's end of the confined supervisor's socket, and `launcher`
+    /// is readable once the Room's first process has ended.
+    fn hold(&mut self, supervisor: &UnixStream, launcher: BorrowedFd<'_>);
+    /// Sees the Room taken down. `down` stops its first process, drains
+    /// its cgroup and closes its mapping, and says why when it can't;
+    /// what is left then stays owned for the next try.
+    fn settle(&mut self, down: &mut dyn FnMut() -> Result<(), String>);
 }
 
 #[derive(Deserialize, Serialize)]
@@ -169,11 +184,11 @@ pub(super) fn check_installed(
     staging: PathBuf,
     cgroup_parent: Option<&Path>,
     identity: impl FnOnce() -> Result<(u32, u32), String>,
-    foreground: Option<&Operation<'_>>,
-) -> Result<Option<RoomForegroundResult>, String> {
+    mut session: Option<&mut (dyn Session + '_)>,
+) -> Result<(), String> {
     crate::room_disk::with_open_volume(disk, |volume, device| {
-        if let Some(operation) = foreground {
-            operation.connected().map_err(|error| error.to_string())?;
+        if let Some(session) = session.as_deref_mut() {
+            session.begin()?;
         }
         if !cfg!(target_arch = "x86_64") {
             return Err(UNSUPPORTED_ARCH.into());
@@ -198,18 +213,52 @@ pub(super) fn check_installed(
             gid,
         };
         let mut launcher = None;
-        let result = check_mount(program, &spec, &group, &mut launcher, foreground, |owner| {
-            mapper.send_to_launcher(owner)
-        });
+        let result = check_mount(
+            program,
+            &spec,
+            &group,
+            &mut launcher,
+            session.as_deref_mut(),
+            |owner| mapper.send_to_launcher(owner),
+        );
         *pending = Some(Pending::Mount {
             mapper,
             launcher,
             group,
         });
-        reconcile(&mut pending)?;
+        match session {
+            // The session stays in charge until the Room is down: it
+            // keeps the disk claimed here for as long as that takes.
+            Some(session) => session.settle(&mut || reconcile(&mut pending)),
+            None => reconcile(&mut pending)?,
+        }
         drop(pending);
         result
     })
+}
+
+/// Hands the launcher what it needs, once the spawner holds an exit
+/// witness for it. The witness is kept in `launcher_pidfd` whatever
+/// follows, and lent back when everything was sent.
+fn hand_over<'a>(
+    owner: &UnixStream,
+    endpoint: &UnixStream,
+    spec: &[u8],
+    launcher_pidfd: &'a mut Option<OwnedFd>,
+    handoff: impl FnOnce(&UnixStream) -> Result<(), hatchling_sys::Error>,
+) -> Result<BorrowedFd<'a>, String> {
+    // No mapper or volume inputs cross until the spawner has an
+    // independent exit witness for the actual namespace process.
+    let launcher: &'a OwnedFd = launcher_pidfd
+        .insert(hatchling_sys::net::recv_fd(owner.as_fd()).map_err(|error| error.to_string())?);
+    let spawner = hatchling_sys::self_pidfd().map_err(|error| error.to_string())?;
+    hatchling_sys::net::send_fd(owner.as_fd(), spawner.as_fd())
+        .map_err(|error| error.to_string())?;
+    write_frame(owner, spec).map_err(|error| error.to_string())?;
+    hatchling_sys::net::send_fd(owner.as_fd(), endpoint.as_fd())
+        .map_err(|error| error.to_string())?;
+    handoff(owner).map_err(|error| error.to_string())?;
+    Ok(launcher.as_fd())
 }
 
 fn check_mount(
@@ -217,9 +266,9 @@ fn check_mount(
     spec: &MountSpec,
     group: &CellCgroup,
     launcher_pidfd: &mut Option<OwnedFd>,
-    foreground: Option<&Operation<'_>>,
+    session: Option<&mut (dyn Session + '_)>,
     handoff: impl FnOnce(&UnixStream) -> Result<(), hatchling_sys::Error>,
-) -> Result<Option<RoomForegroundResult>, String> {
+) -> Result<(), String> {
     let (owner, launcher) = UnixStream::pair().map_err(|error| error.to_string())?;
     let (supervisor, endpoint) = UnixStream::pair().map_err(|error| error.to_string())?;
     owner
@@ -252,57 +301,48 @@ fn check_mount(
             return Err(reason);
         }
     };
-    let sent = (|| {
-        // No mapper or volume inputs cross until the spawner has an
-        // independent exit witness for the actual namespace process.
-        *launcher_pidfd =
-            Some(hatchling_sys::net::recv_fd(owner.as_fd()).map_err(|error| error.to_string())?);
-        let spawner = hatchling_sys::self_pidfd().map_err(|error| error.to_string())?;
-        hatchling_sys::net::send_fd(owner.as_fd(), spawner.as_fd())
-            .map_err(|error| error.to_string())?;
-        write_frame(&owner, &bytes).map_err(|error| error.to_string())?;
-        hatchling_sys::net::send_fd(owner.as_fd(), endpoint.as_fd())
-            .map_err(|error| error.to_string())?;
-        handoff(&owner).map_err(|error| error.to_string())
-    })();
+    let sent = hand_over(&owner, &endpoint, &bytes, launcher_pidfd, handoff);
     drop((owner, endpoint));
-    let deadline = Instant::now() + DEADLINE;
+    let Some(session) = session else {
+        return admit(sent.map(|_launcher| ()), supervisor, &child, DEADLINE);
+    };
+    let held = match sent {
+        Ok(launcher) => {
+            session.hold(&supervisor, launcher);
+            Ok(())
+        }
+        Err(reason) => Err(reason),
+    };
+    drop(supervisor);
+    // A session always ends the same way, however it went: the wrapper is
+    // stopped here, and reconciliation, which owns the namespace pidfd
+    // and the cgroup, stops the Room and everything left in it.
+    let _ = child.wait_deadline(Duration::ZERO);
+    held
+}
+
+/// The one-shot check of a launched Room: its supervisor says it is ready
+/// and, once its socket is closed, its launcher ends cleanly, all within
+/// `limit`. A launcher that fails is what is said, whatever else went
+/// wrong; then why the handover failed (`sent`), then the readiness.
+fn admit(
+    sent: Result<(), String>,
+    supervisor: UnixStream,
+    launched: &hatchling_sys::Child,
+    limit: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now() + limit;
     let result = sent.and_then(|()| {
         wait_for_ready(deadline, |bytes, remaining| {
-            if let Some(operation) = foreground {
-                return operation.read(&supervisor, deadline, bytes);
-            }
             supervisor.set_read_timeout(Some(remaining))?;
             (&supervisor).read(bytes)
-        })?;
-        foreground
-            .map(|operation| operation.exchange(&supervisor, deadline))
-            .transpose()
+        })
     });
     // An admission-only supervisor waits for EOF before it exits.
     drop(supervisor);
-    if foreground.is_some() && result.is_err() {
-        // Reconciliation still owns the namespace pidfd and the cgroup,
-        // including descendants that outlive the wrapper.
-        let _ = child.wait_deadline(Duration::ZERO);
-        return result;
-    }
-    let status = foreground.map_or_else(
-        || {
-            child
-                .wait_deadline(deadline.saturating_duration_since(Instant::now()))
-                .map_err(io::Error::other)
-        },
-        |operation| {
-            operation.wait_for_exit(deadline, || child.try_wait().map_err(io::Error::other))
-        },
-    );
-    let status = status.map_err(|error| {
-        if foreground.is_some() {
-            let _ = child.wait_deadline(Duration::ZERO);
-        }
-        error.to_string()
-    })?;
+    let status = launched
+        .wait_deadline(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|error| error.to_string())?;
     if status != 0 {
         return Err(format!(
             "the trusted room mount helper failed (status {})",
@@ -589,6 +629,41 @@ mod tests {
             started.elapsed() < Duration::from_secs(10),
             "launcher exit did not deliver EOF promptly"
         );
+    }
+
+    /// The one-shot check passes only for a supervisor that said it is
+    /// ready and a launcher that then ended cleanly, within the limit. A
+    /// launcher that failed is what is said, before a failed handover,
+    /// and that before a supervisor that never was ready.
+    #[test]
+    fn a_room_is_admitted_when_it_is_ready_and_its_launcher_ends_cleanly() {
+        let admitted = |status: i32, ready: bool, sent: Result<(), String>| {
+            let (supervisor, mut room) = UnixStream::pair().unwrap();
+            if ready {
+                room.write_all(READY).unwrap();
+            }
+            drop(room);
+            // A process to stand for the launcher: it ends with `status`.
+            let launched = match hatchling_sys::fork().expect("fork") {
+                hatchling_sys::ForkResult::Parent { child } => child,
+                hatchling_sys::ForkResult::Child => hatchling_sys::exit_child(status),
+            };
+            admit(sent, supervisor, &launched, Duration::from_secs(10))
+        };
+        let failed = || {
+            Err(String::from(
+                "the trusted room mount helper failed (status 3)",
+            ))
+        };
+        let handover = || Err(String::from("the handover failed"));
+        assert_eq!(admitted(0, true, Ok(())), Ok(()));
+        assert_eq!(admitted(3, true, Ok(())), failed());
+        assert_eq!(
+            admitted(0, false, Ok(())),
+            Err(String::from("the Room supervisor closed before readiness"))
+        );
+        assert_eq!(admitted(0, true, handover()), handover());
+        assert_eq!(admitted(3, false, handover()), failed());
     }
 
     #[test]

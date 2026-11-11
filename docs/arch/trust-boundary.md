@@ -80,17 +80,41 @@ trusted PID 1 forks the image supervisor as PID 2. The supervisor runs
 as the dedicated `hatchling-room` account with empty supplementary groups,
 no new privileges, null stdio, and an empty environment. Only its own
 socket crosses exec. After the fixed readiness frame, the private spawner
-channel can dispatch one command by absolute Room path with direct argv,
-null stdin, and `/workspace` as the working directory. The supervisor
-reports the command's termination and the first 4 KiB of each output
-stream, with a separate truncation flag for each stream. All reported
-fields are untrusted. The spawner bounds readiness, the exchange, and
-clean exit with one deadline after the mount handoff. It checks for a
-broker disconnect through launcher exit and requires a complete reply
-matching the dispatch nonce, followed by EOF. A descendant that keeps an
-output pipe open can cause the command to reach its deadline after the
-direct child exits. The spawner releases the result after the launcher
-exits, the cgroup drains, and the verified image mapper closes. Room
+channel dispatches commands one at a time, each by absolute Room path
+with direct argv, null stdin, and `/workspace` as the working directory.
+The supervisor reports each command's termination and the first 4 KiB of
+each output stream, with a separate truncation flag for each stream. All
+reported fields are untrusted. Each reply must be complete, alone, and
+match its dispatch nonce. A descendant that keeps an output pipe open can
+cause the command to reach its deadline after the direct child exits.
+
+The Room is kept between commands, as one session for the install. One
+spawner thread holds it from its launch until it is down, and holds the
+disk's exclusive claim for as long. The first command starts the session
+and later commands run in it. A second command while one runs is
+refused. A session ends:
+
+- after one hour, whatever it is doing;
+- after fifteen minutes with no command;
+- when a command misses its 30-second deadline, counted from its request,
+  so the first command's includes the launch;
+- when the supervisor isn't ready within 30 seconds, closes, speaks when
+  it isn't its turn, or answers for another dispatch;
+- when the connection that asked for a command closes or sends more;
+- when the Room's first process exits;
+- when the room disk is closed or wiped, before either is done;
+- when the broker goes, before the spawner closes the disk and leaves.
+
+It always ends the same way: the launcher is stopped and confirmed
+exited, the cgroup drains, and the verified image mapper closes. A
+failure that ends a session is reported only after that. If the cleanup
+fails, the session's thread keeps the claim, refuses commands and mount
+checks with the reason, and tries again every five seconds and at once on
+a close or a wipe. Once the broker has gone it tries once more and
+leaves; the Room's first process then ends the Room itself, as it does
+whenever the spawner is gone. While a session lives, a mount check is
+answered by it without another launch, and a status, open or create of
+the disk is done by its thread under its claim. Room
 admission requires x86_64 Linux. Trusted disk operations and Room admission
 hold a kernel exclusive lock on the room directory's trusted parent,
 which persists across creation and wipe. Independent operator processes
@@ -99,6 +123,7 @@ tier-enrollment entrypoints take that same nonblocking claim and confirm
 the disk is closed before changing keys, the keyring or sealed stores;
 they retain it through the final Room key-slot change. Busy maintenance
 refuses without cancelling work; the owner stops Hatchling and retries.
+A kept session is admitted work for as long as it lives.
 Maintenance retries cleanup retained in its own process and refuses if
 that fails or the decrypted volume cannot close. An external operator
 does not share the spawner's retained image-mapper handles. Guided setup
@@ -106,7 +131,7 @@ retains the claim while changing the vault, in addition to its existing
 service-stop prerequisite. If the configured parent does not exist,
 Room creation is unavailable; trusted installation must not create that
 missing parent concurrently with an operator key change.
-Shared sessions and their expiry and receipt path remain separate work.
+Background jobs, their receipts and fuller output remain separate work.
 Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
 write. If the program reports the failure via its exit status and

@@ -56,7 +56,7 @@ pub use error::Error;
 pub use fds::{
     PIPE_ATOMIC_BYTES, StdioKind, cloexec_fds_above_stderr, close_fds_above_stderr_except,
     fd_flags, inherited_device, is_pipe, keep_across_exec, open_fds, pipe, place_across_exec,
-    stdio_kind, take_stdin, wait_readable, write_whole_to_pipe,
+    stdio_kind, take_stdin, wait_readable, wait_readable_for, write_whole_to_pipe,
 };
 pub use idmap::IdMap;
 pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
