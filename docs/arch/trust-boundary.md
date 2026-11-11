@@ -68,7 +68,12 @@ fixed workspace and inbox siblings on that same mount. Root controls the
 volume root and inbox. A symlink or nested mount cannot supply either source.
 It mounts the encrypted workspace and 512 MiB session scratch with
 `nodev,nosuid,noexec`, and attaches the spawner's inbox read-only at
-`/workspace/inbox`. It refuses links in mount targets, leaves source
+`/workspace/inbox`. Installed admission grants the dedicated Room group
+write access to the authenticated workspace root. Root owns that directory
+and its inbox attachment. The workspace's sticky bit protects the attachment
+while the Room creates and manages its own files. Existing root-private
+workspaces receive the grant without changing their contents. It refuses
+links in mount targets, leaves source
 submounts behind, and exposes a read-only PID-only `/proc` and just
 `null`, `zero`, and `urandom` under `/dev`. After the root switch, the
 trusted PID 1 forks the image supervisor as PID 2. The supervisor runs

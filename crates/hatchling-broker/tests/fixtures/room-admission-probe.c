@@ -49,6 +49,26 @@ int main(int argc, char **argv, char **environment) {
         !strstr(status, "CapAmb:\t0000000000000000\n"))
         return 38;
 
+    if (ROOM_PROBE_MODE == 0) {
+        const char *marker = "/workspace/admission-marker";
+        int file = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (file >= 0) {
+            if (write(file, "first", 5) != 5 || close(file))
+                return 43;
+        } else {
+            char before[5];
+            if (errno != EEXIST || (file = open(marker, O_RDWR | O_APPEND)) < 0 ||
+                read(file, before, sizeof before) != (ssize_t)sizeof before ||
+                memcmp(before, "first", sizeof before) || write(file, "second", 6) != 6 ||
+                close(file))
+                return 44;
+        }
+        if (!mkdir("/workspace/inbox/refused", 0700) || (errno != EACCES && errno != EROFS))
+            return 45;
+        if (!unlink("/workspace/root-owned-marker") || errno != EPERM)
+            return 46;
+    }
+
     static const char ready[] = "\0\0\0\x05ready";
     if (ROOM_PROBE_MODE == 1) {
         sleep(120);
