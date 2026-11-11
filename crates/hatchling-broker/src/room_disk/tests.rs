@@ -34,6 +34,136 @@ fn with_open_volume_requires_the_authenticated_device() {
     assert!(reason.contains("isn't mapped"), "{reason}");
 }
 
+#[test]
+fn room_operations_share_the_kernel_claim() {
+    let bench = Bench::new("operation-claim");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let (old, new, _, _) = two_vault_keys(&bench);
+    bench.forget_runs();
+    let claim = bench.disk.claim_operation().unwrap().unwrap();
+    assert!(hatchling_sys::claim_dir(&bench.root).is_none());
+    for op in [
+        RoomDiskOp::Create,
+        RoomDiskOp::Open,
+        RoomDiskOp::Close,
+        RoomDiskOp::Status,
+        RoomDiskOp::Wipe,
+    ] {
+        let reason = bench.run(op).unwrap_err();
+        assert!(reason.contains("in use by another process"), "{reason}");
+    }
+    for reason in [
+        with_open_volume(&bench.disk, |_, _| Ok(())).unwrap_err(),
+        close(&bench.disk).unwrap_err(),
+        wipe(&bench.disk).unwrap_err(),
+        opens_with(&bench.disk, &old).unwrap_err(),
+        rotate(&bench.disk, &old, &new).unwrap_err(),
+        status(&bench.disk).unwrap_err(),
+    ] {
+        assert!(reason.contains("in use by another process"), "{reason}");
+    }
+    assert!(bench.ran().is_empty(), "a refused operation ran a tool");
+    drop(claim);
+    assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Closed);
+    let next = bench.disk.claim_operation().unwrap().unwrap();
+    assert!(hatchling_sys::claim_dir(&bench.root).is_none());
+    drop(next);
+    assert!(hatchling_sys::claim_dir(&bench.root).is_some());
+}
+
+#[test]
+fn a_room_operation_claim_refuses_an_untrusted_parent() {
+    let mut bench = Bench::new("operation-parent");
+    mode(&bench.root, 0o777);
+    assert!(bench.disk.claim_operation().is_err());
+    mode(&bench.root, 0o755);
+    let real = bench.root.join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, bench.root.join("link")).unwrap();
+    bench.disk.dir = bench.root.join("link/room");
+    assert!(bench.disk.claim_operation().is_err());
+    bench.disk.dir = bench.root.join("missing/room");
+    assert!(bench.disk.claim_operation().unwrap().is_none());
+    assert!(!bench.root.join("missing").exists());
+    assert!(bench.run(RoomDiskOp::Create).is_err());
+    assert!(!bench.root.join("missing").exists());
+    std::fs::write(bench.root.join("file"), b"not a directory").unwrap();
+    bench.disk.dir = bench.root.join("file/room");
+    assert!(bench.disk.claim_operation().is_err());
+    // Stat itself must fail with ENOTDIR, independently of the later
+    // trusted-chain refusal of an existing regular-file parent.
+    bench.disk.dir = bench.root.join("file/child/room");
+    assert!(bench.disk.claim_operation().is_err());
+}
+
+#[test]
+fn a_room_operation_claim_ends_with_its_process() {
+    const PARENT: &str = "HATCHLING_TEST_ROOM_CLAIM_PARENT";
+    if let Some(parent) = std::env::var_os(PARENT) {
+        let parent = PathBuf::from(parent);
+        let mut disk = RoomDisk::at(parent.join("room"), MIN_SIZE).unwrap();
+        disk.top = parent.clone();
+        disk.trusted = vec![hatchling_sys::euid()];
+        let _claim = disk.claim_operation().unwrap().unwrap();
+        std::fs::write(parent.join("claimed"), b"ready").unwrap();
+        std::thread::sleep(Duration::from_secs(10));
+        return;
+    }
+    let bench = Bench::new("claim-process");
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "room_disk::tests::a_room_operation_claim_ends_with_its_process",
+        ])
+        .env(PARENT, &bench.root)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !bench.root.join("claimed").exists()
+        && child.try_wait().unwrap().is_none()
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let held =
+        bench.root.join("claimed").exists() && hatchling_sys::claim_dir(&bench.root).is_none();
+    let _ = child.kill();
+    let status = child.wait().unwrap();
+    assert!(held, "the other process did not hold the Room claim");
+    assert_eq!(
+        std::os::unix::process::ExitStatusExt::signal(&status),
+        Some(9)
+    );
+    assert!(
+        bench.disk.claim_operation().unwrap().is_some(),
+        "the dead process left a stale Room claim"
+    );
+}
+
+#[test]
+fn rotation_confirms_closure_before_changing_key_slots() {
+    let bench = Bench::new("rotate-closed");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let (old, new, old_key, new_key) = two_vault_keys(&bench);
+    bench.slots(&[old_key.expose().as_slice()]);
+    for failure in ["fail-close", "keep-mapped"] {
+        bench.list_own_mapping();
+        bench.switch(failure, true);
+        bench.forget_runs();
+        assert!(rotate(&bench.disk, &old, &new).is_err());
+        assert_eq!(bench.slotted(), [hex(old_key.expose())]);
+        assert_eq!(commands(&bench), ["close"]);
+        assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Mapped);
+        bench.switch(failure, false);
+    }
+    assert_eq!(rotate(&bench.disk, &old, &new).unwrap(), Rotated::Done);
+    assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Closed);
+    assert_eq!(bench.slotted(), [hex(new_key.expose())]);
+}
+
 /// One program's run, as the stand-in recorded it.
 #[derive(Debug)]
 pub(crate) struct Ran {
@@ -660,7 +790,7 @@ fn each_check_stops_the_op_before_a_program_runs() {
     refused(&bench, RoomDiskOp::Open, "isn't private");
     mode(&bench.disk.dir, 0o700);
     mode(&bench.root, 0o775);
-    refused(&bench, RoomDiskOp::Open, "can't be run");
+    refused(&bench, RoomDiskOp::Open, "can't be trusted");
     refused(&bench, RoomDiskOp::Close, "can't be trusted");
     refused(&bench, RoomDiskOp::Status, "can't be trusted");
     mode(&bench.root, 0o755);
@@ -1419,7 +1549,10 @@ fn a_rotation_picks_up_from_where_it_stopped() {
         "the same key twice took the only one out"
     );
     assert!(commands(&bench).is_empty());
-    assert!(rotate_with_vault(&bench.disk, &old, &MasterKey::generate().unwrap()).is_ok());
+    {
+        let maintenance = maintenance(&bench.disk).unwrap();
+        assert!(rotate_with_vault(&maintenance, &old, &MasterKey::generate().unwrap()).is_ok());
+    }
     wipe(&bench.disk).unwrap();
     bench.forget_runs();
     assert_eq!(rotate(&bench.disk, &old, &new).unwrap(), Rotated::NoImage);
@@ -1437,9 +1570,12 @@ fn a_rotation_that_fails_keeps_a_key_that_opens() {
     for stop in ["fail-luksAddKey", "add-ignored", "fail-open"] {
         bench.slots(&[old_key.expose().as_slice()]);
         bench.switch(stop, true);
-        let refused = rotate_with_vault(&bench.disk, &old, &new)
-            .unwrap_err()
-            .to_string();
+        let refused = {
+            let maintenance = maintenance(&bench.disk).unwrap();
+            rotate_with_vault(&maintenance, &old, &new)
+                .unwrap_err()
+                .to_string()
+        };
         bench.switch(stop, false);
         assert!(refused.contains("isn't finished"), "{refused}");
         assert_eq!(

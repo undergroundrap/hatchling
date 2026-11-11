@@ -91,8 +91,22 @@ matching the dispatch nonce, followed by EOF. A descendant that keeps an
 output pipe open can cause the command to reach its deadline after the
 direct child exits. The spawner releases the result after the launcher
 exits, the cgroup drains, and the verified image mapper closes. Room
-admission requires x86_64 Linux. The session lifecycle must coordinate
-the separate operator rekey path before this has a production caller.
+admission requires x86_64 Linux. Trusted disk operations and Room admission
+hold a kernel exclusive lock on the room directory's trusted parent,
+which persists across creation and wipe. Independent operator processes
+cannot close, wipe or rotate the disk during admitted work. Rekey and
+tier-enrollment entrypoints take that same nonblocking claim and confirm
+the disk is closed before changing keys, the keyring or sealed stores;
+they retain it through the final Room key-slot change. Busy maintenance
+refuses without cancelling work; the owner stops Hatchling and retries.
+Maintenance retries cleanup retained in its own process and refuses if
+that fails or the decrypted volume cannot close. An external operator
+does not share the spawner's retained image-mapper handles. Guided setup
+retains the claim while changing the vault, in addition to its existing
+service-stop prerequisite. If the configured parent does not exist,
+Room creation is unavailable; trusted installation must not create that
+missing parent concurrently with an operator key change.
+Shared sessions and their expiry and receipt path remain separate work.
 Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
 write. If the program reports the failure via its exit status and

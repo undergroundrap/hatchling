@@ -217,7 +217,21 @@ fn names(config: &KeyringConfig) -> Vec<String> {
 fn two_keys_plugged_in_are_registered_together() {
     let (_scratch, vault, config) = vault("setup-both");
     let mut bench = Bench::new_keys(2, &[0, 1]);
-    let run = run_with(&vault, &config, &mut bench, &["", "", "<code>"], &[]);
+    let run = run_doing(
+        |setup| {
+            let room = crate::room_disk::here()?;
+            let maintenance = crate::room_disk::maintenance(&room)?;
+            let path = config.keyring.as_deref().unwrap();
+            finish_interrupted(setup, path, &maintenance)?;
+            protect(setup, keyring_of(&config), path, &maintenance)
+        },
+        &vault,
+        &config,
+        &mut bench,
+        &["", "", "<code>"],
+        &[],
+        &[],
+    );
     assert_eq!(run.done.unwrap(), Done::Protected);
     assert_eq!(names(&config), ["Test key", "Test key 2"]);
     assert!(
@@ -668,6 +682,12 @@ fn a_stolen_key_offers_to_reset_the_room_disk() {
             with_keys(&format!("stolen-room-{answer}"), 2);
         let room = crate::room_disk::tests::Bench::new(&format!("stolen-room-{answer}"));
         room.run(crate::room_disk::RoomDiskOp::Create).unwrap();
+        let master = keyring_of(&config)
+            .unlock_hardware_key(bench.keys.first_mut().unwrap())
+            .unwrap()
+            .into_key();
+        let key = hatchling_vault::RoomRootKey::of(&master).image_key(&room.image_id());
+        room.slots(&[key.expose().as_slice()]);
         let run = run_doing(
             |setup| lost_key_with(setup, &room.disk),
             &vault,
@@ -681,7 +701,8 @@ fn a_stolen_key_offers_to_reset_the_room_disk() {
             run.asked
                 .iter()
                 .any(|asked| asked.contains("Reset the agent's room disk?")),
-            "a stolen key wasn't offered a room disk reset"
+            "a stolen key wasn't offered a room disk reset: {:?}",
+            run.done.as_ref().err()
         );
         assert_eq!(run.done.unwrap(), Done::Protected);
         let said = run.said.text();

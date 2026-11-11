@@ -61,7 +61,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use hatchling_core::framing::write_frame;
@@ -334,6 +334,30 @@ impl RoomDisk {
                 .map_err(|error| format!("the room directory can't be made: {error}"))?;
         }
         self.check_dir()
+    }
+
+    /// Keep trusted processes from changing the disk under a live Room.
+    /// The parent is stable across create and wipe; the Room cannot reach
+    /// it. The kernel releases this close-on-exec lock if its owner dies.
+    fn claim_operation(&self) -> Result<Option<hatchling_sys::HeldLock>, String> {
+        let parent = self
+            .dir
+            .parent()
+            .ok_or("the room directory has no directory above it")?;
+        match std::fs::symlink_metadata(parent) {
+            // Create cannot make the parent either. No disk operation can
+            // run here until a trusted installer prepares that directory.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("the room directory can't be looked at: {error}")),
+            Ok(_) => {}
+        }
+        hatchling_sys::trusted_dir_chain_from(&self.top, parent, &self.trusted)
+            .map_err(|error| format!("the room directory can't be trusted: {error}"))?;
+        hatchling_sys::claim_dir(parent).map(Some).ok_or_else(|| {
+            String::from(
+                "the room disk is in use by another process; stop Hatchling and retry maintenance",
+            )
+        })
     }
 
     /// Why `program` can't be run as root, if it can't: it must be a
@@ -1099,6 +1123,7 @@ pub(crate) fn with_open_volume<T>(
     check: impl FnOnce(&Path, &str) -> Result<T, String>,
 ) -> Result<T, String> {
     let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
     disk.check_dir()?;
     if disk.image_at(&disk.image())?.is_none() {
         return Err(String::from("there's no room disk"));
@@ -1129,6 +1154,7 @@ pub fn run(
     op: RoomDiskOp,
 ) -> Result<Option<RoomDiskStatus>, String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
     let done = match op {
         RoomDiskOp::Create => disk.create(keeper).map(|()| None),
         RoomDiskOp::Open => disk.open(keeper).map(|()| None),
@@ -1234,6 +1260,7 @@ pub fn here() -> Result<RoomDisk, Error> {
 /// Why not: a check that failed, or a disk in use (busy).
 pub fn close(disk: &RoomDisk) -> Result<(), String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
     let closed = crate::room_launch::retry_pending().and_then(|()| disk.close());
     drop(turn);
     closed
@@ -1246,6 +1273,7 @@ pub fn close(disk: &RoomDisk) -> Result<(), String> {
 /// As [`close`], and why the image or its record can't be removed.
 pub fn wipe(disk: &RoomDisk) -> Result<(), String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
     let wiped = crate::room_launch::retry_pending().and_then(|()| disk.wipe());
     drop(turn);
     wiped
@@ -1262,23 +1290,50 @@ pub fn wipe(disk: &RoomDisk) -> Result<(), String> {
 /// A check that failed, or cryptsetup failing for anything but the key.
 pub fn opens_with(disk: &RoomDisk, master: &MasterKey) -> Result<Option<bool>, String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
     let opens = disk.opens_with(master);
     drop(turn);
     opens
 }
 
-/// Moves the room disk's key slot from the vault key `old` to `new`, one op
-/// at a time with the spawner's. See [`RoomDisk`]'s `rotate`.
+/// Moves the room disk's key slot from the vault key `old` to `new`, with
+/// the disk closed and new Room admission excluded until it finishes.
 ///
 /// # Errors
 ///
 /// A check that failed, or a step of cryptsetup's: there's still a key
 /// that opens it, and running it again picks up from there.
 pub fn rotate(disk: &RoomDisk, old: &MasterKey, new: &MasterKey) -> Result<Rotated, String> {
-    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
-    let rotated = disk.rotate(old, new);
-    drop(turn);
-    rotated
+    let maintenance = maintenance(disk).map_err(|error| error.to_string())?;
+    maintenance.disk.rotate(old, new)
+}
+
+/// Exclusive authority for a vault change, held from before its first
+/// mutation through the final Room key-slot change. It carries no key.
+pub(crate) struct Maintenance<'a> {
+    disk: &'a RoomDisk,
+    _process: Option<hatchling_sys::HeldLock>,
+    _turn: MutexGuard<'static, ()>,
+}
+
+/// Refuse active Room work before an operator changes any key or store.
+pub(crate) fn maintenance(disk: &RoomDisk) -> Result<Maintenance<'_>, Error> {
+    let prepare = || -> Result<Maintenance<'_>, String> {
+        // Take the nonblocking process claim before the local mutex: a
+        // live Room must produce a refusal, not silently defer the change.
+        let process = disk.claim_operation()?;
+        let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+        // A free claim does not prove an orphan is gone. A failed close
+        // must leave keyring and store mutation out of reach as well.
+        crate::room_launch::retry_pending()?;
+        disk.close()?;
+        Ok(Maintenance {
+            disk,
+            _process: process,
+            _turn: turn,
+        })
+    };
+    prepare().map_err(|reason| Error::Usage { reason })
 }
 
 /// The room disk's key slot moved with a change of the vault's key, from
@@ -1290,11 +1345,11 @@ pub fn rotate(disk: &RoomDisk, old: &MasterKey, new: &MasterKey) -> Result<Rotat
 ///
 /// [`Error::Usage`], saying why the room disk's key wasn't changed.
 pub(crate) fn rotate_with_vault(
-    disk: &RoomDisk,
+    maintenance: &Maintenance<'_>,
     old: &MasterKey,
     new: &MasterKey,
 ) -> Result<(), Error> {
-    match rotate(disk, old, new) {
+    match maintenance.disk.rotate(old, new) {
         Ok(Rotated::NeitherOpens) => {
             tracing::warn!(
                 "the room disk opens with neither the old nor the new vault key, so its key wasn't changed"
@@ -1317,6 +1372,7 @@ pub(crate) fn rotate_with_vault(
 /// A check that failed.
 pub fn status(disk: &RoomDisk) -> Result<RoomDiskStatus, String> {
     let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
     let status = disk.status();
     drop(turn);
     status
