@@ -80,5 +80,19 @@ int main(int argc, char **argv, char **environment) {
         sleep(120);
         return 41;
     }
+    if (ROOM_PROBE_MODE == 3) {
+        char dispatch[512];
+        ssize_t received;
+        do {
+            received = read(3, dispatch, sizeof dispatch);
+        } while (received > 0 || (received < 0 && errno == EINTR));
+        if (received < 0)
+            return 47;
+        static const char stale[] = "[\"previous-dispatch\",{\"status\":{\"exited\":0},\"stdout\":[],\"stderr\":[],\"stdout_truncated\":false,\"stderr_truncated\":false}]";
+        static const unsigned char size[] = {0, 0, 0, sizeof stale - 1};
+        if (write(3, size, sizeof size) != sizeof size
+            || write(3, stale, sizeof stale - 1) != sizeof stale - 1)
+            return 48;
+    }
     return 0;
 }

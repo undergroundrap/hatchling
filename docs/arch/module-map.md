@@ -24,7 +24,7 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 - **Run as root, the trusted side is four processes, each under its own user** (WO-017). `hatchling-broker` starts each from its own binary:
   - **the vault keeper** (`keeper.rs`, `hatchling-keeper`) holds the master key, the secrets store's key and the sign-ins' (WO-031), and releases only what the configuration gives each purpose. It answers each agent cell's vault ops on the cell's own vault channel, and fills a signed-in profile's sign-ins into its browser on that browser's own. The spawner hands it each channel, and the broker holds no end of one: it names a fill to the browser by its nonce alone (WO-031);
   - **the egress authority** (`egress_authority.rs`, `hatchling-egress`) alone reads the credentials of the requests it makes: the egress swap, harness relays and search;
-  - **the spawner** (`spawner.rs`, root) starts every cell's helper, holds each spec to its own policy, makes each cell's group, gives and takes back harness trees, and writes approved deliveries as the owner's. Its trusted room helper (`room_launch.rs`) admits the verified mount and reaps the image supervisor after a one-shot readiness check;
+  - **the spawner** (`spawner.rs`, root) starts every cell's helper, holds each spec to its own policy, makes each cell's group, gives and takes back harness trees, and writes approved deliveries as the owner's. Its trusted room helper (`room_launch.rs`) admits the verified mount and reaps the image supervisor. The private Room exchange (`room_foreground.rs`) bounds one command and checks the supervisor's result;
   - **the broker** drops to `hatchling-broker` once its start is done (`broker_user.rs`) and confines its own file access with Landlock (`confine.rs`, `hatchling_sys::landlock`).
 
   The owner's sockets admit the owner recorded at start (`owner.rs`). Without root, all four run as the owner, and the broker is still confined.
@@ -45,7 +45,7 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 | --- | --- |
 | `hatchling-broker` | Central coordinator. Spawns cells, routes messages, enforces grants, serves the local API, and holds the owner's approvals (`approvals`, WO-027). Never executes untrusted code. |
 | `hatchling-agent` | The binary that runs inside a cell. It reaches the broker over its one peer-authorized session; all its logic is library code, tested without spawning it. |
-| `hatchling-browser` | *Not published.* Cell-side controllers. The browser binary starts headless Chromium and drives it over its DevTools pipe (WO-029). The default-off `hatchling-room` binary prototypes foreground process control inside the room (WO-034). Both run on the untrusted side. |
+| `hatchling-browser` | *Not published.* Cell-side controllers. The browser binary starts headless Chromium and drives it over its DevTools pipe (WO-029). The default-off `hatchling-room` binary runs and captures foreground commands inside the room (WO-034). Both run on the untrusted side. |
 | `hatchling-core` | The shared foundation: identity newtypes, protocol framing and message types, grants, kernel peer credentials, and the canonical form and digest an approval binds (`action`). The vocabulary everything else speaks. |
 | `hatchling-loop` | The agent's tool-calling loop. The model proposes; the host validates and bounds. LLM-agnostic. |
 

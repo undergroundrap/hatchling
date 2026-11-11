@@ -16,6 +16,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 runs one foreground command through the installed Room.** The broker receives its reported exit status and capped output after the Room is torn down. Workspace files persist across launches.
 - **WO-034 gives the Room write access to its encrypted workspace.** The launcher grants access to the dedicated Room group and keeps the inbox attachment under root control.
 - **WO-034 checks the installed Room supervisor at admission.** The trusted launcher starts it as the dedicated Room user under the Room syscall filter, checks readiness, and reaps it before releasing the verified image.
 - **WO-034 gives the Room launcher its own required cgroup.** It starts with bounded memory and CPU, a 512-task limit and no swap. The spawner waits for the group to drain before removing the image mapper.
