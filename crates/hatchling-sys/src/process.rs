@@ -1097,6 +1097,71 @@ pub fn reap_as_init(program: &Child) -> i32 {
     }
 }
 
+/// How often an owner-watched init looks for orphans to reap, in
+/// milliseconds. Its own program's exit and its owner's wake it at once.
+const ORPHAN_TICK: i32 = 100;
+
+/// Reaps a namespace's children while its trusted owner is alive, and
+/// returns the program's exit code, or `None` when the owner ended first.
+///
+/// The code is as [`child_exit_code`] gives it; 1 if the wait itself
+/// fails or the program was collected elsewhere.
+///
+/// `owner` is a pidfd obtained by the trusted owner before handoff, not a
+/// numeric PID supplied by the confined program. A silent program cannot
+/// defer the liveness check by retaining output pipes. On `None` the
+/// caller must exit its PID namespace's init, so the kernel kills every
+/// remaining member; an owner that can no longer be watched counts as
+/// ended. No thread is started. The program's own exit is seen at once,
+/// and other children are reaped on the way.
+#[must_use]
+pub fn reap_as_init_with_owner(program: &Child, owner: BorrowedFd<'_>) -> Option<i32> {
+    reap_watching(program, owner, ORPHAN_TICK)
+}
+
+fn reap_watching(program: &Child, owner: BorrowedFd<'_>, tick: i32) -> Option<i32> {
+    use rustix::event::{PollFd, PollFlags, poll};
+
+    // The program's pidfd is watched too: its exit must not wait out a
+    // tick, which every command would pay.
+    let mut watched = [
+        PollFd::new(&owner, PollFlags::IN),
+        PollFd::new(&program.pidfd, PollFlags::IN),
+    ];
+    let mut delay = 0;
+    loop {
+        // Check the owner before every reap, including under a stream of
+        // exiting orphans. Neither child traffic nor a silent supervisor
+        // can keep an ownerless Room running.
+        match poll(&mut watched, delay) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return None,
+        }
+        let [owner_seen, program_seen] = &watched;
+        if !owner_seen.revents().is_empty() {
+            return None;
+        }
+        let program_ended = !program_seen.revents().is_empty();
+        match rustix::process::wait(rustix::process::WaitOptions::NOHANG) {
+            Ok(Some((pid, status))) => {
+                if pid.as_raw_nonzero().get() == program.pid.get() {
+                    program.reaped.store(true, Ordering::SeqCst);
+                    return Some(child_exit_code(i32::try_from(status.as_raw()).unwrap_or(1)));
+                }
+                delay = 0;
+            }
+            // The program ended and is not here to reap: it was collected
+            // elsewhere, as the kernel does for a process that ignores
+            // SIGCHLD. Its code is lost. Its pidfd stays readable, so
+            // waiting on would spin.
+            Ok(None) if program_ended => return Some(1),
+            Ok(None) => delay = tick,
+            Err(_) => return Some(1),
+        }
+    }
+}
+
 /// Exits the current process immediately without running destructors.
 ///
 /// For fork children that must not touch parent state (no `Drop`, no
@@ -1775,6 +1840,265 @@ mod tests {
                     0
                 } else {
                     3
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn owner_watched_init_reaps_others_and_returns_its_programs_code() {
+        match fork().expect("fork helper") {
+            ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(Duration::from_secs(10))
+                    .expect("helper");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: setup failed; 2: wrong code; 3: program not marked reaped; 4: unreaped orphan"
+                );
+            }
+            ForkResult::Child => {
+                let Ok(owner) = self_pidfd() else {
+                    exit_child(1)
+                };
+                let _early = match fork() {
+                    Ok(ForkResult::Parent { child }) => child,
+                    Ok(ForkResult::Child) => exit_child(3),
+                    Err(_) => exit_child(1),
+                };
+                let program = match fork() {
+                    Ok(ForkResult::Parent { child }) => child,
+                    Ok(ForkResult::Child) => {
+                        std::thread::sleep(Duration::from_millis(200));
+                        exit_child(7);
+                    }
+                    Err(_) => exit_child(1),
+                };
+                let code = reap_as_init_with_owner(&program, owner.as_fd());
+                let left = rustix::process::wait(rustix::process::WaitOptions::NOHANG);
+                exit_child(if code != Some(7) {
+                    2
+                } else if !program.reaped.load(Ordering::SeqCst) {
+                    3
+                } else if matches!(left, Err(rustix::io::Errno::CHILD)) {
+                    0
+                } else {
+                    4
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn owner_watched_init_refuses_a_dead_owner_without_waiting_for_its_program() {
+        for already_gone in [false, true] {
+            match fork().expect("fork helper") {
+                ForkResult::Parent { child } => {
+                    let status = child
+                        .wait_deadline(Duration::from_secs(10))
+                        .expect("helper");
+                    assert_eq!(
+                        child_exit_code(status),
+                        0,
+                        "1: setup failed; 2: ignored owner death; 3: waited for program; 4: program exited"
+                    );
+                }
+                ForkResult::Child => {
+                    let owner = match fork() {
+                        Ok(ForkResult::Parent { child }) => child,
+                        Ok(ForkResult::Child) => {
+                            std::thread::sleep(Duration::from_millis(200));
+                            exit_child(0);
+                        }
+                        Err(_) => exit_child(1),
+                    };
+                    let program = match fork() {
+                        Ok(ForkResult::Parent { child }) => child,
+                        Ok(ForkResult::Child) => {
+                            std::thread::sleep(Duration::from_secs(30));
+                            exit_child(7);
+                        }
+                        Err(_) => exit_child(1),
+                    };
+                    if already_gone && owner.wait_deadline(Duration::from_secs(3)).is_err() {
+                        exit_child(1);
+                    }
+                    let started = Instant::now();
+                    let code = reap_as_init_with_owner(&program, owner.as_fd());
+                    let still_running = matches!(program.try_wait(), Ok(None));
+                    let _ = program.terminate();
+                    let _ = program.wait_deadline(Duration::from_secs(3));
+                    let _ = owner.wait_deadline(Duration::from_secs(3));
+                    exit_child(if code.is_some() {
+                        2
+                    } else if started.elapsed() >= Duration::from_secs(3) {
+                        3
+                    } else if !still_running {
+                        4
+                    } else {
+                        0
+                    });
+                }
+            }
+        }
+    }
+
+    /// The program's exit ends the wait at once, not at the next tick: a
+    /// tick far longer than the test allows would be waited out otherwise.
+    #[test]
+    fn owner_watched_init_returns_as_its_program_exits_without_waiting_out_a_tick() {
+        match fork().expect("fork helper") {
+            ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(Duration::from_secs(30))
+                    .expect("helper");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: setup failed; 2: wrong code; 3: waited out the tick"
+                );
+            }
+            ForkResult::Child => {
+                let Ok(owner) = self_pidfd() else {
+                    exit_child(1)
+                };
+                let program = match fork() {
+                    Ok(ForkResult::Parent { child }) => child,
+                    Ok(ForkResult::Child) => {
+                        std::thread::sleep(Duration::from_millis(200));
+                        exit_child(7);
+                    }
+                    Err(_) => exit_child(1),
+                };
+                let started = Instant::now();
+                let code = reap_watching(&program, owner.as_fd(), 10_000);
+                exit_child(if code != Some(7) {
+                    2
+                } else if started.elapsed() >= Duration::from_secs(5) {
+                    3
+                } else {
+                    0
+                });
+            }
+        }
+    }
+
+    /// An orphan that exits while the program runs is reaped within a
+    /// tick, not left a zombie until the program ends.
+    #[test]
+    fn owner_watched_init_reaps_an_orphan_while_its_program_still_runs() {
+        match fork().expect("fork helper") {
+            ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(Duration::from_secs(30))
+                    .expect("helper");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: setup failed; 2: wrong code; 3: the orphan was still a zombie"
+                );
+            }
+            ForkResult::Child => {
+                let Ok(owner) = self_pidfd() else {
+                    exit_child(1)
+                };
+                // Exits 200 ms in, after the first empty wait: only a
+                // tick finds it before the program ends.
+                let orphan = match fork() {
+                    Ok(ForkResult::Parent { child }) => child,
+                    Ok(ForkResult::Child) => {
+                        std::thread::sleep(Duration::from_millis(200));
+                        exit_child(0);
+                    }
+                    Err(_) => exit_child(1),
+                };
+                // The program looks until the orphan is gone, for 5 s at
+                // most: a zombie still takes a signal check, a reaped
+                // child's pid does not.
+                let Some(orphan_pid) = Pid::from_raw(orphan.pid.get()) else {
+                    exit_child(1)
+                };
+                let program = match fork() {
+                    Ok(ForkResult::Parent { child }) => child,
+                    Ok(ForkResult::Child) => {
+                        let started = Instant::now();
+                        while started.elapsed() < Duration::from_secs(5) {
+                            if matches!(
+                                rustix::process::test_kill_process(orphan_pid),
+                                Err(rustix::io::Errno::SRCH)
+                            ) {
+                                exit_child(7);
+                            }
+                            std::thread::sleep(Duration::from_millis(20));
+                        }
+                        exit_child(9);
+                    }
+                    Err(_) => exit_child(1),
+                };
+                exit_child(match reap_as_init_with_owner(&program, owner.as_fd()) {
+                    Some(7) => 0,
+                    Some(9) => 3,
+                    _ => 2,
+                });
+            }
+        }
+    }
+
+    /// A program the kernel collected itself, as it does where SIGCHLD is
+    /// ignored, ends the wait with 1. Its pidfd stays readable and there
+    /// is nothing to reap, so a wait that only went round again would
+    /// spin for as long as any other child lived.
+    #[test]
+    fn owner_watched_init_ends_when_its_program_was_collected_elsewhere() {
+        match fork().expect("fork helper") {
+            ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(Duration::from_secs(10))
+                    .expect("helper");
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: setup failed; 2: wrong code; 3: waited on after the program ended"
+                );
+            }
+            ForkResult::Child => {
+                let Ok(owner) = self_pidfd() else {
+                    exit_child(1)
+                };
+                // SAFETY: setting a signal's disposition to ignore in a
+                // single-threaded fork child before any other work.
+                if unsafe { libc::signal(libc::SIGCHLD, libc::SIG_IGN) } == libc::SIG_ERR {
+                    exit_child(1);
+                }
+                // Another child that lives on: with it, a wait finds
+                // nothing to reap instead of failing for want of children.
+                let other = match fork() {
+                    Ok(ForkResult::Parent { child }) => child,
+                    Ok(ForkResult::Child) => {
+                        std::thread::sleep(Duration::from_secs(30));
+                        exit_child(0);
+                    }
+                    Err(_) => exit_child(1),
+                };
+                let program = match fork() {
+                    Ok(ForkResult::Parent { child }) => child,
+                    Ok(ForkResult::Child) => {
+                        std::thread::sleep(Duration::from_millis(200));
+                        exit_child(7);
+                    }
+                    Err(_) => exit_child(1),
+                };
+                let started = Instant::now();
+                let code = reap_as_init_with_owner(&program, owner.as_fd());
+                let waited = started.elapsed();
+                let _ = other.terminate();
+                exit_child(if code != Some(1) {
+                    2
+                } else if waited >= Duration::from_secs(3) {
+                    3
+                } else {
+                    0
                 });
             }
         }

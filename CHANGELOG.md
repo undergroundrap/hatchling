@@ -8,6 +8,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **WO-034 stops the Room when its spawner ends.** If the spawner was killed while the broker kept running, the Room's work could carry on with nothing in charge of it. The Room's first process now watches the spawner and ends the Room when the spawner is gone, within about two seconds even if its log can't be written, and that log says why. The read-only image mapping of that launch is left in place for now; clearing it at start follows with the Room session work. `hatchling-sys` adds `reap_as_init_with_owner`, and nothing it already had changes.
 - **WO-034 refuses key maintenance during Room work.** Rekey and tier enrollment acquire exclusive disk authority and confirm closure before changing keys or stores. Stop Hatchling and retry when maintenance reports a busy Room.
 - **WO-034 keeps Room cleanup going through an interrupted wait.** The spawner still needs to confirm the launcher exited before releasing the image and keeps its five-second wait limit.
 - **WO-034 verifies which filesystem is mounted at the room workspace.** Opening the disk and reporting it open now require the root of the expected encrypted volume with the workspace's safety flags. A different mount with the same flags is refused.

@@ -31,6 +31,10 @@ const SUPERVISOR_FD: i32 = 3;
 const READY: &[u8; 9] = b"\0\0\0\x05ready";
 const UNSUPPORTED_ARCH: &str = "the Room supervisor requires x86_64 Linux";
 const DEADLINE: Duration = Duration::from_secs(30);
+const SPAWNER_ENDED: &str = "the Room was stopped: its spawner ended";
+/// How long the Room's first process may take to stop the supervisor and
+/// say why once the spawner is gone.
+const OWNERLESS_GRACE: Duration = Duration::from_secs(2);
 
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
 
@@ -253,6 +257,9 @@ fn check_mount(
         // independent exit witness for the actual namespace process.
         *launcher_pidfd =
             Some(hatchling_sys::net::recv_fd(owner.as_fd()).map_err(|error| error.to_string())?);
+        let spawner = hatchling_sys::self_pidfd().map_err(|error| error.to_string())?;
+        hatchling_sys::net::send_fd(owner.as_fd(), spawner.as_fd())
+            .map_err(|error| error.to_string())?;
         write_frame(&owner, &bytes).map_err(|error| error.to_string())?;
         hatchling_sys::net::send_fd(owner.as_fd(), endpoint.as_fd())
             .map_err(|error| error.to_string())?;
@@ -359,6 +366,11 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
     hatchling_sys::net::send_fd(channel.as_fd(), pidfd.as_fd())
         .map_err(|error| error.to_string())?;
     drop(pidfd);
+    // The namespace cannot look up its owner outside the PID namespace.
+    // Keep the spawner's own trusted pidfd; a worker thread or a socket's
+    // EOF does not establish the owning process's lifetime.
+    let spawner =
+        hatchling_sys::net::recv_fd(channel.as_fd()).map_err(|error| error.to_string())?;
     let bytes = read_frame(&channel).map_err(|error| error.to_string())?;
     let spec: MountSpec = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     let endpoint =
@@ -379,11 +391,19 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
     match hatchling_sys::fork().map_err(|error| error.to_string())? {
         hatchling_sys::ForkResult::Parent { child } => {
             drop(endpoint);
-            let status = hatchling_sys::reap_as_init(&child);
-            if status != 0 {
-                return Err(format!("the Room supervisor exited with status {status}"));
+            match hatchling_sys::reap_as_init_with_owner(&child, spawner.as_fd()) {
+                Some(0) => Ok(()),
+                Some(status) => Err(format!("the Room supervisor exited with status {status}")),
+                // Returning ends this namespace's init, and the kernel
+                // kills whatever the Room still runs. On the way out the
+                // supervisor is stopped and the reason is written to a
+                // log the dead spawner handed down, which may never take
+                // it: neither may hold the Room open past the grace.
+                None => {
+                    end_within(OWNERLESS_GRACE);
+                    Err(String::from(SPAWNER_ENDED))
+                }
             }
-            Ok(())
         }
         hatchling_sys::ForkResult::Child => {
             let result = (|| -> Result<(), hatchling_sys::Error> {
@@ -405,6 +425,18 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
             }
             hatchling_sys::exit_child(1);
         }
+    }
+}
+
+/// Ends this process with status 1 once `grace` has passed, whatever it
+/// is doing by then; at once if the timer can't be started.
+fn end_within(grace: Duration) {
+    let timer = std::thread::Builder::new().spawn(move || {
+        std::thread::sleep(grace);
+        hatchling_sys::exit_child(1);
+    });
+    if timer.is_err() {
+        hatchling_sys::exit_child(1);
     }
 }
 
@@ -444,6 +476,29 @@ mod tests {
     use crate::room_disk::{RoomDiskOp, tests::Bench};
     use std::os::fd::AsRawFd as _;
     use std::os::unix::process::ExitStatusExt as _;
+
+    /// A process told to end within a grace ends with 1 when the grace is
+    /// up, though it is busy with something that would take far longer,
+    /// and not before.
+    #[test]
+    fn end_within_ends_a_busy_process_when_the_grace_is_up() {
+        let grace = Duration::from_millis(300);
+        let started = Instant::now();
+        match hatchling_sys::fork().expect("fork") {
+            hatchling_sys::ForkResult::Parent { child } => {
+                let status = child
+                    .wait_deadline(Duration::from_secs(10))
+                    .expect("the process outlived its grace");
+                assert_eq!(hatchling_sys::child_exit_code(status), 1);
+                assert!(started.elapsed() >= grace, "ended before the grace");
+            }
+            hatchling_sys::ForkResult::Child => {
+                end_within(grace);
+                std::thread::sleep(Duration::from_secs(30));
+                hatchling_sys::exit_child(0);
+            }
+        }
+    }
 
     #[test]
     fn room_mount_admission_requires_an_open_disk() {
