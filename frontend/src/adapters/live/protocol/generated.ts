@@ -1053,6 +1053,10 @@ export type CodeState = 'asked' | 'filled' | 'declined' | 'expired';
  */
 export type Concealed = string;
 /**
+ * Why a confirmation stopped waiting without the owner's decision.
+ */
+export type ConfirmationClosure = 'expired' | 'withdrawn';
+/**
  * One field of what a confirmation asks.
  */
 export type ConfirmationField = {
@@ -4829,6 +4833,20 @@ export type UiEventBody = {
     readonly kind: 'confirmation_decided';
     /**
      * The revision the decision applied to.
+     */
+    readonly revision: number;
+} | {
+    /**
+     * The confirmation closed.
+     */
+    readonly confirmation_id: string;
+    readonly kind: 'confirmation_closed';
+    /**
+     * Why it stopped waiting.
+     */
+    readonly reason: ConfirmationClosure;
+    /**
+     * The revision that was waiting.
      */
     readonly revision: number;
 } | {

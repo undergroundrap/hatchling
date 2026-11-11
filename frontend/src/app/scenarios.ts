@@ -65,6 +65,7 @@ export function openScenarios(ctx: AppContext): void {
             { id: 'network', title: 'Task approval above the input', description: 'One scoped permission request, mirrored in Activity and Approvals history.' },
             { id: 'multiple', title: 'Multiple approval requests', description: 'Review each request separately; no blanket approval.' },
             { id: 'expired', title: 'Expired approval', description: 'A timed-out request stays in history and cannot be approved.' },
+            { id: 'lapsed', title: 'Answer arrives too late', description: 'The request timed out first: nothing was decided, and the app says so.' },
             { id: 'failed', title: 'Decision could not be saved', description: 'The request stays visible with an explicit retryable failure.' },
             { id: 'unknown', title: 'Decision not confirmed', description: 'Check the result without sending permission a second time.' },
         ];

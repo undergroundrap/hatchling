@@ -294,6 +294,7 @@ export class LiveAdapter implements ProtocolAdapter {
                 return undefined;
             case 'confirmation':
             case 'confirmation_decided':
+            case 'confirmation_closed':
                 this.taskApprovals.observe(event);
                 this.#sites.observe(event);
                 this.#memory.observe(event);

@@ -10,12 +10,16 @@
 // once more and has the last word. Whether anything is allowed is the
 // broker's decision, never this adapter's: it carries the user's answer.
 //
+// A request the broker closes without a decision (it lapsed, or the session
+// that asked ended) is closed here when the broker says so, on the stream: its
+// card stops offering answers, and a replay never shows it as waiting again.
+//
 // The decisions the owner made before this connection, which the broker
 // keeps, are read when it opens: the history shows them as they were decided,
 // across a restart.
 import type { ApprovalAttempt, ApprovalResult, ApprovalStatus, TaskApproval, TaskApprovalPort } from '../../session/task-approvals.js';
 import type { LiveClient, Reply } from './client.js';
-import type { ActionRefusal, ConfirmationRequest, Decision, DecisionRecord, DecisionRejection, UiEvent } from './protocol/generated.js';
+import type { ActionRefusal, ConfirmationClosure, ConfirmationRequest, Decision, DecisionRecord, DecisionRejection, UiEvent } from './protocol/generated.js';
 import { MAIN_CHAT, appChat } from './chat.js';
 import { clockTime } from './text.js';
 const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
@@ -27,6 +31,29 @@ const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
 };
 /** What a broker rejection says about the request itself. */
 const CLOSES: Readonly<Partial<Record<DecisionRejection, ApprovalStatus>>> = { unknown: 'cancelled', expired: 'expired' };
+/** What the broker closing a request without a decision makes of its card. */
+const CLOSURES: Readonly<Record<ConfirmationClosure, ApprovalStatus>> = { expired: 'expired', withdrawn: 'cancelled' };
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** The local calendar day a moment falls on, as a day count. */
+const localDay = (at: number): number => {
+    const day = new Date(at);
+    return Math.round(new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime() / DAY_MS);
+};
+/**
+ * When a request stops waiting, in the words a person would use on the day it
+ * was offered: `09:10`, `tomorrow at 09:10`, or the date and the time. On the
+ * person's own clock, as every other time in the app is.
+ */
+export const expiryWords = (expiresAt: string, offeredAt: string): string => {
+    const time = clockTime(expiresAt);
+    const days = localDay(Date.parse(expiresAt)) - localDay(Date.parse(offeredAt));
+    if (!(days > 0))
+        return time;
+    if (days === 1)
+        return `tomorrow at ${time}`;
+    const day = new Date(Date.parse(expiresAt));
+    return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')} at ${time}`;
+};
 const REFUSALS: Readonly<Record<ActionRefusal, string>> = {
     not_connected: 'Hatchling is not connected to its broker, so nothing was decided.',
     bad_request: 'Hatchling could not read the decision, so nothing was decided.',
@@ -51,6 +78,8 @@ export class LiveApprovals implements TaskApprovalPort {
     }>();
     /** Requests the broker said are closed, without a decision. */
     readonly #closed = new Map<string, ApprovalStatus>();
+    /** Requests the broker closed on the stream: for good, whatever is replayed after. */
+    readonly #ended = new Map<string, ApprovalStatus>();
     readonly #attempts = new Map<string, Promise<ApprovalResult>>();
     readonly #sending = new Set<string>();
     readonly #nextId: () => string;
@@ -81,6 +110,10 @@ export class LiveApprovals implements TaskApprovalPort {
     /** Record a confirmation event, which the client has already applied once. */
     observe(event: UiEvent): void {
         const body = event.body;
+        if (body.kind === 'confirmation_closed') {
+            this.#ended.set(body.confirmation_id, CLOSURES[body.reason]);
+            return;
+        }
         if (body.kind !== 'confirmation')
             return;
         const seen = this.#seen.get(body.confirmation_id);
@@ -90,7 +123,9 @@ export class LiveApprovals implements TaskApprovalPort {
         this.#closed.delete(body.confirmation_id);
     }
     getSnapshot(): readonly TaskApproval[] {
-        const live = [...this.#seen.values()].map(({ request, at }) => this.#card(request, at));
+        // The newest first, as the history after it is: what was just asked
+        // for leads the queue, not what has waited longest.
+        const live = [...this.#seen.values()].reverse().map(({ request, at }) => this.#card(request, at));
         // What was decided before this connection, as it was decided.
         const kept = this.#history
             .filter(record => !this.#seen.has(record.confirmation_id))
@@ -121,12 +156,12 @@ export class LiveApprovals implements TaskApprovalPort {
     }
     #card(request: ConfirmationRequest, at: string, kept?: Decision): TaskApproval {
         const decision = kept ?? this.#client.decision(request.confirmation_id);
-        const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'approve_always' ? 'allowed-always' : decision === 'deny' ? 'denied' : this.#closed.get(request.confirmation_id) ?? 'pending';
+        const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'approve_always' ? 'allowed-always' : decision === 'deny' ? 'denied' : this.#ended.get(request.confirmation_id) ?? this.#closed.get(request.confirmation_id) ?? 'pending';
         const forTask = request.session === true;
         const always = request.always === true;
         // The broker's own words for approving, when it has them: Remember it.
         const approve = typeof request.approve === 'string' ? request.approve : 'Allow once';
-        const expires = typeof request.expires_at === 'string' ? clockTime(request.expires_at) : '';
+        const expires = typeof request.expires_at === 'string' && clockTime(request.expires_at) !== '' ? expiryWords(request.expires_at, at) : '';
         return {
             id: request.confirmation_id,
             revision: request.revision,
@@ -135,7 +170,7 @@ export class LiveApprovals implements TaskApprovalPort {
             kind: 'tool',
             title: 'Hatchling asks before it continues',
             description: request.summary,
-            resource: expires === '' ? 'This request does not expire.' : `This request expires at ${expires} UTC.`,
+            resource: expires === '' ? 'This request does not expire.' : `This request waits for your answer until ${expires}.`,
             detail: [
                 `${approve} answers this request as described, and only this version of it.`,
                 forTask ? "Allow for task also answers every request like it until the agent's session ends; in a chat, that's this answer." : '',

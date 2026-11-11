@@ -26,7 +26,10 @@
 //! event at or below the client's mark is a duplicate and is dropped.
 //! A confirmation is decided at most once: once the client has seen
 //! [`UiEventBody::ConfirmationDecided`] for it, replaying its request
-//! never presents it again.
+//! never presents it again. One that stops waiting without a decision,
+//! because it lapsed or was withdrawn, is closed the same way
+//! ([`UiEventBody::ConfirmationClosed`]): nothing can be decided on it,
+//! and it is never presented as waiting again.
 //!
 //! # Interactive surfaces (v2)
 //!
@@ -205,6 +208,16 @@ pub enum UiEventBody {
         revision: u64,
         /// The decision.
         decision: Decision,
+    },
+    /// A confirmation stopped waiting without a decision. Nothing can be
+    /// decided on it any more, and it is never presented as waiting again.
+    ConfirmationClosed {
+        /// The confirmation closed.
+        confirmation_id: String,
+        /// The revision that was waiting.
+        revision: u64,
+        /// Why it stopped waiting.
+        reason: ConfirmationClosure,
     },
     /// What the agent is doing now (v2).
     AgentStatus {
@@ -1690,6 +1703,17 @@ pub enum UiActionResult {
     },
 }
 
+/// Why a confirmation stopped waiting without the owner's decision.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ConfirmationClosure {
+    /// The owner didn't decide in time.
+    Expired,
+    /// The broker took it back: nothing is left to act on an answer.
+    Withdrawn,
+}
+
 /// Why a decision was not recorded.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -2169,6 +2193,33 @@ mod tests {
             ),
             &json!({"seq": 6, "ts": "t", "body": {"kind": "confirmation_decided", "confirmation_id": "k1", "revision": 2, "decision": "deny"}}),
         );
+    }
+
+    /// A confirmation that stopped waiting without a decision, as the wire
+    /// says it: which one, at which revision, and why.
+    #[test]
+    fn a_closed_confirmation_is_pinned() {
+        let at = |seq, body| UiEvent {
+            seq,
+            ts: String::from("t"),
+            body,
+        };
+        for (reason, said) in [
+            (ConfirmationClosure::Expired, "expired"),
+            (ConfirmationClosure::Withdrawn, "withdrawn"),
+        ] {
+            pinned(
+                &at(
+                    7,
+                    UiEventBody::ConfirmationClosed {
+                        confirmation_id: String::from("k1"),
+                        revision: 2,
+                        reason,
+                    },
+                ),
+                &json!({"seq": 7, "ts": "t", "body": {"kind": "confirmation_closed", "confirmation_id": "k1", "revision": 2, "reason": said}}),
+            );
+        }
     }
 
     #[test]

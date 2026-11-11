@@ -35,6 +35,12 @@
 .task-approval-feedback { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); font-size: calc(12px * var(--ui-scale)); margin: 10px 0; overflow-wrap: anywhere; }
 .task-approval-feedback > svg { flex-shrink: 0; margin-top: 2px; }
 .task-approval-feedback.error, .task-approval-feedback.unknown { color: var(--attention); }
+/* An answer that reached a closed request: said in the request's place, until dismissed. */
+.task-approval-notice { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 10px 16px; margin-bottom: 8px; font-size: calc(13px * var(--ui-scale)); line-height: 1.45; color: var(--text); }
+.task-approval-notice > .task-approval-feedback { margin: 0 0 4px; }
+.task-approval-notice-request { margin: 0; color: var(--muted); font-size: calc(12px * var(--ui-scale)); overflow-wrap: anywhere; }
+.task-approval-notice-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
+.task-approval-notice-actions > .button { padding: 4px; min-height: 28px; font-size: calc(11px * var(--ui-scale)); color: var(--muted); }
 .task-approval-pagination { display: flex; align-items: center; gap: 4px; margin-top: 10px; color: var(--muted); font-size: calc(11px * var(--ui-scale)); }
 .task-approval-pagination > span { margin-right: auto; }
 .task-approval-pagination .icon-button { width: 30px; height: 30px; flex-shrink: 0; }

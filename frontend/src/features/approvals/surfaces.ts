@@ -48,10 +48,15 @@ function decisionActions(ctx: AppContext, request: TaskApproval): HTMLElement {
     return actions;
 }
 /** Composer and history refer to the same adapter request, never duplicated state. */
+/** An answer that reached a closed request: what it was, that nothing was decided, and where the record is. */
+function unansweredNotices(ctx: AppContext): HTMLElement[] {
+    return ctx.approvals.notices(ctx.ui.chatId).map(notice => h('section', { class: 'task-approval-notice', 'data-task-approval-notice': notice.id, role: 'status', 'aria-live': 'polite' }, h('p', { class: 'task-approval-feedback error' }, icon('warning', 14), h('span', {}, h('strong', {}, 'Answer not taken. '), notice.detail, ' Nothing will be done for it.')), h('p', { class: 'task-approval-notice-request' }, notice.title), h('div', { class: 'task-approval-notice-actions' }, button('Approvals history', () => openHistory(ctx), { variant: 'link' }), button('Dismiss', () => ctx.approvals.dismiss(notice.id), { variant: 'link' }))));
+}
 export function renderTaskApprovalQueue(ctx: AppContext): HTMLElement | null {
+    const notices = unansweredNotices(ctx);
     const pending = ctx.approvals.pending(ctx.ui.chatId);
     if (!pending.length)
-        return null;
+        return notices.length ? h('div', { class: 'task-approval-dock' }, ...notices) : null;
     let selection = selected.get(ctx);
     if (!selection) {
         selection = new Map();
@@ -92,7 +97,7 @@ export function renderTaskApprovalQueue(ctx: AppContext): HTMLElement | null {
         next.id = 'next-task-approval';
         card.append(h('footer', { class: 'task-approval-pagination' }, h('span', { role: 'status' }, `${index + 1} of ${pending.length} requests · each needs its own decision`), previous, next));
     }
-    return h('div', { class: 'task-approval-dock' }, card);
+    return h('div', { class: 'task-approval-dock' }, ...notices, card);
 }
 export function taskApprovalRecord(ctx: AppContext, request: TaskApproval): HTMLElement {
     const feedback = ctx.approvals.state(request.id);

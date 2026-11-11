@@ -684,13 +684,23 @@ impl<'a> Ops<'a> {
                 },
                 ApiOutcome::Served,
             ),
-            Err(reason) => (
-                UiActionResult::DecisionRejected {
-                    confirmation_id: confirmation_id.to_owned(),
-                    reason,
-                },
-                ApiOutcome::Refused,
-            ),
+            Err(reason) => {
+                // The journal says why, so a refused decision can be told
+                // from one that was never made.
+                tracing::info!(
+                    confirmation = confirmation_id,
+                    ?reason,
+                    ?decision,
+                    "a decision on a confirmation was rejected"
+                );
+                (
+                    UiActionResult::DecisionRejected {
+                        confirmation_id: confirmation_id.to_owned(),
+                        reason,
+                    },
+                    ApiOutcome::Refused,
+                )
+            }
         }
     }
 

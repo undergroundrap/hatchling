@@ -44,7 +44,9 @@ use serde_json::json;
 use crate::Config;
 use crate::Skills;
 use crate::api_stream::Bus;
-use crate::approvals::{Approvals, Proposal, Refusal, Requested, State};
+use crate::approvals::{
+    Approvals, DECIDE_SECS, Proposal, Refusal, Requested, State, UNWAITED_DECIDE_SECS,
+};
 
 /// What an approved activation runs: the broker's own record of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,6 +274,7 @@ impl Board {
                 action,
                 fingerprint: effect,
                 task: task.to_owned(),
+                decide_secs: UNWAITED_DECIDE_SECS,
                 session: false,
                 always: false,
             },
@@ -317,6 +320,7 @@ impl Board {
                 action: site_action(site, url),
                 fingerprint: json!({ "op": "web.visit", "site": site }),
                 task: task.to_owned(),
+                decide_secs: DECIDE_SECS,
                 session: true,
                 always,
             },
@@ -354,6 +358,7 @@ impl Board {
                 action: json!({ "format": 1, "op": "memory.keep", "scope": "user", "content": content }),
                 fingerprint: json!({ "op": "memory.keep", "content": content }),
                 task: task.to_owned(),
+                decide_secs: UNWAITED_DECIDE_SECS,
                 session: false,
                 always: false,
             },
@@ -418,6 +423,7 @@ impl Board {
                 action: json!({ "format": 1, "op": "schedule.create", "when": when, "task": task, "grants": grants }),
                 fingerprint: json!({ "op": "schedule.create", "when": when, "task": task }),
                 task: asking.to_owned(),
+                decide_secs: UNWAITED_DECIDE_SECS,
                 session: false,
                 always: false,
             },
@@ -485,6 +491,7 @@ impl Board {
                 action,
                 fingerprint,
                 task: task.to_owned(),
+                decide_secs: DECIDE_SECS,
                 session: false,
                 always: false,
             },
@@ -524,7 +531,11 @@ impl Board {
         decision: Decision,
         now: i64,
     ) -> Result<State, DecisionRejection> {
-        let decided = self.approvals.decide(id, revision, digest, decision, now)?;
+        let decided = self.approvals.decide(id, revision, digest, decision, now);
+        // A decision that came too late finds its request lapsed: the app
+        // hears that the request closed, as well as that nothing was decided.
+        self.tell_closed();
+        let decided = decided?;
         self.keep(id, decision, now);
         self.publish(UiEventBody::ConfirmationDecided {
             confirmation_id: id.to_owned(),
@@ -546,6 +557,29 @@ impl Board {
             self.wake.notify_all();
         }
         Ok(decided)
+    }
+
+    /// Lapses what has waited its time out at `now`, and tells the app of
+    /// every request that stopped waiting without the owner's decision.
+    pub fn sweep(&self, now: i64) {
+        self.approvals.lapse(now);
+        self.tell_closed();
+    }
+
+    /// Tells the app of each request that stopped waiting without a
+    /// decision, once: its card is no longer one the owner can answer.
+    fn tell_closed(&self) {
+        for closed in self.approvals.take_closed() {
+            self.cards
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&closed.id);
+            self.publish(UiEventBody::ConfirmationClosed {
+                confirmation_id: closed.id,
+                revision: closed.revision,
+                reason: closed.why,
+            });
+        }
     }
 
     /// The next approved request for the worker, waiting up to `wait`.
@@ -800,8 +834,27 @@ pub fn work_forever(
     hub: Option<&LocalHub>,
 ) -> ! {
     loop {
-        let _ = run_next(config, key, skills, hub, WORKER_WAIT);
+        let now = Timestamp::now().as_second();
+        let _ = work_once(config, key, skills, hub, WORKER_WAIT, now);
     }
+}
+
+/// One turn of the worker at `now`: a look, then a step ([`run_next`]).
+///
+/// The look is for requests that stopped waiting without the owner's
+/// decision (one that lapsed, one a session that ended took back), so the
+/// app hears within a turn of it. What the owner was told, if anything
+/// was approved.
+pub fn work_once(
+    config: &Config,
+    key: &dyn OpensStores,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+    wait: Duration,
+    now: i64,
+) -> Option<String> {
+    board(config).sweep(now);
+    run_next(config, key, skills, hub, wait)
 }
 
 /// One step of the worker: waits up to `wait` for an approval on
@@ -990,6 +1043,7 @@ pub fn run_approved(
 
 #[cfg(test)]
 mod tests {
+    use hatchling_core::ui::ConfirmationClosure;
     use hatchling_core::{ActivationInput, ArtifactInput, IdeaRef};
 
     use super::*;
@@ -1114,6 +1168,114 @@ mod tests {
             )
             .unwrap();
         assert_ne!(other.digest, requested.digest);
+    }
+
+    /// Every `ConfirmationClosed` on `bus`, in order.
+    fn closed_on(bus: &Bus) -> Vec<(String, u64, ConfirmationClosure)> {
+        bus.after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::ConfirmationClosed {
+                    confirmation_id,
+                    revision,
+                    reason,
+                } = event.body
+                {
+                    Some((confirmation_id, revision, reason))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// A request the owner can no longer answer is said so on the stream,
+    /// once, and its card is forgotten: one that lapsed, one its session
+    /// took back, and one a decision arrived too late for. What nothing
+    /// waits on (something to remember) is given a day; what a session
+    /// waits on (a site to read) a quarter of an hour.
+    #[test]
+    fn a_request_that_stops_waiting_is_told_to_the_app() {
+        let board = empty();
+        let bus = Arc::new(Bus::starting_at(1));
+        board.attach(Arc::clone(&bus));
+        let site = board
+            .propose_site(
+                &SiteAsk {
+                    site: "https://a.example",
+                    url: "https://a.example/x",
+                    reason: "to read it",
+                    led: None,
+                    always: false,
+                    visit: false,
+                },
+                "t1",
+                100,
+            )
+            .unwrap();
+        let memory = board.propose_memory("likes teal", "t2", 100).unwrap();
+        let late = board.propose_memory("has a corgi", "t3", 100).unwrap();
+        let build = board
+            .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t4", 100)
+            .unwrap();
+        let schedule = board
+            .propose_schedule(
+                &hatchling_core::ScheduleSpec::Cron {
+                    expr: String::from("0 9 * * *"),
+                    tz: String::from("UTC"),
+                },
+                "Water the plants.",
+                &[],
+                "every day at nine",
+                "t5",
+                100,
+            )
+            .unwrap();
+        assert_eq!(site.expires_at, 100 + DECIDE_SECS);
+        for unwaited in [&memory, &late, &build, &schedule] {
+            assert_eq!(unwaited.expires_at, 100 + UNWAITED_DECIDE_SECS);
+        }
+        // What the owner decides is decided, never told as closed.
+        for decided in [&build, &schedule] {
+            assert_eq!(
+                board.decide(&decided.id, 1, &decided.digest, Decision::Deny, 101),
+                Ok(State::Denied)
+            );
+        }
+        let has_card = |id: &str| board.cards.lock().unwrap().contains_key(id);
+
+        board.sweep(100 + DECIDE_SECS - 1);
+        assert!(closed_on(&bus).is_empty(), "closed before its time");
+        assert!(has_card(&site.id));
+        board.sweep(100 + DECIDE_SECS);
+        let lapsed = (site.id.clone(), 1, ConfirmationClosure::Expired);
+        assert_eq!(closed_on(&bus), std::slice::from_ref(&lapsed));
+        assert!(!has_card(&site.id), "a lapsed request's card was kept");
+        assert!(has_card(&memory.id), "a day wasn't given");
+
+        // The session that asked ended: the worker's next look tells it.
+        assert_eq!(board.approvals().withdraw_task("t2", |_| true), 1);
+        board.sweep(100 + DECIDE_SECS);
+        let taken_back = (memory.id, 1, ConfirmationClosure::Withdrawn);
+        assert_eq!(closed_on(&bus), [lapsed.clone(), taken_back.clone()]);
+
+        // A decision that comes too late says so itself, without waiting
+        // for the worker.
+        assert_eq!(
+            board.decide(
+                &late.id,
+                1,
+                &late.digest,
+                Decision::Deny,
+                100 + UNWAITED_DECIDE_SECS
+            ),
+            Err(DecisionRejection::Expired)
+        );
+        let too_late = (late.id.clone(), 1, ConfirmationClosure::Expired);
+        assert_eq!(closed_on(&bus), [lapsed, taken_back, too_late]);
+        assert!(!has_card(&late.id));
+        board.sweep(100 + UNWAITED_DECIDE_SECS + 1);
+        assert_eq!(closed_on(&bus).len(), 3, "told twice");
     }
 
     /// A decision goes out on the stream; an approval, and only an

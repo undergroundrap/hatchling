@@ -1,7 +1,9 @@
 // Client-side replay reconciliation . Events carry strictly increasing
 // sequence numbers. The ledger applies each one at most once, keeps the mark
 // to resume from after a reconnect, and never presents a decided confirmation
-// again, however often its request is replayed.
+// again, however often its request is replayed. One the broker closed without
+// a decision (it lapsed, or was withdrawn) is the same: nothing can be decided
+// on it, so it is never offered as waiting again.
 import type { ConfirmationRequest, Decision, UiAction, UiEvent } from './generated.js';
 /** What applying one event did. */
 export type Applied = 'applied' | 'duplicate';
@@ -9,6 +11,7 @@ export class EventLedger {
     #mark: number | undefined;
     readonly #pending = new Map<string, ConfirmationRequest>();
     readonly #decided = new Map<string, Decision>();
+    readonly #closed = new Set<string>();
     /** The `after_seq` to resume from: the highest sequence applied, or `null` before any. */
     afterSeq(): number | null {
         return this.#mark ?? null;
@@ -25,10 +28,14 @@ export class EventLedger {
             this.#decided.set(body.confirmation_id, body.decision);
             this.#pending.delete(body.confirmation_id);
         }
+        else if (body.kind === 'confirmation_closed') {
+            this.#closed.add(body.confirmation_id);
+            this.#pending.delete(body.confirmation_id);
+        }
         return 'applied';
     }
     #offer(request: ConfirmationRequest): void {
-        if (this.#decided.has(request.confirmation_id))
+        if (this.#decided.has(request.confirmation_id) || this.#closed.has(request.confirmation_id))
             return;
         const current = this.#pending.get(request.confirmation_id);
         if (current === undefined || request.revision > current.revision)
@@ -45,8 +52,8 @@ export class EventLedger {
     /**
      * The action deciding a pending confirmation, at the revision and action
      * digest on screen. A
-     * confirmation that is not pending (decided, or never offered) gets no
-     * action: a decision is never sent twice.
+     * confirmation that is not pending (decided, closed, or never offered) gets
+     * no action: a decision is never sent twice, and never to a closed request.
      */
     decide(confirmationId: string, decision: Decision): UiAction | undefined {
         const request = this.#pending.get(confirmationId);

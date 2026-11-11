@@ -39,7 +39,7 @@ export interface ApprovalResult {
     readonly state: 'accepted' | 'rejected' | 'unknown';
     readonly detail: string;
 }
-export type ApprovalScenario = 'network' | 'multiple' | 'expired' | 'failed' | 'unknown';
+export type ApprovalScenario = 'network' | 'multiple' | 'expired' | 'failed' | 'unknown' | 'lapsed';
 export interface TaskApprovalPort {
     getSnapshot(): readonly TaskApproval[];
     subscribe(listener: () => void): () => void;

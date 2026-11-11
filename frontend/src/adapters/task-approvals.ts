@@ -9,7 +9,7 @@ export class ScriptedTaskApprovals implements TaskApprovalPort {
     }>();
     private readonly held = new Map<string, ApprovalAttempt>();
     private serial = 0;
-    private fault: 'none' | 'failed' | 'unknown' = 'none';
+    private fault: 'none' | 'failed' | 'unknown' | 'lapsed' = 'none';
     private disposed = false;
     constructor(private readonly publish: (requests: readonly TaskApproval[]) => void, private readonly chatExists: (chatId: string) => boolean) { }
     getSnapshot(): readonly TaskApproval[] { return structuredClone(this.requests); }
@@ -17,7 +17,7 @@ export class ScriptedTaskApprovals implements TaskApprovalPort {
     preview(scenario: ApprovalScenario, chatId: string): void {
         if (this.disposed || !this.chatExists(chatId))
             return;
-        this.fault = scenario === 'failed' || scenario === 'unknown' ? scenario : 'none';
+        this.fault = scenario === 'failed' || scenario === 'unknown' || scenario === 'lapsed' ? scenario : 'none';
         // Old preview requests are cancelled, not granted, when another demo starts.
         this.requests = this.requests.map(item => item.status === 'pending' ? { ...item, status: 'cancelled', report: 'This local preview was replaced. No permission was granted.' } : item);
         this.held.clear();
@@ -43,6 +43,14 @@ export class ScriptedTaskApprovals implements TaskApprovalPort {
             result = { state: 'rejected', detail: 'That permission scope was not requested.' };
         else if (this.held.has(request.id))
             result = { state: 'unknown', detail: 'A decision for this request is awaiting confirmation. Check its status; no additional decision was sent.' };
+        else if (this.fault === 'lapsed') {
+            // The request's time ran out while its card was on screen: the
+            // answer arrives too late, and the request is closed.
+            this.fault = 'none';
+            this.requests = this.requests.map(item => item.id === request.id ? { ...item, status: 'expired', report: 'This request timed out before it was answered. No permission was granted. A new request is needed.' } : item);
+            result = { state: 'rejected', detail: 'This request expired before the decision arrived, so nothing was decided.' };
+            this.emit();
+        }
         else if (this.fault === 'failed') {
             this.fault = 'none';
             result = { state: 'rejected', detail: 'Your decision was not saved. Nothing was approved. Try again when ready.' };

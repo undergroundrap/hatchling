@@ -165,10 +165,11 @@ Use these established terms consistently:
 | Permission awaiting review | **Task approval needed**; exact request, reason and scope |
 | Permission decision saving | **Saving your decision**; disable repeated actions |
 | Permission response uncertain | **Decision not confirmed** → Check status, not a replay |
+| Answer reached a request that had closed | **Answer not taken**; say why, that nothing was decided and nothing will be done → Approvals history / Dismiss |
 
 A task approval that carries the request's fields (WO-027) lists them in the card, above the scope: what the broker resolved first, then the agent's own words, each agent field labeled **From the agent**. Values are inert text, isolated for direction, whole (they wrap, never truncate), and every hidden or direction-control character is shown as its code point (`⟨U+202E⟩`). Agent text never becomes a button, a label or a notification. A site the agent asks to read (WO-028) may also offer **Allow for task** (until the agent's session ends) and **Allow always** (kept until revoked under Permissions → Websites); a request offers only the scopes it states, and the app refuses any other before sending.
 
-Keep uncertainty explicit. “Dismiss” is not “Cancel the original action.” Permission approval is never silently queued while offline. A purchase must open the existing complete quote; generic Allow does not bypass purchase review. Expired requests stay in history without live approval controls.
+Keep uncertainty explicit. “Dismiss” is not “Cancel the original action.” Permission approval is never silently queued while offline. A purchase must open the existing complete quote; generic Allow does not bypass purchase review. Expired and withdrawn requests stay in history without live approval controls, and leave the queue when the broker closes them. An answer that arrives after that is never shown as taken: the request's place says nothing was decided, until dismissed. The newest request leads the queue.
 
 Errors should name the failed thing, say what remains safe, and offer the next action. Prefer “This conversation couldn’t load. Try again; your draft will stay here.” to raw transport errors or a vague “Oops.” Do not insert real account names, news claims or copied report text into the synthetic examples.
 

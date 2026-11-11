@@ -114,6 +114,55 @@ test('unknown permission response can only reconcile, not resend or change its d
     review.dispose();
     adapter.dispose();
 });
+test('an answer that reaches a closed request says nothing was decided, until dismissed', async () => {
+    const { adapter, port, request } = setup();
+    let status = 'pending';
+    const closing = {
+        getSnapshot: () => port.getSnapshot().map(item => ({ ...item, status })),
+        subscribe: () => () => { },
+        // The broker's answer: the request had expired, and is closed.
+        respond: () => { status = 'expired'; return Promise.resolve({ state: 'rejected', detail: 'This request expired before the decision arrived, so nothing was decided.' }); },
+        refresh: () => Promise.resolve(),
+    };
+    let changes = 0;
+    const review = new ApprovalReview(closing, () => { changes++; });
+    await review.respond(request, 'deny');
+    assert.equal(review.pending().length, 0, 'the request left the queue');
+    assert.equal(review.state(request.id), undefined);
+    assert.deepEqual(review.notices(), [{ id: request.id, chatId: request.chatId, title: request.description, detail: 'This request expired before the decision arrived, so nothing was decided.' }]);
+    assert.deepEqual(review.notices(request.chatId).map(item => item.id), [request.id]);
+    assert.deepEqual(review.notices('another-chat'), []);
+    const before = changes;
+    review.dismiss(request.id);
+    assert.deepEqual(review.notices(), []);
+    assert.equal(changes, before + 1, 'dismissing redraws');
+    review.dismiss(request.id);
+    assert.equal(changes, before + 1, 'nothing left to dismiss');
+    review.dispose();
+    adapter.dispose();
+    // An answer that was taken, or whose fate is unknown, leaves no such notice.
+    for (const [state, closes] of [['accepted', 'allowed-once'], ['unknown', 'expired']]) {
+        const again = setup();
+        let now = 'pending';
+        const fake = { getSnapshot: () => again.port.getSnapshot().map(item => ({ ...item, status: now })), subscribe: () => () => { }, respond: () => { now = closes; return Promise.resolve({ state, detail: 'x' }); }, refresh: () => Promise.resolve() };
+        const quiet = new ApprovalReview(fake, () => { });
+        await quiet.respond(again.request, 'once');
+        assert.deepEqual(quiet.notices(), []);
+        quiet.dispose();
+        again.adapter.dispose();
+    }
+});
+test('the scripted answer that arrives too late closes its request and grants nothing', async () => {
+    const { adapter, port, request } = setup('lapsed');
+    const review = new ApprovalReview(port, () => { });
+    await review.respond(request, 'once');
+    assert.equal(port.getSnapshot()[0].status, 'expired');
+    assert.match(port.getSnapshot()[0].report, /No permission was granted/);
+    assert.equal(review.pending().length, 0);
+    assert.match(review.notices()[0].detail, /expired before the decision arrived/);
+    review.dispose();
+    adapter.dispose();
+});
 test('double clicks dispatch one permission decision while waiting', async () => {
     const { adapter, port, request } = setup();
     let calls = 0;

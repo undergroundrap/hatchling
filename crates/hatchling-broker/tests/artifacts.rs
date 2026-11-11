@@ -43,7 +43,8 @@ use hatchling_broker::{
 use hatchling_channel::{LocalHub, Message};
 use hatchling_core::framing::{read_frame, write_frame};
 use hatchling_core::ui::{
-    ChatAuthor, ConfirmationRequest, Decision, DecisionRejection, FieldSource, UiEventBody,
+    ChatAuthor, ConfirmationClosure, ConfirmationRequest, Decision, DecisionRejection, FieldSource,
+    UiEventBody,
 };
 use hatchling_core::{
     ActivationProposal, AgentMessage, ArtifactInput, ArtifactInspection, ArtifactOp,
@@ -1583,6 +1584,68 @@ fn decide(
         Decision::Approve,
         NOW,
     )
+}
+
+/// The worker's turn tells the app of a request that stopped waiting
+/// without the owner's decision, though nothing was approved and nothing
+/// asked: here one whose session ended. The owner isn't left looking at a
+/// request no answer can reach.
+#[test]
+fn the_workers_turn_tells_the_app_of_a_request_taken_back() {
+    let world = World::new("closed-request");
+    let board = approval_board::board(&world.config);
+    let bus = Arc::new(Bus::starting_at(1));
+    board.attach(Arc::clone(&bus));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let now = i64::try_from(now).unwrap();
+    let asked = board
+        .propose_memory("likes teal", "a-session", now)
+        .unwrap();
+    assert_eq!(board.approvals().withdraw_task("a-session", |_| true), 1);
+    let turn = |now| {
+        approval_board::work_once(
+            &world.config,
+            key(),
+            &world.skills,
+            None,
+            Duration::ZERO,
+            now,
+        )
+    };
+    assert_eq!(turn(now), None, "nothing was approved");
+    // Its clock is the turn's: a request whose day is up lapses on it.
+    let lapsing = board
+        .propose_memory("has a corgi", "another-session", now)
+        .unwrap();
+    let a_day_on = now + hatchling_broker::approvals::UNWAITED_DECIDE_SECS;
+    assert_eq!(turn(a_day_on - 1), None);
+    assert_eq!(turn(a_day_on), None);
+    let closed: Vec<(String, ConfirmationClosure)> = bus
+        .after(None)
+        .into_iter()
+        .filter_map(|event| {
+            if let UiEventBody::ConfirmationClosed {
+                confirmation_id,
+                reason,
+                ..
+            } = event.body
+            {
+                Some((confirmation_id, reason))
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(
+        closed,
+        [
+            (asked.id, ConfirmationClosure::Withdrawn),
+            (lapsing.id, ConfirmationClosure::Expired)
+        ]
+    );
 }
 
 /// WO-027, end to end: a proposal reaches the owner's app as the broker's
