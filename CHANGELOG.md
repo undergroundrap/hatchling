@@ -18,6 +18,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **WO-034 keeps the Room between commands.** The first command starts one Room session for the install, and later commands run in it without launching again. A session runs one command at a time. It ends after an hour, after fifteen minutes with no command, when a command misses its deadline or its connection goes, when the room disk is closed or wiped, and when the broker goes. A failure that ends it is reported once the Room is down. Nothing in the app uses the Room yet. `hatchling-sys` adds `wait_readable_for`, and nothing it already had changes.
 - **WO-034 runs one foreground command through the installed Room.** The broker receives its reported exit status and capped output after the Room is torn down. Workspace files persist across launches.
 - **WO-034 gives the Room write access to its encrypted workspace.** The launcher grants access to the dedicated Room group and keeps the inbox attachment under root control.
 - **WO-034 checks the installed Room supervisor at admission.** The trusted launcher starts it as the dedicated Room user under the Room syscall filter, checks readiness, and reaps it before releasing the verified image.

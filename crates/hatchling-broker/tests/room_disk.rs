@@ -1114,6 +1114,14 @@ fn check_installed_room_mount(
     spawner.0.room_disk(RoomDiskOp::Create)?;
     let closed = refusal()?;
     assert!(closed.contains("isn't mapped"), "{closed}");
+    // A command hears the same reason: no Room is launched for it, and it
+    // isn't left to try again.
+    let unopened = spawner
+        .0
+        .run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))
+        .err()
+        .ok_or("a command ran with the room disk closed")?;
+    assert!(unopened.contains("isn't mapped"), "{unopened}");
     spawner.0.room_disk(RoomDiskOp::Open)?;
     let mount = place.disk.mount_point();
     let canary = mount.join("workspace/kept");
@@ -1152,10 +1160,26 @@ fn check_installed_room_mount(
     check_room_cgroup(&place, &spawner.0, parent.path())?;
     assert_eq!(mapper_names()?, before, "success left an image mapper");
     assert_eq!(std::fs::read(&canary)?, b"kept in the encrypted room");
-    check_room_foreground(&spawner.0, &place)?;
+    check_room_foreground(&spawner.0, &place, &before)?;
+    // The Room is kept after its last command, with its image mapped,
+    // until its session ends: here, as its disk is closed.
+    assert_ne!(
+        mapper_names()?,
+        before,
+        "the Room was not kept after its command"
+    );
+    spawner.0.room_disk(RoomDiskOp::Close)?;
+    assert_eq!(
+        mapper_names()?,
+        before,
+        "closing the disk left the Room's image mapped"
+    );
+    spawner.0.room_disk(RoomDiskOp::Open)?;
     if tag == "installed-broker-admission" {
         check_room_foreground_limits(&spawner.0, &place, parent.path())?;
+        check_room_stays_held_until_cleared(&spawner.0, &place)?;
         check_room_foreground_disconnect(program, parent.path())?;
+        check_room_ends_with_its_broker(program, parent.path())?;
     }
     assert_eq!(
         mapper_names()?,
@@ -1168,7 +1192,11 @@ fn check_installed_room_mount(
     Ok(())
 }
 
-fn check_room_foreground(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+fn check_room_foreground(
+    spawner: &Spawner,
+    place: &Place,
+    before: &std::collections::BTreeSet<String>,
+) -> Result<(), Failed> {
     let first = spawner
         .run_room_foreground(&["/bin/foreground", "seed", "room data"].map(str::to_owned))?;
     assert_eq!(first.status, RoomForegroundStatus::Exited(23));
@@ -1178,8 +1206,40 @@ fn check_room_foreground(spawner: &Spawner, place: &Place) -> Result<(), Failed>
     let path = place.disk.mount_point().join("workspace/foreground-file");
     let digest = Sha256::digest(std::fs::read(&path)?);
     assert_eq!(digest, Sha256::digest(b"room data"));
+
+    // The next command runs in the same Room: it finds the scratch the
+    // first one left, which no other Room has. A status and an open of
+    // the disk under it leave the Room as it is; so does a check.
+    let kept = spawner.run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))?;
+    assert_eq!(
+        kept.status,
+        RoomForegroundStatus::Exited(0),
+        "the second command ran in another Room"
+    );
+    assert_eq!(
+        spawner
+            .room_disk(RoomDiskOp::Status)?
+            .map(|status| status.state),
+        Some(RoomDiskState::Open)
+    );
+    spawner.room_disk(RoomDiskOp::Open)?;
+    spawner.check_room_mount()?;
+    let kept = spawner.run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))?;
+    assert_eq!(
+        kept.status,
+        RoomForegroundStatus::Exited(0),
+        "a status, an open or a check ended the Room"
+    );
+
+    // Closing the disk ends the Room first: nothing of it is left, and
+    // the next command starts another, with scratch of its own.
     spawner.room_disk(RoomDiskOp::Close)?;
     assert!(!place.mapped());
+    assert_eq!(
+        &mapper_names()?,
+        before,
+        "the closed disk's Room left its image mapped"
+    );
     spawner.room_disk(RoomDiskOp::Open)?;
     let next = spawner.run_room_foreground(&["/bin/foreground", "resume"].map(str::to_owned))?;
     assert_eq!(next.status, RoomForegroundStatus::Exited(0));
@@ -1223,6 +1283,23 @@ fn check_room_foreground_limits(
             "the timeout left a Room cgroup"
         );
     }
+    Ok(())
+}
+
+/// One command at a time: a second is refused while one runs, and the
+/// disk under the Room still answers for itself.
+fn check_one_command_at_a_time(spawner: &Spawner) -> Result<(), Failed> {
+    let busy = spawner
+        .run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))
+        .err()
+        .ok_or("a second command ran beside the first")?;
+    assert!(busy.contains("busy with another command"), "{busy}");
+    assert_eq!(
+        spawner
+            .room_disk(RoomDiskOp::Status)?
+            .map(|status| status.state),
+        Some(RoomDiskState::Open)
+    );
     Ok(())
 }
 
@@ -1272,6 +1349,7 @@ fn check_room_foreground_disconnect(program: &Path, cgroup: &Path) -> Result<(),
             before,
             "the workload did not keep the image mapped"
         );
+        check_one_command_at_a_time(&spawner.0)?;
         let (vault, keyring, old) = check_room_maintenance_refusals(&place, program)?;
         let started = std::time::Instant::now();
         drop(request);
@@ -1323,6 +1401,133 @@ fn check_room_foreground_disconnect(program: &Path, cgroup: &Path) -> Result<(),
     drop(control);
     assert!(child.wait()?.success());
     result
+}
+
+/// A session whose Room can't be cleared stays in charge of it: the disk
+/// isn't closed under it, nothing runs or is checked beside it, and it
+/// keeps the disk's claim, so an operator is refused as during a live
+/// Room. Once the Room can be cleared, a close clears it and closes.
+fn check_room_stays_held_until_cleared(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    // The private namespace sees a real veritysetup except that close
+    // deliberately fails. The genuine image mapper stays in the kernel.
+    let system = Path::new("/usr/sbin/veritysetup");
+    let real = place.dir.join("veritysetup-held-real");
+    let shim = place.dir.join("veritysetup-held-fail-close");
+    std::fs::copy(system, &real)?;
+    std::fs::write(
+        &shim,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = close ]; then exit 1; fi\nexec '{}' \"$@\"\n",
+            real.display()
+        ),
+    )?;
+    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700))?;
+    let before = mapper_names()?;
+    let output = ["/bin/foreground", "output"].map(str::to_owned);
+    let ran = spawner.run_room_foreground(&output)?;
+    assert_eq!(ran.status, RoomForegroundStatus::Exited(0));
+    assert!(
+        Command::new("mount")
+            .arg("--bind")
+            .arg(&shim)
+            .arg(system)
+            .status()?
+            .success()
+    );
+    let held = HeldBind(system.to_owned());
+    let result = (|| -> Result<(), Failed> {
+        let close = spawner
+            .room_disk(RoomDiskOp::Close)
+            .err()
+            .ok_or("the disk closed under a Room that wasn't cleared")?;
+        assert!(close.contains("isn't cleared yet"), "{close}");
+        assert!(close.contains("cannot remove room mapper"), "{close}");
+        let beside = spawner
+            .run_room_foreground(&output)
+            .err()
+            .ok_or("a command ran beside a Room that wasn't cleared")?;
+        assert!(beside.contains("isn't cleared yet"), "{beside}");
+        let check = spawner
+            .check_room_mount()
+            .err()
+            .ok_or("a Room was admitted beside one that wasn't cleared")?;
+        assert!(check.contains("isn't cleared yet"), "{check}");
+        assert_eq!(
+            spawner
+                .room_disk(RoomDiskOp::Status)?
+                .map(|status| status.state),
+            Some(RoomDiskState::Open)
+        );
+        let reason = room_disk::close(&place.disk)
+            .err()
+            .ok_or("maintenance closed the disk under a Room that wasn't cleared")?;
+        assert!(reason.contains("in use by another process"), "{reason}");
+        assert_ne!(mapper_names()?, before, "the fixture left nothing to clear");
+        assert!(place.mapped());
+        Ok(())
+    })();
+    drop(held);
+    result?;
+    spawner.room_disk(RoomDiskOp::Close)?;
+    assert_eq!(mapper_names()?, before, "the cleared Room left its mapper");
+    assert!(!place.mapped());
+    spawner.room_disk(RoomDiskOp::Open)?;
+    Ok(())
+}
+
+/// A Room kept idle ends when the broker goes: the spawner sees it down
+/// and closes its disk before it leaves, with nothing of the Room left.
+fn check_room_ends_with_its_broker(program: &Path, cgroup: &Path) -> Result<(), Failed> {
+    let place = Place::new("session-broker-loss")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let channel = keeper
+        .spawner
+        .lock()
+        .map_err(|_| "test keeper lock poisoned")?
+        .try_clone()?;
+    let (control, inherited) = UnixStream::pair()?;
+    hatchling_sys::keep_across_exec(inherited.as_fd())?;
+    hatchling_sys::keep_across_exec(channel.as_fd())?;
+    let before = mapper_names()?;
+    let mut child = installed_spawner_command(&place, program, Some(cgroup))
+        .arg(hatchling_broker::spawner::SPAWNER_SUBCOMMAND)
+        .env("HATCHLING_SPAWNER_FD", inherited.as_raw_fd().to_string())
+        .env(
+            "HATCHLING_SPAWNER_KEEPER_FD",
+            channel.as_raw_fd().to_string(),
+        )
+        .spawn()?;
+    drop((channel, inherited));
+    let result = (|| -> Result<(), Failed> {
+        let spawner = Spawner::over(control.try_clone()?);
+        spawner.room_disk(RoomDiskOp::Create)?;
+        spawner.room_disk(RoomDiskOp::Open)?;
+        let seeded =
+            spawner.run_room_foreground(&["/bin/foreground", "seed", "kept"].map(str::to_owned))?;
+        assert_eq!(seeded.status, RoomForegroundStatus::Exited(23));
+        assert_ne!(mapper_names()?, before, "the idle Room was not kept");
+        assert!(place.mapped());
+        Ok(())
+    })();
+    // The broker goes with the Room idle and nothing asked of it.
+    let started = std::time::Instant::now();
+    drop(control);
+    let status = child.wait()?;
+    result?;
+    assert!(status.success(), "the spawner failed as its broker went");
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "the spawner waited out the Room's idle time"
+    );
+    assert_eq!(mapper_names()?, before, "the Room outlived its broker");
+    assert!(!place.mapped(), "the Room's disk stayed open");
+    for entry in std::fs::read_dir(cgroup)? {
+        assert!(
+            !entry?.file_type()?.is_dir(),
+            "the broker's going left a Room cgroup"
+        );
+    }
+    Ok(())
 }
 
 fn room_operator_command(

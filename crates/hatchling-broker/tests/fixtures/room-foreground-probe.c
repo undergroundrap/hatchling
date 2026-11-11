@@ -83,6 +83,9 @@ int main(int argc, char **argv)
         return 13;
     if (!strcmp(argv[1], "resume"))
         return resume();
+    /* The scratch an earlier command left is there only in the same Room. */
+    if (!strcmp(argv[1], "kept"))
+        return access("/session/marker", F_OK) ? 18 : 0;
     if (!strcmp(argv[1], "output"))
         return send_bytes(STDERR_FILENO, zeros, 131072)
             || send_bytes(STDOUT_FILENO, zeros, 4096);

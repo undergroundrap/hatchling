@@ -112,6 +112,16 @@ mod proof {
         assert_eq!(exchange(&peer, &["poll"]), b"running");
         assert_eq!(exchange(&peer, &["stop"]), b"stop-requested");
         reap_job(&peer, b"signal:9");
+        // One command after another on the one connection, each answered
+        // with its own nonce: the Room is kept between commands.
+        for nonce in ["first", "second"] {
+            let reply = exchange(&peer, &["run", "/bin/true", nonce]);
+            let (echo, result): (String, serde_json::Value) =
+                serde_json::from_slice(&reply).unwrap();
+            assert_eq!(echo, nonce);
+            assert!(result.get("status").is_some(), "{result}");
+        }
+        assert_eq!(exchange(&peer, &["poll"]), b"idle");
         drop(peer);
         assert_eq!(supervisor.wait_deadline(Duration::from_secs(4)).unwrap(), 0);
     }

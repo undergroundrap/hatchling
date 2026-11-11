@@ -1,7 +1,8 @@
 //! The room-side foreground process controller (WO-034).
 //!
 //! The spawner owns admission, deadlines, and teardown. This endpoint's
-//! replies and captured bytes are untrusted data.
+//! replies and captured bytes are untrusted data. It runs one command
+//! after another, for as long as the spawner keeps its Room.
 
 use std::error::Error;
 use std::fs::File;
@@ -40,7 +41,7 @@ fn serve(stream: &UnixStream) -> Result<()> {
             if let [op, program, args @ .., nonce] = request.as_slice() {
                 if op == "run" && worker.is_none() {
                     write_frame(stream, &serde_json::to_vec(&(nonce, run(program, args)?))?)?;
-                    break;
+                    continue;
                 }
             }
             let reply = dispatch(&request, &mut worker)?;
@@ -228,6 +229,34 @@ mod tests {
         drop(peer);
         assert!(task.join().unwrap());
         assert_eq!(ready.unwrap(), b"ready");
+    }
+
+    /// The supervisor answers each command with that command's nonce, one
+    /// after another on one connection, and ends cleanly when it closes.
+    #[test]
+    fn serve_runs_one_command_after_another() {
+        let (peer, endpoint) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let task = std::thread::spawn(move || serve(&endpoint).is_ok());
+        assert_eq!(
+            hatchling_core::framing::read_frame(&peer).unwrap(),
+            b"ready"
+        );
+        for nonce in ["first", "second", "third"] {
+            let request = ["run", "/bin/true", nonce];
+            write_frame(&peer, &serde_json::to_vec(&request).unwrap()).unwrap();
+            let reply = hatchling_core::framing::read_frame(&peer).unwrap();
+            let (echo, result): (String, serde_json::Value) =
+                serde_json::from_slice(&reply).unwrap();
+            assert_eq!(echo, nonce);
+            assert!(result.get("status").is_some(), "{result}");
+        }
+        drop(peer);
+        assert!(
+            task.join().unwrap(),
+            "the supervisor failed after its commands"
+        );
     }
 
     #[test]

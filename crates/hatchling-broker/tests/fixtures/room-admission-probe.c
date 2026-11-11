@@ -81,13 +81,29 @@ int main(int argc, char **argv, char **environment) {
         return 41;
     }
     if (ROOM_PROBE_MODE == 3) {
+        /* One whole dispatch frame. The spawner keeps its end open for
+         * the next command, so there is no end of input to wait for. */
+        unsigned char head[4];
         char dispatch[512];
-        ssize_t received;
-        do {
-            received = read(3, dispatch, sizeof dispatch);
-        } while (received > 0 || (received < 0 && errno == EINTR));
-        if (received < 0)
-            return 47;
+        size_t have = 0;
+        while (have < sizeof head) {
+            ssize_t received = read(3, head + have, sizeof head - have);
+            if (received < 0 && errno == EINTR)
+                continue;
+            if (received <= 0)
+                return 47;
+            have += (size_t)received;
+        }
+        size_t left = ((size_t)head[0] << 24) | ((size_t)head[1] << 16)
+            | ((size_t)head[2] << 8) | (size_t)head[3];
+        while (left) {
+            ssize_t received = read(3, dispatch, left < sizeof dispatch ? left : sizeof dispatch);
+            if (received < 0 && errno == EINTR)
+                continue;
+            if (received <= 0)
+                return 47;
+            left -= (size_t)received;
+        }
         static const char stale[] = "[\"previous-dispatch\",{\"status\":{\"exited\":0},\"stdout\":[],\"stderr\":[],\"stdout_truncated\":false,\"stderr_truncated\":false}]";
         static const unsigned char size[] = {0, 0, 0, sizeof stale - 1};
         if (write(3, size, sizeof size) != sizeof size

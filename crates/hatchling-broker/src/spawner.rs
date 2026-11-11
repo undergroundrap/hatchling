@@ -58,6 +58,9 @@ use hatchling_isolation::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::room_launch::Session;
+use crate::room_session::{DiskReply, Kept, Limits, Seat, Sessions};
+
 use crate::browser_session::BrowserSettings;
 use crate::cell::{CellConfig, CellLimits, Process, agent_identity};
 use crate::harness_tree::TreeOp;
@@ -903,11 +906,18 @@ impl Spawner {
     /// The command uses an absolute Room path, starts in `/workspace` and
     /// has no stdin. The supervisor's result and output are untrusted.
     ///
+    /// The Room is kept for the next command: one session, started by the
+    /// first command, lasts until it has been idle for fifteen minutes or
+    /// has lived an hour, whichever is first. It runs one command at a
+    /// time; a second while one runs is refused. A command that misses its
+    /// deadline, or whose connection goes, ends the session, and so does
+    /// closing or wiping the room disk.
+    ///
     /// # Errors
     ///
-    /// Returns a refusal or a failure of admission, communication, deadline
-    /// or teardown. A command result requires output capture and teardown
-    /// to complete within their bounds.
+    /// Returns a refusal or a failure of admission, communication or
+    /// deadline. A failure that ends the session is returned once the Room
+    /// is down.
     pub fn run_room_foreground(&self, argv: &[String]) -> Result<RoomForegroundResult, String> {
         crate::room_foreground::validate_command(argv)?;
         let stream = self.connect().map_err(|error| error.to_string())?;
@@ -1284,21 +1294,63 @@ fn refuse_to_run(reason: &str) -> ExitCode {
 /// of its own, until the broker goes. `held` is the binary helpers are
 /// started as, and the policy every spec is held to.
 fn serve(broker: &UnixStream, held: &Arc<(PathBuf, Policy)>, keeper: Option<&Keeper>) {
+    let sessions = Arc::new(room_sessions(held, keeper));
+    serve_with(broker, held, keeper, &sessions);
+}
+
+/// [`serve`], with the Room session its connections reach.
+fn serve_with(
+    broker: &UnixStream,
+    held: &Arc<(PathBuf, Policy)>,
+    keeper: Option<&Keeper>,
+    sessions: &Arc<Sessions>,
+) {
     while let Ok(fd) = hatchling_sys::net::recv_fd(broker.as_fd()) {
         let held = Arc::clone(held);
         let keeper = keeper.map(Arc::clone);
+        let sessions = Arc::clone(sessions);
         std::thread::spawn(move || {
             let stream = UnixStream::from(fd);
             let (program, policy) = &*held;
-            if let Err(error) = serve_connection(&stream, program, policy, keeper.as_ref()) {
+            let served = serve_connection(&stream, program, policy, keeper.as_ref(), &sessions);
+            if let Err(error) = served {
                 tracing::warn!(%error, "a connection from the broker ended");
             }
         });
     }
-    // The broker has gone, however it went: the room disk goes closed.
+    // The broker has gone, however it went: the Room ends, no other
+    // starts, and the room disk goes closed.
+    sessions.shut("the Room was stopped: the broker has gone");
     if let (Some(room), Some(_)) = (&held.1.room, keeper) {
         crate::room_disk::close_on_leaving(room);
     }
+}
+
+/// The spawner's Room session, as its connections reach it: each session
+/// is held by a thread of its own, from its launch until it is down.
+fn room_sessions(held: &Arc<(PathBuf, Policy)>, keeper: Option<&Keeper>) -> Sessions {
+    let held = Arc::clone(held);
+    let keeper = keeper.map(Arc::clone);
+    Sessions::new(move |seat| {
+        let held = Arc::clone(&held);
+        let keeper = keeper.clone();
+        std::thread::Builder::new()
+            .name(String::from("room-session"))
+            .spawn(move || {
+                let (program, policy) = &*held;
+                hold_room_session(program, policy, keeper.as_ref(), seat);
+            })
+    })
+}
+
+/// Launches a Room for the session at `seat`, holds it until it is down,
+/// and answers what it still owes then.
+fn hold_room_session(program: &Path, policy: &Policy, keeper: Option<&Keeper>, seat: Seat) {
+    let mut kept = Kept::new(seat, Limits::INSTALLED, |op| {
+        room_disk_done(policy, keeper, op, true)
+    });
+    let launched = room_launch(program, policy, keeper, Some(&mut kept));
+    kept.finish(launched, |op| room_disk_done(policy, keeper, op, false));
 }
 
 /// Answers one connection: one request, then, for a helper, its
@@ -1308,6 +1360,7 @@ fn serve_connection(
     program: &Path,
     policy: &Policy,
     keeper: Option<&Keeper>,
+    sessions: &Sessions,
 ) -> Result<(), Error> {
     let Some(frame) = read_frame_or_eof(stream).map_err(gone)? else {
         return Ok(());
@@ -1366,19 +1419,22 @@ fn serve_connection(
             };
             send(stream, &reply)
         }
-        Request::RoomDisk { op } => send(stream, &room_disk_reply(policy, keeper, op)),
-        Request::RoomMount => send(stream, &room_launch_reply(program, policy, keeper, None)),
+        Request::RoomDisk { op } => {
+            let done = sessions.disk(op, |op| room_disk_done(policy, keeper, op, false));
+            send(stream, &room_disk_reply(done))
+        }
+        Request::RoomMount => {
+            let reply = match sessions.probe(|| room_launch(program, policy, keeper, None)) {
+                Ok(()) => Reply::Done,
+                Err(reason) => Reply::Refused { reason },
+            };
+            send(stream, &reply)
+        }
         Request::RoomRun { argv } => {
-            let reply = match crate::room_foreground::validate_command(&argv) {
-                Ok(()) => room_launch_reply(
-                    program,
-                    policy,
-                    keeper,
-                    Some(&crate::room_foreground::Operation {
-                        requester: stream,
-                        argv: &argv,
-                    }),
-                ),
+            let run = crate::room_foreground::validate_command(&argv)
+                .and_then(|()| sessions.run(&argv, stream));
+            let reply = match run {
+                Ok(result) => Reply::RoomRun { result },
                 Err(reason) => Reply::Refused { reason },
             };
             send(stream, &reply)
@@ -1386,13 +1442,15 @@ fn serve_connection(
     }
 }
 
-fn room_launch_reply(
+/// Launches the installed Room: a check that it works, or, with `session`,
+/// a Room that `session` holds until it is down.
+fn room_launch(
     program: &Path,
     policy: &Policy,
     keeper: Option<&Keeper>,
-    foreground: Option<&crate::room_foreground::Operation<'_>>,
-) -> Reply {
-    let result = match (&policy.room, keeper) {
+    session: Option<&mut (dyn Session + '_)>,
+) -> Result<(), String> {
+    match (&policy.room, keeper) {
         (Some(room), Some(_)) => HelperDir::make().and_then(|staging| {
             crate::room_launch::check_installed(
                 program,
@@ -1411,15 +1469,10 @@ fn room_launch_reply(
                         [policy.agent.identity, policy.skill.identity],
                     )
                 },
-                foreground,
+                session,
             )
         }),
         _ => Err(String::from(crate::room_disk::NOT_HERE)),
-    };
-    match result {
-        Ok(Some(result)) => Reply::RoomRun { result },
-        Ok(None) => Reply::Done,
-        Err(reason) => Reply::Refused { reason },
     }
 }
 
@@ -1516,20 +1569,30 @@ fn room_identity_requires_its_own_local_account_and_group() {
 }
 
 /// The answer to the broker's room disk `op`: done, its status, or why not.
-fn room_disk_reply(
-    policy: &Policy,
-    keeper: Option<&Keeper>,
-    op: crate::room_disk::RoomDiskOp,
-) -> Reply {
-    let (Some(room), Some(keeper)) = (&policy.room, keeper) else {
-        return Reply::Refused {
-            reason: String::from(crate::room_disk::NOT_HERE),
-        };
-    };
-    match crate::room_disk::run(room, keeper, op) {
+fn room_disk_reply(done: DiskReply) -> Reply {
+    match done {
         Ok(Some(status)) => Reply::RoomDisk { status },
         Ok(None) => Reply::Done,
         Err(reason) => Reply::Refused { reason },
+    }
+}
+
+/// Does the room disk's `op`: the ordinary way, or, when a Room session
+/// asks from inside its own hold on the disk (`held`), without taking the
+/// turn and the claim that session already has.
+fn room_disk_done(
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+    op: crate::room_disk::RoomDiskOp,
+    held: bool,
+) -> DiskReply {
+    let (Some(room), Some(keeper)) = (&policy.room, keeper) else {
+        return Err(String::from(crate::room_disk::NOT_HERE));
+    };
+    if held {
+        crate::room_disk::run_held(room, keeper, op)
+    } else {
+        crate::room_disk::run(room, keeper, op)
     }
 }
 
@@ -2112,6 +2175,122 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         Policy::of(&CellConfig::skill("policy").unwrap(), agent, paths(), None)
     }
 
+    /// Every request about the Room and its disk reaches the spawner's
+    /// one session: done directly while there is none, answered by it once
+    /// a command has started it. A command that isn't valid starts
+    /// nothing. When the broker goes the session is ended and seen out
+    /// before the spawner leaves, and nothing starts after.
+    #[test]
+    fn room_requests_reach_the_session_and_it_ends_with_the_broker() {
+        use crate::room_disk::RoomDiskOp;
+        use crate::room_session::tests::{result, stand_ins};
+        let (sessions, started, ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let said = spawner.room_disk(RoomDiskOp::Status).unwrap_err();
+        assert!(said.contains("no room disk here"), "{said}");
+        let said = spawner.check_room_mount().unwrap_err();
+        assert!(said.contains("no room disk here"), "{said}");
+        let stream = spawner.connect().unwrap();
+        let invalid = Request::RoomRun {
+            argv: vec![String::from("relative")],
+        };
+        send(&stream, &invalid).unwrap();
+        assert!(matches!(receive(&stream).unwrap(), Reply::Refused { .. }));
+        assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
+
+        let ran = spawner.run_room_foreground(&[String::from("/bin/true")]);
+        assert_eq!(ran, Ok(result(1)));
+        assert_eq!(spawner.check_room_mount(), Ok(()));
+        assert_eq!(
+            spawner.room_disk(RoomDiskOp::Close),
+            Err(String::from("session 1 Close"))
+        );
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert_eq!(ended.load(Ordering::SeqCst), 0);
+
+        drop((stream, spawner));
+        served.join().unwrap();
+        assert_eq!(
+            ended.load(Ordering::SeqCst),
+            1,
+            "the spawner left before its session was down"
+        );
+        let (_broker, requester) = UnixStream::pair().unwrap();
+        assert_eq!(
+            sessions.run(&[String::from("/bin/true")], &requester),
+            Err(String::from("the spawner is leaving"))
+        );
+    }
+
+    /// A session asks for the disk it holds from inside its own claim on
+    /// it: answered there, where the ordinary way is refused as in use.
+    #[test]
+    fn a_session_asks_for_its_disk_inside_its_own_claim() {
+        use crate::room_disk::{RoomDiskOp, RoomDiskState};
+        let bench = crate::room_disk::tests::Bench::new("spawner-held-disk");
+        bench.run(RoomDiskOp::Create).unwrap();
+        let policy = Policy {
+            room: Some(bench.disk.clone()),
+            ..policy()
+        };
+        let keeper = Some(&bench.keeper);
+        let _claim = hatchling_sys::claim_dir(&bench.root).unwrap();
+        let held = room_disk_done(&policy, keeper, RoomDiskOp::Status, true);
+        assert_eq!(
+            held.unwrap().map(|status| status.state),
+            Some(RoomDiskState::Closed)
+        );
+        let direct = room_disk_done(&policy, keeper, RoomDiskOp::Status, false).unwrap_err();
+        assert!(direct.contains("in use by another process"), "{direct}");
+    }
+
+    /// With a room disk and a keeper, a launch is tried, and says what
+    /// is in its way: here, a disk that isn't open. A command that starts
+    /// a session for it hears the same, from the spawner's own session
+    /// thread.
+    #[test]
+    fn a_launch_with_a_room_disk_is_tried_and_says_what_stops_it() {
+        use crate::room_disk::RoomDiskOp;
+        let bench = crate::room_disk::tests::Bench::new("spawner-launch");
+        bench.run(RoomDiskOp::Create).unwrap();
+        let policy = Policy {
+            room: Some(bench.disk.clone()),
+            ..policy()
+        };
+        let held = Arc::new((PathBuf::from("/bin/false"), policy));
+        let said = room_launch(&held.0, &held.1, Some(&bench.keeper), None).unwrap_err();
+        assert!(said.contains("isn't mapped"), "{said}");
+        let sessions = room_sessions(&held, Some(&bench.keeper));
+        let (_broker, requester) = UnixStream::pair().unwrap();
+        let said = sessions
+            .run(&[String::from("/bin/true")], &requester)
+            .unwrap_err();
+        assert!(said.contains("isn't mapped"), "{said}");
+    }
+
+    /// The spawner's own session thread answers the command it was
+    /// started for, here with why no Room can be launched: this spawner
+    /// keeps no room disk.
+    #[test]
+    fn the_spawners_session_thread_answers_what_started_it() {
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let sessions = room_sessions(&held, None);
+        let (_broker, requester) = UnixStream::pair().unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                sessions.run(&[String::from("/bin/true")], &requester),
+                Err(String::from(crate::room_disk::NOT_HERE))
+            );
+        }
+    }
+
     /// The room disk is asked for by its op alone: no path, size or name,
     /// and nothing else.
     #[test]
@@ -2160,14 +2339,21 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             with_keeper(kept, false).room.is_none(),
             "a room disk kept with no keeper to give its key"
         );
+        for held in [false, true] {
+            assert_eq!(
+                room_disk_done(&policy(), None, RoomDiskOp::Status, held),
+                Err(String::from(crate::room_disk::NOT_HERE))
+            );
+        }
+        assert_eq!(
+            room_launch(Path::new("/bin/sh"), &policy(), None, None),
+            Err(String::from(crate::room_disk::NOT_HERE))
+        );
         assert!(matches!(
-            room_disk_reply(&policy(), None, RoomDiskOp::Status),
+            room_disk_reply(Err(String::from("no"))),
             Reply::Refused { .. }
         ));
-        assert!(matches!(
-            room_launch_reply(Path::new("/bin/sh"), &policy(), None, None),
-            Reply::Refused { .. }
-        ));
+        assert!(matches!(room_disk_reply(Ok(None)), Reply::Done));
         let (spawner, _served) = serving("/bin/sh");
         let said = spawner.room_disk(RoomDiskOp::Status).unwrap_err();
         assert!(said.contains("no room disk here"), "{said}");
@@ -2900,7 +3086,10 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         served.join().unwrap();
         let (broker, theirs) = UnixStream::pair().unwrap();
         write_frame(&broker, br#"{"request":"steal"}"#).unwrap();
-        assert!(serve_connection(&theirs, Path::new("/bin/sh"), &policy(), None).is_err());
+        let sessions = Sessions::new(|_| Err(std::io::Error::other("no session here")));
+        assert!(
+            serve_connection(&theirs, Path::new("/bin/sh"), &policy(), None, &sessions).is_err()
+        );
         assert!(gone("x").to_string().contains("cannot be reached: x"));
     }
 
