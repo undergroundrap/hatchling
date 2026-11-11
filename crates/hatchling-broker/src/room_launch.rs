@@ -1,5 +1,5 @@
-//! One-shot Room admission through the installed spawner. A trusted init
-//! mounts the view and reaps the confined image supervisor after readiness.
+//! One-shot Room admission and foreground execution through the installed
+//! spawner. A trusted init mounts the view and reaps the confined supervisor.
 
 use std::fs::{self, File};
 use std::io::{self, Read as _, Write as _};
@@ -20,6 +20,7 @@ use hatchling_sys::room_mounts::RoomMounts;
 use serde::{Deserialize, Serialize};
 
 use crate::room_disk::RoomDisk;
+use crate::room_foreground::{Operation, RoomForegroundResult};
 use crate::spawner::ROOM_MOUNT_SUBCOMMAND;
 
 const RECORD: &str = "/etc/hatchling/room-image.admission";
@@ -158,14 +159,18 @@ fn room_group(parent: Option<&Path>) -> Result<CellCgroup, String> {
         .map_err(|error| format!("cannot create the room cgroup: {error}"))
 }
 
-pub(crate) fn check_installed(
+pub(super) fn check_installed(
     program: &Path,
     disk: &RoomDisk,
     staging: PathBuf,
     cgroup_parent: Option<&Path>,
     identity: impl FnOnce() -> Result<(u32, u32), String>,
-) -> Result<(), String> {
+    foreground: Option<&Operation<'_>>,
+) -> Result<Option<RoomForegroundResult>, String> {
     crate::room_disk::with_open_volume(disk, |volume, device| {
+        if let Some(operation) = foreground {
+            operation.connected().map_err(|error| error.to_string())?;
+        }
         if !cfg!(target_arch = "x86_64") {
             return Err(UNSUPPORTED_ARCH.into());
         }
@@ -189,7 +194,7 @@ pub(crate) fn check_installed(
             gid,
         };
         let mut launcher = None;
-        let result = check_mount(program, &spec, &group, &mut launcher, |owner| {
+        let result = check_mount(program, &spec, &group, &mut launcher, foreground, |owner| {
             mapper.send_to_launcher(owner)
         });
         *pending = Some(Pending::Mount {
@@ -208,8 +213,9 @@ fn check_mount(
     spec: &MountSpec,
     group: &CellCgroup,
     launcher_pidfd: &mut Option<OwnedFd>,
+    foreground: Option<&Operation<'_>>,
     handoff: impl FnOnce(&UnixStream) -> Result<(), hatchling_sys::Error>,
-) -> Result<(), String> {
+) -> Result<Option<RoomForegroundResult>, String> {
     let (owner, launcher) = UnixStream::pair().map_err(|error| error.to_string())?;
     let (supervisor, endpoint) = UnixStream::pair().map_err(|error| error.to_string())?;
     owner
@@ -254,24 +260,49 @@ fn check_mount(
     })();
     drop((owner, endpoint));
     let deadline = Instant::now() + DEADLINE;
-    let ready = sent.and_then(|()| {
+    let result = sent.and_then(|()| {
         wait_for_ready(deadline, |bytes, remaining| {
+            if let Some(operation) = foreground {
+                return operation.read(&supervisor, deadline, bytes);
+            }
             supervisor.set_read_timeout(Some(remaining))?;
             (&supervisor).read(bytes)
-        })
+        })?;
+        foreground
+            .map(|operation| operation.exchange(&supervisor, deadline))
+            .transpose()
     });
-    // After ready the supervisor waits for EOF before it exits.
+    // An admission-only supervisor waits for EOF before it exits.
     drop(supervisor);
-    let status = child
-        .wait_deadline(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|error| error.to_string())?;
+    if foreground.is_some() && result.is_err() {
+        // Reconciliation still owns the namespace pidfd and the cgroup,
+        // including descendants that outlive the wrapper.
+        let _ = child.wait_deadline(Duration::ZERO);
+        return result;
+    }
+    let status = foreground.map_or_else(
+        || {
+            child
+                .wait_deadline(deadline.saturating_duration_since(Instant::now()))
+                .map_err(io::Error::other)
+        },
+        |operation| {
+            operation.wait_for_exit(deadline, || child.try_wait().map_err(io::Error::other))
+        },
+    );
+    let status = status.map_err(|error| {
+        if foreground.is_some() {
+            let _ = child.wait_deadline(Duration::ZERO);
+        }
+        error.to_string()
+    })?;
     if status != 0 {
         return Err(format!(
             "the trusted room mount helper failed (status {})",
             hatchling_sys::child_exit_code(status)
         ));
     }
-    ready
+    result
 }
 
 fn wait_for_ready(
@@ -424,6 +455,7 @@ mod tests {
             bench.root.clone(),
             None,
             || unreachable!("a closed disk is refused before identity lookup"),
+            None,
         )
         .unwrap_err();
         assert!(reason.contains("isn't mapped"), "{reason}");
@@ -492,6 +524,7 @@ mod tests {
                 &spec,
                 &group,
                 &mut launcher,
+                None,
                 |_| Ok(())
             )
             .is_err()

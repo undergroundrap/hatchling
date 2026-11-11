@@ -25,7 +25,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use hatchling_broker::room_disk::{self, RoomDisk, RoomDiskOp, RoomDiskState, Rotated};
-use hatchling_broker::spawner::Spawner;
+use hatchling_broker::spawner::{RoomForegroundStatus, Spawner};
 use hatchling_core::framing::{read_frame, write_frame};
 use sha2::{Digest as _, Sha256};
 
@@ -417,6 +417,15 @@ fn installed_spawner(
     program: &Path,
     cgroup: Option<&Path>,
 ) -> Result<CloseDisk, Failed> {
+    let command = installed_spawner_command(place, program, cgroup);
+    let channel = keeper
+        .spawner
+        .lock()
+        .map_err(|_| "test keeper lock poisoned")?;
+    Ok(CloseDisk(Spawner::start_with(command, Some(&channel))?))
+}
+
+fn installed_spawner_command(place: &Place, program: &Path, cgroup: Option<&Path>) -> Command {
     let mut command = Command::new(program);
     command
         .env_clear()
@@ -433,11 +442,7 @@ fn installed_spawner(
     if let Some(cgroup) = cgroup {
         command.env("HATCHLING_CELL_CGROUP", cgroup);
     }
-    let channel = keeper
-        .spawner
-        .lock()
-        .map_err(|_| "test keeper lock poisoned")?;
-    Ok(CloseDisk(Spawner::start_with(command, Some(&channel))?))
+    command
 }
 
 #[test]
@@ -547,7 +552,20 @@ fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Resul
     let supervisor = std::env::var_os("HATCHLING_TEST_ROOM_SUPERVISOR")
         .ok_or("root Room proof requires the static image supervisor")?;
     let fixture = Place::new("installed-image")?;
-    let (root, digest, binds) = room_admission_fixture(&fixture, Path::new(&supervisor))?;
+    let source = fixture.dir.join("foreground.c");
+    let probe = fixture.dir.join("foreground");
+    std::fs::write(&source, include_str!("fixtures/room-foreground-probe.c"))?;
+    assert!(
+        Command::new("cc")
+            .args(["-static", "-Wall", "-Wextra", "-Werror"])
+            .arg(&source)
+            .arg("-o")
+            .arg(&probe)
+            .status()?
+            .success()
+    );
+    let (root, digest, binds) =
+        room_admission_fixture(&fixture, Path::new(&supervisor), Some(&probe))?;
     let broker = Path::new(env!("CARGO_BIN_EXE_hatchling-broker"));
     for (tag, program) in [
         ("installed-broker-admission", broker.to_owned()),
@@ -564,7 +582,7 @@ fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Resul
         check_installed_room_mount(tag, &program, &root, &digest)?;
     }
     drop(binds);
-    for mode in 0..=2 {
+    for mode in 0..=3 {
         check_supervisor_boundary(broker, mode)?;
     }
     Ok(())
@@ -590,7 +608,7 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
         compiled.success(),
         "could not build the Room boundary probe"
     );
-    let (root, digest, _binds) = room_admission_fixture(&fixture, &probe)?;
+    let (root, digest, _binds) = room_admission_fixture(&fixture, &probe, None)?;
     let system = Path::new("/usr/bin/unshare");
     let real = fixture.dir.join("unshare-real");
     let shim = fixture.dir.join("unshare-probe");
@@ -637,13 +655,21 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
             &before,
         )?;
     }
-    let started = std::time::Instant::now();
-    let admission = spawner.0.check_room_mount();
     if mode == 0 {
-        admission?;
+        spawner.0.check_room_mount()?;
         check_workspace_persists(&spawner.0, &place, gid)?;
+    } else if mode == 3 {
+        let reason = spawner
+            .0
+            .run_room_foreground(&[String::from("/bin/unused")])
+            .err()
+            .ok_or("the Room accepted a stale foreground reply")?;
+        assert!(reason.contains("different dispatch"), "{reason}");
     } else {
-        let reason = admission
+        let started = std::time::Instant::now();
+        let reason = spawner
+            .0
+            .check_room_mount()
             .err()
             .ok_or("Room accepted a supervisor that did not exit")?;
         let elapsed = started.elapsed();
@@ -844,10 +870,146 @@ fn check_installed_room_mount(
     check_room_cgroup(&place, &spawner.0, parent.path())?;
     assert_eq!(mapper_names()?, before, "success left an image mapper");
     assert_eq!(std::fs::read(&canary)?, b"kept in the encrypted room");
+    check_room_foreground(&spawner.0, &place)?;
+    if tag == "installed-broker-admission" {
+        check_room_foreground_limits(&spawner.0, &place, parent.path())?;
+        check_room_foreground_disconnect(program, parent.path())?;
+    }
+    assert_eq!(
+        mapper_names()?,
+        before,
+        "foreground work left an image mapper"
+    );
     check_pending_image_cleanup(&spawner.0, &place)?;
     assert!(!place.mapped());
     std::fs::remove_file(record)?;
     Ok(())
+}
+
+fn check_room_foreground(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    let first = spawner
+        .run_room_foreground(&["/bin/foreground", "seed", "room data"].map(str::to_owned))?;
+    assert_eq!(first.status, RoomForegroundStatus::Exited(23));
+    assert_eq!(first.stdout, b"/workspace");
+    assert_eq!(first.stderr, b"diagnostic");
+    assert!(!first.stdout_truncated && !first.stderr_truncated);
+    let path = place.disk.mount_point().join("workspace/foreground-file");
+    let digest = Sha256::digest(std::fs::read(&path)?);
+    assert_eq!(digest, Sha256::digest(b"room data"));
+    spawner.room_disk(RoomDiskOp::Close)?;
+    assert!(!place.mapped());
+    spawner.room_disk(RoomDiskOp::Open)?;
+    let next = spawner.run_room_foreground(&["/bin/foreground", "resume"].map(str::to_owned))?;
+    assert_eq!(next.status, RoomForegroundStatus::Exited(0));
+    assert_eq!(Sha256::digest(&next.stdout), digest);
+
+    // A large stderr write precedes stdout and must never stall its capture.
+    let capped = spawner.run_room_foreground(&["/bin/foreground", "output"].map(str::to_owned))?;
+    assert_eq!(capped.status, RoomForegroundStatus::Exited(0));
+    assert_eq!(capped.stdout, vec![0; 4096]);
+    assert_eq!(capped.stderr, vec![0; 4096]);
+    assert!(!capped.stdout_truncated && capped.stderr_truncated);
+    let missing = spawner.run_room_foreground(&[String::from("/bin/absent")])?;
+    assert_eq!(missing.status, RoomForegroundStatus::SpawnFailed);
+    Ok(())
+}
+
+fn check_room_foreground_limits(
+    spawner: &Spawner,
+    place: &Place,
+    parent: &Path,
+) -> Result<(), Failed> {
+    let full =
+        spawner.run_room_foreground(&["/bin/foreground", "fill-scratch"].map(str::to_owned))?;
+    assert_eq!(full.status, RoomForegroundStatus::Exited(1));
+    assert_eq!(full.stderr, b"ENOSPC");
+    let timeout = spawner.run_room_foreground(&["/bin/foreground", "wait"].map(str::to_owned));
+    let reason = timeout
+        .err()
+        .ok_or("the Room deadline allowed the job to finish")?;
+    assert!(
+        reason.contains("Room foreground deadline expired"),
+        "{reason}"
+    );
+    assert_eq!(
+        std::fs::read(place.disk.mount_point().join("workspace/timeout-marker"))?,
+        b"started"
+    );
+    for entry in std::fs::read_dir(parent)? {
+        assert!(
+            !entry?.file_type()?.is_dir(),
+            "the timeout left a Room cgroup"
+        );
+    }
+    Ok(())
+}
+
+fn check_room_foreground_disconnect(program: &Path, cgroup: &Path) -> Result<(), Failed> {
+    let place = Place::new("foreground-disconnect")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let channel = keeper
+        .spawner
+        .lock()
+        .map_err(|_| "test keeper lock poisoned")?
+        .try_clone()?;
+    let (control, inherited) = UnixStream::pair()?;
+    hatchling_sys::keep_across_exec(inherited.as_fd())?;
+    hatchling_sys::keep_across_exec(channel.as_fd())?;
+    let mut child = installed_spawner_command(&place, program, Some(cgroup))
+        .arg(hatchling_broker::spawner::SPAWNER_SUBCOMMAND)
+        .env("HATCHLING_SPAWNER_FD", inherited.as_raw_fd().to_string())
+        .env(
+            "HATCHLING_SPAWNER_KEEPER_FD",
+            channel.as_raw_fd().to_string(),
+        )
+        .spawn()?;
+    drop((channel, inherited));
+    let result = (|| -> Result<(), Failed> {
+        let before = mapper_names()?;
+        let spawner = CloseDisk(Spawner::over(control.try_clone()?));
+        spawner.0.room_disk(RoomDiskOp::Create)?;
+        spawner.0.room_disk(RoomDiskOp::Open)?;
+        let (request, endpoint) = UnixStream::pair()?;
+        hatchling_sys::net::send_fd(control.as_fd(), endpoint.as_fd())?;
+        drop(endpoint);
+        write_frame(
+            &request,
+            br#"{"request":"room-run","argv":["/bin/foreground","wait"]}"#,
+        )?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let marker = place.disk.mount_point().join("workspace/timeout-marker");
+        while !marker.is_file() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the Room workload never started"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_ne!(
+            mapper_names()?,
+            before,
+            "the workload did not keep the image mapped"
+        );
+        let started = std::time::Instant::now();
+        drop(request);
+        spawner.0.room_disk(RoomDiskOp::Close)?;
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the request disconnect waited for the command deadline"
+        );
+        assert_eq!(mapper_names()?, before);
+        assert!(!place.mapped());
+        for entry in std::fs::read_dir(cgroup)? {
+            assert!(
+                !entry?.file_type()?.is_dir(),
+                "disconnect left a Room cgroup"
+            );
+        }
+        Ok(())
+    })();
+    drop(control);
+    assert!(child.wait()?.success());
+    result
 }
 
 fn check_room_cgroup(place: &Place, spawner: &Spawner, parent: &Path) -> Result<(), Failed> {
@@ -1171,6 +1333,7 @@ fn check_substituted_mount(spawner: &Spawner, mount: &Path) -> Result<(), Failed
 fn room_admission_fixture(
     place: &Place,
     supervisor: &Path,
+    foreground: Option<&Path>,
 ) -> Result<(String, String, [HeldBind; 2]), Failed> {
     let fixture_etc = place.dir.join("etc");
     let fixture_share = place.dir.join("share");
@@ -1190,6 +1353,10 @@ fn room_admission_fixture(
     let libexec = system.join("usr/local/libexec");
     std::fs::create_dir_all(&libexec)?;
     std::fs::copy(supervisor, libexec.join("hatchling-room"))?;
+    if let Some(foreground) = foreground {
+        std::fs::create_dir(system.join("bin"))?;
+        std::fs::copy(foreground, system.join("bin/foreground"))?;
+    }
     // Give verity a data image with more than one block.
     let mut data = vec![0_u8; 8192];
     std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut data)?;

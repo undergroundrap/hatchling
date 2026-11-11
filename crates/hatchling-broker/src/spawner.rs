@@ -565,6 +565,8 @@ enum Request {
     RoomDisk { op: crate::room_disk::RoomDiskOp },
     /// Check admission using only the spawner's installed room sources.
     RoomMount,
+    /// Run one command after admission using the installed Room sources.
+    RoomRun { argv: Vec<String> },
 }
 
 /// What the spawner answers.
@@ -583,7 +585,11 @@ enum Reply {
     RoomDisk {
         status: crate::room_disk::RoomDiskStatus,
     },
+    /// One foreground command ended and the Room was torn down.
+    RoomRun { result: RoomForegroundResult },
 }
+
+pub use crate::room_foreground::{RoomForegroundResult, RoomForegroundStatus};
 
 /// The broker's end of the spawner.
 #[derive(Debug)]
@@ -769,7 +775,7 @@ impl Spawner {
         let pid = match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Started { pid } => pid,
             Reply::Refused { reason } => return Err(reason),
-            Reply::Exited { .. } | Reply::Done | Reply::RoomDisk { .. } => {
+            Reply::Exited { .. } | Reply::Done | Reply::RoomDisk { .. } | Reply::RoomRun { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -838,9 +844,10 @@ impl Spawner {
         match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Done => Ok(()),
             Reply::Refused { reason } => Err(reason),
-            Reply::Started { .. } | Reply::Exited { .. } | Reply::RoomDisk { .. } => {
-                Err(String::from("the spawner answered out of step"))
-            }
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::RoomDisk { .. }
+            | Reply::RoomRun { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -864,7 +871,7 @@ impl Spawner {
             Reply::Done => Ok(None),
             Reply::RoomDisk { status } => Ok(Some(status)),
             Reply::Refused { reason } => Err(reason),
-            Reply::Started { .. } | Reply::Exited { .. } => {
+            Reply::Started { .. } | Reply::Exited { .. } | Reply::RoomRun { .. } => {
                 Err(String::from("the spawner answered out of step"))
             }
         }
@@ -884,7 +891,40 @@ impl Spawner {
         match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Done => Ok(()),
             Reply::Refused { reason } => Err(reason),
-            Reply::RoomDisk { .. } | Reply::Started { .. } | Reply::Exited { .. } => {
+            Reply::RoomDisk { .. }
+            | Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::RoomRun { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Run one command in the installed Room through the spawner's private channel.
+    ///
+    /// The command uses an absolute Room path, starts in `/workspace` and
+    /// has no stdin. The supervisor's result and output are untrusted.
+    ///
+    /// # Errors
+    ///
+    /// Returns a refusal or a failure of admission, communication, deadline
+    /// or teardown. A command result requires output capture and teardown
+    /// to complete within their bounds.
+    pub fn run_room_foreground(&self, argv: &[String]) -> Result<RoomForegroundResult, String> {
+        crate::room_foreground::validate_command(argv)?;
+        let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        send(
+            &stream,
+            &Request::RoomRun {
+                argv: argv.to_vec(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        match receive(&stream).map_err(|error| error.to_string())? {
+            Reply::RoomRun { result } => Ok(result),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. } | Reply::Exited { .. } | Reply::Done | Reply::RoomDisk { .. } => {
                 Err(String::from("the spawner answered out of step"))
             }
         }
@@ -917,9 +957,10 @@ impl Spawner {
         match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Done => Ok(()),
             Reply::Refused { reason } => Err(reason),
-            Reply::Started { .. } | Reply::Exited { .. } | Reply::RoomDisk { .. } => {
-                Err(String::from("the spawner answered out of step"))
-            }
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::RoomDisk { .. }
+            | Reply::RoomRun { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 }
@@ -959,7 +1000,8 @@ impl SpawnedProcess {
                     Reply::Started { .. }
                     | Reply::Refused { .. }
                     | Reply::Done
-                    | Reply::RoomDisk { .. },
+                    | Reply::RoomDisk { .. }
+                    | Reply::RoomRun { .. },
                 ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
@@ -1325,36 +1367,59 @@ fn serve_connection(
             send(stream, &reply)
         }
         Request::RoomDisk { op } => send(stream, &room_disk_reply(policy, keeper, op)),
-        Request::RoomMount => {
-            let result = match (&policy.room, keeper) {
-                (Some(room), Some(_)) => HelperDir::make().and_then(|staging| {
-                    crate::room_launch::check_installed(
-                        program,
-                        room,
-                        staging.0.clone(),
-                        policy.cgroup.as_deref(),
-                        || {
-                            let read = |path| {
-                                std::fs::read_to_string(path)
-                                    .map_err(|error| format!("cannot read {path}: {error}"))
-                            };
-                            parse_room_identity(
-                                &read("/etc/passwd")?,
-                                &read("/etc/group")?,
-                                policy.owner,
-                                [policy.agent.identity, policy.skill.identity],
-                            )
-                        },
-                    )
-                }),
-                _ => Err(String::from(crate::room_disk::NOT_HERE)),
-            };
-            let reply = match result {
-                Ok(()) => Reply::Done,
+        Request::RoomMount => send(stream, &room_launch_reply(program, policy, keeper, None)),
+        Request::RoomRun { argv } => {
+            let reply = match crate::room_foreground::validate_command(&argv) {
+                Ok(()) => room_launch_reply(
+                    program,
+                    policy,
+                    keeper,
+                    Some(&crate::room_foreground::Operation {
+                        requester: stream,
+                        argv: &argv,
+                    }),
+                ),
                 Err(reason) => Reply::Refused { reason },
             };
             send(stream, &reply)
         }
+    }
+}
+
+fn room_launch_reply(
+    program: &Path,
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+    foreground: Option<&crate::room_foreground::Operation<'_>>,
+) -> Reply {
+    let result = match (&policy.room, keeper) {
+        (Some(room), Some(_)) => HelperDir::make().and_then(|staging| {
+            crate::room_launch::check_installed(
+                program,
+                room,
+                staging.0.clone(),
+                policy.cgroup.as_deref(),
+                || {
+                    let read = |path| {
+                        std::fs::read_to_string(path)
+                            .map_err(|error| format!("cannot read {path}: {error}"))
+                    };
+                    parse_room_identity(
+                        &read("/etc/passwd")?,
+                        &read("/etc/group")?,
+                        policy.owner,
+                        [policy.agent.identity, policy.skill.identity],
+                    )
+                },
+                foreground,
+            )
+        }),
+        _ => Err(String::from(crate::room_disk::NOT_HERE)),
+    };
+    match result {
+        Ok(Some(result)) => Reply::RoomRun { result },
+        Ok(None) => Reply::Done,
+        Err(reason) => Reply::Refused { reason },
     }
 }
 
@@ -2097,6 +2162,10 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         );
         assert!(matches!(
             room_disk_reply(&policy(), None, RoomDiskOp::Status),
+            Reply::Refused { .. }
+        ));
+        assert!(matches!(
+            room_launch_reply(Path::new("/bin/sh"), &policy(), None, None),
             Reply::Refused { .. }
         ));
         let (spawner, _served) = serving("/bin/sh");

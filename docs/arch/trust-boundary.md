@@ -79,14 +79,24 @@ submounts behind, and exposes a read-only PID-only `/proc` and just
 trusted PID 1 forks the image supervisor as PID 2. The supervisor runs
 as the dedicated `hatchling-room` account with empty supplementary groups,
 no new privileges, null stdio, and an empty environment. Only its own
-socket crosses exec. The spawner receives the fixed readiness frame and
-closes that socket, and the trusted init reaps the supervisor. Readiness
-and exit share one deadline. The frame does not grant authority. Room
-admission requires x86_64 Linux. Workload and session controls have
-separate proof.
+socket crosses exec. After the fixed readiness frame, the private spawner
+channel can dispatch one command by absolute Room path with direct argv,
+null stdin, and `/workspace` as the working directory. The supervisor
+reports the command's termination and the first 4 KiB of each output
+stream, with a separate truncation flag for each stream. All reported
+fields are untrusted. The spawner bounds readiness, the exchange, and
+clean exit with one deadline after the mount handoff. It checks for a
+broker disconnect through launcher exit and requires a complete reply
+matching the dispatch nonce, followed by EOF. A descendant that keeps an
+output pipe open can cause the command to reach its deadline after the
+direct child exits. The spawner releases the result after the launcher
+exits, the cgroup drains, and the verified image mapper closes. Room
+admission requires x86_64 Linux. The session lifecycle must coordinate
+the separate operator rekey path before this has a production caller.
 Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
-write. Reporting the job's failure belongs to the launcher.
+write. If the program reports the failure via its exit status and
+standard error, the foreground result carries both within its output cap.
 
 The spawner's room-disk open and status checks pin the workspace mount
 and match its kernel mount record to the expected LUKS2 mapping. They

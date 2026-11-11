@@ -147,6 +147,29 @@ pub fn is_listening(fd: BorrowedFd<'_>) -> Result<bool, Error> {
         .map_err(|errno| net_error("read SO_ACCEPTCONN", errno.into()))
 }
 
+/// Whether a connected Unix stream has neither input nor EOF ready.
+/// This never consumes a byte or waits for the peer.
+///
+/// # Errors
+///
+/// Returns a socket error if the descriptor cannot be checked.
+pub fn unix_stream_quiet(socket: BorrowedFd<'_>) -> std::io::Result<bool> {
+    use rustix::io::Errno;
+    loop {
+        let mut byte = [0_u8; 1];
+        match rustix::net::recv(
+            socket,
+            &mut byte,
+            RecvFlags::PEEK.union(RecvFlags::DONTWAIT),
+        ) {
+            Err(Errno::AGAIN) => return Ok(true),
+            Err(Errno::INTR) => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Ok(false),
+        }
+    }
+}
+
 /// Takes ownership of the Unix stream socket this process inherited at
 /// `fd`.
 ///
@@ -201,6 +224,22 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn unix_stream_quiet_distinguishes_empty_input_data_and_eof() {
+        let (mut ours, mut peer) = UnixStream::pair().unwrap();
+        ours.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        assert!(unix_stream_quiet(ours.as_fd()).unwrap());
+        peer.write_all(b"x").unwrap();
+        assert!(!unix_stream_quiet(ours.as_fd()).unwrap());
+        let mut byte = [0];
+        ours.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, *b"x");
+        assert!(unix_stream_quiet(ours.as_fd()).unwrap());
+        drop(peer);
+        assert!(!unix_stream_quiet(ours.as_fd()).unwrap());
+    }
 
     #[test]
     fn only_an_inherited_unix_stream_is_adopted_and_it_closes_on_exec() {
