@@ -258,9 +258,22 @@ mod tests {
     }
 
     fn different_nonce(nonce: &str) -> String {
-        let digit = if nonce.starts_with('0') { '1' } else { '0' };
+        let digit = u8::from_str_radix(nonce.get(..1).unwrap(), 16).unwrap() ^ 1;
         let suffix = nonce.get(1..).unwrap();
-        format!("{digit}{suffix}")
+        format!("{digit:x}{suffix}")
+    }
+
+    fn fresh_nonce() -> String {
+        use std::fmt::Write as _;
+
+        let bytes = ring::rand::generate::<[u8; 32]>(&ring::rand::SystemRandom::new())
+            .unwrap()
+            .expose();
+        let mut value = String::with_capacity(64);
+        for byte in bytes {
+            write!(&mut value, "{byte:02x}").unwrap();
+        }
+        value
     }
 
     fn dispatched_nonce(peer: &UnixStream) -> String {
@@ -285,7 +298,8 @@ mod tests {
 
     #[test]
     fn decode_result_checks_both_output_bounds_and_termination() {
-        let nonce = crate::approval::random_hex("").unwrap();
+        let nonce = fresh_nonce();
+        assert_eq!(nonce.len(), 64);
         let base = decode_result(&result_frame(&nonce, EXITED), &nonce).unwrap();
         assert_eq!(base.status, RoomForegroundStatus::Exited(23));
         assert_eq!(base.stdout, [255]);
@@ -317,6 +331,8 @@ mod tests {
         }
         assert!(decode_result(b"bad", &nonce).is_err());
         let earlier = different_nonce(&nonce);
+        assert_eq!(earlier.len(), nonce.len());
+        assert_ne!(earlier, nonce);
         assert!(decode_result(&result_frame(&earlier, EXITED), &nonce).is_err());
         let at_cap = RoomForegroundResult {
             status: RoomForegroundStatus::Signaled(15),
