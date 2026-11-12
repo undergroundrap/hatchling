@@ -6,6 +6,7 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
+use std::time::Instant;
 
 use hatchling_core::framing::read_frame_or_eof;
 
@@ -24,6 +25,64 @@ fn test_key() -> Vec<u8> {
 
 fn mode(path: &Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Runs a stand-in that was just written, once, until it starts. It does
+/// nothing on this run: it is told so, and leaves at its first line.
+///
+/// A process another test forked while the file was open for writing
+/// holds that descriptor until it goes on to its own program, and for as
+/// long as anything holds one the kernel refuses to run the file ("text
+/// file busy"). Once the file has started once, nothing holds it, and
+/// nothing can come to: it is closed here.
+fn settle(tool: &Path) {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let ran = Command::new(tool)
+            .env("HATCHLING_TEST_SETTLE", "1")
+            .stdin(Stdio::null())
+            .status();
+        let busy = ran
+            .as_ref()
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::ExecutableFileBusy);
+        if busy && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(2));
+            continue;
+        }
+        assert!(ran.unwrap().success(), "a stand-in didn't leave at once");
+        return;
+    }
+}
+
+/// A stand-in that something still holds open for writing can't be run,
+/// and settling waits that out: it returns only once the file starts.
+#[test]
+fn a_stand_in_is_settled_before_it_is_used() {
+    let dir = std::env::temp_dir().join(format!("hatchling-settle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir(&dir).unwrap();
+    let tool = dir.join("tool");
+    let script = "#!/bin/sh\n[ -n \"$HATCHLING_TEST_SETTLE\" ] && exit 0\nexit 7\n";
+    std::fs::write(&tool, script).unwrap();
+    mode(&tool, 0o755);
+    // Held open for writing, as a forked child of another test holds it.
+    let held = std::fs::OpenOptions::new().write(true).open(&tool).unwrap();
+    let busy = Command::new(&tool).status().unwrap_err();
+    assert_eq!(busy.kind(), std::io::ErrorKind::ExecutableFileBusy);
+    let began = Instant::now();
+    let holder = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        drop(held);
+    });
+    settle(&tool);
+    assert!(
+        began.elapsed() >= Duration::from_millis(300),
+        "settled while the file was still held open"
+    );
+    holder.join().unwrap();
+    // Settled, it runs as itself.
+    assert_eq!(Command::new(&tool).status().unwrap().code(), Some(7));
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -150,10 +209,10 @@ fn a_room_operation_claim_ends_with_its_process() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(5);
     while !bench.root.join("claimed").exists()
         && child.try_wait().unwrap().is_none()
-        && std::time::Instant::now() < deadline
+        && Instant::now() < deadline
     {
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -263,6 +322,7 @@ impl Bench {
         let root = self.root.display();
         let record = format!(
             "#!/bin/sh\n\
+             [ -n \"$HATCHLING_TEST_SETTLE\" ] && exit 0\n\
              n=$(ls {root}/log | wc -l)\n\
              d={root}/log/$n\n\
              mkdir \"$d\"\n\
@@ -311,6 +371,7 @@ impl Bench {
             let path = self.root.join("tools").join(name);
             std::fs::write(&path, script).unwrap();
             mode(&path, 0o755);
+            settle(&path);
         }
     }
 
@@ -888,7 +949,7 @@ fn a_program_past_its_deadline_is_killed() {
     let mut bench = Bench::new("deadline");
     bench.disk.timeout = Duration::from_secs(1);
     bench.switch("hang", true);
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let done = bench.run(RoomDiskOp::Create);
     assert!(
         started.elapsed() < Duration::from_secs(15),
