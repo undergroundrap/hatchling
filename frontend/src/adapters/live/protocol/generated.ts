@@ -3714,6 +3714,12 @@ export type SetupState = {
      */
     readonly last_backup?: number | null;
     /**
+     * Whether cells are held by process limits alone, with no cgroup to
+     * bound each one's memory and CPU as a whole: weaker, so the app's
+     * security page says it of an install that has it.
+     */
+    readonly process_limits_only?: boolean;
+    /**
      * The agent's room disk, its encrypted computer: none from a broker
      * from before there was one.
      */

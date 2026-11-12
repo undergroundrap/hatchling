@@ -299,7 +299,9 @@ Each takes a positive number, or `unlimited`. Rlimits leave the broker's own bou
 
 Set `HATCHLING_CELL_CGROUP` to an empty cgroup v2 directory delegated to the broker. Hatchling enables its `pids`, `memory` and `cpu` controllers and creates a child group per cell. Its limits are written before the first child is placed there and released; every descendant inherits membership. The process bound counts the supervisor, init and program too. The broker stays in its own group. For helper-backed skills, harnesses and scheduled runs it retains an outer cleanup group, so cancelling or killing the helper also removes its cell groups. When a cell ends or its handle is dropped, Hatchling kills the whole group with `cgroup.kill`, waits up to five seconds for it to empty, and removes it. This mode needs Linux 5.14+ for `cgroup.kill` and access to the common ancestor's `cgroup.procs` when placing children. The group path is never mounted in a cell.
 
-With systemd 254 or later, add these settings to the broker's service:
+`scripts/install.sh` does this for a service install, where systemd is 254 or later and the machine's cgroups offer the three controllers (`cat /sys/fs/cgroup/cgroup.controllers`). Where they don't, as in some containers and restricted VMs, it leaves the settings out, says so, and cells use the rlimits alone, as below; `hatchling-broker doctor` notes it.
+
+By hand, with systemd 254 or later, add these settings to the broker's service:
 
 ```ini
 [Service]

@@ -3190,6 +3190,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "null"
                 ]
             },
+            "process_limits_only": {
+                "type": "boolean"
+            },
             "room_disk": {
                 "anyOf": [
                     {

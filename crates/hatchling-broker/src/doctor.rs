@@ -287,31 +287,83 @@ pub(crate) fn service_cell_cgroup() -> Option<String> {
     cell_cgroup_in(&String::from_utf8_lossy(&shown.stdout))
 }
 
-/// What's wrong with the delegated cgroup at `parent`, if anything: a
-/// broker that can't bound its cells stops at once, so this is worth
-/// saying before anyone unlocks it.
-pub(crate) fn cell_limits_problem(parent: Option<&str>) -> Option<String> {
-    let missing = hatchling_sys::cgroup::missing_controllers(Path::new(parent?));
-    (!missing.is_empty()).then(|| {
-        format!(
-            "the service's cgroup has no {} controller, and cells won't run without one",
-            missing.join(", ")
-        )
-    })
+/// What's wrong with the delegated cgroup at `parent`, if anything, and
+/// the fix: a broker that can't bound its cells stops at once, so this is
+/// worth saying before it's started, and before anyone unlocks it.
+///
+/// It's what can be seen without changing anything
+/// ([`hatchling_sys::cgroup::delegation_problem`]). The service's cgroup
+/// isn't there before the service's first start, nor between the starts
+/// of one that keeps stopping, so one that isn't there is judged by the
+/// tree it will be made in.
+pub(crate) fn cell_limits_problem(parent: Option<&str>) -> Option<(String, &'static str)> {
+    let parent = parent?;
+    hatchling_sys::cgroup::delegation_problem(Path::new(parent))
+        .map(|problem| cell_limits_said(parent, &problem))
+}
+
+/// What's said of `problem` with the cell cgroup at `parent`, and the fix.
+fn cell_limits_said(
+    parent: &str,
+    problem: &hatchling_sys::cgroup::DelegationProblem,
+) -> (String, &'static str) {
+    use hatchling_sys::cgroup::DelegationProblem;
+    match problem {
+        DelegationProblem::ParentLacks(missing) => (
+            format!(
+                "the service's cgroup has no {} controller, and cells won't run without one",
+                missing.join(", ")
+            ),
+            CELL_LIMITS_FIX,
+        ),
+        DelegationProblem::TreeLacks(missing) => (
+            format!(
+                "this machine's cgroups offer no {} controller, so cells can't have a cgroup of their own, and with HATCHLING_CELL_CGROUP set the broker stops at every start",
+                missing.join(", ")
+            ),
+            NO_CONTROLLERS_FIX,
+        ),
+        DelegationProblem::NotCgroup2 => (
+            format!(
+                "HATCHLING_CELL_CGROUP ({parent}) isn't in a cgroup v2 tree, and the broker stops at every start"
+            ),
+            NOT_A_CGROUP_FIX,
+        ),
+    }
 }
 
 /// How to get the controllers back: a reload has systemd apply them again.
 pub(crate) const CELL_LIMITS_FIX: &str =
     "Run `sudo systemctl daemon-reload`, then `sudo systemctl restart hatchling`.";
 
+/// What to do on a machine whose cgroups offer no controller cells need.
+const NO_CONTROLLERS_FIX: &str = "Run the installer again: on a machine like this it holds cells by process limits alone, and says so. Or do it by hand: remove /etc/systemd/system/hatchling.service.d/cgroup.conf, then `sudo systemctl daemon-reload` and `sudo systemctl restart hatchling`.";
+
+/// What to do about a cell cgroup that isn't one.
+const NOT_A_CGROUP_FIX: &str = "Set it to the service's own cgroup under /sys/fs/cgroup, or unset it to hold cells by process limits alone (README, Cell limits).";
+
+/// What doctor says of cells with no cgroup of their own: it works, and
+/// it's weaker, so it's said as something to know.
+const PROCESS_LIMITS: &str = "cells are held by process limits alone (HATCHLING_CELL_CGROUP isn't set): nothing bounds a cell's memory or CPU as a whole, and a cell that ends isn't killed as one";
+
+/// How to give cells a cgroup, where the machine can.
+const PROCESS_LIMITS_FIX: &str = "where this machine's cgroups offer the pids, memory and cpu controllers (`cat /sys/fs/cgroup/cgroup.controllers`), run the installer again, or see the README's Cell limits";
+
 /// Whether cells can be bounded as the settings say.
 fn check_cell_limits(parent: Option<&str>) -> Finding {
-    match (parent, cell_limits_problem(parent)) {
-        (_, Some(what)) => Finding::problem(what, CELL_LIMITS_FIX),
-        (Some(_), None) => Finding::Fine(String::from("each cell has its own cgroup")),
-        (None, None) => Finding::Fine(String::from(
-            "cells use process limits: HATCHLING_CELL_CGROUP isn't set",
-        )),
+    cell_limits_found(parent.is_some(), cell_limits_problem(parent))
+}
+
+/// What doctor finds of cell limits: with a cgroup `set` or not, and the
+/// `problem` with it.
+fn cell_limits_found(set: bool, problem: Option<(String, &'static str)>) -> Finding {
+    match (set, problem) {
+        (_, Some((what, fix))) => Finding::problem(what, fix),
+        (true, None) => Finding::Fine(String::from("each cell has its own cgroup")),
+        (false, None) => Finding::Note {
+            what: String::from(PROCESS_LIMITS),
+            fix: String::from(PROCESS_LIMITS_FIX),
+        },
     }
 }
 
@@ -1270,24 +1322,85 @@ mod tests {
     /// A cgroup short of a controller is found before anyone unlocks.
     #[test]
     fn a_cgroup_without_its_controllers_is_a_problem() {
-        let dir = scratch("cell-limits");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("cgroup.controllers"), "memory pids\n").unwrap();
-        let parent = dir.to_str().unwrap();
-        let (what, fix) = problem(check_cell_limits(Some(parent)));
-        assert!(what.contains("no cpu controller"), "{what}");
+        use hatchling_sys::cgroup::DelegationProblem;
+        // One that's there and lacks a controller: a reload gets it back.
+        let (what, fix) = cell_limits_said("/c", &DelegationProblem::ParentLacks(vec!["cpu"]));
+        assert_eq!(
+            what,
+            "the service's cgroup has no cpu controller, and cells won't run without one"
+        );
         assert!(fix.contains("daemon-reload"), "{fix}");
-        std::fs::write(dir.join("cgroup.controllers"), "cpu memory pids\n").unwrap();
-        assert_eq!(cell_limits_problem(Some(parent)), None);
+        let found = cell_limits_found(true, Some((what.clone(), fix)));
+        assert_eq!(problem(found), (what, fix.to_owned()));
         assert!(matches!(
-            check_cell_limits(Some(parent)),
-            Finding::Fine(said) if said.contains("own cgroup")
+            cell_limits_found(true, None),
+            Finding::Fine(said) if said == "each cell has its own cgroup"
         ));
-        assert!(matches!(
-            check_cell_limits(None),
-            Finding::Fine(said) if said.contains("isn't set")
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The installer's own doctor said cells each had a cgroup on a machine
+    /// whose cgroups offered no controllers, and the broker then stopped at
+    /// every start. A machine like that is a problem while the settings ask
+    /// for a cgroup, and the fix is the installer's own.
+    #[test]
+    fn a_machine_with_no_controllers_is_a_problem_before_the_first_start() {
+        use hatchling_sys::cgroup::DelegationProblem;
+        let lacking = DelegationProblem::TreeLacks(vec!["pids", "memory", "cpu"]);
+        let (what, fix) = cell_limits_said("/c", &lacking);
+        assert!(
+            what.starts_with("this machine's cgroups offer no pids, memory, cpu controller")
+                && what.ends_with("the broker stops at every start"),
+            "{what}"
+        );
+        assert!(
+            fix.starts_with("Run the installer again")
+                && fix.contains("hatchling.service.d/cgroup.conf"),
+            "{fix}"
+        );
+        // A path that's no cgroup at all, by the filesystem itself.
+        let (what, fix) = cell_limits_said("/c", &DelegationProblem::NotCgroup2);
+        assert_eq!(
+            what,
+            "HATCHLING_CELL_CGROUP (/c) isn't in a cgroup v2 tree, and the broker stops at every start"
+        );
+        assert!(fix.contains("unset it"), "{fix}");
+        let dir = scratch("not-a-cgroup");
+        let (what, _) = problem(check_cell_limits(Some(&*dir.to_string_lossy())));
+        assert!(what.contains("isn't in a cgroup v2 tree"), "{what}");
+        // And one that isn't there yet is judged all the same: the
+        // service's cgroup isn't, before the service's first start.
+        let unmade = dir.join("not").join("made");
+        let (what, _) = problem(check_cell_limits(Some(&*unmade.to_string_lossy())));
+        assert!(what.contains("isn't in a cgroup v2 tree"), "{what}");
+        // And a real one that offers every controller has nothing wrong.
+        let offered =
+            std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers").unwrap_or_default();
+        if ["pids", "memory", "cpu"]
+            .iter()
+            .all(|needed| offered.split_whitespace().any(|name| name == *needed))
+        {
+            assert_eq!(cell_limits_problem(Some("/sys/fs/cgroup")), None);
+        }
+    }
+
+    /// Cells held by process limits alone work, and are weaker: said as
+    /// something to know, with how to change it, not as nothing.
+    #[test]
+    fn process_limits_alone_are_noted_as_weaker() {
+        assert_eq!(cell_limits_problem(None), None);
+        let Finding::Note { what, fix } = check_cell_limits(None) else {
+            return assert_eq!(
+                check_cell_limits(None),
+                Finding::problem("", ""),
+                "not a note"
+            );
+        };
+        assert!(
+            what.starts_with("cells are held by process limits alone")
+                && what.contains("nothing bounds a cell's memory or CPU as a whole"),
+            "{what}"
+        );
+        assert!(fix.contains("run the installer again"), "{fix}");
     }
 
     #[test]

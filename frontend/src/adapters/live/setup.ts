@@ -31,6 +31,7 @@ export function setupOf(setup: WireSetup): SetupView {
         lastBackup: setup.last_backup ?? null,
         windowsSetup: setup.windows_setup ?? false,
         roomDisk: setup.room_disk ? roomDiskOf(setup.room_disk) : null,
+        processLimitsOnly: setup.process_limits_only ?? false,
     };
 }
 export class LiveSetup implements SetupPort {

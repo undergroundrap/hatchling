@@ -820,6 +820,11 @@ pub struct SetupState {
     /// from before there was one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room_disk: Option<RoomDiskView>,
+    /// Whether cells are held by process limits alone, with no cgroup to
+    /// bound each one's memory and CPU as a whole: weaker, so the app's
+    /// security page says it of an install that has it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub process_limits_only: bool,
 }
 
 /// The agent's room disk, as the app shows it: how it is, and its sizes in
@@ -1792,6 +1797,35 @@ mod tests {
 
     use super::*;
     use crate::subagent::ChildFailure;
+
+    /// Cells held by process limits alone are on the wire only when they
+    /// are: an install whose cells have a cgroup says what it always said.
+    #[test]
+    fn process_limits_only_is_on_the_wire_only_when_true() {
+        let setup = |process_limits_only| SetupState {
+            vault: VaultProtection {
+                tier: VaultTier::File,
+                keys: 0,
+                codes: 0,
+                codes_unconfirmed: false,
+            },
+            last_backup: None,
+            windows_setup: false,
+            room_disk: None,
+            process_limits_only,
+        };
+        pinned(
+            &setup(false),
+            &json!({"vault": {"tier": "file", "keys": 0, "codes": 0}}),
+        );
+        pinned(
+            &setup(true),
+            &json!({
+                "vault": {"tier": "file", "keys": 0, "codes": 0},
+                "process_limits_only": true,
+            }),
+        );
+    }
 
     /// Serializes to exactly `expected` and reads back unchanged.
     fn pinned<T>(value: &T, expected: &Value)

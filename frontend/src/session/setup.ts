@@ -37,6 +37,8 @@ export interface SetupView {
     readonly windowsSetup: boolean;
     /** The agent's computer: none from a broker from before there was one. */
     readonly roomDisk: RoomDiskView | null;
+    /** Whether the agent's rooms are held by process limits alone, with no cgroup of their own. */
+    readonly processLimitsOnly: boolean;
 }
 /** What's set up, as last read. */
 export type SetupState = {

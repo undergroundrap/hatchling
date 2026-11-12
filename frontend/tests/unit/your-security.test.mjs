@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { YOUR_SECURITY } from '../../dist/app/features/settings/your-security-text.js';
-import { onThisInstall } from '../../dist/app/features/settings/security.js';
+import { onThisInstall, roomsOnThisInstall } from '../../dist/app/features/settings/security.js';
 const page = readFileSync(new URL('../../../docs/your-security.md', import.meta.url), 'utf8');
 const REPO = 'https://github.com/undergroundrap/hatchling/blob/main';
 /** The docs page as the app shows it: no title, the dialog has one, and links that work from there. */
@@ -27,5 +27,10 @@ test('the page says only what is true of this install', () => {
     assert.doesNotMatch(onThisInstall(read('file')), /security key/u);
     for (const unknown of [undefined, { kind: 'unread' }, { kind: 'failed', detail: 'x' }]) {
         assert.equal(onThisInstall(unknown), null, 'said only of what has been read');
+        assert.equal(roomsOnThisInstall(unknown), null, 'said only of what has been read');
     }
+    // Rooms held by process limits alone are the weaker way, and said; a cgroup of their own goes without saying.
+    const rooms = (processLimitsOnly) => ({ kind: 'read', setup: { ...read('file').setup, processLimitsOnly } });
+    assert.match(roomsOnThisInstall(rooms(true)), /process limits alone.*no cgroup to bound a room's memory and CPU.*doctor/u);
+    assert.equal(roomsOnThisInstall(rooms(false)), null);
 });
