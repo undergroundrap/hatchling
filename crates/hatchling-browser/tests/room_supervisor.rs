@@ -163,8 +163,10 @@ mod proof {
         assert!(matches!(stopped, Say::Stopping { .. }), "{stopped:?}");
         assert_eq!(ended(&peer, "sleeper").0, Ended::Signaled(9));
         // What a job reads and writes is kept, in memory and in its
-        // files, in the session directory.
-        let both = "cat; echo err >&2";
+        // files, in the session directory. The job is the shell's own
+        // words and no other program: the proof is of the supervisor, and
+        // not of what one `cat` or another asks of the kernel.
+        let both = "read -r line; echo \"$line\"; echo err >&2";
         start(&peer, "writer", &["sh", "-c", both], &dir, b"fed\n");
         let (how, stdout, stderr) = ended(&peer, "writer");
         assert_eq!(how, Ended::Exited(0));
