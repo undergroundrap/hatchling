@@ -23,7 +23,8 @@
 //! The PIN of a key is typed here, in the operator's own terminal, and
 //! goes only to the key.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -845,132 +846,341 @@ fn add_second(
     })
 }
 
-/// What `vault-keyring setup` does before the service's settings are taken
-/// on.
+/// Whether the command `args` is one of the guided ones.
+pub(crate) fn is_guided(args: &[String]) -> bool {
+    args.first().map(String::as_str) == Some("vault-keyring")
+        && guided(args.get(1).map(String::as_str))
+}
+
+/// What a first setup adds to the settings of a service that has no
+/// keyring: where its keyring goes, beside the vault, and a PIN required
+/// of every key. Nothing, for one that names a keyring already.
 ///
-/// It adds to them, when they have no keyring: its place, and a PIN
-/// required of every key. And it stops the service, as moving the vault
-/// gives it a new key a running broker wouldn't have.
+/// # Errors
+///
+/// Settings that name no vault to put a keyring beside.
+pub(crate) fn first_settings(
+    settings: &BTreeMap<String, String>,
+) -> Result<Vec<(String, String)>, String> {
+    use crate::environment as env;
+    if settings.contains_key(env::HATCHLING_VAULT_KEYRING.name) {
+        return Ok(Vec::new());
+    }
+    let Some(root) = settings
+        .get(env::HATCHLING_VAULT_DIR.name)
+        .and_then(|vault| Path::new(vault).parent())
+    else {
+        return Err(String::from("the settings name no vault"));
+    };
+    let keyring = root.join("keyring").join("keyring");
+    Ok(vec![
+        (
+            env::HATCHLING_VAULT_KEYRING.name.to_owned(),
+            keyring.display().to_string(),
+        ),
+        (
+            env::HATCHLING_REQUIRE_KEY_PIN.name.to_owned(),
+            String::from("true"),
+        ),
+    ])
+}
+
+/// What a guided setup reaches of the service it sets up.
+pub(crate) struct Service<'a> {
+    /// Its settings file.
+    pub(crate) settings: &'a Path,
+    /// Who owns that file.
+    pub(crate) owner: u32,
+    /// Stops it for a setup; why not, if it didn't.
+    pub(crate) stop: &'a dyn Fn() -> Result<(), String>,
+    /// Starts it; whether it started.
+    pub(crate) start: &'a dyn Fn() -> bool,
+}
+
+/// The service's unit.
+const SERVICE_UNIT: &str = "hatchling";
+
+/// The lock a setup holds while the service is stopped for it: what waits
+/// on it gets it when the setup's process is gone, however it went.
+const SETUP_LOCK: &str = "/run/hatchling-setup.lock";
+
+/// The unit that waits on [`SETUP_LOCK`], and then starts the service.
+const GUARD_UNIT: &str = "hatchling-setup-guard";
+
+/// Said when nothing could be set to wait on the lock.
+const UNGUARDED: &str = "If this is interrupted, Hatchling stays stopped until you start it: sudo systemctl start hatchling";
+
+/// Runs `act` on the installed service: root's settings file,
+/// `systemctl`, and a guard on the stop ([`stop_for_setup`]).
+pub(crate) fn installed<T>(act: impl FnOnce(&Service<'_>) -> T) -> T {
+    let held = RefCell::new(None);
+    act(&Service {
+        settings: Path::new(crate::doctor::SERVICE_SETTINGS),
+        owner: 0,
+        stop: &|| {
+            stop_for_setup(
+                Path::new(SETUP_LOCK),
+                Path::new("systemd-run"),
+                Path::new("systemctl"),
+                &mut std::io::stderr(),
+            )
+            .map(|guard| *held.borrow_mut() = Some(guard))
+        },
+        start: &|| start_after_setup(Path::new("systemctl")),
+    })
+}
+
+/// Has `program`, a `systemctl`, do `verb` to `unit`; whether it did.
+fn systemctl(program: &Path, verb: &str, unit: &str) -> bool {
+    Command::new(program)
+        .args([verb, unit])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// A setup's hold on the service while it's stopped for it.
+#[derive(Debug)]
+pub(crate) struct Guard {
+    /// Held for as long as the setup's process lives.
+    _lock: hatchling_sys::HeldLock,
+    /// Whether something waits on it, to start the service.
+    armed: bool,
+}
+
+/// What `systemd-run` is given to set the guard: a unit of its own, so a
+/// closed terminal doesn't end it, that waits for the lock at `lock` and
+/// then starts the service.
+fn guard_arguments(lock: &Path) -> Vec<String> {
+    let mut arguments: Vec<String> = ["--quiet", "--collect", "--unit", GUARD_UNIT, "flock"]
+        .map(String::from)
+        .to_vec();
+    arguments.push(lock.display().to_string());
+    arguments.extend(["systemctl", "start", SERVICE_UNIT].map(String::from));
+    arguments
+}
+
+/// Takes the setup's lock at `lock`, and has `systemd_run` set a unit to
+/// wait on it. A setup stops the service for as long as it runs, and one
+/// that's interrupted (a closed window, Ctrl-C, a kill) can't start it
+/// again itself: the lock is let go when its process ends, whatever ended
+/// it, and the unit waiting on it starts the service.
+///
+/// # Errors
+///
+/// A lock another setup holds, or one that can't be taken.
+fn guard(lock: &Path, systemd_run: &Path) -> Result<Guard, String> {
+    let held = hatchling_sys::try_lock(lock)
+        .map_err(|error| format!("can't take the setup's lock: {error}"))?
+        .ok_or_else(|| {
+            String::from("another setup is running: let it finish, or stop it, then run this again")
+        })?;
+    let armed = Command::new(systemd_run)
+        .args(guard_arguments(lock))
+        .status()
+        .is_ok_and(|status| status.success());
+    Ok(Guard { _lock: held, armed })
+}
+
+/// Stops the service for a setup, guarded ([`guard`]); `out` is told when
+/// no guard could be set. A service that doesn't stop keeps no guard.
+///
+/// # Errors
+///
+/// As [`guard`], or a service that didn't stop.
+fn stop_for_setup(
+    lock: &Path,
+    systemd_run: &Path,
+    systemctl_program: &Path,
+    out: &mut dyn Write,
+) -> Result<Guard, String> {
+    let guard = guard(lock, systemd_run)?;
+    if !guard.armed {
+        let _ = writeln!(out, "{UNGUARDED}");
+    }
+    if systemctl(systemctl_program, "stop", SERVICE_UNIT) {
+        return Ok(guard);
+    }
+    let _ = systemctl(systemctl_program, "stop", GUARD_UNIT);
+    Err(String::from(
+        "can't stop the service: sudo systemctl stop hatchling",
+    ))
+}
+
+/// Starts the service after a setup, once: the guard goes first, as the
+/// setup is here to start it itself.
+fn start_after_setup(systemctl_program: &Path) -> bool {
+    let _ = systemctl(systemctl_program, "stop", GUARD_UNIT);
+    systemctl(systemctl_program, "start", SERVICE_UNIT)
+}
+
+/// Whether a guided setup can run here: as root (`euid`), on a service
+/// install. It changes nothing: the service is stopped, and its settings
+/// added to, only once the setup itself starts ([`run_setup`]).
 ///
 /// # Errors
 ///
 /// Why not, in a sentence.
-pub fn prepare() -> Result<(), String> {
-    use crate::environment as env;
-    if hatchling_sys::euid() != 0 {
+pub(crate) fn ready(euid: u32, service: &Service<'_>) -> Result<(), String> {
+    if euid != 0 {
         return Err(String::from("run it with sudo"));
     }
-    let path = Path::new(crate::doctor::SERVICE_SETTINGS);
-    if !path.exists() {
+    if !service.settings.exists() {
         return Err(format!(
             "{} isn't there: setup is for a service install (docs/install.md)",
-            path.display()
+            service.settings.display()
         ));
     }
-    let text = crate::service_settings::read_trusted_text(path, 0)
+    Ok(())
+}
+
+/// Adds what a first setup adds ([`first_settings`]) to the service's
+/// settings file, when it names no keyring. Answers the file as it was, to
+/// put back if the setup makes no keyring ([`take_back`]).
+fn adopt(service: &Service<'_>) -> Result<Option<String>, String> {
+    let text = crate::service_settings::read_trusted_text(service.settings, service.owner)
         .map_err(|unread| format!("{}\n{}", unread.what, unread.fix))?;
-    let settings = crate::doctor::parse_settings(&text);
-    if !settings.contains_key(env::HATCHLING_VAULT_KEYRING.name) {
-        let Some(root) = settings
-            .get(env::HATCHLING_VAULT_DIR.name)
-            .and_then(|vault| Path::new(vault).parent())
-        else {
-            return Err(String::from("the settings name no vault"));
-        };
-        let keyring = root.join("keyring").join("keyring");
-        let changes = [
-            (
-                env::HATCHLING_VAULT_KEYRING.name,
-                Some(keyring.display().to_string()),
-            ),
-            (
-                env::HATCHLING_REQUIRE_KEY_PIN.name,
-                Some(String::from("true")),
-            ),
-        ];
-        crate::model_switch::rewrite(path, &text, &changes)?;
+    let added = first_settings(&crate::doctor::parse_settings(&text))?;
+    if added.is_empty() {
+        return Ok(None);
     }
-    let stopped = Command::new("systemctl")
-        .args(["stop", "hatchling"])
-        .status()
-        .map_err(|err| format!("can't stop the service: {err}"))?;
-    if stopped.success() {
-        Ok(())
-    } else {
-        Err(String::from(
-            "can't stop the service: sudo systemctl stop hatchling",
-        ))
+    let changes: Vec<(&str, Option<String>)> = added
+        .iter()
+        .map(|(key, value)| (key.as_str(), Some(value.clone())))
+        .collect();
+    crate::model_switch::rewrite(service.settings, &text, &changes)?;
+    Ok(Some(text))
+}
+
+/// Puts the service's settings back as they were (`before`) when a setup
+/// that added a keyring to them made none at `keyring`: the service then
+/// starts as it did before. Settings that name a keyring that isn't there
+/// stop the keeper at every start.
+fn take_back(
+    service: &Service<'_>,
+    before: Option<&str>,
+    keyring: Option<&Path>,
+) -> Result<(), String> {
+    match before {
+        Some(text) if !keyring.is_some_and(Path::is_file) => {
+            crate::model_switch::restore(service.settings, text)
+        }
+        Some(_) | None => Ok(()),
     }
 }
 
-/// `vault-keyring setup`, in this terminal: the setup, then the service
-/// started and unlocked.
+/// Runs `guide`, a guided setup, around the service: stopped first, as
+/// moving the vault gives it a new key a running broker wouldn't have (and
+/// guarded, so a setup that's interrupted doesn't leave it stopped); its
+/// settings given a keyring when they name none, which they lose again if
+/// the guide stops before one is made at `keyring`; and started again,
+/// whatever happened. A setup that fails leaves the service as it found
+/// it.
+///
+/// # Errors
+///
+/// A service that doesn't stop or start, settings that can't be changed,
+/// or why the guide stopped.
+fn around<T>(
+    service: &Service<'_>,
+    keyring: Option<&Path>,
+    guide: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    let usage = |reason: String| Error::Usage { reason };
+    (service.stop)().map_err(usage)?;
+    let done = match adopt(service) {
+        Ok(before) => guide().map_err(|stopped| {
+            let Err(kept) = take_back(service, before.as_deref(), keyring) else {
+                return stopped;
+            };
+            let why = if let Error::Usage { reason } = &stopped {
+                reason.clone()
+            } else {
+                stopped.to_string()
+            };
+            usage(format!(
+                "{why}. And {kept}: run this again, and it carries on from here"
+            ))
+        }),
+        Err(refused) => Err(usage(refused)),
+    };
+    // Whatever happened, the service goes back: an interrupted setup left
+    // the vault as it was, or it says so.
+    let started = (service.start)();
+    let done = done?;
+    if started {
+        Ok(done)
+    } else {
+        Err(usage(String::from(
+            "the service didn't start: sudo systemctl start hatchling",
+        )))
+    }
+}
+
+/// The PIN typed at a prompt: none, for an empty answer or one that
+/// couldn't be read.
+fn typed_pin(answer: Result<Zeroizing<String>, Error>) -> Option<Zeroizing<String>> {
+    answer.ok().filter(|pin| !pin.is_empty())
+}
+
+/// Whether the guided `action` is the one for a key that's gone; the
+/// other is the setup.
+fn is_lost_key(action: Option<&str>) -> bool {
+    action == Some(LOST_ACTION)
+}
+
+/// `vault-keyring setup`, in this terminal: the setup, with the service
+/// stopped for it and started after ([`around`]), then unlocked.
 ///
 /// # Errors
 ///
 /// Why it stopped.
-pub fn run_setup(
-    broker: &crate::Config,
+pub(crate) fn run_setup(
+    service: &Service<'_>,
+    vault: &VaultConfig,
     config: &KeyringConfig,
     stores: &[(Store, PathBuf)],
     action: Option<&str>,
 ) -> Result<(), Error> {
-    let mut asking = |prompt: &str| ring::terminal_answer(prompt, false);
-    let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
-    let touches = Rc::new(Cell::new(0));
-    let counted = Rc::clone(&touches);
-    let mut devices = ring::platform_keys_noticing(
-        Box::new(|| {
-            ring::terminal_answer(ring::PIN_PROMPT, true)
-                .ok()
-                .filter(|pin| !pin.is_empty())
-        }),
-        Box::new(move |touch| {
-            let _ = writeln!(std::io::stderr(), "{}", touch_line(touch, &counted));
-        }),
-    );
-    let mut wait = || {
-        std::thread::sleep(LOOK_EVERY);
-        true
-    };
-    let mut out = std::io::stderr();
-    let wsl = std::fs::read_to_string("/proc/sys/kernel/osrelease")
-        .is_ok_and(|release| release.to_ascii_lowercase().contains("microsoft"));
-    let guide = if action == Some(LOST_ACTION) {
-        lost_key
-    } else {
-        run
-    };
-    let done = guide(&mut Setup {
-        vault: &broker.vault,
-        config,
-        stores,
-        ask: &mut asking,
-        secret: &mut secret,
-        devices: &mut devices,
-        out: &mut out,
-        wait: &mut wait,
-        wsl,
-        touches: &touches,
-    });
-    // Let go of the keys: each stays locked while it's held, and the unlock
-    // below needs them.
-    drop(devices);
-    // A stopped keeper leaves its socket: gone now, it's only there again
-    // once the new one is really waiting.
-    let socket = crate::unlock_relay::socket_path(&broker.vault);
-    forget_socket(&socket, &crate::broker_user::own_users());
-    // Whatever happened, the service goes back: an interrupted setup left
-    // the vault as it was, or it says so.
-    let started = Command::new("systemctl")
-        .args(["start", "hatchling"])
-        .status();
-    done?;
-    if !started.is_ok_and(|status| status.success()) {
-        return Err(Error::Usage {
-            reason: String::from("the service didn't start: sudo systemctl start hatchling"),
+    let socket = crate::unlock_relay::socket_path(vault);
+    around(service, config.keyring.as_deref(), || {
+        let mut asking = |prompt: &str| ring::terminal_answer(prompt, false);
+        let mut secret = |prompt: &str| ring::terminal_answer(prompt, true);
+        let touches = Rc::new(Cell::new(0));
+        let counted = Rc::clone(&touches);
+        let mut devices = ring::platform_keys_noticing(
+            Box::new(|| typed_pin(ring::terminal_answer(ring::PIN_PROMPT, true))),
+            Box::new(move |touch| {
+                let _ = writeln!(std::io::stderr(), "{}", touch_line(touch, &counted));
+            }),
+        );
+        let mut wait = || {
+            std::thread::sleep(LOOK_EVERY);
+            true
+        };
+        let mut out = std::io::stderr();
+        let wsl = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .is_ok_and(|release| release.to_ascii_lowercase().contains("microsoft"));
+        let guide = if is_lost_key(action) { lost_key } else { run };
+        let done = guide(&mut Setup {
+            vault,
+            config,
+            stores,
+            ask: &mut asking,
+            secret: &mut secret,
+            devices: &mut devices,
+            out: &mut out,
+            wait: &mut wait,
+            wsl,
+            touches: &touches,
         });
-    }
+        // Let go of the keys: each stays locked while it's held, and the
+        // unlock below needs them.
+        drop(devices);
+        // A stopped keeper leaves its socket: gone now, it's only there
+        // again once the new one is really waiting.
+        forget_socket(&socket, &crate::broker_user::own_users());
+        done
+    })?;
     // It's locked now, as after every restart: unlocking here shows the
     // key works, and shows how.
     for _ in 0..40 {
@@ -983,7 +1193,7 @@ pub fn run_setup(
         std::io::stderr(),
         "\nAll set. Hatchling is locked, as it is after every restart. Unlock it now:"
     );
-    let _ = crate::unlock_relay::unlock_main("hatchling-broker", &broker.vault);
+    let _ = crate::unlock_relay::unlock_main("hatchling-broker", vault);
     let _ = writeln!(
         std::io::stderr(),
         "{}",

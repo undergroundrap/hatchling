@@ -954,6 +954,550 @@ fn the_guided_actions_are_setup_and_lost_key() {
     assert!(!guided(None));
 }
 
+#[test]
+fn a_guided_command_is_vault_keyring_with_a_guided_action() {
+    let args =
+        |list: &[&str]| -> Vec<String> { list.iter().map(|arg| (*arg).to_owned()).collect() };
+    assert!(is_guided(&args(&["vault-keyring", "setup"])));
+    assert!(is_guided(&args(&["vault-keyring", "lost-key"])));
+    assert!(!is_guided(&args(&["vault-keyring", "status"])));
+    assert!(!is_guided(&args(&["vault-keyring"])));
+    assert!(!is_guided(&args(&["setup"])));
+    assert!(!is_guided(&args(&["secret", "setup"])));
+    assert!(!is_guided(&[]));
+}
+
+fn settings_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect()
+}
+
+/// A first setup puts the keyring beside the vault, and asks a PIN of
+/// every key; a service with a keyring gains nothing; one with no vault
+/// has nowhere to put one.
+#[test]
+fn a_first_setup_adds_a_keyring_beside_the_vault() {
+    let fresh = settings_of(&[("HATCHLING_VAULT_DIR", "/var/lib/hatchling/vault")]);
+    assert_eq!(
+        first_settings(&fresh).unwrap(),
+        [
+            (
+                String::from("HATCHLING_VAULT_KEYRING"),
+                String::from("/var/lib/hatchling/keyring/keyring")
+            ),
+            (
+                String::from("HATCHLING_REQUIRE_KEY_PIN"),
+                String::from("true")
+            ),
+        ]
+    );
+    let keyed = settings_of(&[
+        ("HATCHLING_VAULT_DIR", "/var/lib/hatchling/vault"),
+        ("HATCHLING_VAULT_KEYRING", "/elsewhere/keyring"),
+    ]);
+    assert_eq!(first_settings(&keyed).unwrap(), []);
+    for nowhere in [
+        settings_of(&[]),
+        settings_of(&[("HATCHLING_VAULT_DIR", "/")]),
+    ] {
+        assert_eq!(
+            first_settings(&nowhere).unwrap_err(),
+            "the settings name no vault"
+        );
+    }
+}
+
+/// A service on a bench: its settings in a file of this user's, and its
+/// stops and starts counted.
+struct Stand {
+    _scratch: Scratch,
+    settings: PathBuf,
+    /// Where a keyring the settings name would be.
+    keyring: PathBuf,
+    stops: Cell<u32>,
+    starts: Cell<u32>,
+    /// Whether it stops, and whether it starts.
+    stoppable: Cell<bool>,
+    startable: Cell<bool>,
+}
+
+/// The settings of a fresh install, as the stand's file holds them.
+fn fresh_text(vault: &Path) -> String {
+    format!(
+        "# the service's\nHATCHLING_VAULT_DIR={}\nHATCHLING_LOG_LEVEL=info\n",
+        vault.display()
+    )
+}
+
+impl Stand {
+    fn new(name: &str) -> Self {
+        let (scratch, vault, _) = vault(&format!("stand-{name}"));
+        let root = vault.root.parent().unwrap().to_path_buf();
+        let settings = root.join("hatchling.env");
+        std::fs::write(&settings, fresh_text(&vault.root)).unwrap();
+        Self {
+            _scratch: scratch,
+            settings,
+            keyring: root.join("keyring").join("keyring"),
+            stops: Cell::new(0),
+            starts: Cell::new(0),
+            stoppable: Cell::new(true),
+            startable: Cell::new(true),
+        }
+    }
+
+    fn vault_dir(&self) -> PathBuf {
+        self.settings.parent().unwrap().join("vault")
+    }
+
+    fn text(&self) -> String {
+        std::fs::read_to_string(&self.settings).unwrap()
+    }
+
+    /// The files beside the settings: the settings, and any backup.
+    fn beside(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.settings.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("hatchling.env"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Runs `act` on this service.
+    fn with<T>(&self, act: impl FnOnce(&Service<'_>) -> T) -> T {
+        act(&Service {
+            settings: &self.settings,
+            owner: hatchling_sys::euid(),
+            stop: &|| {
+                self.stops.set(self.stops.get() + 1);
+                if self.stoppable.get() {
+                    Ok(())
+                } else {
+                    Err(String::from("it won't stop"))
+                }
+            },
+            start: &|| {
+                self.starts.set(self.starts.get() + 1);
+                self.startable.get()
+            },
+        })
+    }
+
+    /// Runs a setup around this service: `guide` makes the keyring, or
+    /// doesn't, and ends as it says.
+    fn setup(&self, guide: impl FnOnce() -> Result<u32, Error>) -> Result<u32, Error> {
+        self.with(|service| around(service, Some(&self.keyring), guide))
+    }
+}
+
+fn stopped_with(reason: &str) -> Error {
+    Error::Usage {
+        reason: reason.to_owned(),
+    }
+}
+
+/// The reason a setup gave for stopping; nothing, if it didn't stop that
+/// way.
+fn reason_of(done: &Result<u32, Error>) -> String {
+    match done {
+        Err(Error::Usage { reason }) => reason.clone(),
+        Ok(_) | Err(_) => String::new(),
+    }
+}
+
+/// The settings name the keyring, and a PIN of every key, as a first
+/// setup leaves them.
+fn names_the_keyring(stand: &Stand) -> bool {
+    let settings = crate::doctor::parse_settings(&stand.text());
+    settings.get("HATCHLING_VAULT_KEYRING").map(String::as_str)
+        == Some(&*stand.keyring.to_string_lossy())
+        && settings
+            .get("HATCHLING_REQUIRE_KEY_PIN")
+            .map(String::as_str)
+            == Some("true")
+}
+
+/// A setup is root's, on a service install, and looking changes nothing.
+#[test]
+fn a_setup_is_ready_only_as_root_on_a_service_install() {
+    let stand = Stand::new("ready");
+    let before = stand.text();
+    stand.with(|service| {
+        assert_eq!(ready(0, service), Ok(()));
+        assert_eq!(ready(1000, service).unwrap_err(), "run it with sudo");
+    });
+    std::fs::remove_file(&stand.settings).unwrap();
+    stand.with(|service| {
+        let refused = ready(0, service).unwrap_err();
+        assert!(
+            refused.contains("isn't there: setup is for a service install")
+                && refused.contains(&*stand.settings.to_string_lossy()),
+            "{refused}"
+        );
+        assert_eq!(ready(1000, service).unwrap_err(), "run it with sudo");
+    });
+    assert_eq!((stand.stops.get(), stand.starts.get()), (0, 0));
+    std::fs::write(&stand.settings, &before).unwrap();
+    assert_eq!(stand.beside(), ["hatchling.env"]);
+}
+
+/// The first setup on a fresh install: the service is stopped, its
+/// settings gain the keyring, the setup makes it, and the service is
+/// started on settings that name a keyring that's there.
+#[test]
+fn a_first_setup_gives_the_service_its_keyring() {
+    let stand = Stand::new("first");
+    let done = stand.setup(|| {
+        // The setup runs with the service stopped, and its settings ready.
+        assert_eq!((stand.stops.get(), stand.starts.get()), (1, 0));
+        assert!(names_the_keyring(&stand), "{}", stand.text());
+        std::fs::create_dir_all(stand.keyring.parent().unwrap()).unwrap();
+        std::fs::write(&stand.keyring, b"made").unwrap();
+        Ok(7)
+    });
+    assert_eq!(done.unwrap(), 7);
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));
+    assert!(names_the_keyring(&stand), "{}", stand.text());
+    // What was there is kept, and a copy of the settings as they were.
+    assert!(stand.text().starts_with(&fresh_text(&stand.vault_dir())));
+    let beside = stand.beside();
+    assert_eq!(beside.len(), 2, "{beside:?}");
+    let kept = beside.last().unwrap();
+    let backup = stand.settings.parent().unwrap().join(kept);
+    assert!(kept.starts_with("hatchling.env.before-"), "{beside:?}");
+    assert_eq!(
+        std::fs::read_to_string(backup).unwrap(),
+        fresh_text(&stand.vault_dir())
+    );
+
+    // Run again, the settings have their keyring: nothing is added.
+    let text = stand.text();
+    assert_eq!(stand.setup(|| Ok(8)).unwrap(), 8);
+    assert_eq!(stand.text(), text);
+    assert_eq!(stand.beside().len(), 2);
+}
+
+/// The first run of `vault-keyring setup` on a fresh install stopped with
+/// an error after it had put a keyring in the service's settings, and the
+/// service was started on a keyring that was never made: the keeper
+/// stopped at every start, and Hatchling was down until someone ran the
+/// setup again. A setup that stops before it makes a keyring leaves the
+/// settings as they were, and the service starts as it did before.
+#[test]
+fn a_setup_that_makes_no_keyring_leaves_the_settings_as_they_were() {
+    let stand = Stand::new("stopped");
+    let before = stand.text();
+    let done = stand.setup(|| {
+        assert!(names_the_keyring(&stand), "{}", stand.text());
+        Err(stopped_with("the guide stopped"))
+    });
+    assert!(
+        matches!(&done, Err(Error::Usage { reason }) if reason == "the guide stopped"),
+        "{done:?}"
+    );
+    assert_eq!(
+        stand.text(),
+        before,
+        "the settings name a keyring never made"
+    );
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));
+
+    // One that stops after the keyring is made keeps them: the vault's key
+    // is in the keyring now, and the service needs its name.
+    let stand = Stand::new("stopped-late");
+    let done = stand.setup(|| {
+        std::fs::create_dir_all(stand.keyring.parent().unwrap()).unwrap();
+        std::fs::write(&stand.keyring, b"made").unwrap();
+        Err(stopped_with("no key arrived"))
+    });
+    assert!(
+        matches!(&done, Err(Error::Usage { reason }) if reason == "no key arrived"),
+        "{done:?}"
+    );
+    assert!(names_the_keyring(&stand), "{}", stand.text());
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));
+
+    // Something at the keyring's name that isn't a keyring is none made.
+    let stand = Stand::new("stopped-not-a-file");
+    let before = stand.text();
+    let done = stand.setup(|| {
+        std::fs::create_dir_all(&stand.keyring).unwrap();
+        Err(stopped_with("stopped"))
+    });
+    assert!(done.is_err());
+    assert_eq!(stand.text(), before);
+
+    // A service that had its keyring before the setup keeps it named,
+    // whatever the setup does: it added nothing, so takes nothing back.
+    let stand = Stand::new("stopped-keyed");
+    let keyed = format!(
+        "{}HATCHLING_VAULT_KEYRING={}\n",
+        fresh_text(&stand.vault_dir()),
+        stand.keyring.display()
+    );
+    std::fs::write(&stand.settings, &keyed).unwrap();
+    let done = stand.setup(|| Err(stopped_with("stopped")));
+    assert!(done.is_err());
+    assert_eq!(stand.text(), keyed);
+    assert_eq!(stand.beside(), ["hatchling.env"]);
+}
+
+/// With no keyring named to look for, a setup that stopped made none.
+#[test]
+fn a_setup_with_no_keyring_to_look_for_takes_its_settings_back() {
+    let stand = Stand::new("no-name");
+    let before = stand.text();
+    let done: Result<u32, Error> =
+        stand.with(|service| around(service, None, || Err(stopped_with("stopped"))));
+    assert!(done.is_err());
+    assert_eq!(stand.text(), before);
+}
+
+/// A service that won't stop is left alone: nothing is changed, the setup
+/// doesn't run, and it isn't started. One that doesn't start again is
+/// said, with the command that starts it.
+#[test]
+fn a_service_that_does_not_stop_or_start_is_said() {
+    let stand = Stand::new("stuck");
+    let before = stand.text();
+    stand.stoppable.set(false);
+    let ran = Cell::new(false);
+    let done = stand.setup(|| {
+        ran.set(true);
+        Ok(0)
+    });
+    assert!(!ran.get(), "the setup ran with the service going");
+    assert_eq!(reason_of(&done), "it won't stop");
+    assert_eq!(stand.text(), before);
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 0));
+
+    let stand = Stand::new("unstarted");
+    stand.startable.set(false);
+    let done = stand.setup(|| Ok(1));
+    assert!(
+        matches!(&done, Err(Error::Usage { reason }) if reason == "the service didn't start: sudo systemctl start hatchling"),
+        "{done:?}"
+    );
+    // Why the setup stopped comes first, when it did.
+    let stand = Stand::new("unstarted-stopped");
+    stand.startable.set(false);
+    let done = stand.setup(|| Err(stopped_with("the guide stopped")));
+    assert!(
+        matches!(&done, Err(Error::Usage { reason }) if reason == "the guide stopped"),
+        "{done:?}"
+    );
+    assert_eq!(stand.starts.get(), 1);
+}
+
+/// Settings the setup can't trust or can't use stop it before the guide
+/// runs, and the service, stopped for it, is started again.
+#[test]
+fn settings_a_setup_cannot_use_stop_it_and_the_service_goes_back() {
+    let stand = Stand::new("untrusted");
+    mode_of(&stand.settings, 0o666);
+    let ran = Cell::new(false);
+    let done = stand.setup(|| {
+        ran.set(true);
+        Ok(0)
+    });
+    assert!(!ran.get(), "the setup ran on settings anyone can change");
+    let reason = reason_of(&done);
+    assert!(
+        reason.contains("it isn't read") && reason.contains("chmod 600"),
+        "{done:?}"
+    );
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));
+
+    let stand = Stand::new("no-vault");
+    std::fs::write(&stand.settings, "HATCHLING_LOG_LEVEL=info\n").unwrap();
+    let done = stand.setup(|| {
+        ran.set(true);
+        Ok(0)
+    });
+    assert!(!ran.get(), "the setup ran with no vault");
+    assert_eq!(reason_of(&done), "the settings name no vault");
+    assert_eq!(stand.text(), "HATCHLING_LOG_LEVEL=info\n");
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));
+}
+
+fn mode_of(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+}
+
+/// Settings that can't be put back are said with why the setup stopped,
+/// and what to do: they still name a keyring that isn't there.
+#[test]
+fn settings_that_cannot_be_put_back_are_said() {
+    let stand = Stand::new("stuck-settings");
+    let dir = stand.settings.parent().unwrap().to_path_buf();
+    let done = stand.setup(|| {
+        // Nothing can be written beside the settings now.
+        std::fs::create_dir(dir.join("hatchling.env.next")).unwrap();
+        Err(stopped_with("the guide stopped"))
+    });
+    let reason = reason_of(&done);
+    assert!(
+        reason.starts_with("the guide stopped. And ")
+            && reason.contains("couldn't be put back as it was")
+            && reason.ends_with("run this again, and it carries on from here"),
+        "{reason}"
+    );
+    assert_eq!(stand.starts.get(), 1);
+
+    // Whatever kind of failure stopped it, it's said first, as it reads.
+    let stand = Stand::new("stuck-settings-other");
+    let dir = stand.settings.parent().unwrap().to_path_buf();
+    let done = stand.setup(|| {
+        std::fs::create_dir(dir.join("hatchling.env.next")).unwrap();
+        Err(Error::Keeper {
+            reason: String::from("no keeper"),
+        })
+    });
+    let reason = reason_of(&done);
+    let keeper = Error::Keeper {
+        reason: String::from("no keeper"),
+    }
+    .to_string();
+    assert!(reason.starts_with(&format!("{keeper}. And ")), "{reason}");
+}
+
+/// The whole of `vault-keyring setup` on a fresh install, stopped by the
+/// guide itself: with no keyring among its settings it stops at once, and
+/// the service is started again on the settings it had.
+#[test]
+fn the_real_setup_stopped_at_its_first_step_changes_nothing() {
+    let stand = Stand::new("real");
+    let before = stand.text();
+    let (_scratch, vault, _) = vault("stand-real-vault");
+    let stores = secrets(&vault);
+    let unnamed = KeyringConfig::default();
+    let done = stand.with(|service| run_setup(service, &vault, &unnamed, &stores, Some("setup")));
+    assert!(matches!(done, Err(Error::Usage { .. })), "{done:?}");
+    assert_eq!(stand.text(), before);
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));
+}
+
+/// At the terminal, an empty answer to the PIN prompt is no PIN, as one
+/// that can't be read is; and of the two guided actions, only `lost-key`
+/// is the guide for a key that's gone.
+#[test]
+fn the_terminals_pin_and_guide_are_read_as_given() {
+    let typed = |text: &str| typed_pin(Ok(Zeroizing::new(text.to_owned())));
+    assert_eq!(
+        typed("246810").as_deref().map(String::as_str),
+        Some("246810")
+    );
+    assert_eq!(typed(""), None);
+    assert_eq!(typed_pin(Err(stopped_with("no terminal"))), None);
+    assert!(is_lost_key(Some("lost-key")));
+    assert!(!is_lost_key(Some("setup")));
+    assert!(!is_lost_key(None));
+}
+
+/// `systemctl` is asked, and its answer is the answer.
+#[test]
+fn the_service_is_stopped_and_started_by_systemctl() {
+    assert!(systemctl(Path::new("/bin/true"), "start", "hatchling"));
+    assert!(!systemctl(Path::new("/bin/false"), "start", "hatchling"));
+    assert!(!systemctl(
+        Path::new("/nonexistent/systemctl"),
+        "stop",
+        "hatchling"
+    ));
+    assert!(start_after_setup(Path::new("/bin/true")));
+    assert!(!start_after_setup(Path::new("/bin/false")));
+}
+
+/// A place for a setup's lock.
+fn lock_at(name: &str) -> (Scratch, PathBuf) {
+    let (scratch, vault, _) = vault(&format!("stand-lock-{name}"));
+    let lock = vault.root.parent().unwrap().join("setup.lock");
+    (scratch, lock)
+}
+
+/// Ctrl-C while a setup waited for a key left Hatchling stopped: the
+/// setup had stopped it, and was gone before it could start it again. A
+/// setup holds a lock while the service is stopped, and a unit of the
+/// system's waits on that lock to start the service: the lock is let go
+/// when the setup's process ends, whatever ended it.
+#[test]
+fn a_setup_holds_a_lock_that_a_guard_waits_on() {
+    let (_scratch, lock) = lock_at("guard");
+    assert_eq!(
+        guard_arguments(&lock),
+        [
+            "--quiet",
+            "--collect",
+            "--unit",
+            "hatchling-setup-guard",
+            "flock",
+            &*lock.to_string_lossy(),
+            "systemctl",
+            "start",
+            "hatchling",
+        ]
+    );
+    let held = guard(&lock, Path::new("/bin/true")).unwrap();
+    assert!(held.armed, "the guard was set, and isn't said to be");
+    // One setup at a time: a second finds the lock held, and says so.
+    let second = guard(&lock, Path::new("/bin/true")).unwrap_err();
+    assert!(second.starts_with("another setup is running"), "{second}");
+    drop(held);
+    // Let go, it's free again; a guard that can't be set is known.
+    for unset in ["/bin/false", "/nonexistent/systemd-run"] {
+        let held = guard(&lock, Path::new(unset)).unwrap();
+        assert!(!held.armed, "{unset} set no guard");
+    }
+    // A lock that can't be taken at all is said.
+    let nowhere = guard(
+        Path::new("/nonexistent/dir/setup.lock"),
+        Path::new("/bin/true"),
+    );
+    assert!(
+        nowhere
+            .unwrap_err()
+            .starts_with("can't take the setup's lock: "),
+    );
+}
+
+/// The service is stopped under the guard, and a setup with no guard is
+/// told what an interruption would leave. A service that doesn't stop
+/// keeps no lock.
+#[test]
+fn the_service_is_stopped_for_a_setup_under_its_guard() {
+    let (_scratch, lock) = lock_at("stop");
+    let yes = Path::new("/bin/true");
+    let no = Path::new("/bin/false");
+    let mut said = Vec::new();
+    let held = stop_for_setup(&lock, yes, yes, &mut said).unwrap();
+    assert!(held.armed);
+    assert!(said.is_empty(), "{}", String::from_utf8_lossy(&said));
+    drop(held);
+
+    let held = stop_for_setup(&lock, no, yes, &mut said).unwrap();
+    assert!(!held.armed);
+    assert_eq!(
+        String::from_utf8_lossy(&said),
+        "If this is interrupted, Hatchling stays stopped until you start it: sudo systemctl start hatchling\n"
+    );
+    drop(held);
+
+    let refused = stop_for_setup(&lock, yes, no, &mut Vec::new()).unwrap_err();
+    assert_eq!(
+        refused,
+        "can't stop the service: sudo systemctl stop hatchling"
+    );
+    assert!(
+        guard(&lock, yes).is_ok(),
+        "a service that didn't stop kept the lock"
+    );
+}
+
 /// Two of a model are told apart, and names already taken are passed over.
 #[test]
 fn a_name_already_taken_gets_a_number() {

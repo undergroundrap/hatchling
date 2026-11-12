@@ -105,20 +105,23 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         }
         Some(_) | None => {}
     }
-    // The guided setup adds to the service's settings before they're taken
-    // on, and stops the service: a broker running would keep the old key.
-    if args.first().map(String::as_str) == Some("vault-keyring")
-        && crate::key_setup::guided(args.get(1).map(String::as_str))
-    {
-        if let Err(why) = crate::key_setup::prepare() {
+    // The guided setup is root's, on a service install: said before
+    // anything is read. It changes nothing yet: the service is stopped and
+    // its settings added to once the setup itself starts.
+    if crate::key_setup::is_guided(args) {
+        let ready = crate::key_setup::installed(|service| {
+            crate::key_setup::ready(hatchling_sys::euid(), service)
+        });
+        if let Err(why) = ready {
             let _ = writeln!(std::io::stderr().lock(), "{program} vault-keyring: {why}");
             return ExitCode::FAILURE;
         }
     }
     // An operator command from a shell with no settings, on a service
-    // install: it runs again with the service's (the call returns only
-    // when it can't).
-    if let Some(unread) = crate::service_settings::rerun_if_wanted(args) {
+    // install, and the guided setup from any shell: it runs again with the
+    // service's (the call returns only when it can't).
+    let service = Path::new(crate::doctor::SERVICE_SETTINGS);
+    if let Some(unread) = crate::service_settings::rerun_if_wanted(args, service, 0) {
         let _ = writeln!(
             std::io::stderr().lock(),
             "{program}: {}\n{}",
@@ -149,13 +152,20 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
             let mut stderr = std::io::stderr().lock();
             let _ = writeln!(stderr, "{program}: {err}");
             if matches!(err, Error::Usage { .. }) {
-                let _ = write!(stderr, "{}", help(program));
+                // What's wrong was just said: the whole manual after it
+                // would bury it.
+                let _ = writeln!(stderr, "{}", see_help(program));
                 ExitCode::from(EX_USAGE)
             } else {
                 ExitCode::FAILURE
             }
         }
     }
+}
+
+/// Where the commands and settings are listed, said after a usage error.
+fn see_help(program: &str) -> String {
+    format!("`{program} --help` lists every command and setting.")
 }
 
 /// Help for either broker invocation, generated from its reader declarations.
@@ -291,6 +301,16 @@ mod tests {
                 ExitCode::FAILURE
             );
         }
+    }
+
+    /// A usage error is followed by where the manual is, not by all of
+    /// it: what's wrong was just said.
+    #[test]
+    fn a_usage_error_points_at_the_help() {
+        assert_eq!(
+            see_help("hatchling broker"),
+            "`hatchling broker --help` lists every command and setting."
+        );
     }
 
     #[test]
