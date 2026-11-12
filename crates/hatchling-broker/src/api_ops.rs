@@ -110,17 +110,23 @@ fn read_setup(owns: bool) -> (UiActionResult, ApiOutcome) {
         crate::keeper::keeper().map(crate::keeper::Keeper::protection),
         crate::backup::last_backup(),
         crate::room_disk::view_here(),
+        crate::cell::env_value(std::env::var(
+            crate::environment::HATCHLING_CELL_CGROUP.name,
+        ))
+        .is_none(),
     )
 }
 
 /// What's set up on this machine, from what the keeper said of the vault
 /// (`asked`, none when there's no keeper), the last backup and the room
-/// disk as the app is told it (`room`): a keeper that couldn't say is said
-/// as such, and nothing is guessed.
+/// disk as the app is told it (`room`), and whether cells have no cgroup
+/// of their own (`process_limits_only`): a keeper that couldn't say is
+/// said as such, and nothing is guessed.
 fn setup_answer(
     asked: Option<Result<VaultProtection, Error>>,
     last_backup: Option<u64>,
     room: RoomDiskView,
+    process_limits_only: bool,
 ) -> (UiActionResult, ApiOutcome) {
     let unavailable = || {
         (
@@ -138,6 +144,7 @@ fn setup_answer(
                     last_backup,
                     windows_setup: crate::windows_setup::installed(),
                     room_disk: Some(room),
+                    process_limits_only,
                 },
             },
             ApiOutcome::Served,
@@ -2288,20 +2295,25 @@ mod tests {
             },
             ApiOutcome::Refused,
         );
-        assert_eq!(
-            setup_answer(Some(Ok(vault)), Some(7), room),
-            (
-                UiActionResult::Setup {
-                    setup: SetupState {
-                        vault,
-                        last_backup: Some(7),
-                        windows_setup: crate::windows_setup::installed(),
-                        room_disk: Some(room),
-                    }
-                },
-                ApiOutcome::Served
-            )
-        );
+        // Cells with no cgroup of their own are said to the app, which
+        // says it on its security page; cells with one go without saying.
+        for limits_only in [false, true] {
+            assert_eq!(
+                setup_answer(Some(Ok(vault)), Some(7), room, limits_only),
+                (
+                    UiActionResult::Setup {
+                        setup: SetupState {
+                            vault,
+                            last_backup: Some(7),
+                            windows_setup: crate::windows_setup::installed(),
+                            room_disk: Some(room),
+                            process_limits_only: limits_only,
+                        }
+                    },
+                    ApiOutcome::Served
+                )
+            );
+        }
         assert_eq!(
             room.off,
             Some(hatchling_core::ui::RoomDiskOff::NotHere),
@@ -2310,8 +2322,11 @@ mod tests {
         let failed = Error::Keeper {
             reason: String::from("no"),
         };
-        assert_eq!(setup_answer(Some(Err(failed)), Some(7), room), unavailable);
-        assert_eq!(setup_answer(None, Some(7), room), unavailable);
+        assert_eq!(
+            setup_answer(Some(Err(failed)), Some(7), room, false),
+            unavailable
+        );
+        assert_eq!(setup_answer(None, Some(7), room, false), unavailable);
         assert_eq!(
             read_setup(false),
             (

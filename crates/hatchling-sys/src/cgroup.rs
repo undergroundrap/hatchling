@@ -61,6 +61,61 @@ pub fn missing_controllers(parent: &Path) -> Vec<&'static str> {
         .collect()
 }
 
+/// Why cells can't be given a cgroup under a parent, as far as can be
+/// seen without changing anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DelegationProblem {
+    /// The parent isn't in a cgroup v2 tree.
+    NotCgroup2,
+    /// The parent is there, and lacks these controllers.
+    ParentLacks(Vec<&'static str>),
+    /// The parent isn't there yet, and the root of the tree it would be
+    /// made in doesn't offer these controllers: nothing below a root has
+    /// one the root lacks.
+    TreeLacks(Vec<&'static str>),
+}
+
+/// What's wrong with giving cells a cgroup under `parent`, as far as can
+/// be seen without changing anything; `None` when nothing that can be
+/// seen is.
+///
+/// [`prepare_parent`] is the check that counts, and it changes things: it
+/// enables controllers and makes a group. This one is for saying, before
+/// a broker is started, that [`prepare_parent`] can't pass. A `parent`
+/// that isn't there yet (a service's cgroup, before the service has ever
+/// started) is judged by the tree it will be made in.
+#[must_use]
+pub fn delegation_problem(parent: &Path) -> Option<DelegationProblem> {
+    delegation_problem_in(parent, &is_cgroup2)
+}
+
+/// Whether `path` is on a cgroup v2 filesystem.
+fn is_cgroup2(path: &Path) -> bool {
+    rustix::fs::statfs(path).is_ok_and(|stat| stat.f_type == libc::CGROUP2_SUPER_MAGIC)
+}
+
+/// [`delegation_problem`], where `in_tree` says whether a path is in a
+/// cgroup v2 tree.
+fn delegation_problem_in(
+    parent: &Path,
+    in_tree: &dyn Fn(&Path) -> bool,
+) -> Option<DelegationProblem> {
+    let nearest = parent.ancestors().find(|path| path.exists())?;
+    if !in_tree(nearest) {
+        return Some(DelegationProblem::NotCgroup2);
+    }
+    if nearest == parent {
+        let missing = missing_controllers(parent);
+        return (!missing.is_empty()).then_some(DelegationProblem::ParentLacks(missing));
+    }
+    let root = nearest
+        .ancestors()
+        .take_while(|path| in_tree(path))
+        .last()?;
+    let missing = missing_controllers(root);
+    (!missing.is_empty()).then_some(DelegationProblem::TreeLacks(missing))
+}
+
 /// Checks an empty cgroup v2 parent and enables its required controllers.
 ///
 /// # Errors
@@ -309,6 +364,109 @@ mod tests {
 
     /// What a cgroup lacks is named; one that isn't there lacks nothing
     /// anyone can say.
+    /// A tree of plain files standing for a cgroup tree: `root` offers
+    /// `offered`, and holds an empty `system.slice`.
+    fn tree(name: &str, offered: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-delegation-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("system.slice")).unwrap();
+        fs::write(root.join("cgroup.controllers"), offered).unwrap();
+        root
+    }
+
+    /// A service's cgroup isn't there until the service has started, and a
+    /// check that looked only at it found nothing wrong on a machine whose
+    /// cgroups offer no controllers: the installer said cells were bounded,
+    /// and the broker then stopped at every start. Before it's there, it's
+    /// judged by the root of the tree it will be made in.
+    #[test]
+    fn a_cgroup_not_made_yet_is_judged_by_its_trees_root() {
+        let root = tree("root", "cpuset io hugetlb rdma\n");
+        let inside = |path: &Path| path.starts_with(&root);
+        let parent = root.join("system.slice").join("hatchling.service");
+        assert_eq!(
+            delegation_problem_in(&parent, &inside),
+            Some(DelegationProblem::TreeLacks(vec!["pids", "memory", "cpu"]))
+        );
+        fs::write(root.join("cgroup.controllers"), "cpu io memory\n").unwrap();
+        assert_eq!(
+            delegation_problem_in(&parent, &inside),
+            Some(DelegationProblem::TreeLacks(vec!["pids"]))
+        );
+        // A root that offers them all: nothing to see. What a slice between
+        // has enabled so far doesn't count: systemd enables them as it
+        // starts the service.
+        fs::write(
+            root.join("cgroup.controllers"),
+            "cpuset cpu io memory pids\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("system.slice").join("cgroup.controllers"),
+            "memory pids\n",
+        )
+        .unwrap();
+        assert_eq!(delegation_problem_in(&parent, &inside), None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// One that's there is judged by what it has, whatever its root offers.
+    #[test]
+    fn a_cgroup_that_is_there_is_judged_by_what_it_has() {
+        let root = tree("there", "cpuset cpu io memory pids\n");
+        let inside = |path: &Path| path.starts_with(&root);
+        let parent = root.join("system.slice").join("hatchling.service");
+        fs::create_dir(&parent).unwrap();
+        fs::write(parent.join("cgroup.controllers"), "memory pids\n").unwrap();
+        assert_eq!(
+            delegation_problem_in(&parent, &inside),
+            Some(DelegationProblem::ParentLacks(vec!["cpu"]))
+        );
+        fs::write(parent.join("cgroup.controllers"), "cpu memory pids\n").unwrap();
+        assert_eq!(delegation_problem_in(&parent, &inside), None);
+        // A root that offers none doesn't matter to one that has them.
+        fs::write(root.join("cgroup.controllers"), "\n").unwrap();
+        assert_eq!(delegation_problem_in(&parent, &inside), None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A path that isn't in a cgroup tree at all is said to be that, there
+    /// or not; a relative one names nothing that can be looked at.
+    #[test]
+    fn a_path_outside_a_cgroup_tree_is_said_to_be() {
+        let root = tree("outside", "cpu memory pids\n");
+        let nowhere = |_: &Path| false;
+        for parent in [root.clone(), root.join("not").join("made")] {
+            assert_eq!(
+                delegation_problem_in(&parent, &nowhere),
+                Some(DelegationProblem::NotCgroup2)
+            );
+            // By the filesystem itself: a temporary directory is no cgroup.
+            assert_eq!(
+                delegation_problem(&parent),
+                Some(DelegationProblem::NotCgroup2)
+            );
+        }
+        assert_eq!(
+            delegation_problem_in(Path::new("not/absolute/and/not/there"), &nowhere),
+            None
+        );
+        fs::remove_dir_all(&root).unwrap();
+        // And a real cgroup v2 mount is one, where this machine has one.
+        let mount = Path::new("/sys/fs/cgroup");
+        if mount.join("cgroup.controllers").exists() {
+            assert!(is_cgroup2(mount));
+            assert_ne!(
+                delegation_problem(&mount.join("hatchling-not-made")),
+                Some(DelegationProblem::NotCgroup2)
+            );
+        }
+        assert!(!is_cgroup2(Path::new("/nonexistent/hatchling")));
+    }
+
     #[test]
     fn missing_controllers_are_named() {
         let dir = std::env::temp_dir().join(format!(

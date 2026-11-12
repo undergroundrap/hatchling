@@ -420,8 +420,7 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
     let limits = std::env::var(env::HATCHLING_CELL_CGROUP.name)
         .ok()
         .or_else(crate::doctor::service_cell_cgroup);
-    if let Some(what) = crate::doctor::cell_limits_problem(limits.as_deref()) {
-        let fix = crate::doctor::CELL_LIMITS_FIX;
+    if let Some((what, fix)) = crate::doctor::cell_limits_problem(limits.as_deref()) {
         let _ = writeln!(
             stderr,
             "{program} unlock: not asking for your key yet: {what}. {fix}"

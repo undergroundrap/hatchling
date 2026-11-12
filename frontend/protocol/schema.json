@@ -9203,6 +9203,10 @@
             "null"
           ]
         },
+        "process_limits_only": {
+          "description": "Whether cells are held by process limits alone, with no cgroup to\nbound each one's memory and CPU as a whole: weaker, so the app's\nsecurity page says it of an install that has it.",
+          "type": "boolean"
+        },
         "room_disk": {
           "anyOf": [
             {

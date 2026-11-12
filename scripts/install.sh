@@ -55,7 +55,17 @@ usage() {
   echo "       sudo scripts/install.sh --from <dir> --keep-model" >&2
   exit 64
 }
-fail() { echo "install.sh: $*" >&2; exit 1; }
+# Set while a protected install's service is stopped for an upgrade: a
+# failure then starts it again, so a failed upgrade doesn't leave Hatchling
+# down. It comes back locked, as after any restart.
+STOPPED_LOCKED=
+fail() {
+  echo "install.sh: $*" >&2
+  if [ -n "$STOPPED_LOCKED" ] && systemctl start hatchling.service > /dev/null 2>&1; then
+    echo "install.sh: Hatchling is started again, and locked, as after any restart: sudo hatchling-broker unlock" >&2
+  fi
+  exit 1
+}
 say() { echo "== $*"; }
 
 FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED= KEEP_MODEL= WINDOWS_ROOM_BUNDLE=
@@ -253,12 +263,27 @@ fi
 say "installing the services"
 install -D -m 644 "$PACKAGING/systemd/hatchling.service" /etc/systemd/system/hatchling.service
 SYSTEMD=$(systemctl --version | sed -n '1s/^systemd \([0-9]*\).*/\1/p')
-if [ "${SYSTEMD:-0}" -ge 254 ]; then
-  mkdir -p /etc/systemd/system/hatchling.service.d
-  install -D -m 644 "$PACKAGING/systemd/hatchling-cgroup.conf" /etc/systemd/system/hatchling.service.d/cgroup.conf
-else
+# The controllers a cell's cgroup needs that this machine's cgroups don't
+# offer: none, on most. A container or a restricted VM may offer none of
+# them, and a broker given a cgroup there stops at every start.
+no_controllers() {
+  offered=$(cat /sys/fs/cgroup/cgroup.controllers 2> /dev/null) || offered=
+  missing=
+  for controller in pids memory cpu; do
+    case " $offered " in *" $controller "*) ;; *) missing="$missing $controller" ;; esac
+  done
+  echo "${missing# }"
+}
+MISSING=$(no_controllers)
+if [ "${SYSTEMD:-0}" -lt 254 ]; then
   rm -f /etc/systemd/system/hatchling.service.d/cgroup.conf
   say "systemd $SYSTEMD has no DelegateSubgroup: cells run without a cgroup of their own (README, Cell limits)"
+elif [ -n "$MISSING" ]; then
+  rm -f /etc/systemd/system/hatchling.service.d/cgroup.conf
+  say "this machine's cgroups offer no $MISSING controller: cells are held by process limits alone, with nothing bounding a cell's memory or CPU as a whole (README, Cell limits). doctor says so too"
+else
+  mkdir -p /etc/systemd/system/hatchling.service.d
+  install -D -m 644 "$PACKAGING/systemd/hatchling-cgroup.conf" /etc/systemd/system/hatchling.service.d/cgroup.conf
 fi
 install -D -m 644 "$PACKAGING/systemd/hatchling-host@.service" /etc/systemd/system/hatchling-host@.service
 systemctl daemon-reload
@@ -367,13 +392,14 @@ if [ -z "$HOSTED$KEEP_MODEL" ] && command -v curl > /dev/null; then
   load_model || say "the model's server didn't load $MODEL (not Ollama, or not ready yet): doctor checks it"
 fi
 
-# A vault a security key protects locks at any restart, and waits for its
-# owner: an upgrade isn't to call that a problem, nor wait for what can't
-# come until they've unlocked it.
+# A vault a security key or an authenticator app protects locks at any
+# restart, and waits for its owner: an upgrade isn't to call that a
+# problem, nor wait for what can't come until they've unlocked it.
 KEYED=
-if /usr/local/bin/hatchling-broker vault-keyring status 2> /dev/null | grep -q "tier hardware key"; then
+if /usr/local/bin/hatchling-broker vault-keyring status 2> /dev/null | grep -Eq "tier (hardware key|TOTP)"; then
   KEYED=1
   systemctl stop hatchling.service
+  STOPPED_LOCKED=1
   rm -f /var/lib/hatchling/vault.unlock/unlock.sock
 fi
 
@@ -422,6 +448,7 @@ if ! systemctl restart hatchling.service; then
   done
   say "the broker started on its second try"
 fi
+STOPPED_LOCKED=
 
 # The service becomes active at exec. The host needs both tokens, written
 # and handed to the owner by this broker start, before it can serve.
@@ -455,9 +482,26 @@ fi
 systemctl enable "hatchling-host@$OWNER_NAME.service" > /dev/null 2>&1
 systemctl restart "hatchling-host@$OWNER_NAME.service"
 
+# A broker that stops straight after it starts is started again by systemd,
+# and each start writes the app's tokens: the wait above passes over a
+# service that keeps stopping. So it's watched past one restart period:
+# after the app's host is started, which is started when it always was.
+restarts() { systemctl show hatchling.service -p NRestarts --value 2> /dev/null || echo 0; }
+started_with=$(restarts)
+tries=0
+while [ "$tries" -lt 8 ]; do
+  tries=$((tries + 1))
+  sleep 1
+  if [ "$(restarts)" != "$started_with" ] || systemctl is-failed --quiet hatchling.service; then
+    fail "the broker keeps stopping after it starts: sudo hatchling-broker doctor says what it can see, and journalctl -u hatchling.service says why"
+  fi
+done
+systemctl is-active --quiet hatchling.service \
+  || fail "the broker isn't running: sudo hatchling-broker doctor says what it can see, and journalctl -u hatchling.service says why"
+
 if [ -n "$KEYED" ]; then
   echo
-  echo "Hatchling is up to date, and locked: a security key protects its vault. To unlock it:"
+  echo "Hatchling is up to date, and locked: its vault waits for you after every restart. To unlock it:"
   echo "  sudo hatchling-broker unlock"
   exit 0
 fi

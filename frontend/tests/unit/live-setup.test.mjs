@@ -129,8 +129,9 @@ function live() {
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 test('the broker\'s word, in the app\'s', () => {
-    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null, windowsSetup: false, roomDisk: null });
-    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7, windows_setup: true }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7, windowsSetup: true, roomDisk: null });
+    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null, windowsSetup: false, roomDisk: null, processLimitsOnly: false });
+    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7, windows_setup: true }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7, windowsSetup: true, roomDisk: null, processLimitsOnly: false });
+    assert.equal(setupOf({ ...wire, process_limits_only: true }).processLimitsOnly, true, 'rooms held by process limits alone are said');
 });
 test('the agent\'s computer, in the app\'s words: numbers and a fixed reason, and nothing made up', () => {
     const disk = { state: 'open', cap: 10, used: 2, free: 8, on_disk: 3, host_free: 90 };
