@@ -9,14 +9,25 @@ is attached to the release that carries this change.
 | | |
 |---|---|
 | Base commit | `2e431964` (`fix(room): close the room disk where the root mount isn't shared (#424)`) |
-| Tested tree | `9e6d019b040313a8d106c2f2a9eae3e803ee848a` |
+| Tested tree | `9edfb1203760f7366e0870ba42201232118be837` |
 | Date | 2026-11-12 (UTC) |
 | Machine | x86_64, Ubuntu 26.04.1, kernel 6.6.87.2 (WSL2), systemd 259: a sandbox for the gate, and root outside its jail for the Room itself |
 | Toolchains | Rust 1.85.0 (minimum) and 1.98.1 (pinned), cargo-mutants 27.1.0 |
-| Results bundle | `hatchling-room-run-jobs-results.tar.gz`, 5894606 bytes, sha256 `ed68cf0f2446f9852388caa3a333318f60d545724807f56acd5aaea9069d1d53` |
+| Results bundle | `hatchling-room-run-jobs-results.tar.gz`, 5894847 bytes, sha256 `820cf23cc31060b89365bcd95d42b02b38e7105094f63495f3844385a7a614aa` |
 
-This record was added after the runs, in its own commit. It changes no
-code: the tested tree is the tree of the commit before it.
+This record was added after the runs, in commits of its own. It changes
+no code: the tested tree is the tree of the commit before its last
+change.
+
+The tested tree differs from the one the first runs were made on,
+`9e6d019b040313a8d106c2f2a9eae3e803ee848a`, in two files: the supervisor's
+proof (`crates/hatchling-browser/tests/room_supervisor.rs`), changed after
+CI found what is told under "What the runs found", and this record. The
+gate, the proofs, the mutant of the supervisor's entry and the installed
+Room tests were run again on the tested tree, and are what is reported
+here. The hand-breaks, the three mutation runs by crate, the stress run
+and the latency measurements are the first tree's: no line they break,
+mutate or time is in either file.
 
 ## What changed
 
@@ -127,7 +138,7 @@ supervisor's descriptors or environment, a stop kills a running job, and
 what a job reads and writes is kept in memory and in its files; it ends
 on what it can't read; and it ends its jobs when the spawner goes.
 `root/super.log` sha256
-`c3af03c441221fa38fbaa8608349e66b1923edc07d53435dcf3aedcd3ca3bb79`.
+`ac4f0f3cbe532f1462cd57548b96b590f3210c7f097f996d6eb33a52881e3c21`.
 
 ## The gate
 
@@ -143,7 +154,7 @@ check and the protocol schema check.
 | 1.98.1 | 0 | 135 | 3749 | 0 | 0 |
 
 `gate.log` sha256
-`9b161fd1fad1a0151b512488170ba4dc1cf5684a7f1792240d633e58877290e8`.
+`b4b4e8faed5c08edb7e8a6527a828bd1702d10333ff9b7a8921801104f10c840`.
 
 The broker's library tests were then run 15 times over on 1.98.1, every
 test in parallel: 15 runs, 1379 passed and 0 failed in each. `stress.log`
@@ -183,7 +194,7 @@ cargo mutants --in-place --in-diff <the supervisor's diff> --features room-super
 
 | Run | Mutants | Caught | Missed | `outcomes.json` sha256 |
 |---|---|---|---|---|
-| The supervisor's entry, against its proof | 1 | 1 | 0 | `2f50ace1e27f63a294cf32430655f4e8999d49264e3f1b2beb932ceaecaf8bcd` |
+| The supervisor's entry, against its proof | 1 | 1 | 0 | `8f04f27eef8df40873f8557d1f9b354e035732cb24a18f75f72afbd3b30d6ffb` |
 
 No mutant was excluded, so there is no equivalence proof to give.
 
@@ -328,12 +339,27 @@ Kept here because each changed the code or the tests.
 - **One hand-break survived the first run of them**: a job's end said a
   second time while its output was being fetched. The check was there;
   no test reached it. One does now.
+- **CI failed the supervisor's proof, on both toolchains, where this
+  machine had passed it.** The proof's job ran `cat`. The machine these
+  runs were made on has another `cat`, which never makes that call; CI's
+  is GNU `cat`, which first asks the kernel for `fadvise64`. The Room's
+  filter doesn't allow that call, so the job was killed ("Bad system
+  call") and the proof saw none of its output. It was reproduced here by
+  putting GNU `cat` in the job, and traced to that call. The proof is of
+  the supervisor, so its job now uses only what the shell does itself.
+  What it found of the filter is not fixed here: see below.
 
 ## What this change does not do
 
 - **Give the agent a tool.** Nothing the model can call reaches the Room
-  yet. That is the next change, with the tool's description tried on the
+  yet. That is a later change, with the tool's description tried on the
   default local model as part of its acceptance.
+- **Let GNU `cat` run in the Room.** The Room's filter kills a program
+  that calls `fadvise64`, and GNU `cat` does. The Room's image is built
+  from GNU tools, so this is in the way of any tool that runs them. The
+  filter is a trust boundary and isn't changed inside this work: the fix
+  is a change of its own, before the tool, proved over the image's
+  common tools and not `cat` alone.
 - **Stop what leaves a job's process group.** A process that starts a
   session of its own outlives its job's stop and its job's end. It is
   held by the Room's cgroup and ends with the Room.
