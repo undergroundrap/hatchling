@@ -892,10 +892,16 @@ impl RoomDisk {
             )?;
         }
         let device = Path::new(MAPPER).join(&name);
-        if let Err(error) =
+        // Shared first: a service started while the disk is mounted takes
+        // a copy of the mount, and only a shared mount's unmount reaches
+        // the copy. One it didn't reach would keep the disk open after a
+        // close, under a mount nobody here can take down.
+        let mounted = hatchling_sys::share_below(&self.dir).and_then(|_| {
             hatchling_sys::mount_locked_down(&device, &mount, "ext4", "errors=remount-ro")
-        {
+        });
+        if let Err(error) = mounted {
             let _ = self.close_mapping(&name);
+            let _ = hatchling_sys::unshare_below(&self.dir);
             return Err(format!("the room disk can't be mounted: {error}"));
         }
         let verified = self
@@ -929,6 +935,9 @@ impl RoomDisk {
         {
             hatchling_sys::unmount_strict(&mount).map_err(|error| unmount_refusal(&error))?;
         }
+        // The room directory's own bind, if opening made one: it goes with
+        // the mount it was for. One in use stays, and that's no failure.
+        let _ = hatchling_sys::unshare_below(&self.dir);
         if self.image_at(&self.image())?.is_none() {
             return Ok(());
         }
