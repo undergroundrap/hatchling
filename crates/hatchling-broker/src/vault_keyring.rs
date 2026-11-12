@@ -143,9 +143,35 @@ impl KeyringConfig {
 
     pub(crate) fn keyring_path(&self) -> Result<&Path, Error> {
         self.keyring.as_deref().ok_or_else(|| Error::Usage {
-            reason: String::from("set HATCHLING_VAULT_KEYRING to the keyring's absolute path"),
+            reason: no_keyring(Path::new(crate::doctor::SERVICE_SETTINGS).exists()),
         })
     }
+}
+
+/// What a command that needs a keyring says where the settings name none.
+/// On a `service` install the setup makes one, and adds it to the
+/// service's settings itself; anywhere else the setting is the operator's
+/// to give.
+fn no_keyring(service: bool) -> String {
+    String::from(if service {
+        "this vault has no keyring yet: `sudo hatchling-broker vault-keyring setup` makes one, and carries on from there"
+    } else {
+        "set HATCHLING_VAULT_KEYRING to the keyring's absolute path"
+    })
+}
+
+/// What `vault-keyring status` says of a vault with no keyring: how it
+/// opens, and what protects it more.
+const NO_KEYRING_STATUS: &str = "vault-keyring: no keyring. The vault's key is in a file on this machine, and it opens by itself after a restart.\n  to protect it with a security key: sudo hatchling-broker vault-keyring setup";
+
+/// What `vault-keyring status` says where the settings name a keyring at
+/// `path` and none is there: a setup that was cut short before it made
+/// one.
+fn unmade_status(path: &Path) -> String {
+    format!(
+        "vault-keyring: no keyring at {} yet, though the settings name it: a setup stopped before it made one.\n  to finish it: sudo hatchling-broker vault-keyring setup",
+        path.display()
+    )
 }
 
 pub(crate) const fn vault_error(source: hatchling_vault::Error) -> Error {
@@ -1623,7 +1649,9 @@ pub fn run_keyring(broker: &crate::Config, action: Option<&str>) -> Result<(), E
     let config = KeyringConfig::from_env()?;
     let stores = crate::sealed_stores(broker, crate::vault_ops::redaction_config(broker)?.as_ref());
     if crate::key_setup::guided(action) {
-        return crate::key_setup::run_setup(broker, &config, &stores, action);
+        return crate::key_setup::installed(|service| {
+            crate::key_setup::run_setup(service, &broker.vault, &config, &stores, action)
+        });
     }
     if action == Some(crate::key_setup::CHANGE_PIN_ACTION) {
         return crate::key_setup::run_change_pin(broker, &config, &stores);
@@ -1705,6 +1733,12 @@ pub fn who_can_open(config: &KeyringConfig) -> Result<VaultProtection, Error> {
 ///
 /// As [`status`].
 pub fn report(config: &KeyringConfig) -> Result<String, Error> {
+    let Some(path) = config.keyring.as_deref() else {
+        return Ok(String::from(NO_KEYRING_STATUS));
+    };
+    if !path.try_exists().map_err(io_error)? {
+        return Ok(unmade_status(path));
+    }
     let summary = status(config)?;
     let keyring = Keyring::load(config.keyring_path()?).map_err(vault_error)?;
     let shown = keyring.protection();
@@ -2003,6 +2037,50 @@ pub(crate) mod tests {
         // A second adoption finds the plain key gone, so it is refused; the keyring stands.
         assert!(matches!(init(&vault, &config), Err(Error::Vault { .. })));
         assert!(unlock(&vault, &config).is_ok());
+    }
+
+    /// `vault-keyring status` was the first keyring command a fresh
+    /// install saw, and it answered with a usage error and the manual. A
+    /// vault with no keyring is a state, not a mistake: status says how it
+    /// opens and what protects it more. A keyring the settings name that
+    /// was never made is said too, with the command that finishes it.
+    #[test]
+    fn status_without_a_keyring_says_so_and_what_to_run() {
+        let none = report(&KeyringConfig::default()).unwrap();
+        assert!(
+            none.starts_with("vault-keyring: no keyring. ")
+                && none.contains("opens by itself after a restart")
+                && none.ends_with("sudo hatchling-broker vault-keyring setup"),
+            "{none}"
+        );
+        let (scratch, _vault) = scratch("status-unmade");
+        let config = keyring_config(&scratch);
+        let path = config.keyring.clone().unwrap();
+        let unmade = report(&config).unwrap();
+        assert!(
+            unmade.starts_with(&format!(
+                "vault-keyring: no keyring at {} yet",
+                path.display()
+            )) && unmade.contains("a setup stopped before it made one")
+                && unmade.ends_with("sudo hatchling-broker vault-keyring setup"),
+            "{unmade}"
+        );
+    }
+
+    /// A command that needs a keyring, where the settings name none, names
+    /// the next step: on a service install, the setup, which makes one.
+    #[test]
+    fn a_command_that_needs_a_keyring_names_the_next_step() {
+        let installed = no_keyring(true);
+        assert!(
+            installed.starts_with("this vault has no keyring yet: ")
+                && installed.contains("`sudo hatchling-broker vault-keyring setup` makes one"),
+            "{installed}"
+        );
+        assert_eq!(
+            no_keyring(false),
+            "set HATCHLING_VAULT_KEYRING to the keyring's absolute path"
+        );
     }
 
     #[test]

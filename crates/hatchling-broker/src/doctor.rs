@@ -335,6 +335,9 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
     if let (Ok(Some((uid, _))), Some(dir)) = (crate::keeper::keeper_user(), path.parent()) {
         let _ = hatchling_vault::act_for(uid, &[dir]);
     }
+    if !path.exists() {
+        return unmade_keyring(path);
+    }
     let ring = match hatchling_vault::Keyring::load(path) {
         Ok(ring) => ring,
         Err(error) => {
@@ -356,6 +359,19 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
         | Finding::Unchecked(_)
         | Finding::Note { .. }) => other,
     }
+}
+
+/// What doctor says where the settings name a keyring at `path` and none
+/// is there: a setup that was cut short before it made one. The keeper
+/// stops at every start until it's finished.
+fn unmade_keyring(path: &Path) -> Finding {
+    Finding::problem(
+        format!(
+            "the settings name a keyring at {}, and none is there: a setup stopped before it made one, so Hatchling can't start",
+            path.display()
+        ),
+        "Run `sudo hatchling-broker vault-keyring setup`: it carries on from where it stopped.",
+    )
 }
 
 /// What doctor says of a vault at `tier` with `enrolled` security keys,
@@ -1349,17 +1365,30 @@ mod tests {
             ))
             .contains("key file")
         );
-        let broken = BTreeMap::from([(
+        let dir = std::env::temp_dir().join(format!(
+            "hatchling-doctor-broken-keyring-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let keyring = dir.join("keyring");
+        let named = BTreeMap::from([(
             String::from("HATCHLING_VAULT_KEYRING"),
-            String::from("/nonexistent/hatchling/keyring"),
+            keyring.display().to_string(),
         )]);
+        let found = || check_vault(&|key: &str| named.get(key).cloned(), &here(&[], false));
+        // One the settings name that was never made: the setup finishes it.
+        let (what, fix) = problem(found());
         assert!(
-            fix(check_vault(
-                &|key: &str| broken.get(key).cloned(),
-                &here(&[], false)
-            ))
-            .contains("doesn't load")
+            what.contains("none is there") && what.contains(&*keyring.to_string_lossy()),
+            "{what}"
         );
+        assert!(fix.contains("vault-keyring setup"), "{fix}");
+        // One that's there and isn't a keyring.
+        std::fs::write(&keyring, b"not a keyring").unwrap();
+        let (what, _) = problem(found());
+        assert!(what.contains("doesn't load"), "{what}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The other model's server is one the app can switch to when egress

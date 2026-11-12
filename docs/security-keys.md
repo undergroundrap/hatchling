@@ -38,6 +38,8 @@ It looks at what's plugged in, and does the rest:
 
 Nothing in the vault changes until your keys are ready. **If anything interrupts it, a closed window or a power cut, run the same command again.** It finds where things stand and carries on.
 
+Hatchling is stopped while setup runs, and started again when it ends, however it ends: stop it with Ctrl-C or close the window, and Hatchling is started again within a few seconds. If setup stops before it has made the vault's keyring, it puts the service's settings back as they were first, so a setup that failed leaves Hatchling running as before. To see where things stand at any time: `sudo hatchling-broker vault-keyring status`. Before any setup it says the vault's key is in a file, and names this command.
+
 **Choosing a PIN.** 6 to 8 digits you'll remember, not one you use anywhere else. The key locks itself after 8 wrong tries, which is why a short PIN is safe, and why you shouldn't guess. Use the same one on both keys.
 
 **Which key goes where.** A key made to stay in a port, like a YubiKey 5C Nano, can live in the computer: the PIN protects it if the machine is stolen. Keep the other, such as a 5C NFC, on your keychain or in a drawer. Register the one that stays plugged in last: a Nano is hard to pull out.

@@ -566,19 +566,30 @@ pub(crate) fn rewrite(
     changes: &[(&str, Option<String>)],
 ) -> Result<std::path::PathBuf, String> {
     let backup = back_up(path, text)?;
-    let next = path.with_extension("env.next");
-    let write = || -> std::io::Result<()> {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&next)?
-            .write_all(edited(text, changes).as_bytes())?;
-        std::fs::rename(&next, path)
-    };
-    write().map_err(|err| format!("can't write {}: {err}; it's as it was", path.display()))?;
+    put(path, &edited(text, changes))
+        .map_err(|err| format!("can't write {}: {err}; it's as it was", path.display()))?;
     Ok(backup)
+}
+
+/// Makes `text` the settings at `path`, whole or not at all: written
+/// beside it, private, and moved into place.
+fn put(path: &Path, text: &str) -> std::io::Result<()> {
+    let next = path.with_extension("env.next");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&next)?
+        .write_all(text.as_bytes())?;
+    std::fs::rename(&next, path)
+}
+
+/// Puts the settings at `path` back as `text`, what they were before a
+/// change that came to nothing.
+pub(crate) fn restore(path: &Path, text: &str) -> Result<(), String> {
+    put(path, text)
+        .map_err(|err| format!("{} couldn't be put back as it was ({err})", path.display()))
 }
 
 /// The most backups made in one second: past that, something's wrong.
