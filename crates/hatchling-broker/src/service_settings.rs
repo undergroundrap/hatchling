@@ -139,7 +139,7 @@ fn plan(
     service_exists: bool,
     read: impl FnOnce() -> Result<BTreeMap<String, String>, Unread>,
 ) -> Plan {
-    let setup = service_exists && crate::key_setup::is_guided(args);
+    let setup = service_exists && crate::key_setup::for_service(args, service_exists);
     if !setup && !wanted(args, !own.is_empty(), service_exists) {
         return Plan::Stay;
     }
@@ -318,6 +318,26 @@ mod tests {
                 assert_eq!(drop, dropped, "{action} with {own:?}");
             }
         }
+    }
+
+    /// The authenticator enrollment, where there's a service, takes the
+    /// service's settings as the setup does, whatever the shell holds, and
+    /// the keyring a first enrollment needs. Where there's none it stays.
+    #[test]
+    fn the_authenticator_enrollment_takes_the_services_settings_too() {
+        let totp = args(&["vault-keyring", "enroll-totp"]);
+        let own = map(&[("HATCHLING_LOG_LEVEL", "debug")]);
+        let (settings, drop) = again(plan(&totp, &own, true, || Ok(fresh())));
+        assert_eq!(
+            settings.get("HATCHLING_VAULT_KEYRING").map(String::as_str),
+            Some("/var/lib/hatchling/keyring/keyring")
+        );
+        assert_eq!(drop, Vec::<String>::new());
+        assert_eq!(
+            plan(&totp, &ours(&settings), true, || Ok(fresh())),
+            Plan::Stay
+        );
+        assert_eq!(plan(&totp, &own, false, unread), Plan::Stay);
     }
 
     /// Run again with exactly the service's settings, the setup stays: it

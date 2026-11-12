@@ -105,10 +105,12 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         }
         Some(_) | None => {}
     }
-    // The guided setup is root's, on a service install: said before
+    // The guided setup, and the authenticator enrollment on a service
+    // install, are root's, on a service install: said before
     // anything is read. It changes nothing yet: the service is stopped and
     // its settings added to once the setup itself starts.
-    if crate::key_setup::is_guided(args) {
+    let service = Path::new(crate::doctor::SERVICE_SETTINGS);
+    if crate::key_setup::for_service(args, service.exists()) {
         let ready = crate::key_setup::installed(|service| {
             crate::key_setup::ready(hatchling_sys::euid(), service)
         });
@@ -120,7 +122,6 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
     // An operator command from a shell with no settings, on a service
     // install, and the guided setup from any shell: it runs again with the
     // service's (the call returns only when it can't).
-    let service = Path::new(crate::doctor::SERVICE_SETTINGS);
     if let Some(unread) = crate::service_settings::rerun_if_wanted(args, service, 0) {
         let _ = writeln!(
             std::io::stderr().lock(),

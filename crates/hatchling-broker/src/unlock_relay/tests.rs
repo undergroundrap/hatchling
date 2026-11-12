@@ -8,6 +8,33 @@ use zeroize::Zeroizing;
 
 use super::*;
 
+/// With no key plugged in, `unlock` told the owner of a vault an
+/// authenticator app protects to plug one in. It names each thing that
+/// might open the vault without one.
+#[test]
+fn with_no_key_plugged_in_unlock_names_what_else_opens_the_vault() {
+    assert!(
+        NO_KEY_PLUGGED.contains("your authenticator app's, or a backup code")
+            && NO_KEY_PLUGGED.contains("To use a security key, plug it in"),
+        "{NO_KEY_PLUGGED}"
+    );
+}
+
+/// Where nothing waits to be unlocked, `unlock` fails, whoever runs it:
+/// another user is told it's root's, and root that nothing is waiting.
+#[test]
+fn unlock_fails_where_nothing_waits_to_be_unlocked() {
+    let dir = scratch("nothing-waiting");
+    let root = dir.join("vault");
+    let vault = VaultConfig {
+        key_file: VaultConfig::default_key_file(&root),
+        root,
+        grants: Vec::new(),
+    };
+    assert_eq!(unlock_main("hatchling-broker", &vault), ExitCode::FAILURE);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// "Unlocked" is said only of a service still running.
 #[test]
 fn unlocked_is_said_only_of_a_running_service() {

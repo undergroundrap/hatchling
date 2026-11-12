@@ -49,6 +49,10 @@ pub const LOST_ACTION: &str = "lost-key";
 /// The `vault-keyring` action that changes a key's PIN.
 pub const CHANGE_PIN_ACTION: &str = "change-pin";
 
+/// The `vault-keyring` action that protects the vault with an
+/// authenticator app.
+pub const TOTP_ACTION: &str = "enroll-totp";
+
 /// Whether `action` is one of the guided ones, run in the operator's
 /// terminal with the service stopped.
 #[must_use]
@@ -139,9 +143,7 @@ pub fn run(setup: &mut Setup<'_>) -> Result<Done, Error> {
     let room = crate::room_disk::here()?;
     let maintenance = crate::room_disk::maintenance(&room)?;
     let path = setup.config.keyring_path()?.to_path_buf();
-    if !path.exists() {
-        ring::init(setup.vault, setup.config)?;
-    }
+    ring::adopt_if_none(setup.vault, setup.config)?;
     finish_interrupted(setup, &path, &maintenance)?;
     let keyring = Keyring::load(&path).map_err(ring::vault_error)?;
     if keyring.tier() == Tier::HardwareKey {
@@ -526,6 +528,7 @@ fn register_next(
         looks += 1;
         if looks == HINT_AFTER && !any {
             setup.say(not_seen(setup.wsl));
+            setup.say(NO_KEY);
         }
         if looks >= LOOKS || !(setup.wait)() {
             return Err(Error::Usage {
@@ -556,6 +559,9 @@ fn touch_line(touch: Touch, left: &Cell<u32>) -> String {
 }
 
 /// What to check when a key that's plugged in isn't seen.
+/// Said with [`not_seen`]: the way on for someone with no key.
+const NO_KEY: &str = "No security key? An authenticator app protects the vault too, more weakly. Stop this with Ctrl-C (Hatchling starts again), then: sudo hatchling-broker vault-keyring enroll-totp";
+
 const fn not_seen(wsl: bool) -> &'static str {
     if wsl {
         "Still nothing. In WSL a key shows up only once it's attached: in PowerShell, `usbipd list` should say Attached beside it. A new port has a new BUSID. If it isn't listed at all, try another port."
@@ -850,6 +856,24 @@ fn add_second(
 pub(crate) fn is_guided(args: &[String]) -> bool {
     args.first().map(String::as_str) == Some("vault-keyring")
         && guided(args.get(1).map(String::as_str))
+}
+
+/// Whether `action` is the authenticator enrollment on a `service`
+/// install. There, like the guided ones, it's the service's own: run with
+/// the service's settings and with the service stopped, and it makes the
+/// keyring if there's none. Anywhere else it's the plain command, on the
+/// vault the settings in hand name.
+pub(crate) fn totp_for_service(action: Option<&str>, service: bool) -> bool {
+    service && action == Some(TOTP_ACTION)
+}
+
+/// Whether the command `args` is the service's own, where there is a
+/// `service` or not: a guided one, or the authenticator enrollment on a
+/// service install.
+pub(crate) fn for_service(args: &[String], service: bool) -> bool {
+    is_guided(args)
+        || (args.first().map(String::as_str) == Some("vault-keyring")
+            && totp_for_service(args.get(1).map(String::as_str), service))
 }
 
 /// What a first setup adds to the settings of a service that has no
@@ -1201,6 +1225,59 @@ pub(crate) fn run_setup(
     );
     Ok(())
 }
+
+/// `vault-keyring enroll-totp` on a service install, in this terminal:
+/// the enrollment, with the service stopped for it and started after
+/// ([`around`]), then unlocked with a code. On a vault with no keyring it
+/// makes one first, as the setup does, so it works as the first keyring
+/// command an install sees. What it says, and the backup codes, are shown
+/// before the service is started: a service that doesn't start doesn't
+/// cost the owner their codes.
+///
+/// # Errors
+///
+/// Why it stopped.
+pub(crate) fn run_totp(
+    service: &Service<'_>,
+    vault: &VaultConfig,
+    config: &KeyringConfig,
+    stores: &[(Store, PathBuf)],
+) -> Result<(), Error> {
+    let socket = crate::unlock_relay::socket_path(vault);
+    around(service, config.keyring.as_deref(), || {
+        ring::adopt_if_none(vault, config)?;
+        let (mut asking, mut devices) = ring::terminal_operator();
+        let done = ring::command(
+            vault,
+            config,
+            stores,
+            Some(TOTP_ACTION),
+            &mut asking,
+            &mut devices,
+            &mut std::io::stdout(),
+        );
+        drop(devices);
+        forget_socket(&socket, &crate::broker_user::own_users());
+        done
+    })?;
+    for _ in 0..40 {
+        if socket.exists() {
+            break;
+        }
+        std::thread::sleep(LOOK_EVERY);
+    }
+    let _ = writeln!(std::io::stderr(), "\n{TOTP_SET}");
+    let _ = crate::unlock_relay::unlock_main("hatchling-broker", vault);
+    let _ = writeln!(
+        std::io::stderr(),
+        "{}",
+        crate::windows_setup::here("After each restart, the same: sudo hatchling-broker unlock")
+    );
+    Ok(())
+}
+
+/// Said when the authenticator is enrolled and the service is back.
+const TOTP_SET: &str = "All set. Hatchling is locked, as it is after every restart. Unlock it now, with a code from your app:";
 
 /// What a stopped keeper left at `socket` goes, if it's a socket of one of
 /// `owners`. Run as root, in a directory the keeper's user owns: anything

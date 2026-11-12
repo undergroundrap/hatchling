@@ -322,9 +322,17 @@ fn a_key_not_seen_gets_a_hint_on_what_to_check() {
     let nothing: Vec<&[usize]> = vec![&[]; looks * 2];
     let run = run_with(&vault, &config, &mut bench, &[], &nothing);
     assert_eq!(run.said.text().matches(not_seen(false)).count(), 1);
+    // With it, the way on for someone with no key at all.
+    assert_eq!(run.said.text().matches(NO_KEY).count(), 1);
+    assert!(
+        NO_KEY.contains("Ctrl-C")
+            && NO_KEY.ends_with("sudo hatchling-broker vault-keyring enroll-totp"),
+        "{NO_KEY}"
+    );
     let early: Vec<&[usize]> = vec![&[]; looks - 2];
     let run = run_with(&vault, &config, &mut bench, &[], &early);
     assert!(!run.said.text().contains(not_seen(false)));
+    assert!(!run.said.text().contains(NO_KEY));
     assert!(not_seen(false).contains("another port"));
     assert!(not_seen(true).contains("usbipd list"));
 }
@@ -967,6 +975,34 @@ fn a_guided_command_is_vault_keyring_with_a_guided_action() {
     assert!(!is_guided(&[]));
 }
 
+/// The authenticator enrollment is the service's own where there's a
+/// service: no doc named it, and as the first keyring command on a fresh
+/// install it stopped at a missing setting. Where there's no service it's
+/// the plain command it was.
+#[test]
+fn the_authenticator_enrollment_is_the_services_own_on_a_service_install() {
+    let args =
+        |list: &[&str]| -> Vec<String> { list.iter().map(|arg| (*arg).to_owned()).collect() };
+    assert!(totp_for_service(Some("enroll-totp"), true));
+    assert!(!totp_for_service(Some("enroll-totp"), false));
+    assert!(!totp_for_service(Some("enroll-keys"), true));
+    assert!(!totp_for_service(None, true));
+
+    let totp = args(&["vault-keyring", "enroll-totp"]);
+    assert!(for_service(&totp, true));
+    assert!(!for_service(&totp, false));
+    // The guided ones are, with a service or without (they say so).
+    for guided in ["setup", "lost-key"] {
+        assert!(for_service(&args(&["vault-keyring", guided]), true));
+        assert!(for_service(&args(&["vault-keyring", guided]), false));
+    }
+    // Nothing else is.
+    assert!(!for_service(&args(&["vault-keyring", "status"]), true));
+    assert!(!for_service(&args(&["secret", "enroll-totp"]), true));
+    assert!(!for_service(&args(&["enroll-totp"]), true));
+    assert!(!for_service(&[], true));
+}
+
 fn settings_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
         .iter()
@@ -1377,6 +1413,23 @@ fn the_real_setup_stopped_at_its_first_step_changes_nothing() {
     let stores = secrets(&vault);
     let unnamed = KeyringConfig::default();
     let done = stand.with(|service| run_setup(service, &vault, &unnamed, &stores, Some("setup")));
+    assert!(matches!(done, Err(Error::Usage { .. })), "{done:?}");
+    assert_eq!(stand.text(), before);
+    assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));
+}
+
+/// The whole of `vault-keyring enroll-totp` on a fresh service install,
+/// stopped at its first step: with no keyring among its settings it
+/// stops at once, the settings are as they were, and the service is
+/// started again.
+#[test]
+fn the_real_enrollment_stopped_at_its_first_step_changes_nothing() {
+    let stand = Stand::new("real-totp");
+    let before = stand.text();
+    let (_scratch, vault, _) = vault("stand-real-totp-vault");
+    let stores = secrets(&vault);
+    let unnamed = KeyringConfig::default();
+    let done = stand.with(|service| run_totp(service, &vault, &unnamed, &stores));
     assert!(matches!(done, Err(Error::Usage { .. })), "{done:?}");
     assert_eq!(stand.text(), before);
     assert_eq!((stand.stops.get(), stand.starts.get()), (1, 1));

@@ -4,7 +4,7 @@ Hatchling keeps your keys and sign-ins in a vault, sealed at rest. By default it
 
 **The trade-off: after each restart, you unlock it.** The service starts at boot, finds the vault locked, and waits, and the agent and its schedules wait with it. You unlock it with one command, your PIN and a touch. A schedule that came due while it was locked runs once it's unlocked, marked late: once, however many times it was due.
 
-You don't need a key: without one, nothing here applies, and Hatchling works as it does.
+You don't need a key: without one, nothing here applies, and Hatchling works as it does. With no key, an authenticator app also makes Hatchling wait for you after a restart, though a stolen disk still opens the vault: [Protecting the vault with an authenticator app](authenticator.md).
 
 ## What you need
 
