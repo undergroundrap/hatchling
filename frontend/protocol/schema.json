@@ -6399,7 +6399,7 @@
               "type": "string"
             },
             "timing": {
-              "description": "How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,\n1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`\n(five fields), on the owner's clock.",
+              "description": "How it repeats: `at` (once, `today HH:MM`, `tomorrow HH:MM` or\n`YYYY-MM-DD HH:MM`), `every` (`15m`, 1 to 59 minutes), `daily`\nor `weekdays` (`HH:MM`), or `cron` (five fields), on the\nowner's clock.",
               "type": "string"
             },
             "value": {
@@ -6692,7 +6692,7 @@
           "type": "object"
         },
         {
-          "description": "A proposal wasn't put to the owner (v19): its timing doesn't read,\nthey said no to the same one, or their requests are paused or full.",
+          "description": "A proposal wasn't put to the owner (v19): its timing doesn't read\nor has already passed, they said no to the same one, or their\nrequests are paused or full.",
           "properties": {
             "reason": {
               "description": "Why, for the agent to tell them.",
@@ -7825,7 +7825,7 @@
                   "type": "string"
                 },
                 "timing": {
-                  "description": "How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,\n1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`\n(five fields), on the owner's clock.",
+                  "description": "How it repeats: `at` (once, `today HH:MM`, `tomorrow HH:MM` or\n`YYYY-MM-DD HH:MM`), `every` (`15m`, 1 to 59 minutes), `daily`\nor `weekdays` (`HH:MM`), or `cron` (five fields), on the\nowner's clock.",
                   "type": "string"
                 },
                 "value": {

@@ -598,9 +598,10 @@ pub enum ScheduleOp {
     /// approve. Nothing is scheduled before.
     #[serde(rename = "propose")]
     Propose {
-        /// How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,
-        /// 1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`
-        /// (five fields), on the owner's clock.
+        /// How it repeats: `at` (once, `today HH:MM`, `tomorrow HH:MM` or
+        /// `YYYY-MM-DD HH:MM`), `every` (`15m`, 1 to 59 minutes), `daily`
+        /// or `weekdays` (`HH:MM`), or `cron` (five fields), on the
+        /// owner's clock.
         timing: String,
         /// The timing's value.
         value: String,
@@ -913,8 +914,9 @@ pub enum ScheduleResult {
         /// Its timing in words, as the owner was shown it.
         when: String,
     },
-    /// A proposal wasn't put to the owner (v19): its timing doesn't read,
-    /// they said no to the same one, or their requests are paused or full.
+    /// A proposal wasn't put to the owner (v19): its timing doesn't read
+    /// or has already passed, they said no to the same one, or their
+    /// requests are paused or full.
     #[serde(rename = "unasked")]
     Unasked {
         /// Why, for the agent to tell them.
