@@ -272,6 +272,17 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     // Refused in a CLI cell: glibc's resolver sends a name's two queries
     // with it. Seen only in a real cell, from OpenCode (WO-018).
     ("sendmmsg", 307),
+    // What the Room image's own file tools ask for (`ROOM_TOOL_CALLS`,
+    // `ROOM_UNGRANTED`), with `fstatfs` above. Numbers verified against
+    // /usr/include/x86_64-linux-gnu/asm/unistd_64.h.
+    ("fchdir", 81),
+    ("creat", 85),
+    ("fsetxattr", 190),
+    ("llistxattr", 195),
+    ("fadvise64", 221),
+    ("symlinkat", 266),
+    ("dup3", 292),
+    ("openat2", 437),
 ];
 
 /// aarch64 has no `arch_prctl`; the rest of the surface is the same
@@ -388,6 +399,8 @@ const EPERM: u32 = 1;
 const LIMITS_BUT_CORE: [u32; 15] = [0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const ENOTTY: u32 = 25;
 const ENOSYS: u32 = 38;
+/// `ENOTSUP`, which Linux spells `EOPNOTSUPP`.
+const ENOTSUP: u32 = 95;
 const EAFNOSUPPORT: u32 = 97;
 /// `prctl` options the CLIs were seen to use: `PR_SET_PDEATHSIG`,
 /// `PR_SET_NAME`, `PR_GET_AUXV`, `PR_SET_VMA`.
@@ -476,6 +489,57 @@ const CLI_CALLS: [&str; 63] = [
     "epoll_wait",
     "pwritev2",
 ];
+
+/// What the Room image's own file tools ask of the kernel beyond the CLI
+/// profile's. Found by tracing GNU coreutils, findutils and tar at
+/// ordinary work and comparing with the Room's profile: under it, a tool
+/// that made any of these was killed. Each is an operation the profile
+/// already allows, asked another way, or a hint: none opens a way the
+/// Room didn't have. They are the Room's alone: no other profile has
+/// them from here.
+#[cfg(target_arch = "x86_64")]
+const ROOM_TOOL_CALLS: [&str; 8] = [
+    // A hint about how a file will be read. It reads, writes and changes
+    // nothing. (`cat`, `cp`, `sort`, `wc`, and ten more.)
+    "fadvise64",
+    // `chdir`, to a directory already open: it reaches none that `chdir`
+    // and `openat` don't. (`find`, `mkdir -p`.)
+    "fchdir",
+    // `open`, to write a new or emptied file: `open` with those flags.
+    // (`tar`, making an archive.)
+    "creat",
+    // `statfs`, of a file already open. (`du`, `find`.)
+    "fstatfs",
+    // `symlink`, named from a directory already open. (`ln -s`.)
+    "symlinkat",
+    // `dup2`, and may mark the copy close-on-exec. (`shuf`, `uniq`.)
+    "dup3",
+    // `openat`, with limits on how the path may resolve: it can refuse
+    // what `openat` would open, and opens nothing `openat` can't.
+    // (`tar`, unpacking.)
+    "openat2",
+    // `listxattr`, of a link itself and not what it points to. It lists
+    // names, and reads no values. (`ls -l`.)
+    "llistxattr",
+];
+
+/// What the Room's tools ask for in ordinary work and the Room doesn't
+/// grant: answered with an error the tool already handles, so it goes on
+/// without.
+///
+/// The rule this follows: a call an ordinary tool makes in ordinary use,
+/// and that isn't granted, is answered. Everything else that isn't
+/// allowed still kills the process, and that kill is a signal worth
+/// having. A call belongs here only when a tool was seen making it and
+/// seen going on without it.
+///
+/// `fsetxattr` sets an extended attribute on a file already open, and no
+/// call that sets one is allowed. `install` asks it of each file it
+/// copies. Told the file system doesn't support it (`ENOTSUP`), as one
+/// with no extended attributes says, it carries on; told anything else,
+/// it fails.
+#[cfg(target_arch = "x86_64")]
+const ROOM_UNGRANTED: [(&str, u32); 1] = [("fsetxattr", ENOTSUP)];
 
 /// The calls a headless Chromium makes beyond the CLI profile's (WO-029),
 /// found by tracing it and then leaving each out in a real cell: without
@@ -822,7 +886,9 @@ impl SeccompProfile {
     /// The room's `x86_64` syscall profile. Keep the CLI's process and file
     /// operations, but restrict socket creation to Unix sockets and refuse
     /// `bind`, `listen`, and `setsockopt`. Refuse `memfd_create` so a job
-    /// cannot use it to bypass the room's `noexec` mounts.
+    /// cannot use it to bypass the room's `noexec` mounts. Allow what the
+    /// image's own file tools ask for (`ROOM_TOOL_CALLS`), and answer what
+    /// they ask for and aren't granted (`ROOM_UNGRANTED`).
     ///
     /// # Errors
     ///
@@ -844,6 +910,12 @@ impl SeccompProfile {
         // address through autobind, even when bind and listen are refused.
         profile.refuse("setsockopt", EPERM)?;
         profile.refuse("memfd_create", ENOSYS)?;
+        for name in ROOM_TOOL_CALLS {
+            profile.allow(name)?;
+        }
+        for (name, errno) in ROOM_UNGRANTED {
+            profile.refuse(name, errno)?;
+        }
         Ok(profile)
     }
 
@@ -1857,15 +1929,27 @@ mod tests {
         let cli = SeccompProfile::harness_cli().unwrap();
         let refused = ["bind", "listen", "setsockopt", "memfd_create"]
             .map(|name| syscall_number(name).unwrap());
+        let tools = ROOM_TOOL_CALLS.map(|name| syscall_number(name).unwrap());
+        let ungranted = ROOM_UNGRANTED.map(|(name, _)| syscall_number(name).unwrap());
         let mut expected = cli.allowed_numbers();
         expected.retain(|nr| !refused.contains(nr));
-        assert_eq!(room.allowed_numbers(), expected, "room narrows the CLI");
+        expected.extend(tools);
+        expected.sort_unstable();
+        assert_eq!(
+            room.allowed_numbers(),
+            expected,
+            "room narrows the CLI, but for its tools' calls"
+        );
         let socket = syscall_number("socket").unwrap();
         let inherited_rules = |profile: &SeccompProfile| {
             profile
                 .effective_rules()
                 .into_iter()
-                .filter(|rule| rule.nr != socket && !refused.contains(&rule.nr))
+                .filter(|rule| {
+                    rule.nr != socket
+                        && !refused.contains(&rule.nr)
+                        && !ungranted.contains(&rule.nr)
+                })
                 .collect::<Vec<_>>()
         };
         assert_eq!(inherited_rules(&room), inherited_rules(&cli));
@@ -1903,6 +1987,257 @@ mod tests {
             SECCOMP_RET_KILL_PROCESS
         );
         assert_eq!(call(&prog, "clone", [17, 0, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
+    }
+
+    /// What the Room's tools ask for is allowed in the Room, and what it
+    /// doesn't grant them is answered with the one error they go on
+    /// from. The calls beside it that set or remove an attribute still
+    /// kill. No other profile gets any of this from the Room's lists.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn room_allows_what_its_tools_ask_and_answers_what_it_does_not_grant() {
+        assert_eq!(
+            ROOM_TOOL_CALLS,
+            [
+                "fadvise64",
+                "fchdir",
+                "creat",
+                "fstatfs",
+                "symlinkat",
+                "dup3",
+                "openat2",
+                "llistxattr"
+            ]
+        );
+        assert_eq!(ROOM_UNGRANTED, [("fsetxattr", 95)]);
+        // Each name is the kernel's number for it.
+        for (name, number) in [
+            ("fadvise64", libc::SYS_fadvise64),
+            ("fchdir", libc::SYS_fchdir),
+            ("creat", libc::SYS_creat),
+            ("fstatfs", libc::SYS_fstatfs),
+            ("symlinkat", libc::SYS_symlinkat),
+            ("dup3", libc::SYS_dup3),
+            ("openat2", libc::SYS_openat2),
+            ("llistxattr", libc::SYS_llistxattr),
+            ("fsetxattr", libc::SYS_fsetxattr),
+        ] {
+            assert_eq!(
+                syscall_number(name),
+                Some(u32::try_from(number).unwrap()),
+                "{name}"
+            );
+        }
+        let no = [0; 6];
+        let room = SeccompProfile::room().unwrap().build();
+        for name in ROOM_TOOL_CALLS {
+            assert_eq!(call(&room, name, no), SECCOMP_RET_ALLOW, "{name}");
+        }
+        assert_eq!(
+            call(&room, "fsetxattr", no),
+            SECCOMP_RET_ERRNO + ENOTSUP,
+            "what isn't granted is answered"
+        );
+        for number in [
+            libc::SYS_setxattr,
+            libc::SYS_lsetxattr,
+            libc::SYS_removexattr,
+            libc::SYS_lremovexattr,
+            libc::SYS_fremovexattr,
+        ] {
+            assert_eq!(
+                run(&room, AUDIT_ARCH, u32::try_from(number).unwrap(), no),
+                SECCOMP_RET_KILL_PROCESS,
+                "syscall {number}"
+            );
+        }
+        // The browser's profile has `fstatfs` by its own list, and
+        // nothing else of these.
+        let others = [
+            ("agent", SeccompProfile::agent().unwrap(), ""),
+            ("harness", SeccompProfile::harness().unwrap(), ""),
+            ("harness CLI", SeccompProfile::harness_cli().unwrap(), ""),
+            ("browser", SeccompProfile::browser().unwrap(), "fstatfs"),
+        ];
+        for (label, profile, own) in others {
+            let prog = profile.build();
+            for name in ROOM_TOOL_CALLS.into_iter().chain(["fsetxattr"]) {
+                if name != own {
+                    assert_eq!(
+                        call(&prog, name, no),
+                        SECCOMP_RET_KILL_PROCESS,
+                        "{label}: {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A tool the Room's image is made of, at ordinary work: its
+    /// arguments, and what it reads on its standard input.
+    #[cfg(target_arch = "x86_64")]
+    type RoomTool = (&'static str, &'static [&'static str], &'static str);
+
+    /// The image's file tools, in an order each can follow the last in.
+    #[cfg(target_arch = "x86_64")]
+    const ROOM_TOOLS: &[RoomTool] = &[
+        ("cat", &["numbers.txt"], ""),
+        ("cp", &["numbers.txt", "copy.txt"], ""),
+        ("mv", &["copy.txt", "moved.txt"], ""),
+        ("rm", &["moved.txt"], ""),
+        ("ls", &["-la", "."], ""),
+        ("head", &["-n", "3", "numbers.txt"], ""),
+        ("tail", &["-n", "3", "numbers.txt"], ""),
+        ("wc", &["-l", "numbers.txt"], ""),
+        ("sort", &["letters.txt"], ""),
+        ("uniq", &["letters.txt"], ""),
+        ("cut", &["-c1", "letters.txt"], ""),
+        ("tr", &["a-z", "A-Z"], "abc\n"),
+        ("mkdir", &["-p", "made/deeper"], ""),
+        ("touch", &["made/file"], ""),
+        ("stat", &["numbers.txt"], ""),
+        ("du", &["-s", "."], ""),
+        ("df", &["."], ""),
+        ("ln", &["-s", "numbers.txt", "link"], ""),
+        ("chmod", &["600", "made/file"], ""),
+        ("sha256sum", &["numbers.txt"], ""),
+        ("md5sum", &["numbers.txt"], ""),
+        ("tee", &["teed.txt"], "teed\n"),
+        ("seq", &["1", "5"], ""),
+        ("date", &[], ""),
+        ("env", &[], ""),
+        ("id", &[], ""),
+        (
+            "dd",
+            &["if=numbers.txt", "of=dd.txt", "bs=512", "count=2"],
+            "",
+        ),
+        ("od", &["-c", "letters.txt"], ""),
+        ("mktemp", &["-p", "."], ""),
+        ("realpath", &["link"], ""),
+        (
+            "install",
+            &["-m", "600", "numbers.txt", "installed.txt"],
+            "",
+        ),
+        ("truncate", &["-s", "10", "installed.txt"], ""),
+        ("split", &["-l", "500", "numbers.txt", "part-"], ""),
+        ("shuf", &["letters.txt"], ""),
+        ("grep", &["-c", "1", "numbers.txt"], ""),
+        ("sed", &["-n", "2p", "numbers.txt"], ""),
+        ("awk", &["END { print NR }", "numbers.txt"], ""),
+        ("find", &[".", "-name", "*.txt"], ""),
+        ("xargs", &["-n1", "echo"], "a b\n"),
+        ("diff", &["numbers.txt", "sub/n.txt"], ""),
+        ("tar", &["-cf", "made.tar", "sub"], ""),
+        ("tar", &["-tf", "made.tar"], ""),
+        ("tar", &["-xf", "made.tar", "-C", "made"], ""),
+        ("gzip", &["-kf", "letters.txt"], ""),
+        ("gunzip", &["-c", "letters.txt.gz"], ""),
+        (
+            "sh",
+            &["-c", "for f in *.txt; do :; done; echo done | cat"],
+            "",
+        ),
+    ];
+
+    /// Where `tool` is: the GNU one where a machine keeps it under a
+    /// name of its own beside another (`gnucat`), since the Room's image
+    /// is made of the GNU tools.
+    #[cfg(target_arch = "x86_64")]
+    fn room_tool(tool: &str) -> std::path::PathBuf {
+        let gnu = std::path::Path::new("/usr/bin").join(format!("gnu{tool}"));
+        if gnu.exists() {
+            gnu
+        } else {
+            std::path::PathBuf::from(tool)
+        }
+    }
+
+    /// Runs every tool in `dir`, made here with what the tools read.
+    /// Each must end well, and says how it didn't; `filtered` says which
+    /// run this is.
+    #[cfg(target_arch = "x86_64")]
+    fn run_room_tools(dir: &std::path::Path, filtered: bool) {
+        use std::fmt::Write as _;
+
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let mut numbers = String::new();
+        for number in 1..=2000 {
+            writeln!(numbers, "{number}").unwrap();
+        }
+        std::fs::write(dir.join("numbers.txt"), &numbers).unwrap();
+        std::fs::write(dir.join("sub/n.txt"), &numbers).unwrap();
+        std::fs::write(dir.join("letters.txt"), "b\na\nc\na\n").unwrap();
+        for (tool, arguments, input) in ROOM_TOOLS {
+            std::fs::write(dir.join("input"), input).unwrap();
+            let ran = std::process::Command::new(room_tool(tool))
+                .args(*arguments)
+                .current_dir(dir)
+                .stdin(std::fs::File::open(dir.join("input")).unwrap())
+                .output()
+                .unwrap();
+            assert!(
+                ran.status.success(),
+                "{tool} {arguments:?}, filtered {filtered}: {}\n{}",
+                ran.status,
+                String::from_utf8_lossy(&ran.stderr)
+            );
+        }
+    }
+
+    /// The tools the Room's image is made of run under the Room's
+    /// profile, in a fresh process: as they are first, so a tool that
+    /// fails by itself isn't the profile's doing, then with the profile.
+    ///
+    /// The Room's jobs run as its own account and never as root, and a
+    /// tool run by root asks for more (`tar` gives each file it unpacks
+    /// its owner back). So a run by root gives root up first, as the
+    /// Room's launcher does: to `nobody`, an account every machine's own
+    /// files name. Shown files of a user they don't name, `ls -l` asks
+    /// the machine's other user databases who that is, and what those
+    /// ask of the kernel is the machine's doing and no tool's.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn the_rooms_tools_run_under_its_profile() {
+        use crate::process::{drop_to, euid, exit_child, set_no_new_privs};
+
+        const PROBE: &str = "HATCHLING_TEST_ROOM_TOOLS_PROBE";
+        const NOBODY: u32 = 65534;
+        if let Some(dir) = std::env::var_os(PROBE) {
+            let dir = std::path::PathBuf::from(dir);
+            if euid() == 0 {
+                drop_to(NOBODY, NOBODY).unwrap();
+            }
+            run_room_tools(&dir.join("plain"), false);
+            set_no_new_privs().unwrap();
+            install(&SeccompProfile::room().unwrap()).unwrap();
+            run_room_tools(&dir.join("filtered"), true);
+            // Distinguish a completed probe from libtest selecting zero tests.
+            exit_child(42);
+        }
+        // A fresh process: the profile stays on whatever installs it, and
+        // installing allocates, which would be unsafe in a fork of the
+        // multithreaded test runner.
+        let dir = std::env::temp_dir().join(format!("hatchling-room-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "seccomp::tests::the_rooms_tools_run_under_its_profile",
+                "--nocapture",
+            ])
+            .env(PROBE, &dir)
+            .output()
+            .expect("start room tools probe");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            output.status.code(),
+            Some(42),
+            "a tool didn't run, by itself or under the Room's profile: {}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 
     #[cfg(target_arch = "x86_64")]
