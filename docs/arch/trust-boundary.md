@@ -79,31 +79,71 @@ submounts behind, and exposes a read-only PID-only `/proc` and just
 trusted PID 1 forks the image supervisor as PID 2. The supervisor runs
 as the dedicated `hatchling-room` account with empty supplementary groups,
 no new privileges, null stdio, and an empty environment. Only its own
-socket crosses exec. After the fixed readiness frame, the private spawner
-channel dispatches commands one at a time, each by absolute Room path
-with direct argv, null stdin, and `/workspace` as the working directory.
-The supervisor reports each command's termination and the first 4 KiB of
-each output stream, with a separate truncation flag for each stream. All
-reported fields are untrusted. Each reply must be complete, alone, and
-match its dispatch nonce. A descendant that keeps an output pipe open can
-cause the command to reach its deadline after the direct child exits.
+socket crosses exec.
 
-The Room is kept between commands, as one session for the install. One
+After the fixed readiness frame, the private spawner channel asks the
+supervisor one thing at a time, in typed frames whose unknown fields never
+decode: to start a job, to stop one, or to hand over a kept piece of what
+an ended job wrote. Each answer must echo its ask's nonce. The one thing
+the supervisor says unasked is that a job it was given has ended.
+
+A command is a job, named by whoever asks for it. It is a program named
+plainly (found on the fixed path `/usr/bin:/bin`) or by its absolute Room
+path, with direct argv and no shell, a working directory (`/workspace`
+unless one is named), and up to 32 KiB on its standard input. A job gets a
+fixed environment (`PATH`, `HOME=/session/home`, `TMPDIR=/session`,
+`LANG=C.UTF-8`) and a process group of its own. Its home goes with the
+session, so nothing a job leaves there is read by a later session's jobs.
+At most four jobs run at once.
+
+A job is over when its first process ends. Whatever that process left in
+its process group is killed with it, and a pipe held open outside the
+group is read for a fifth of a second more, no longer. The supervisor
+keeps the first and the last 16 KiB of each output stream, with the count
+of the bytes between them, and writes the whole of each stream, up to
+8 MiB, to a file in `/session/jobs`. A session directory that is full
+still runs a job: its files are then short, and said to be.
+
+All of what the supervisor reports is untrusted. The spawner checks that
+an end is one a process can have and that the kept counts can be true
+together, takes each kept piece only at the length the supervisor said it
+had, and names each stream's file itself, from the job's name.
+
+The Room is kept between jobs, as one session for the install. One
 spawner thread holds it from its launch until it is down, and holds the
-disk's exclusive claim for as long. The first command starts the session
-and later commands run in it. A second command while one runs is
-refused. A session ends:
+disk's exclusive claim for as long. The first job starts the session and
+later jobs run in it.
+
+A job has a limit: 120 seconds unless its caller names one, and never
+more than 600. A job still running at its limit is stopped, which kills
+its process group; a stop can also be asked for. Whoever asks for a job
+waits for it only as long as they say, and is then told it is running: it
+runs on to its limit. The spawner keeps what is known of the last 64 jobs
+that are over, across sessions: how each ended, why it was stopped if it
+was, how long it ran by the spawner's own clock, and its kept output. A
+name the spawner knows is never run again: asking by it answers with that
+job as it is, so a caller that lost an answer asks, and nothing runs
+twice. A job still running when its session ends is lost with it, and is
+recorded so. One the supervisor was never given didn't start, and its
+name stays free.
+
+A session ends:
 
 - after one hour, whatever it is doing;
-- after fifteen minutes with no command;
-- when a command misses its 30-second deadline, counted from its request,
-  so the first command's includes the launch;
-- when the supervisor isn't ready within 30 seconds, closes, speaks when
-  it isn't its turn, or answers for another dispatch;
-- when the connection that asked for a command closes or sends more;
+- after fifteen minutes with no job in hand;
+- when a job that was stopped hasn't ended five seconds later;
+- when the supervisor isn't ready within 30 seconds, doesn't answer an
+  ask within ten, closes, says something that can't be read, answers
+  something it wasn't asked, says a job ended that it wasn't given or
+  hasn't said started, or says an end or a piece of output that can't be
+  true;
 - when the Room's first process exits;
 - when the room disk is closed or wiped, before either is done;
 - when the broker goes, before the spawner closes the disk and leaves.
+
+A connection that asked for a job and then closes, or sends more, is let
+go. Its job, once the supervisor has it, runs on to its end or its limit;
+one not yet given to the supervisor is dropped with it.
 
 It always ends the same way: the launcher is stopped and confirmed
 exited, the cgroup drains, and the verified image mapper closes. A

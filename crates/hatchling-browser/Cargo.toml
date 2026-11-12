@@ -32,8 +32,10 @@ hatchling-core.workspace = true
 # Starting the browser: fork, the pipe placed on fds 3 and 4, exec; and
 # the inherited connection to the broker.
 hatchling-sys.workspace = true
-# The DevTools pipe: made, made non-blocking, polled with a deadline.
-rustix = { version = "0.38", features = ["event", "fs", "pipe"] }
+# The DevTools pipe: made, made non-blocking, polled with a deadline. The
+# Room's supervisor: a job's process group killed, its first process
+# watched through a pidfd.
+rustix = { version = "0.38", features = ["event", "fs", "pipe", "process"] }
 serde_json = "1"
 thiserror = "2"
 

@@ -97,7 +97,7 @@ pub mod room_disk;
     clippy::redundant_pub_crate,
     reason = "the launcher and spawner share a private exchange"
 )]
-mod room_foreground;
+mod room_job;
 #[allow(
     clippy::redundant_pub_crate,
     reason = "the broker's CLI and spawner share these internal entry points"

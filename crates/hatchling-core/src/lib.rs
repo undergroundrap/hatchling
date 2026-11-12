@@ -24,6 +24,7 @@ pub mod log_level;
 pub mod messages;
 pub mod model_reasoning;
 pub mod peer;
+pub mod room;
 pub mod run_failure;
 pub mod run_tools;
 pub mod secret;

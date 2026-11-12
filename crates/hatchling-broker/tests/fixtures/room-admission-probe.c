@@ -104,7 +104,9 @@ int main(int argc, char **argv, char **environment) {
                 return 47;
             left -= (size_t)received;
         }
-        static const char stale[] = "[\"previous-dispatch\",{\"status\":{\"exited\":0},\"stdout\":[],\"stderr\":[],\"stdout_truncated\":false,\"stderr_truncated\":false}]";
+        /* An answer to something that was never asked. */
+        static const char stale[] = "{\"say\":\"started\",\"nonce\":\""
+            "0000000000000000000000000000000000000000000000000000000000000000\"}";
         static const unsigned char size[] = {0, 0, 0, sizeof stale - 1};
         if (write(3, size, sizeof size) != sizeof size
             || write(3, stale, sizeof stale - 1) != sizeof stale - 1)

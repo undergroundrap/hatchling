@@ -59,7 +59,7 @@ use hatchling_isolation::{
 use serde::{Deserialize, Serialize};
 
 use crate::room_launch::Session;
-use crate::room_session::{DiskReply, Kept, Limits, Seat, Sessions};
+use crate::room_session::{DiskReply, Kept, Ledger, Limits, Seat, Sessions};
 
 use crate::browser_session::BrowserSettings;
 use crate::cell::{CellConfig, CellLimits, Process, agent_identity};
@@ -568,8 +568,18 @@ enum Request {
     RoomDisk { op: crate::room_disk::RoomDiskOp },
     /// Check admission using only the spawner's installed room sources.
     RoomMount,
-    /// Run one command after admission using the installed Room sources.
-    RoomRun { argv: Vec<String> },
+    /// Run a command as a job in the installed Room, after admission.
+    RoomRun { run: RoomRun },
+    /// Say how a Room job is, waiting up to `wait_secs` for it to end.
+    RoomJob { job: JobId, wait_secs: u32 },
+    /// Stop a Room job, and say how it came out.
+    RoomStop { job: JobId },
+    /// Hand back a kept piece of what a Room job that is over wrote.
+    RoomOutput {
+        job: JobId,
+        stream: Stream,
+        end: End,
+    },
 }
 
 /// What the spawner answers.
@@ -588,11 +598,19 @@ enum Reply {
     RoomDisk {
         status: crate::room_disk::RoomDiskStatus,
     },
-    /// One foreground command ended and the Room was torn down.
-    RoomRun { result: RoomForegroundResult },
+    /// A Room job, as it is. `started` when this request started it.
+    RoomJob { started: bool, job: RoomJob },
+    /// A kept piece of what a Room job wrote.
+    RoomOutput {
+        #[serde(with = "hatchling_core::room::b64")]
+        bytes: Vec<u8>,
+    },
 }
 
-pub use crate::room_foreground::{RoomForegroundResult, RoomForegroundStatus};
+pub use crate::room_job::{
+    Captured, End, Ended, JOB_CEILING_SECS, JOB_DEFAULT_SECS, JobId, RoomJob, RoomJobAnswer,
+    RoomJobState, RoomJobStopped, RoomRun, STDIN_BYTES, Stream,
+};
 
 /// The broker's end of the spawner.
 #[derive(Debug)]
@@ -778,7 +796,11 @@ impl Spawner {
         let pid = match receive(&stream).map_err(|error| error.to_string())? {
             Reply::Started { pid } => pid,
             Reply::Refused { reason } => return Err(reason),
-            Reply::Exited { .. } | Reply::Done | Reply::RoomDisk { .. } | Reply::RoomRun { .. } => {
+            Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -850,7 +872,8 @@ impl Spawner {
             Reply::Started { .. }
             | Reply::Exited { .. }
             | Reply::RoomDisk { .. }
-            | Reply::RoomRun { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -874,9 +897,10 @@ impl Spawner {
             Reply::Done => Ok(None),
             Reply::RoomDisk { status } => Ok(Some(status)),
             Reply::Refused { reason } => Err(reason),
-            Reply::Started { .. } | Reply::Exited { .. } | Reply::RoomRun { .. } => {
-                Err(String::from("the spawner answered out of step"))
-            }
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -897,46 +921,119 @@ impl Spawner {
             Reply::RoomDisk { .. }
             | Reply::Started { .. }
             | Reply::Exited { .. }
-            | Reply::RoomRun { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
-    /// Run one command in the installed Room through the spawner's private channel.
+    /// Runs a command in the installed Room as a job, through the
+    /// spawner's private channel.
     ///
-    /// The command uses an absolute Room path, starts in `/workspace` and
-    /// has no stdin. The supervisor's result and output are untrusted.
+    /// The program is named plainly or by an absolute path, and no shell
+    /// reads its arguments. It starts in the workspace unless a directory
+    /// is named, with what it is given on its standard input and a fixed
+    /// environment.
     ///
-    /// The Room is kept for the next command: one session, started by the
-    /// first command, lasts until it has been idle for fifteen minutes or
-    /// has lived an hour, whichever is first. It runs one command at a
-    /// time; a second while one runs is refused. A command that misses its
-    /// deadline, or whose connection goes, ends the session, and so does
-    /// closing or wiping the room disk.
+    /// The job is named by the caller. A name the spawner knows starts
+    /// nothing: the answer is that job as it is, and says it wasn't
+    /// started by this call. So a caller that lost an answer asks again,
+    /// by the same name or with [`Self::room_job`], and nothing runs
+    /// twice.
+    ///
+    /// The call waits for the job to end for as long as it says. A job
+    /// still running then is answered as running, and runs on to its
+    /// limit, where it is stopped: every process in its group is killed.
+    ///
+    /// The Room is kept for the next job: one session, started by the
+    /// first job, lasts until it has been idle for fifteen minutes or
+    /// has lived an hour, whichever is first. It runs only so many jobs
+    /// at once. A job still running when its session ends is lost with
+    /// it, and is said to be; closing or wiping the room disk ends the
+    /// session.
+    ///
+    /// How a job ended and what it wrote come from the supervisor
+    /// confined in the Room, and are untrusted.
     ///
     /// # Errors
     ///
-    /// Returns a refusal or a failure of admission, communication or
-    /// deadline. A failure that ends the session is returned once the Room
-    /// is down.
-    pub fn run_room_foreground(&self, argv: &[String]) -> Result<RoomForegroundResult, String> {
-        crate::room_foreground::validate_command(argv)?;
-        let stream = self.connect().map_err(|error| error.to_string())?;
-        stream
+    /// Returns a refusal, or a failure of admission or communication. A
+    /// failure that ends the session is returned once the Room is down.
+    pub fn room_run(&self, run: &RoomRun) -> Result<RoomJobAnswer, String> {
+        crate::room_job::check(run)?;
+        self.room_job_asked(&Request::RoomRun { run: run.clone() }, run.wait_secs)
+    }
+
+    /// Says how the Room job `job` is, waiting up to `wait_secs` for it
+    /// to end. No Room is started for the asking.
+    ///
+    /// # Errors
+    ///
+    /// When there is no job by that name, or the spawner can't be asked.
+    pub fn room_job(&self, job: &JobId, wait_secs: u32) -> Result<RoomJobAnswer, String> {
+        let request = Request::RoomJob {
+            job: job.clone(),
+            wait_secs,
+        };
+        self.room_job_asked(&request, wait_secs)
+    }
+
+    /// Stops the Room job `job`: every process in its group is killed.
+    /// Says how it came out; one that was over already is told as it is.
+    ///
+    /// # Errors
+    ///
+    /// When there is no job by that name, or the spawner can't be asked.
+    pub fn room_stop(&self, job: &JobId) -> Result<RoomJobAnswer, String> {
+        self.room_job_asked(&Request::RoomStop { job: job.clone() }, 0)
+    }
+
+    /// Hands back a kept piece of what the Room job `job`, which is
+    /// over, wrote: the head or the tail of one of its streams. The
+    /// whole of each stream, up to its cap, is in its file in the Room
+    /// for as long as the Room's session lasts.
+    ///
+    /// # Errors
+    ///
+    /// When the job isn't over, was lost with its Room, or isn't known.
+    pub fn room_output(&self, job: &JobId, stream: Stream, end: End) -> Result<Vec<u8>, String> {
+        let connection = self.connect().map_err(|error| error.to_string())?;
+        connection
             .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
             .map_err(|error| error.to_string())?;
-        send(
-            &stream,
-            &Request::RoomRun {
-                argv: argv.to_vec(),
-            },
-        )
-        .map_err(|error| error.to_string())?;
-        match receive(&stream).map_err(|error| error.to_string())? {
-            Reply::RoomRun { result } => Ok(result),
+        let request = Request::RoomOutput {
+            job: job.clone(),
+            stream,
+            end,
+        };
+        send(&connection, &request).map_err(|error| error.to_string())?;
+        match receive(&connection).map_err(|error| error.to_string())? {
+            Reply::RoomOutput { bytes } => Ok(bytes),
             Reply::Refused { reason } => Err(reason),
-            Reply::Started { .. } | Reply::Exited { .. } | Reply::Done | Reply::RoomDisk { .. } => {
-                Err(String::from("the spawner answered out of step"))
-            }
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Asks the spawner about a Room job, and waits for its answer past
+    /// the wait the request itself asks for.
+    fn room_job_asked(&self, request: &Request, wait_secs: u32) -> Result<RoomJobAnswer, String> {
+        let connection = self.connect().map_err(|error| error.to_string())?;
+        let patience = ROOM_DISK_TIMEOUT.saturating_add(Duration::from_secs(u64::from(wait_secs)));
+        connection
+            .set_read_timeout(Some(patience))
+            .map_err(|error| error.to_string())?;
+        send(&connection, request).map_err(|error| error.to_string())?;
+        match receive(&connection).map_err(|error| error.to_string())? {
+            Reply::RoomJob { started, job } => Ok(RoomJobAnswer { started, job }),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -970,14 +1067,15 @@ impl Spawner {
             Reply::Started { .. }
             | Reply::Exited { .. }
             | Reply::RoomDisk { .. }
-            | Reply::RoomRun { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 }
 
 /// How a spawned helper ended, once the spawner says: `Err` when the
 /// spawner went first. Its watch fills it, and wakes its waiters.
-type Ended = Arc<(Mutex<Option<Result<Exit, String>>>, Condvar)>;
+type HelperEnd = Arc<(Mutex<Option<Result<Exit, String>>>, Condvar)>;
 
 /// A helper the spawner started: supervised over its connection. Dropping
 /// it kills the helper.
@@ -988,7 +1086,7 @@ pub struct SpawnedProcess {
     /// Where the broker asks for a kill.
     stream: Mutex<UnixStream>,
     /// How the helper ended, once the spawner says.
-    ended: Ended,
+    ended: HelperEnd,
 }
 
 impl SpawnedProcess {
@@ -998,7 +1096,7 @@ impl SpawnedProcess {
         let reader = stream
             .try_clone()
             .map_err(|error| format!("cannot watch helper {pid}: {error}"))?;
-        let ended: Ended = Arc::new((Mutex::new(None), Condvar::new()));
+        let ended: HelperEnd = Arc::new((Mutex::new(None), Condvar::new()));
         let told = Arc::clone(&ended);
         std::thread::spawn(move || {
             let outcome = match receive(&reader) {
@@ -1011,7 +1109,8 @@ impl SpawnedProcess {
                     | Reply::Refused { .. }
                     | Reply::Done
                     | Reply::RoomDisk { .. }
-                    | Reply::RoomRun { .. },
+                    | Reply::RoomJob { .. }
+                    | Reply::RoomOutput { .. },
                 ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
@@ -1331,22 +1430,31 @@ fn serve_with(
 fn room_sessions(held: &Arc<(PathBuf, Policy)>, keeper: Option<&Keeper>) -> Sessions {
     let held = Arc::clone(held);
     let keeper = keeper.map(Arc::clone);
-    Sessions::new(move |seat| {
+    let ledger = Arc::<Mutex<Ledger>>::default();
+    let kept = Arc::clone(&ledger);
+    Sessions::new(ledger, move |seat| {
         let held = Arc::clone(&held);
         let keeper = keeper.clone();
+        let ledger = Arc::clone(&kept);
         std::thread::Builder::new()
             .name(String::from("room-session"))
             .spawn(move || {
                 let (program, policy) = &*held;
-                hold_room_session(program, policy, keeper.as_ref(), seat);
+                hold_room_session(program, policy, keeper.as_ref(), seat, ledger);
             })
     })
 }
 
 /// Launches a Room for the session at `seat`, holds it until it is down,
 /// and answers what it still owes then.
-fn hold_room_session(program: &Path, policy: &Policy, keeper: Option<&Keeper>, seat: Seat) {
-    let mut kept = Kept::new(seat, Limits::INSTALLED, |op| {
+fn hold_room_session(
+    program: &Path,
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+    seat: Seat,
+    ledger: Arc<Mutex<Ledger>>,
+) {
+    let mut kept = Kept::new(seat, Limits::INSTALLED, ledger, |op| {
         room_disk_done(policy, keeper, op, true)
     });
     let launched = room_launch(program, policy, keeper, Some(&mut kept));
@@ -1430,15 +1538,31 @@ fn serve_connection(
             };
             send(stream, &reply)
         }
-        Request::RoomRun { argv } => {
-            let run = crate::room_foreground::validate_command(&argv)
-                .and_then(|()| sessions.run(&argv, stream));
-            let reply = match run {
-                Ok(result) => Reply::RoomRun { result },
+        Request::RoomRun { run } => send(stream, &room_job_reply(sessions.run(&run, stream))),
+        Request::RoomJob { job, wait_secs } => {
+            let wait = Duration::from_secs(u64::from(wait_secs.min(JOB_CEILING_SECS)));
+            send(stream, &room_job_reply(sessions.job(&job, wait, stream)))
+        }
+        Request::RoomStop { job } => send(stream, &room_job_reply(sessions.stop(&job, stream))),
+        Request::RoomOutput {
+            job,
+            stream: which,
+            end,
+        } => {
+            let reply = match sessions.output(&job, which, end) {
+                Ok(bytes) => Reply::RoomOutput { bytes },
                 Err(reason) => Reply::Refused { reason },
             };
             send(stream, &reply)
         }
+    }
+}
+
+/// What the spawner answers about a Room job.
+fn room_job_reply(asked: crate::room_session::JobReply) -> Reply {
+    match asked {
+        Ok(RoomJobAnswer { started, job }) => Reply::RoomJob { started, job },
+        Err(reason) => Reply::Refused { reason },
     }
 }
 
@@ -2183,7 +2307,8 @@ sleep 30 </dev/null >/dev/null 2>&1 &
     #[test]
     fn room_requests_reach_the_session_and_it_ends_with_the_broker() {
         use crate::room_disk::RoomDiskOp;
-        use crate::room_session::tests::{result, stand_ins};
+        use crate::room_job::tests::{job, run};
+        use crate::room_session::tests::{stand_ins, stood_in};
         let (sessions, started, ended) = stand_ins();
         let sessions = Arc::new(sessions);
         let (ours, theirs) = UnixStream::pair().unwrap();
@@ -2199,14 +2324,44 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert!(said.contains("no room disk here"), "{said}");
         let stream = spawner.connect().unwrap();
         let invalid = Request::RoomRun {
-            argv: vec![String::from("relative")],
+            run: run("j", &["./relative"]),
         };
         send(&stream, &invalid).unwrap();
         assert!(matches!(receive(&stream).unwrap(), Reply::Refused { .. }));
+        let refused = spawner.room_run(&run("j", &["./relative"])).unwrap_err();
+        assert!(refused.contains("interpreter"), "{refused}");
+        // With no session, a job that isn't known is said not to be.
+        for asked in [spawner.room_job(&job("j"), 0), spawner.room_stop(&job("j"))] {
+            assert_eq!(asked.unwrap_err(), "there is no Room job by that name");
+        }
+        assert_eq!(
+            spawner
+                .room_output(&job("j"), Stream::Stdout, End::Head)
+                .unwrap_err(),
+            "there is no Room job by that name"
+        );
         assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
 
-        let ran = spawner.run_room_foreground(&[String::from("/bin/true")]);
-        assert_eq!(ran, Ok(result(1)));
+        let ran = spawner.room_run(&run("j", &["true"]));
+        assert_eq!(ran, Ok(stood_in(1, "j")));
+        // What is asked of a job reaches the session, with a wait no
+        // longer than a job may run.
+        assert_eq!(
+            spawner.room_job(&job("j"), 5),
+            Err(String::from("session 1 asked of j for 5s"))
+        );
+        assert_eq!(
+            spawner.room_job(&job("j"), JOB_CEILING_SECS + 1),
+            Err(String::from("session 1 asked of j for 600s"))
+        );
+        assert_eq!(
+            spawner.room_stop(&job("j")),
+            Err(String::from("session 1 stopped j"))
+        );
+        assert_eq!(
+            spawner.room_output(&job("j"), Stream::Stderr, End::Tail),
+            Err(String::from("session 1 asked of j for 0ns"))
+        );
         assert_eq!(spawner.check_room_mount(), Ok(()));
         assert_eq!(
             spawner.room_disk(RoomDiskOp::Close),
@@ -2224,7 +2379,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         );
         let (_broker, requester) = UnixStream::pair().unwrap();
         assert_eq!(
-            sessions.run(&[String::from("/bin/true")], &requester),
+            sessions.run(&run("k", &["true"]), &requester),
             Err(String::from("the spawner is leaving"))
         );
     }
@@ -2270,7 +2425,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         let sessions = room_sessions(&held, Some(&bench.keeper));
         let (_broker, requester) = UnixStream::pair().unwrap();
         let said = sessions
-            .run(&[String::from("/bin/true")], &requester)
+            .run(&crate::room_job::tests::run("j", &["true"]), &requester)
             .unwrap_err();
         assert!(said.contains("isn't mapped"), "{said}");
     }
@@ -2285,7 +2440,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         let (_broker, requester) = UnixStream::pair().unwrap();
         for _ in 0..2 {
             assert_eq!(
-                sessions.run(&[String::from("/bin/true")], &requester),
+                sessions.run(&crate::room_job::tests::run("j", &["true"]), &requester),
                 Err(String::from(crate::room_disk::NOT_HERE))
             );
         }
@@ -3086,7 +3241,9 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         served.join().unwrap();
         let (broker, theirs) = UnixStream::pair().unwrap();
         write_frame(&broker, br#"{"request":"steal"}"#).unwrap();
-        let sessions = Sessions::new(|_| Err(std::io::Error::other("no session here")));
+        let sessions = Sessions::new(Arc::default(), |_| {
+            Err(std::io::Error::other("no session here"))
+        });
         assert!(
             serve_connection(&theirs, Path::new("/bin/sh"), &policy(), None, &sessions).is_err()
         );
