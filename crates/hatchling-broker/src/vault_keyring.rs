@@ -154,7 +154,7 @@ impl KeyringConfig {
 /// to give.
 fn no_keyring(service: bool) -> String {
     String::from(if service {
-        "this vault has no keyring yet: `sudo hatchling-broker vault-keyring setup` makes one, and carries on from there"
+        "this vault has no keyring yet: `sudo hatchling-broker vault-keyring setup` (security keys) or `sudo hatchling-broker vault-keyring enroll-totp` (an authenticator app) makes one, and carries on from there"
     } else {
         "set HATCHLING_VAULT_KEYRING to the keyring's absolute path"
     })
@@ -162,7 +162,7 @@ fn no_keyring(service: bool) -> String {
 
 /// What `vault-keyring status` says of a vault with no keyring: how it
 /// opens, and what protects it more.
-const NO_KEYRING_STATUS: &str = "vault-keyring: no keyring. The vault's key is in a file on this machine, and it opens by itself after a restart.\n  to protect it with a security key: sudo hatchling-broker vault-keyring setup";
+const NO_KEYRING_STATUS: &str = "vault-keyring: no keyring. The vault's key is in a file on this machine, and it opens by itself after a restart.\n  to protect it with a security key: sudo hatchling-broker vault-keyring setup\n  or with an authenticator app (weaker: a stolen disk still opens the vault): sudo hatchling-broker vault-keyring enroll-totp";
 
 /// What `vault-keyring status` says where the settings name a keyring at
 /// `path` and none is there: a setup that was cut short before it made
@@ -718,6 +718,20 @@ pub fn init(vault: &VaultConfig, config: &KeyringConfig) -> Result<(), Error> {
     remove_key_file(&vault.key_file)
 }
 
+/// Makes the keyring where the settings name one and none is there yet
+/// ([`init`]): the first step of protecting a vault, whichever way it's
+/// then protected. One that's there is left as it is.
+///
+/// # Errors
+///
+/// As [`init`].
+pub(crate) fn adopt_if_none(vault: &VaultConfig, config: &KeyringConfig) -> Result<(), Error> {
+    if config.keyring_path()?.exists() {
+        return Ok(());
+    }
+    init(vault, config)
+}
+
 /// Overwrites and removes the key file at `path`, and only that: a regular
 /// file of one of Hatchling's own users. A vault that's been protected
 /// shouldn't leave the key that opened it in a free block of the same disk.
@@ -761,6 +775,15 @@ pub fn enroll_totp(
     crate::check_sealed_stores(stores)?;
     let mut keyring = Keyring::load(config.keyring_path()?).map_err(vault_error)?;
     let unlocked = unlock_current(&mut keyring, vault, config, ask, devices)?;
+    // A vault that waits for a code after every restart needs a way back
+    // that isn't the app. With no backup codes it's given a set here,
+    // which the move to the new key replaces with the set its owner is
+    // shown: enrolled as the first thing done to a vault, it had none.
+    if keyring.backup_codes_left() == 0 {
+        keyring
+            .generate_backup_codes(&unlocked)
+            .map_err(vault_error)?;
+    }
     let pending = keyring.begin_totp(&unlocked).map_err(vault_error)?;
     let mut prompt = format!(
         "Add this to your authenticator app (it is the seed: keep no other copy), then enter the code it shows:\n{}\n>",
@@ -1653,6 +1676,12 @@ pub fn run_keyring(broker: &crate::Config, action: Option<&str>) -> Result<(), E
             crate::key_setup::run_setup(service, &broker.vault, &config, &stores, action)
         });
     }
+    let service = Path::new(crate::doctor::SERVICE_SETTINGS).exists();
+    if crate::key_setup::totp_for_service(action, service) {
+        return crate::key_setup::installed(|service| {
+            crate::key_setup::run_totp(service, &broker.vault, &config, &stores)
+        });
+    }
     if action == Some(crate::key_setup::CHANGE_PIN_ACTION) {
         return crate::key_setup::run_change_pin(broker, &config, &stores);
     }
@@ -2039,6 +2068,31 @@ pub(crate) mod tests {
         assert!(unlock(&vault, &config).is_ok());
     }
 
+    /// Protecting a vault starts by making its keyring, whichever way it's
+    /// then protected: where there's none, one is made at the file tier
+    /// and the plain key goes; one that's there is left as it is.
+    #[test]
+    fn a_keyring_is_made_where_there_is_none_and_left_where_there_is_one() {
+        let (scratch, vault) = scratch("adopt-if-none");
+        unlock(&vault, &KeyringConfig::default()).unwrap();
+        let config = keyring_config(&scratch);
+        let path = config.keyring.clone().unwrap();
+        assert!(!path.exists());
+        adopt_if_none(&vault, &config).unwrap();
+        assert_eq!(Keyring::load(&path).unwrap().tier(), Tier::File);
+        assert!(!vault.key_file.exists(), "the plain key was left");
+        let made = std::fs::read(&path).unwrap();
+        // Again, it's there: nothing is made over it (a second adoption
+        // would find the plain key gone, and fail).
+        adopt_if_none(&vault, &config).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), made);
+        // With no keyring named, there's nowhere to make one.
+        assert!(matches!(
+            adopt_if_none(&vault, &KeyringConfig::default()),
+            Err(Error::Usage { .. })
+        ));
+    }
+
     /// `vault-keyring status` was the first keyring command a fresh
     /// install saw, and it answered with a usage error and the manual. A
     /// vault with no keyring is a state, not a mistake: status says how it
@@ -2050,7 +2104,10 @@ pub(crate) mod tests {
         assert!(
             none.starts_with("vault-keyring: no keyring. ")
                 && none.contains("opens by itself after a restart")
-                && none.ends_with("sudo hatchling-broker vault-keyring setup"),
+                && none
+                    .contains("with a security key: sudo hatchling-broker vault-keyring setup\n")
+                && none.contains("a stolen disk still opens the vault")
+                && none.ends_with("sudo hatchling-broker vault-keyring enroll-totp"),
             "{none}"
         );
         let (scratch, _vault) = scratch("status-unmade");
@@ -2074,7 +2131,11 @@ pub(crate) mod tests {
         let installed = no_keyring(true);
         assert!(
             installed.starts_with("this vault has no keyring yet: ")
-                && installed.contains("`sudo hatchling-broker vault-keyring setup` makes one"),
+                && installed
+                    .contains("`sudo hatchling-broker vault-keyring setup` (security keys)")
+                && installed.contains(
+                    "`sudo hatchling-broker vault-keyring enroll-totp` (an authenticator app)"
+                ),
             "{installed}"
         );
         assert_eq!(
@@ -2246,6 +2307,33 @@ pub(crate) mod tests {
             ask("x", &mut std::io::BufReader::new(Broken), &mut Vec::new()),
             Err(Error::Vault { .. })
         ));
+    }
+
+    /// Enrolled as the first thing done to a vault, an authenticator left
+    /// it with no backup codes: a lost phone was a lost vault. A first
+    /// enrollment gives a set, and its owner is shown it.
+    #[test]
+    fn a_first_totp_enrollment_gives_backup_codes() {
+        let (_scratch, vault, config) = adopted("totp-first-codes");
+        assert!(status(&config).unwrap().ends_with("0 backup code(s) left"));
+        let mut app = App::new(0);
+        let shown = super::enroll_totp(
+            &vault,
+            &config,
+            &secrets(&vault),
+            &mut |prompt| Ok(Zeroizing::new(app.answer(prompt))),
+            &mut NoKeys,
+        )
+        .unwrap();
+        assert_eq!(
+            shown.map(|codes| codes.codes().count()),
+            Some(10),
+            "the owner was shown no codes"
+        );
+        assert_eq!(
+            status(&config).unwrap(),
+            "vault-keyring: tier TOTP (weaker: the seed is in the keyring), 10 backup code(s) left"
+        );
     }
 
     #[test]
@@ -4589,7 +4677,7 @@ pub(crate) mod tests {
             &mut NoKeys,
         )
         .unwrap();
-        assert!(codes.is_none());
+        assert!(codes.is_some(), "a first enrollment gives backup codes");
         assert!(
             !config.kek_file(&vault).exists(),
             "the file tier's KEK is gone"

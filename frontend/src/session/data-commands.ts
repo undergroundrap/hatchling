@@ -29,9 +29,16 @@ export const PROTECT_COMMAND: DataCommand = {
     note: 'Guided, and safe to run again. Without a key, the vault\u2019s key sits in a file here, and it opens by itself after a restart.',
     command: 'sudo hatchling-broker vault-keyring setup',
 };
+/** Protecting the vault with no security key: weaker, and said so. */
+export const AUTHENTICATOR_COMMAND: DataCommand = {
+    title: 'Or protect it with an authenticator app',
+    note: 'Guided. Hatchling then waits for a code from your app after each restart. Weaker than a security key: a stolen disk still opens the vault.',
+    command: 'sudo hatchling-broker vault-keyring enroll-totp',
+};
 /** Who can open the vault. */
 export const KEY_COMMANDS: readonly DataCommand[] = [
     PROTECT_COMMAND,
+    AUTHENTICATOR_COMMAND,
     {
         title: 'Lost a key, or had one stolen',
         note: 'Removes it, and offers a replacement.',
@@ -39,7 +46,7 @@ export const KEY_COMMANDS: readonly DataCommand[] = [
     },
     {
         title: 'Lock it now',
-        note: 'Takes the vault\u2019s key out of memory until you unlock it. It needs a security key.',
+        note: 'Takes the vault\u2019s key out of memory until you unlock it. It needs a security key or an authenticator app.',
         command: 'sudo hatchling-broker lock',
     },
     {

@@ -444,8 +444,7 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         stderr,
         "Unlocking Hatchling's vault. {}",
         match keys.len() {
-            0 =>
-                "No security key is plugged in: a backup code works, or plug one in and run this again (in WSL, attach it with usbipd first).",
+            0 => NO_KEY_PLUGGED,
             _ => "It'll say when to touch your key.",
         }
     );
@@ -597,6 +596,12 @@ fn last_word(stream: &UnixStream) -> Option<String> {
         _ => None,
     }
 }
+
+/// What `unlock` says first where no security key is plugged in. It can't
+/// tell what opens the vault (the keyring is the keeper's to read), so it
+/// names each thing that might be asked for: a vault an authenticator app
+/// protects has no key to plug in.
+const NO_KEY_PLUGGED: &str = "No security key is plugged in, so it asks for a code: your authenticator app's, or a backup code. To use a security key, plug it in and run this again (in WSL, attach it with usbipd first).";
 
 #[cfg(test)]
 mod tests;

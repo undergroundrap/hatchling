@@ -2,7 +2,7 @@
 // and what's left. Everything here is a step to take in a terminal the owner
 // opened: a PIN, a key or a backup code never passes through this app, so an
 // agent or a stolen app address can't reach one.
-import { MODEL_COMMANDS, BACKUP_COMMAND, onWindows, PROTECT_COMMAND } from './data-commands.js';
+import { AUTHENTICATOR_COMMAND, MODEL_COMMANDS, BACKUP_COMMAND, onWindows, PROTECT_COMMAND } from './data-commands.js';
 import type { DataCommand } from './data-commands.js';
 import { whereShort } from './model.js';
 import type { ModelView } from './model.js';
@@ -107,7 +107,7 @@ function vaultStep(setup: SetupView, noKey: boolean): SetupStep {
         ...base,
         status: noKey ? 'skipped' : 'next',
         said: noKey ? `Skipped: your vault’s key sits in a file on this machine, and it opens by itself after a restart. ${AFTER_KEY}` : `Your API keys and sign-ins are sealed, but the key to them sits in a file on this machine. ${AFTER_KEY} Hatchling works without one.`,
-        commands: [PROTECT_COMMAND],
+        commands: [PROTECT_COMMAND, AUTHENTICATOR_COMMAND],
     };
 }
 function backupStep(setup: SetupView, now: number): SetupStep {

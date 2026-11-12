@@ -20,7 +20,7 @@ export const YOUR_SECURITY = [
     "How well your vault is protected depends on what you've set up:",
     "",
     "- **With a security key:** the vault opens only with one of your keys or a backup code.",
-    "- **With authenticator codes:** you're asked for a code, but what makes the codes is in the keyring on the same disk, so a stolen disk still opens the vault.",
+    "- **With authenticator codes:** you're asked for a code, but what makes the codes is in the keyring on the same disk, so a stolen disk still opens the vault. ([Setting it up](https://github.com/undergroundrap/hatchling/blob/main/docs/authenticator.md).)",
     "- **Until you set one of those up:** the vault's key is in a file on the same disk. Hatchling restarts by itself, and a stolen disk opens the vault. Protect your vault changes that.",
     "",
     "### The Keeper",

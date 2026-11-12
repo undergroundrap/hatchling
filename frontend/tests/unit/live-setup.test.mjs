@@ -15,6 +15,9 @@ test('a new install has what it needs left to do, in order', () => {
     assert.equal(setupProgress(steps), '0 of 3 done');
     assert.equal(steps[0].commands.length, 2, 'hosted or local');
     assert.match(steps[1].commands[0].command, /vault-keyring setup/u);
+    assert.equal(steps[1].commands.length, 2, 'a security key, or an authenticator app');
+    assert.match(steps[1].commands[1].command, /^sudo hatchling-broker vault-keyring enroll-totp$/u);
+    assert.match(steps[1].commands[1].note, /Weaker than a security key: a stolen disk still opens the vault/u);
     assert.match(steps[2].commands[0].command, /hatchling-broker backup/u);
     assert.deepEqual(steps.map(found => found.optional), [false, true, false]);
 });
@@ -41,7 +44,7 @@ test('with no key, the vault is left to do until the owner says they have none',
     const skipped = step('vault', bare, true);
     assert.equal(skipped.status, 'skipped');
     assert.match(skipped.said, /Skipped/u);
-    assert.equal(skipped.commands.length, 1, 'still there to take up');
+    assert.equal(skipped.commands.length, 2, 'still there to take up');
     assert.equal(step('vault', { ...bare, tier: 'totp' }).status, 'done');
     assert.deepEqual(step('vault', { ...bare, tier: 'totp' }).commands, []);
 });
