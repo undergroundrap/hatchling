@@ -1,23 +1,27 @@
 use std::os::fd::OwnedFd;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as Atomic};
 
 use hatchling_core::framing::{read_frame, write_frame};
+use hatchling_core::room::NotStarted;
 
 use super::*;
-use crate::room_foreground::RoomForegroundStatus;
-use crate::room_foreground::tests::{EXITED, different_nonce, result_frame};
+use crate::room_job::tests::{job, run as a_run};
 
 /// Longer than any test takes, and short enough that a session that
 /// fails to end on what a test does to it ends on this, with its reason.
 const LONG: Duration = Duration::from_secs(10);
 
+/// Long enough to be told from no wait at all, and short enough to wait
+/// out.
+const SHORT: Duration = Duration::from_millis(300);
+
 const fn limits() -> Limits {
     Limits {
         cap: LONG,
         idle: LONG,
-        command: LONG,
         ready: LONG,
+        answer: LONG,
+        stop: LONG,
         retry: LONG,
     }
 }
@@ -36,6 +40,7 @@ struct Rig {
     alive: OwnedFd,
     /// What the session did to the disk while it held it.
     ops: Arc<Mutex<Vec<RoomDiskOp>>>,
+    ledger: Arc<Mutex<Ledger>>,
 }
 
 fn new_rig(limits: Limits) -> (Rig, Kept<Disk>) {
@@ -49,6 +54,7 @@ fn new_rig(limits: Limits) -> (Rig, Kept<Disk>) {
         seen.lock().unwrap().push(op);
         Ok(None)
     });
+    let ledger: Arc<Mutex<Ledger>> = Arc::default();
     (
         Rig {
             door,
@@ -57,20 +63,61 @@ fn new_rig(limits: Limits) -> (Rig, Kept<Disk>) {
             launcher,
             alive,
             ops,
+            ledger: Arc::clone(&ledger),
         },
-        Kept::new(seat, limits, disk),
+        Kept::new(seat, limits, ledger, disk),
     )
 }
 
-/// Asks the session for a command: the broker's end of the connection it
-/// is asked on, and where its answer comes.
-fn ask_run(door: &Door, argv: &[&str]) -> (UnixStream, Receiver<RunReply>) {
+/// What a job that the ordinary limits hold is held to.
+fn ordinary() -> Checked {
+    Checked {
+        dir: String::from("/workspace"),
+        limit: LONG,
+        wait: LONG,
+    }
+}
+
+/// Asks the session for a job, held to `checked`: the broker's end of the
+/// connection it is asked on, and where its answer comes.
+fn ask_held(door: &Door, name: &str, checked: Checked) -> (UnixStream, Receiver<JobReply>) {
     let (broker, requester) = UnixStream::pair().unwrap();
     let (reply, answer) = mpsc::channel();
     let sent = door.send(Message::Run {
-        argv: argv.iter().map(|part| String::from(*part)).collect(),
+        run: Box::new(a_run(name, &["true"])),
+        checked,
         requester,
         received: Instant::now(),
+        reply,
+    });
+    assert!(sent.is_ok(), "the session had ended");
+    (broker, answer)
+}
+
+fn ask_run(door: &Door, name: &str) -> (UnixStream, Receiver<JobReply>) {
+    ask_held(door, name, ordinary())
+}
+
+fn ask_job(door: &Door, name: &str, wait: Duration) -> (UnixStream, Receiver<JobReply>) {
+    let (broker, requester) = UnixStream::pair().unwrap();
+    let (reply, answer) = mpsc::channel();
+    let sent = door.send(Message::Job {
+        job: job(name),
+        wait,
+        requester,
+        received: Instant::now(),
+        reply,
+    });
+    assert!(sent.is_ok(), "the session had ended");
+    (broker, answer)
+}
+
+fn ask_stop(door: &Door, name: &str) -> (UnixStream, Receiver<JobReply>) {
+    let (broker, requester) = UnixStream::pair().unwrap();
+    let (reply, answer) = mpsc::channel();
+    let sent = door.send(Message::Stop {
+        job: job(name),
+        requester,
         reply,
     });
     assert!(sent.is_ok(), "the session had ended");
@@ -93,30 +140,121 @@ fn wait<T>(answer: &Receiver<T>) -> T {
     answer.recv_timeout(LONG).expect("no answer came")
 }
 
+/// Whether nothing comes for `answer` in a moment.
+fn unanswered<T>(answer: &Receiver<T>) -> bool {
+    answer.recv_timeout(SHORT).is_err()
+}
+
 fn say_ready(room: &UnixStream) {
     write_frame(room, READY).unwrap();
 }
 
-/// The command the supervisor was sent, and the nonce it came with.
-fn take_command(room: &UnixStream) -> (Vec<String>, String) {
-    let mut request: Vec<String> = serde_json::from_slice(&read_frame(room).unwrap()).unwrap();
-    let nonce = request.pop().unwrap();
-    assert_eq!(nonce.len(), 64);
-    (request, nonce)
+/// What the supervisor is asked next.
+fn hears(room: &UnixStream) -> Ask {
+    let ask: Ask = serde_json::from_slice(&read_frame(room).unwrap()).unwrap();
+    assert_eq!(ask.nonce().len(), 64);
+    ask
 }
 
-/// Answers the next command as the supervisor would, and says what it was.
-fn serve_one(room: &UnixStream) -> Vec<String> {
-    let (request, nonce) = take_command(room);
-    write_frame(room, &result_frame(&nonce, EXITED)).unwrap();
-    request
+fn says(room: &UnixStream, said: &Say) {
+    write_frame(room, &serde_json::to_vec(said).unwrap()).unwrap();
 }
 
-fn exited(answer: &Receiver<RunReply>) {
-    assert_eq!(
-        wait(answer).unwrap().status,
-        RoomForegroundStatus::Exited(23)
+/// Whether the supervisor is asked nothing for `time`.
+fn unasked(room: &UnixStream, time: Duration) -> bool {
+    hatchling_sys::wait_readable_for(&[room.as_fd()], time).unwrap() == [false]
+}
+
+/// Takes the start of the job `name` as the supervisor is asked for it,
+/// and says it started.
+fn starts(room: &UnixStream, name: &str) -> Ask {
+    let ask = hears(room);
+    let Ask::Start {
+        nonce, job: asked, ..
+    } = &ask
+    else {
+        unreachable!("asked {ask:?}, not to start {name}");
+    };
+    assert_eq!(*asked, job(name));
+    says(
+        room,
+        &Say::Started {
+            nonce: nonce.clone(),
+        },
     );
+    ask
+}
+
+/// What was kept of a short stream.
+fn short(out: &[u8]) -> Captured {
+    let length = u32::try_from(out.len()).unwrap();
+    Captured {
+        head: length,
+        spilled: u64::from(length),
+        ..Captured::default()
+    }
+}
+
+/// Says the job `name` ended, having written `out`, and hands over what
+/// was kept of it when asked.
+fn ends(room: &UnixStream, name: &str, how: Ended, out: &[u8]) {
+    says(
+        room,
+        &Say::Ended {
+            job: job(name),
+            how,
+            stdout: short(out),
+            stderr: Captured::default(),
+        },
+    );
+    if out.is_empty() {
+        return;
+    }
+    let ask = hears(room);
+    let Ask::Piece {
+        nonce,
+        job: asked,
+        stream,
+        end,
+    } = ask
+    else {
+        unreachable!("asked {ask:?}, not for a piece of {name}");
+    };
+    assert_eq!((asked, stream, end), (job(name), Stream::Stdout, End::Head));
+    says(
+        room,
+        &Say::Piece {
+            nonce,
+            bytes: out.to_vec(),
+        },
+    );
+}
+
+/// A whole job, as the supervisor serves it.
+fn serves(room: &UnixStream, name: &str, code: u8, out: &[u8]) {
+    starts(room, name);
+    ends(room, name, Ended::Exited(code), out);
+}
+
+/// How a job that ended came out: how, why it was stopped, and what was
+/// kept of its standard output.
+fn outcome(state: &RoomJobState) -> (Ended, Option<RoomJobStopped>, Captured) {
+    let RoomJobState::Ended {
+        how,
+        stopped,
+        stdout,
+        ..
+    } = state
+    else {
+        unreachable!("{state:?} isn't an end");
+    };
+    (*how, *stopped, *stdout)
+}
+
+/// The answer to an ask: whether it started the job, and how the job is.
+fn answered(answer: &Receiver<JobReply>) -> (bool, RoomJobState) {
+    let told = wait(answer).unwrap();
+    (told.started, told.job.state)
 }
 
 /// The ends of a session's Room that a test may close: each stays open
@@ -143,29 +281,57 @@ fn send(mut room: &UnixStream, bytes: &[u8]) {
     room.write_all(bytes).unwrap();
 }
 
+/// Closes a session's supervisor socket when a test leaves, however it
+/// leaves: a test that fails must not wait on a session nothing ends.
+struct ClosedAtEnd(UnixStream);
+
+impl Drop for ClosedAtEnd {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Waits for a session to end by itself, for longer than any of its
+/// waits, then closes its supervisor's socket, so that the thread that
+/// holds it can be joined either way.
+fn seen_out<T>(held: std::thread::ScopedJoinHandle<'_, T>, room: &UnixStream) -> T {
+    let until = Instant::now() + LONG * 2;
+    while !held.is_finished() && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let _ = room.shutdown(std::net::Shutdown::Both);
+    held.join().unwrap()
+}
+
 /// Why a session ended that `script` was the supervisor of, with a first
-/// command asked for when `asked`. Nothing else ends it: its owner, its
-/// requester and whatever `script` left open outlive it.
-fn ended_by(asked: bool, script: impl FnOnce(&mut Far)) -> String {
-    let (rig, mut kept) = new_rig(limits());
+/// job, `first`, asked for when `asked`. Nothing else ends it: its owner,
+/// its requester and whatever `script` left open outlive it.
+fn ended_with(limits: Limits, asked: bool, script: impl FnOnce(&mut Far)) -> String {
+    let (rig, mut kept) = new_rig(limits);
     let Rig {
         door,
         room,
         supervisor,
         launcher,
         alive,
-        ops: _,
+        ..
     } = rig;
-    let _asked = asked.then(|| ask_run(&door, &["/bin/true"]));
+    let _asked = asked.then(|| ask_run(&door, "first"));
+    let closer = room.try_clone().unwrap();
     let mut far = Far {
         room: Some(room),
         alive: Some(alive),
     };
     std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(closer.try_clone().unwrap());
         let held = scope.spawn(|| kept.keep(&supervisor, launcher.as_fd()).unwrap_err());
         script(&mut far);
-        held.join().unwrap()
+        seen_out(held, &closer)
     })
+}
+
+fn ended_by(asked: bool, script: impl FnOnce(&mut Far)) -> String {
+    ended_with(limits(), asked, script)
 }
 
 #[test]
@@ -175,16 +341,17 @@ fn an_installed_session_lives_an_hour_and_idles_fifteen_minutes() {
         Limits {
             cap: Duration::from_secs(3600),
             idle: Duration::from_secs(900),
-            command: Duration::from_secs(30),
             ready: Duration::from_secs(30),
+            answer: Duration::from_secs(10),
+            stop: Duration::from_secs(5),
             retry: Duration::from_secs(5),
         }
     );
 }
 
-/// Which wait ends a session first: readiness until the supervisor is
-/// ready, then the command in hand or else idleness, and the time limit
-/// over all of them. A tie goes to the wait itself, not the limit.
+/// Which of a session's own waits ends it first: readiness until the
+/// supervisor is ready, then idleness unless it has something in hand,
+/// and the time limit over all of them. A tie goes to the wait itself.
 #[test]
 fn the_next_wait_to_run_out_follows_what_the_session_is_doing() {
     let limits = Limits {
@@ -201,42 +368,35 @@ fn the_next_wait_to_run_out_follows_what_the_session_is_doing() {
         ready,
     };
     let unready = clock(0, false);
-    assert_eq!(unready.due(&limits, None), (at(5), Due::Unready));
-    assert_eq!(unready.due(&limits, Some(at(3))), (at(3), Due::Command));
-    assert_eq!(unready.due(&limits, Some(at(7))), (at(5), Due::Unready));
-    assert_eq!(unready.due(&limits, Some(at(5))), (at(5), Due::Unready));
+    assert_eq!(unready.due(&limits, false), (at(5), Due::Unready));
+    assert_eq!(unready.due(&limits, true), (at(5), Due::Unready));
 
     let idle = clock(20, true);
-    assert_eq!(idle.due(&limits, None), (at(30), Due::Idle));
-    assert_eq!(idle.due(&limits, Some(at(50))), (at(50), Due::Command));
-    assert_eq!(idle.due(&limits, Some(at(25))), (at(25), Due::Command));
+    assert_eq!(idle.due(&limits, false), (at(30), Due::Idle));
+    assert_eq!(idle.due(&limits, true), (at(100), Due::Cap));
 
-    assert_eq!(clock(95, true).due(&limits, None), (at(100), Due::Cap));
-    assert_eq!(clock(90, true).due(&limits, None), (at(100), Due::Idle));
-    assert_eq!(
-        clock(0, true).due(&limits, Some(at(150))),
-        (at(100), Due::Cap)
-    );
-    assert_eq!(
-        clock(0, true).due(&limits, Some(at(100))),
-        (at(100), Due::Command)
-    );
+    assert_eq!(clock(95, true).due(&limits, false), (at(100), Due::Cap));
+    assert_eq!(clock(90, true).due(&limits, false), (at(100), Due::Idle));
     let short = Limits {
         cap: Duration::from_secs(3),
         ..limits
     };
-    assert_eq!(unready.due(&short, None), (at(3), Due::Cap));
+    assert_eq!(unready.due(&short, false), (at(3), Due::Cap));
+    let even = Limits {
+        cap: Duration::from_secs(5),
+        ..limits
+    };
+    assert_eq!(unready.due(&even, false), (at(5), Due::Unready));
 
     assert_eq!(Due::Unready.reason(), UNREADY);
-    assert_eq!(Due::Command.reason(), EXPIRED);
     assert_eq!(Due::Cap.reason(), CAPPED);
     assert_eq!(Due::Idle.reason(), IDLE);
 }
 
-/// A frame is taken only when it is whole and alone: no part of one, none
-/// longer than its limit, and nothing after it.
+/// A frame is taken only when it is whole, none longer than its limit is
+/// taken at all, and what follows a frame stays for the next taking.
 #[test]
-fn a_frame_is_taken_whole_and_alone() {
+fn a_frame_is_taken_whole_and_the_next_stays() {
     let mut heard = b"\0\0\0".to_vec();
     assert_eq!(frame(&mut heard, 5), Ok(None));
     assert_eq!(heard, b"\0\0\0");
@@ -245,16 +405,20 @@ fn a_frame_is_taken_whole_and_alone() {
     heard.push(b'y');
     assert_eq!(frame(&mut heard, 5), Ok(Some(b"ready".to_vec())));
     assert!(heard.is_empty(), "a taken frame stayed");
-    let mut heard = b"\0\0\0\x05ready!".to_vec();
-    assert!(frame(&mut heard, 5).unwrap_err().contains("extra data"));
+    let mut heard = b"\0\0\0\x02ab\0\0\0\x01c\0\0".to_vec();
+    assert_eq!(frame(&mut heard, 5), Ok(Some(b"ab".to_vec())));
+    assert_eq!(frame(&mut heard, 5), Ok(Some(b"c".to_vec())));
+    assert_eq!(frame(&mut heard, 5), Ok(None));
+    assert_eq!(heard, b"\0\0", "the start of the next frame was lost");
     let mut heard = b"\0\0\0\x06".to_vec();
     assert!(frame(&mut heard, 5).unwrap_err().contains("oversized"));
     let mut heard = b"\0\0\0\0".to_vec();
     assert_eq!(frame(&mut heard, 0), Ok(Some(Vec::new())));
+    assert!(heard.is_empty());
 }
 
-/// Listening takes what is there and stops; it never takes more than a
-/// frame of its limit and a byte past it, and it says a closed socket is
+/// Listening takes what is there and stops; it never holds more than a
+/// frame of its limit with its length, and it says a closed socket is
 /// closed.
 #[test]
 fn listening_is_bounded_by_the_frame_it_is_for() {
@@ -265,12 +429,12 @@ fn listening_is_bounded_by_the_frame_it_is_for() {
     assert!(heard.is_empty());
     peer.write_all(&[7; 9000]).unwrap();
     assert_eq!(listen(&stream, &mut heard, 8200, "closed"), Ok(()));
-    assert_eq!(heard.len(), 8205, "the bound is a frame and a byte");
+    assert_eq!(heard.len(), 8204, "the bound is a frame and its length");
     assert_eq!(listen(&stream, &mut heard, 8200, "closed"), Ok(()));
-    assert_eq!(heard.len(), 8205, "a full buffer took more");
+    assert_eq!(heard.len(), 8204, "a full buffer took more");
     heard.clear();
     assert_eq!(listen(&stream, &mut heard, 8200, "closed"), Ok(()));
-    assert_eq!(heard, vec![7; 795], "what was left was lost");
+    assert_eq!(heard, vec![7; 796], "what was left was lost");
     heard.clear();
     peer.write_all(b"last").unwrap();
     gone(&peer);
@@ -300,38 +464,45 @@ fn a_failed_read_from_the_supervisor_is_not_silence() {
     assert!(heard.is_empty());
 }
 
-/// A command is with the supervisor only when all of it went at once. One
-/// the socket took part of isn't sent, and awaits no result.
+/// An ask is with the supervisor only when all of it went at once. One
+/// the socket took part of isn't sent, and awaits no answer.
 #[test]
-fn a_command_the_supervisor_cannot_take_whole_is_not_sent() {
-    let flight = |argv: Vec<String>| {
-        let (_broker, requester) = UnixStream::pair().unwrap();
-        let (reply, _answer) = mpsc::channel();
-        Flight {
-            argv,
-            requester,
-            reply,
-            deadline: Instant::now() + LONG,
-            nonce: None,
-        }
-    };
-    let (supervisor, room) = UnixStream::pair().unwrap();
-    supervisor.set_nonblocking(true).unwrap();
-    // As small as the kernel allows: far less than the command below.
-    rustix::net::sockopt::set_socket_send_buffer_size(&supervisor, 1).unwrap();
-    let mut large = flight(vec![String::from("/bin/true"), "x".repeat(1 << 20)]);
-    assert_eq!(large.dispatch(&supervisor), Err(String::from(UNSENT)));
-    assert!(large.nonce.is_none(), "an unsent command awaits a result");
-    drop((supervisor, room));
+fn an_ask_the_supervisor_cannot_take_whole_is_not_sent() {
+    let (rig, mut kept) = new_rig(limits());
+    rig.supervisor.set_nonblocking(true).unwrap();
+    // As small as the kernel allows: far less than the start below.
+    rustix::net::sockopt::set_socket_send_buffer_size(&rig.supervisor, 1).unwrap();
+    let (_broker, requester) = UnixStream::pair().unwrap();
+    let (reply, _answer) = mpsc::channel();
+    let mut large = a_run("large", &["true"]);
+    large.stdin = vec![0; crate::room_job::STDIN_BYTES];
+    kept.run(large, ordinary(), requester, Instant::now(), reply);
+    assert_eq!(
+        kept.ask(&rig.supervisor, Instant::now()),
+        Err(String::from(UNSENT))
+    );
+    assert!(kept.asked.is_none(), "an unsent ask awaits an answer");
 
-    let (supervisor, room) = UnixStream::pair().unwrap();
-    room.set_read_timeout(Some(LONG)).unwrap();
-    supervisor.set_nonblocking(true).unwrap();
-    let mut small = flight(vec![String::from("/bin/true")]);
-    assert_eq!(small.dispatch(&supervisor), Ok(()));
-    let (request, nonce) = take_command(&room);
-    assert_eq!(request, ["run", "/bin/true"]);
-    assert_eq!(small.nonce, Some(nonce));
+    let (rig, mut kept) = new_rig(limits());
+    rig.supervisor.set_nonblocking(true).unwrap();
+    let (_broker, requester) = UnixStream::pair().unwrap();
+    let (reply, _answer) = mpsc::channel();
+    kept.run(
+        a_run("small", &["true"]),
+        ordinary(),
+        requester,
+        Instant::now(),
+        reply,
+    );
+    assert_eq!(kept.ask(&rig.supervisor, Instant::now()), Ok(()));
+    let asked = hears(&rig.room);
+    assert_eq!(
+        kept.asked.as_ref().map(|(nonce, ..)| nonce.as_str()),
+        Some(asked.nonce())
+    );
+    // One at a time: nothing more goes until that is answered.
+    assert_eq!(kept.ask(&rig.supervisor, Instant::now()), Ok(()));
+    assert!(unasked(&rig.room, Duration::ZERO));
 }
 
 #[test]
@@ -349,321 +520,976 @@ fn the_wake_socket_is_emptied_and_says_when_its_owner_is_gone() {
     assert!(!rested(&seat.wake));
 }
 
-/// A second command runs in the Room the first one started: the session
-/// is still held between them, and each answer is its own command's.
 #[test]
-fn a_session_runs_one_command_after_another_in_the_same_room() {
-    let (rig, mut kept) = new_rig(limits());
+fn a_length_of_time_is_told_in_whole_milliseconds() {
+    assert_eq!(millis(Duration::from_millis(1500)), 1500);
+    assert_eq!(millis(Duration::from_micros(2999)), 2);
+    assert_eq!(millis(Duration::ZERO), 0);
+    assert_eq!(millis(Duration::MAX), u64::MAX);
+}
+
+/// When the session next has something to do: the earliest of its own
+/// wait, an ask the supervisor hasn't answered, each running job's limit
+/// or the end of its grace once it is stopped, and the wait of each
+/// caller whose job runs.
+#[test]
+fn the_next_thing_due_is_the_earliest_in_hand() {
+    let limits = Limits {
+        cap: Duration::from_secs(100),
+        idle: Duration::from_secs(50),
+        ready: Duration::from_secs(5),
+        answer: Duration::from_secs(7),
+        stop: Duration::from_secs(3),
+        retry: LONG,
+    };
+    let (_rig, mut kept) = new_rig(limits);
+    let began = Instant::now();
+    let at = |seconds: u64| began + Duration::from_secs(seconds);
+    let clock = Clock {
+        started: began,
+        used: began,
+        ready: true,
+    };
+    assert_eq!(kept.next(&clock), at(50), "idle, with nothing in hand");
+    kept.flights.insert(
+        job("a"),
+        Flight {
+            argv: Vec::new(),
+            dir: String::new(),
+            stdin: Vec::new(),
+            asked: began,
+            limit: at(20),
+            sent: true,
+            started: true,
+            stopping: None,
+            landed: None,
+        },
+    );
+    assert_eq!(kept.next(&clock), at(20), "a running job's limit");
+    kept.asked = Some((String::from("n"), Asking::Stop(job("a")), at(1)));
+    assert_eq!(kept.next(&clock), at(8), "an ask's answer");
+    kept.asked = None;
+    let stopped = Some((at(2), RoomJobStopped::Limit));
+    kept.flights.get_mut(&job("a")).unwrap().stopping = stopped;
+    assert_eq!(kept.next(&clock), at(5), "a stopped job's grace");
+    // A caller's wait counts only while its job runs.
+    let (_broker, requester) = UnixStream::pair().unwrap();
+    let (reply, _answer) = mpsc::channel();
+    kept.waiters.push(Waiter {
+        job: job("a"),
+        requester,
+        reply,
+        until: at(1),
+        started: true,
+    });
+    assert_eq!(kept.next(&clock), at(5), "a wait on a job being stopped");
+    kept.flights.get_mut(&job("a")).unwrap().stopping = None;
+    assert_eq!(kept.next(&clock), at(1), "a wait on a running job");
+    kept.flights.get_mut(&job("a")).unwrap().started = false;
+    assert_eq!(kept.next(&clock), at(20), "a wait on a job not started");
+    // A job that has ended has no limit left to reach, and isn't running.
+    let flight = kept.flights.get_mut(&job("a")).unwrap();
+    flight.started = true;
+    flight.landed = Some(Landed {
+        state: RoomJobState::Lost { why: String::new() },
+        pieces: Default::default(),
+        wanted: 1,
+    });
+    assert_eq!(kept.next(&clock), at(100), "an ended job");
+}
+
+/// A job that is running keeps its session from idling, though nobody
+/// waits for it and nothing is asked of the supervisor.
+#[test]
+fn a_running_job_keeps_its_session_from_idling() {
+    let (rig, mut kept) = new_rig(Limits {
+        idle: SHORT,
+        ..limits()
+    });
     std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
         let held = scope.spawn(|| {
             kept.keep(&rig.supervisor, rig.launcher.as_fd())
                 .unwrap_err()
         });
-        let (_first_broker, first) = ask_run(&rig.door, &["/bin/true", "one arg"]);
         say_ready(&rig.room);
-        assert_eq!(serve_one(&rig.room), ["run", "/bin/true", "one arg"]);
-        exited(&first);
-        let (_second_broker, second) = ask_run(&rig.door, &["/bin/echo"]);
-        assert_eq!(serve_one(&rig.room), ["run", "/bin/echo"]);
-        exited(&second);
-        assert!(!held.is_finished(), "the session ended between commands");
+        let impatient = Checked {
+            wait: Duration::ZERO,
+            ..ordinary()
+        };
+        let (_broker, answer) = ask_held(&rig.door, "quiet", impatient);
+        starts(&rig.room, "quiet");
+        assert!(matches!(answered(&answer).1, RoomJobState::Running { .. }));
+        std::thread::sleep(SHORT * 3);
+        assert!(!held.is_finished(), "a session with a job running idled");
+        ends(&rig.room, "quiet", Ended::Exited(0), b"");
+        assert_eq!(seen_out(held, &rig.room), IDLE);
+    });
+}
+
+/// The ledger keeps only so many jobs that are over: the oldest goes.
+#[test]
+fn the_ledger_lets_its_oldest_job_go() {
+    let mut ledger = Ledger::default();
+    for number in 0..=LEDGER_MAX {
+        ledger.put(job(&format!("job-{number}")), Over::lost("then"));
+    }
+    assert!(ledger.get(&job("job-0")).is_none());
+    assert_eq!(ledger.get(&job("job-1")), Some(&Over::lost("then")));
+    assert!(ledger.get(&job(&format!("job-{LEDGER_MAX}"))).is_some());
+    assert_eq!(ledger.over.len(), LEDGER_MAX);
+}
+
+/// A second job runs in the Room the first one started: the session is
+/// still held between them, each is asked of the supervisor as it was
+/// asked for, and each answer is its own job's, with what it wrote.
+#[test]
+fn a_session_runs_one_job_after_another_in_the_same_room() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let (_first_broker, first) = ask_run(&rig.door, "one");
+        say_ready(&rig.room);
+        let asked = starts(&rig.room, "one");
+        let Ask::Start {
+            argv, dir, stdin, ..
+        } = asked
+        else {
+            unreachable!()
+        };
+        assert_eq!(
+            (argv.as_slice(), dir.as_str()),
+            (&[String::from("true")][..], "/workspace")
+        );
+        assert!(stdin.is_empty());
+        ends(&rig.room, "one", Ended::Exited(23), b"out\n");
+        let (started, state) = answered(&first);
+        assert!(started);
+        assert_eq!(outcome(&state), (Ended::Exited(23), None, short(b"out\n")));
+
+        let (_second_broker, second) = ask_run(&rig.door, "two");
+        serves(&rig.room, "two", 0, b"");
+        assert_eq!(outcome(&answered(&second).1).0, Ended::Exited(0));
+        assert!(!held.is_finished(), "the session ended between jobs");
         assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
         assert_eq!(held.join().unwrap(), "done");
     });
-    assert!(
-        kept.left,
-        "a session told to end still waits on its cleanup"
-    );
+    assert!(opened(&rig.ledger).get(&job("two")).is_some());
+    let kept = opened(&rig.ledger).get(&job("one")).cloned().unwrap();
+    assert_eq!(kept.piece(Stream::Stdout, End::Head), Ok(b"out\n".to_vec()));
+    assert_eq!(kept.piece(Stream::Stdout, End::Tail), Ok(Vec::new()));
+    assert_eq!(kept.piece(Stream::Stderr, End::Head), Ok(Vec::new()));
 }
 
-/// A command isn't sent before the supervisor is ready, and a result
-/// that comes in two parts is one result.
+/// A job asked for before the supervisor is ready waits for it, and what
+/// the supervisor says may come in parts, or several things at once.
 #[test]
-fn a_command_waits_for_readiness_and_its_result_may_come_in_parts() {
+fn a_job_waits_for_readiness_and_what_is_said_may_come_in_parts() {
     let (rig, mut kept) = new_rig(limits());
     std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
         let held = scope.spawn(|| {
             kept.keep(&rig.supervisor, rig.launcher.as_fd())
                 .unwrap_err()
         });
-        let (_broker, answer) = ask_run(&rig.door, &["/bin/true"]);
-        std::thread::sleep(Duration::from_millis(200));
-        let early = hatchling_sys::wait_readable_for(&[rig.room.as_fd()], Duration::ZERO).unwrap();
-        assert_eq!(early, [false], "a command went to an unready supervisor");
-        say_ready(&rig.room);
-        let (_, nonce) = take_command(&rig.room);
-        let result = result_frame(&nonce, EXITED);
-        let mut bytes = u32::try_from(result.len()).unwrap().to_be_bytes().to_vec();
-        bytes.extend(result);
-        let (first, rest) = bytes.split_at(9);
+        let (_broker, answer) = ask_run(&rig.door, "early");
+        assert!(unasked(&rig.room, SHORT), "asked before readiness");
+        send(&rig.room, b"\0\0\0\x05rea");
+        assert!(unasked(&rig.room, SHORT), "asked on part of readiness");
+        send(&rig.room, b"dy");
+        let Ask::Start { nonce, .. } = hears(&rig.room) else {
+            unreachable!()
+        };
+        // Its start and its end, in one write cut in two.
+        let mut both = Vec::new();
+        for said in [
+            Say::Started { nonce },
+            Say::Ended {
+                job: job("early"),
+                how: Ended::Exited(4),
+                stdout: Captured::default(),
+                stderr: Captured::default(),
+            },
+        ] {
+            let body = serde_json::to_vec(&said).unwrap();
+            both.extend(u32::try_from(body.len()).unwrap().to_be_bytes());
+            both.extend(body);
+        }
+        let (first, rest) = both.split_at(both.len() - 7);
         send(&rig.room, first);
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(answer.try_recv().is_err(), "part of a result was a result");
+        assert!(unanswered(&answer), "answered on part of an end");
         send(&rig.room, rest);
-        exited(&answer);
+        assert_eq!(outcome(&answered(&answer).1).0, Ended::Exited(4));
         drop(rig.door);
         assert_eq!(held.join().unwrap(), UNOWNED);
     });
 }
 
-/// A session with nothing to do ends once it has been idle for its limit,
-/// counted from its last command; a command that takes longer than the
-/// limit isn't idleness.
+/// Jobs run side by side, each ends as itself, and only so many run at
+/// once: one more is refused, and has room once another has ended.
 #[test]
-fn an_idle_session_ends_at_its_idle_limit_counted_from_its_last_command() {
-    let idle = Duration::from_millis(400);
-    let (rig, mut kept) = new_rig(Limits { idle, ..limits() });
+fn only_so_many_jobs_run_at_once_and_each_ends_as_itself() {
+    let (rig, mut kept) = new_rig(limits());
     std::thread::scope(|scope| {
-        let held = scope.spawn(|| {
-            let reason = kept
-                .keep(&rig.supervisor, rig.launcher.as_fd())
-                .unwrap_err();
-            (reason, Instant::now())
-        });
-        let (_broker, answer) = ask_run(&rig.door, &["/bin/true"]);
-        say_ready(&rig.room);
-        let (_, nonce) = take_command(&rig.room);
-        std::thread::sleep(idle * 2);
-        let answered = Instant::now();
-        write_frame(&rig.room, &result_frame(&nonce, EXITED)).unwrap();
-        exited(&answer);
-        let (reason, ended) = held.join().unwrap();
-        assert_eq!(reason, IDLE);
-        let waited = ended.duration_since(answered);
-        assert!(waited >= idle, "ended {waited:?} after its last command");
-        assert!(waited < LONG / 2, "idled for {waited:?}");
-    });
-}
-
-/// A session ends at its time limit though a command is running in it.
-/// The command hears why only once the Room is down.
-#[test]
-fn a_session_ends_at_its_time_limit_whatever_it_is_doing() {
-    let cap = Duration::from_millis(500);
-    let (rig, mut kept) = new_rig(Limits { cap, ..limits() });
-    let (_broker, answer) = ask_run(&rig.door, &["/bin/true"]);
-    std::thread::scope(|scope| {
-        let started = Instant::now();
-        let held = scope.spawn(|| {
-            kept.hold(&rig.supervisor, rig.launcher.as_fd());
-            Instant::now()
-        });
-        say_ready(&rig.room);
-        take_command(&rig.room);
-        let lived = held.join().unwrap().duration_since(started);
-        assert!(lived >= cap, "ended after {lived:?}");
-        assert!(lived < LONG / 2, "lived {lived:?}");
-    });
-    assert!(
-        answer.try_recv().is_err(),
-        "answered before the Room was down"
-    );
-    kept.finish(Ok(()), |_| unreachable!("no disk operation is owed"));
-    assert_eq!(wait(&answer), Err(String::from(CAPPED)));
-}
-
-/// A command that doesn't finish by its deadline, counted from when it
-/// was asked for, ends the session, and hears so once the Room is down.
-#[test]
-fn a_command_past_its_deadline_ends_the_session() {
-    let command = Duration::from_millis(400);
-    let (rig, mut kept) = new_rig(Limits {
-        command,
-        ..limits()
-    });
-    let asked = Instant::now();
-    let (_broker, answer) = ask_run(&rig.door, &["/bin/sleep", "60"]);
-    std::thread::scope(|scope| {
-        let held = scope.spawn(|| {
-            kept.hold(&rig.supervisor, rig.launcher.as_fd());
-            Instant::now()
-        });
-        say_ready(&rig.room);
-        take_command(&rig.room);
-        let took = held.join().unwrap().duration_since(asked);
-        assert!(took >= command, "ended after {took:?}");
-        assert!(took < LONG / 2, "took {took:?}");
-    });
-    assert!(
-        answer.try_recv().is_err(),
-        "answered before the Room was down"
-    );
-    kept.finish(Ok(()), |_| unreachable!("no disk operation is owed"));
-    assert_eq!(wait(&answer), Err(String::from(EXPIRED)));
-}
-
-/// A supervisor that never says it is ready ends the session at the
-/// readiness limit; part of a readiness frame isn't readiness.
-#[test]
-fn a_supervisor_that_is_never_ready_ends_the_session() {
-    let ready = Duration::from_millis(400);
-    let (rig, mut kept) = new_rig(Limits { ready, ..limits() });
-    let started = Instant::now();
-    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
         let held = scope.spawn(|| {
             kept.keep(&rig.supervisor, rig.launcher.as_fd())
                 .unwrap_err()
         });
-        send(&rig.room, b"\0\0\0\x05rea");
-        assert_eq!(held.join().unwrap(), UNREADY);
+        say_ready(&rig.room);
+        let names = ["a", "b", "c", "d"];
+        assert_eq!(names.len(), RUNNING_MAX);
+        let mut asked = Vec::new();
+        for name in names {
+            asked.push(ask_run(&rig.door, name));
+            starts(&rig.room, name);
+        }
+        let (_broker, fifth) = ask_run(&rig.door, "e");
+        assert_eq!(wait(&fifth), Err(String::from(FULL)));
+        // The last to start is the first to end.
+        for (code, name) in (1_u8..).zip(names.iter().rev()) {
+            ends(&rig.room, name, Ended::Exited(code), name.as_bytes());
+        }
+        for ((_, answer), code) in asked.iter().zip([4_u8, 3, 2, 1]) {
+            assert_eq!(outcome(&answered(answer).1).0, Ended::Exited(code));
+        }
+        let (_broker, fifth) = ask_run(&rig.door, "e");
+        serves(&rig.room, "e", 0, b"");
+        assert!(answered(&fifth).0);
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
     });
-    let waited = started.elapsed();
-    assert!(waited >= ready, "gave up after {waited:?}");
-    assert!(waited < LONG / 2, "waited {waited:?}");
 }
 
-/// Whoever asked for a command going, or saying more, cancels it and
-/// ends the session, before the supervisor is ready and after.
+/// A name the session knows starts nothing: whoever asks by it again is
+/// told of the job that has it, while it runs and once it is over.
 #[test]
-fn a_requester_that_goes_or_says_more_ends_the_session() {
-    for (ready, says_more) in [(false, false), (true, false), (true, true)] {
-        let (rig, mut kept) = new_rig(limits());
-        let (mut broker, _answer) = ask_run(&rig.door, &["/bin/true"]);
-        std::thread::scope(|scope| {
-            let held = scope.spawn(|| {
-                kept.keep(&rig.supervisor, rig.launcher.as_fd())
-                    .unwrap_err()
-            });
-            if ready {
-                say_ready(&rig.room);
-                take_command(&rig.room);
-            }
-            if says_more {
-                broker.write_all(b"x").unwrap();
-            } else {
-                drop(broker);
-            }
-            assert_eq!(held.join().unwrap(), REQUESTER_GONE);
+fn a_name_that_is_known_is_never_run_again() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
         });
-    }
+        say_ready(&rig.room);
+        let (_first_broker, first) = ask_run(&rig.door, "once");
+        starts(&rig.room, "once");
+        let (_again_broker, again) = ask_run(&rig.door, "once");
+        assert!(unasked(&rig.room, SHORT), "a known name was started again");
+        ends(&rig.room, "once", Ended::Exited(9), b"");
+        let (started, state) = answered(&first);
+        assert!(started);
+        let (restarted, same) = answered(&again);
+        assert!(!restarted, "the second ask says it started the job");
+        assert_eq!(same, state);
+        // Over, it is answered from the ledger.
+        let (_later_broker, later) = ask_run(&rig.door, "once");
+        assert_eq!(answered(&later), (false, state));
+        assert!(unasked(&rig.room, SHORT), "a job that was over was started");
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
 }
 
-/// The supervisor is heard only when it is its turn: its readiness, then
-/// the result of the command it was given. Anything else ends the session.
+/// A caller waits for its job only as long as it said: then it is told
+/// the job is running, once the supervisor has said it started. The job
+/// runs on, and whoever asks by its name is told how it came out.
 #[test]
-fn a_supervisor_out_of_step_ends_the_session() {
-    let said = |bytes: &'static [u8]| ended_by(false, move |far| send(far.room(), bytes));
-    assert_eq!(said(b"\0\0\0\x05other"), BAD_READY);
-    assert_eq!(said(b"\0\0\0\x04read"), BAD_READY);
-    assert!(said(b"\0\0\0\x06").contains("oversized"));
-    assert!(said(b"\0\0\0\x05ready!").contains("extra data"));
-    assert_eq!(ended_by(false, |far| drop(far.room.take())), CLOSED_EARLY);
+fn a_caller_waits_only_so_long_and_its_job_runs_on() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        say_ready(&rig.room);
+        let impatient = Checked {
+            wait: Duration::ZERO,
+            ..ordinary()
+        };
+        let (_broker, answer) = ask_held(&rig.door, "slow", impatient);
+        let Ask::Start { nonce, .. } = hears(&rig.room) else {
+            unreachable!()
+        };
+        assert!(unanswered(&answer), "told it runs before it started");
+        says(&rig.room, &Say::Started { nonce });
+        let (started, state) = answered(&answer);
+        assert!(started);
+        assert!(matches!(state, RoomJobState::Running { .. }), "{state:?}");
+
+        let (_now_broker, now) = ask_job(&rig.door, "slow", Duration::ZERO);
+        assert!(matches!(
+            answered(&now),
+            (false, RoomJobState::Running { .. })
+        ));
+        let (_wait_broker, waiting) = ask_job(&rig.door, "slow", LONG);
+        assert!(unanswered(&waiting), "a wait was answered while it runs");
+        ends(&rig.room, "slow", Ended::Exited(0), b"done\n");
+        let (started, state) = answered(&waiting);
+        assert!(!started);
+        assert_eq!(outcome(&state).2, short(b"done\n"));
+        let (_after_broker, after) = ask_job(&rig.door, "slow", LONG);
+        assert_eq!(answered(&after), (false, state));
+        let (_none_broker, none) = ask_job(&rig.door, "never", LONG);
+        assert_eq!(wait(&none), Err(String::from(NO_JOB)));
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
+}
+
+/// A job still running at its limit is stopped, and says so. The session
+/// goes on: the next job runs in the same Room.
+#[test]
+fn a_job_past_its_limit_is_stopped_and_the_session_goes_on() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        say_ready(&rig.room);
+        let brief = Checked {
+            limit: SHORT,
+            ..ordinary()
+        };
+        let asked = Instant::now();
+        let (_broker, answer) = ask_held(&rig.door, "long", brief);
+        starts(&rig.room, "long");
+        let Ask::Stop {
+            nonce,
+            job: stopped,
+        } = hears(&rig.room)
+        else {
+            unreachable!()
+        };
+        assert!(asked.elapsed() >= SHORT, "stopped before its limit");
+        assert_eq!(stopped, job("long"));
+        says(&rig.room, &Say::Stopping { nonce });
+        assert!(unasked(&rig.room, SHORT), "stopped twice");
+        ends(&rig.room, "long", Ended::Signaled(9), b"");
+        let (how, why, _) = outcome(&answered(&answer).1);
+        assert_eq!(
+            (how, why),
+            (Ended::Signaled(9), Some(RoomJobStopped::Limit))
+        );
+
+        let (_next_broker, next) = ask_run(&rig.door, "next");
+        serves(&rig.room, "next", 0, b"");
+        assert_eq!(outcome(&answered(&next).1).1, None);
+        assert!(!held.is_finished(), "a limit ended the session");
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
+}
+
+/// A caller that waits as long as its job may run is told how the job
+/// came out when it is stopped at its limit, not that it is running.
+#[test]
+fn a_caller_that_waits_out_the_limit_is_told_how_the_job_came_out() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        say_ready(&rig.room);
+        let brief = Checked {
+            limit: SHORT,
+            wait: SHORT,
+            ..ordinary()
+        };
+        let (_broker, answer) = ask_held(&rig.door, "long", brief);
+        starts(&rig.room, "long");
+        let Ask::Stop { nonce, .. } = hears(&rig.room) else {
+            unreachable!()
+        };
+        // Its wait is over, and it is being stopped: nothing is said
+        // until it has ended.
+        let (_also_broker, also) = ask_job(&rig.door, "long", Duration::ZERO);
+        assert!(unanswered(&answer), "told it runs as it was being stopped");
+        assert!(unanswered(&also), "told it runs as it was being stopped");
+        says(&rig.room, &Say::Stopping { nonce });
+        ends(&rig.room, "long", Ended::Signaled(9), b"");
+        let (started, state) = answered(&answer);
+        assert!(started);
+        assert_eq!(outcome(&state).1, Some(RoomJobStopped::Limit));
+        assert_eq!(answered(&also), (false, state));
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
+}
+
+/// A stop that is asked for is asked of the supervisor once, and whoever
+/// asked it and whoever ran the job are told how the job came out. A job
+/// that is over is told as it is, and one that isn't known is said so.
+#[test]
+fn a_stop_is_asked_once_and_says_how_the_job_came_out() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        say_ready(&rig.room);
+        let (_broker, ran) = ask_run(&rig.door, "stopped");
+        starts(&rig.room, "stopped");
+        let (_stop_broker, stop) = ask_stop(&rig.door, "stopped");
+        let (_twice_broker, twice) = ask_stop(&rig.door, "stopped");
+        let Ask::Stop { nonce, .. } = hears(&rig.room) else {
+            unreachable!()
+        };
+        says(&rig.room, &Say::Stopping { nonce });
+        assert!(unasked(&rig.room, SHORT), "stopped twice");
+        ends(&rig.room, "stopped", Ended::Signaled(9), b"");
+        let (started, state) = answered(&ran);
+        assert!(started);
+        assert_eq!(outcome(&state).1, Some(RoomJobStopped::Asked));
+        assert_eq!(answered(&stop), (false, state.clone()));
+        assert_eq!(answered(&twice), (false, state.clone()));
+        let (_over_broker, over) = ask_stop(&rig.door, "stopped");
+        assert_eq!(answered(&over), (false, state));
+        assert!(unasked(&rig.room, SHORT), "a job that was over was stopped");
+        let (_none_broker, none) = ask_stop(&rig.door, "never");
+        assert_eq!(wait(&none), Err(String::from(NO_JOB)));
+
+        // A stop that crosses its job's end: the supervisor has no such
+        // job by then, and that is no fault.
+        let (_cross_broker, crossed) = ask_run(&rig.door, "crossed");
+        starts(&rig.room, "crossed");
+        let (_cross_stop_broker, cross_stop) = ask_stop(&rig.door, "crossed");
+        let Ask::Stop { nonce, .. } = hears(&rig.room) else {
+            unreachable!()
+        };
+        ends(&rig.room, "crossed", Ended::Exited(0), b"");
+        says(&rig.room, &Say::NoJob { nonce });
+        assert_eq!(outcome(&answered(&crossed).1).0, Ended::Exited(0));
+        assert!(wait(&cross_stop).is_ok());
+        assert!(!held.is_finished(), "a crossed stop ended the session");
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
+}
+
+/// A job that doesn't end within its grace after it was stopped ends the
+/// session: it is lost with its Room, and is said to be, once the Room is
+/// down.
+#[test]
+fn a_job_that_does_not_end_when_stopped_ends_the_session() {
+    let (rig, mut kept) = new_rig(Limits {
+        stop: SHORT,
+        ..limits()
+    });
+    let (_broker, ran) = ask_run(&rig.door, "stuck");
+    let (stop, stopped_at) = std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        starts(&rig.room, "stuck");
+        let (_stop_broker, stop) = ask_stop(&rig.door, "stuck");
+        let Ask::Stop { nonce, .. } = hears(&rig.room) else {
+            unreachable!()
+        };
+        let stopped_at = Instant::now();
+        says(&rig.room, &Say::Stopping { nonce });
+        seen_out(held, &rig.room);
+        (stop, stopped_at)
+    });
+    assert!(stopped_at.elapsed() >= SHORT, "its grace wasn't waited out");
+    assert!(ran.try_recv().is_err(), "answered before the Room was down");
+    kept.finish(Ok(()), |_| unreachable!());
+    let lost = RoomJobState::Lost {
+        why: String::from(UNSTOPPED),
+    };
+    assert_eq!(answered(&ran), (true, lost.clone()));
+    assert_eq!(answered(&stop), (false, lost));
+    let kept = opened(&rig.ledger).get(&job("stuck")).cloned().unwrap();
     assert_eq!(
-        ended_by(false, |far| {
-            say_ready(far.room());
-            std::thread::sleep(Duration::from_millis(100));
-            send(far.room(), b"!");
-        }),
-        OUT_OF_TURN
+        kept.piece(Stream::Stdout, End::Head),
+        Err(String::from(LOST))
     );
-    assert_eq!(
-        ended_by(false, |far| {
-            say_ready(far.room());
-            drop(far.room.take());
-        }),
-        OUT_OF_TURN
+}
+
+/// A session with nothing in hand ends at its idle limit, counted from
+/// when it last had something.
+#[test]
+fn an_idle_session_ends_at_its_idle_limit_counted_from_its_last_job() {
+    let idle = Limits {
+        idle: SHORT * 2,
+        ..limits()
+    };
+    let started = Instant::now();
+    let said = ended_with(idle, false, |far| say_ready(far.room()));
+    assert_eq!(said, IDLE);
+    assert!(started.elapsed() >= SHORT * 2);
+
+    let mut finished = None;
+    let said = ended_with(idle, true, |far| {
+        say_ready(far.room());
+        starts(far.room(), "first");
+        std::thread::sleep(SHORT * 3);
+        ends(far.room(), "first", Ended::Exited(0), b"");
+        finished = Some(Instant::now());
+    });
+    assert_eq!(said, IDLE, "a session with a job in hand isn't idle");
+    assert!(
+        finished.unwrap().elapsed() >= SHORT * 2,
+        "idleness was counted from before its last job ended"
     );
+}
+
+/// The time limit holds whatever the session is doing, and a job running
+/// then is lost with it.
+#[test]
+fn a_session_ends_at_its_time_limit_whatever_it_is_doing() {
+    let capped = Limits {
+        cap: SHORT * 2,
+        ..limits()
+    };
+    let said = ended_with(capped, true, |far| {
+        say_ready(far.room());
+        starts(far.room(), "first");
+    });
+    assert_eq!(said, CAPPED);
+
+    let (rig, mut kept) = new_rig(capped);
+    let (_broker, ran) = ask_run(&rig.door, "cut");
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        starts(&rig.room, "cut");
+        seen_out(held, &rig.room);
+    });
+    kept.finish(Ok(()), |_| unreachable!());
+    let lost = RoomJobState::Lost {
+        why: String::from(CAPPED),
+    };
+    assert_eq!(answered(&ran), (true, lost));
+}
+
+/// A supervisor that is never ready, or stops answering, ends the
+/// session.
+#[test]
+fn a_supervisor_that_goes_quiet_ends_the_session() {
+    let unready = Limits {
+        ready: SHORT,
+        ..limits()
+    };
+    assert_eq!(ended_with(unready, true, |_| {}), UNREADY);
+    let unanswering = Limits {
+        answer: SHORT,
+        ..limits()
+    };
+    let said = ended_with(unanswering, true, |far| {
+        say_ready(far.room());
+        let _unanswered = hears(far.room());
+    });
+    assert_eq!(said, UNANSWERED);
+}
+
+/// A job whose limit passes before the Room could start it is let go:
+/// its caller hears why, nothing is asked of the supervisor for it, and
+/// its name is free.
+#[test]
+fn a_job_whose_limit_passes_before_it_is_sent_is_let_go() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let brief = Checked {
+            limit: SHORT,
+            ..ordinary()
+        };
+        let (_broker, answer) = ask_held(&rig.door, "late", brief);
+        let (_other_broker, other) = ask_run(&rig.door, "other");
+        assert_eq!(wait(&answer), Err(String::from(EXPIRED)));
+        say_ready(&rig.room);
+        // What else was waiting to be asked still is.
+        serves(&rig.room, "other", 0, b"");
+        assert!(answered(&other).0);
+        assert!(unasked(&rig.room, SHORT), "a job let go was started");
+        let (_again_broker, again) = ask_run(&rig.door, "late");
+        serves(&rig.room, "late", 0, b"");
+        assert!(answered(&again).0, "its name wasn't free");
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
+    assert!(opened(&rig.ledger).get(&job("late")).is_some());
+}
+
+/// A job the supervisor says it didn't start is let go with why, and its
+/// name is free.
+#[test]
+fn a_job_the_supervisor_does_not_start_is_let_go_with_why() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        say_ready(&rig.room);
+        let (_broker, answer) = ask_run(&rig.door, "absent");
+        let (_also_broker, also) = ask_job(&rig.door, "absent", LONG);
+        let Ask::Start { nonce, .. } = hears(&rig.room) else {
+            unreachable!()
+        };
+        let why = NotStarted::NoSuchProgram;
+        says(&rig.room, &Say::NotStarted { nonce, why });
+        let said = String::from(not_started(why));
+        assert_eq!(wait(&answer), Err(said.clone()));
+        assert_eq!(wait(&also), Err(said));
+        let (_again_broker, again) = ask_run(&rig.door, "absent");
+        serves(&rig.room, "absent", 0, b"");
+        assert!(answered(&again).0, "its name wasn't free");
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
+}
+
+/// A caller that goes, or says more, is let go. Its job, once the
+/// supervisor has it, runs on and is kept; one the supervisor never had
+/// is let go with its caller.
+#[test]
+fn a_caller_that_goes_leaves_its_started_job_running() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        // Asked before readiness, and gone before it: never started.
+        let (broker, _answer) = ask_run(&rig.door, "unsent");
+        gone(&broker);
+        std::thread::sleep(SHORT);
+        say_ready(&rig.room);
+        assert!(unasked(&rig.room, SHORT), "started for a caller that went");
+
+        let (broker, _answer) = ask_run(&rig.door, "sent");
+        starts(&rig.room, "sent");
+        gone(&broker);
+        let (mut talker, _talking) = ask_job(&rig.door, "sent", LONG);
+        talker.write_all(b"more").unwrap();
+        std::thread::sleep(SHORT);
+        assert!(!held.is_finished(), "a caller that went ended the session");
+        ends(&rig.room, "sent", Ended::Exited(5), b"");
+        let (_later_broker, later) = ask_job(&rig.door, "sent", LONG);
+        assert_eq!(outcome(&answered(&later).1).0, Ended::Exited(5));
+        let (_none_broker, none) = ask_job(&rig.door, "unsent", LONG);
+        assert_eq!(wait(&none), Err(String::from(NO_JOB)));
+        drop(rig.door);
+        assert_eq!(held.join().unwrap(), UNOWNED);
+    });
+}
+
+/// What ends a session from outside it: its owner going, the Room's first
+/// process ending, and the supervisor closing, before or after readiness.
+#[test]
+fn a_session_ends_with_its_owner_its_room_or_its_supervisor() {
     assert_eq!(
-        ended_by(false, |far| {
+        ended_by(true, |far| {
             say_ready(far.room());
-            drop(far.alive.take());
+            starts(far.room(), "first");
+            far.alive = None;
         }),
         LAUNCHER_ENDED
     );
+    assert_eq!(
+        ended_by(false, |far| {
+            let room = far.room.take().unwrap();
+            gone(&room);
+        }),
+        CLOSED_EARLY
+    );
+    assert_eq!(
+        ended_by(true, |far| {
+            say_ready(far.room());
+            starts(far.room(), "first");
+            let room = far.room.take().unwrap();
+            gone(&room);
+        }),
+        CLOSED
+    );
+    assert_eq!(
+        ended_by(false, |far| send(far.room(), b"\0\0\0\x05readx")),
+        BAD_READY
+    );
+    assert!(
+        ended_by(false, |far| send(far.room(), b"\0\0\0\x06ready!")).contains("oversized"),
+        "readiness is exactly its five bytes"
+    );
 }
 
-/// A result is taken only whole, alone, for this dispatch and within the
-/// frame limit; one exactly at the limit is taken.
+/// The supervisor may answer only what it was asked, and say of a job
+/// only that it ended, once, after saying it started. Anything else ends
+/// the session.
 #[test]
-fn a_result_is_checked_before_it_is_an_answer() {
-    let answered = |answer: fn(&UnixStream, &str)| {
+fn a_supervisor_out_of_step_ends_the_session() {
+    let ended = |name: &str| Say::Ended {
+        job: job(name),
+        how: Ended::Exited(0),
+        stdout: Captured::default(),
+        stderr: Captured::default(),
+    };
+    let nonce = || "0".repeat(64);
+    // Something that can't be read, and something too long to be one.
+    assert_eq!(
+        ended_by(false, |far| {
+            say_ready(far.room());
+            write_frame(far.room(), b"{\"say\":\"done\"}").unwrap();
+        }),
+        BAD_SAY
+    );
+    assert!(
+        ended_by(false, |far| {
+            say_ready(far.room());
+            send(far.room(), &u32::MAX.to_be_bytes());
+        })
+        .contains("oversized")
+    );
+    // An answer when nothing was asked, and one to something else.
+    assert_eq!(
+        ended_by(false, |far| {
+            say_ready(far.room());
+            says(far.room(), &Say::Started { nonce: nonce() });
+        }),
+        OUT_OF_TURN
+    );
+    assert_eq!(
+        ended_by(true, |far| {
+            say_ready(far.room());
+            let _asked = hears(far.room());
+            says(far.room(), &Say::Started { nonce: nonce() });
+        }),
+        OUT_OF_TURN
+    );
+    // The wrong answer to what was asked.
+    assert_eq!(
+        ended_by(true, |far| {
+            say_ready(far.room());
+            let asked = hears(far.room());
+            let nonce = asked.nonce().to_owned();
+            says(far.room(), &Say::Stopping { nonce });
+        }),
+        OUT_OF_TURN
+    );
+    // An end of a job it was never given, of one it hasn't said started,
+    // and of one that ended already.
+    assert_eq!(
+        ended_by(false, |far| {
+            say_ready(far.room());
+            says(far.room(), &ended("never"));
+        }),
+        OUT_OF_TURN
+    );
+    assert_eq!(
+        ended_by(true, |far| {
+            say_ready(far.room());
+            let _asked = hears(far.room());
+            says(far.room(), &ended("first"));
+        }),
+        OUT_OF_TURN
+    );
+    assert_eq!(
+        ended_by(true, |far| {
+            say_ready(far.room());
+            starts(far.room(), "first");
+            says(far.room(), &ended("first"));
+            says(far.room(), &ended("first"));
+        }),
+        OUT_OF_TURN
+    );
+    // And of one whose end was said, while what it wrote is being fetched.
+    assert_eq!(
+        ended_by(true, |far| {
+            say_ready(far.room());
+            starts(far.room(), "first");
+            let loud = Say::Ended {
+                job: job("first"),
+                how: Ended::Exited(0),
+                stdout: short(b"four"),
+                stderr: Captured::default(),
+            };
+            says(far.room(), &loud);
+            says(far.room(), &loud);
+        }),
+        OUT_OF_TURN
+    );
+}
+
+/// What the supervisor says of a job's end is checked before it is an
+/// answer: an end no process can have, counts that can't be true
+/// together, a piece that isn't the length it said, or no piece at all,
+/// end the session.
+#[test]
+fn a_jobs_end_is_checked_before_it_is_an_answer() {
+    let with = |how: Ended, stdout: Captured| {
         ended_by(true, move |far| {
             say_ready(far.room());
-            let (_, nonce) = take_command(far.room());
-            answer(far.room(), &nonce);
+            starts(far.room(), "first");
+            says(
+                far.room(),
+                &Say::Ended {
+                    job: job("first"),
+                    how,
+                    stdout,
+                    stderr: Captured::default(),
+                },
+            );
         })
     };
-    let different = answered(|room, nonce| {
-        write_frame(room, &result_frame(&different_nonce(nonce), EXITED)).unwrap();
+    assert_eq!(with(Ended::Signaled(0), Captured::default()), BAD_END);
+    let tail_alone = Captured {
+        tail: 1,
+        spilled: 1,
+        ..Captured::default()
+    };
+    assert_eq!(with(Ended::Exited(0), tail_alone), BAD_END);
+    let stderr_wrong = ended_by(true, |far| {
+        say_ready(far.room());
+        starts(far.room(), "first");
+        says(
+            far.room(),
+            &Say::Ended {
+                job: job("first"),
+                how: Ended::Exited(0),
+                stdout: Captured::default(),
+                stderr: tail_alone,
+            },
+        );
     });
-    assert!(different.contains("different dispatch"), "{different}");
-    let invalid = answered(|room, _| write_frame(room, b"invalid").unwrap());
-    assert!(invalid.contains("invalid foreground result"), "{invalid}");
-    let oversized = answered(|room, _| send(room, &[0, 1, 0, 1]));
-    assert!(oversized.contains("oversized"), "{oversized}");
-    let extra = answered(|room, nonce| {
-        let result = result_frame(nonce, EXITED);
-        let mut bytes = u32::try_from(result.len()).unwrap().to_be_bytes().to_vec();
-        bytes.extend(result);
-        bytes.push(b'!');
-        send(room, &bytes);
-    });
-    assert!(extra.contains("extra data"), "{extra}");
-    let cut = answered(|room, _| {
-        send(room, &[0, 0, 0, 8, b'{']);
-        room.shutdown(std::net::Shutdown::Both).unwrap();
-    });
-    assert_eq!(cut, CLOSED);
+    assert_eq!(stderr_wrong, BAD_END);
 
-    let (rig, mut kept) = new_rig(limits());
-    let (_broker, answer) = ask_run(&rig.door, &["/bin/true"]);
-    std::thread::scope(|scope| {
-        let held = scope.spawn(|| {
-            kept.keep(&rig.supervisor, rig.launcher.as_fd())
-                .unwrap_err()
-        });
-        say_ready(&rig.room);
-        let (_, nonce) = take_command(&rig.room);
-        let mut result = result_frame(&nonce, EXITED);
-        result.resize(hatchling_core::MAX_FRAME_BYTES, b' ');
-        write_frame(&rig.room, &result).unwrap();
-        exited(&answer);
-        drop(rig.door);
-        assert_eq!(held.join().unwrap(), UNOWNED);
-    });
+    let piece = |answer: fn(String) -> Say| {
+        ended_by(true, move |far| {
+            say_ready(far.room());
+            starts(far.room(), "first");
+            says(
+                far.room(),
+                &Say::Ended {
+                    job: job("first"),
+                    how: Ended::Exited(0),
+                    stdout: short(b"four"),
+                    stderr: Captured::default(),
+                },
+            );
+            let asked = hears(far.room());
+            says(far.room(), &answer(asked.nonce().to_owned()));
+        })
+    };
+    let longer = |nonce| Say::Piece {
+        nonce,
+        bytes: b"fives".to_vec(),
+    };
+    let shorter = |nonce| Say::Piece {
+        nonce,
+        bytes: b"thr".to_vec(),
+    };
+    assert_eq!(piece(longer), BAD_PIECE);
+    assert_eq!(piece(shorter), BAD_PIECE);
+    assert_eq!(piece(|nonce| Say::NoJob { nonce }), OUT_OF_TURN);
 }
 
-/// One command at a time: a second while one runs is refused at once, and
-/// the first still finishes.
+/// Both pieces of both streams are fetched, each where it belongs.
 #[test]
-fn a_second_command_is_refused_while_one_runs() {
+fn every_kept_piece_of_a_jobs_output_is_fetched() {
+    let full = u32::try_from(hatchling_core::room::PIECE_BYTES).unwrap();
     let (rig, mut kept) = new_rig(limits());
     std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
         let held = scope.spawn(|| {
             kept.keep(&rig.supervisor, rig.launcher.as_fd())
                 .unwrap_err()
         });
-        let (_first_broker, first) = ask_run(&rig.door, &["/bin/true"]);
         say_ready(&rig.room);
-        let (_, nonce) = take_command(&rig.room);
-        let (_second_broker, second) = ask_run(&rig.door, &["/bin/false"]);
-        assert_eq!(wait(&second), Err(String::from(BUSY)));
-        write_frame(&rig.room, &result_frame(&nonce, EXITED)).unwrap();
-        exited(&first);
-        let (_third_broker, third) = ask_run(&rig.door, &["/bin/false"]);
-        assert_eq!(serve_one(&rig.room), ["run", "/bin/false"]);
-        exited(&third);
+        let (_broker, answer) = ask_run(&rig.door, "loud");
+        starts(&rig.room, "loud");
+        let long = Captured {
+            head: full,
+            tail: 3,
+            dropped: 0,
+            spilled: u64::from(full) + 3,
+            spill_cut: false,
+        };
+        says(
+            &rig.room,
+            &Say::Ended {
+                job: job("loud"),
+                how: Ended::Exited(0),
+                stdout: long,
+                stderr: short(b"err"),
+            },
+        );
+        let mut also = None;
+        for (stream, end, fill) in [
+            (
+                Stream::Stdout,
+                End::Head,
+                vec![b'h'; hatchling_core::room::PIECE_BYTES],
+            ),
+            (Stream::Stdout, End::Tail, b"end".to_vec()),
+            (Stream::Stderr, End::Head, b"err".to_vec()),
+        ] {
+            assert!(unanswered(&answer), "answered before its output was whole");
+            let Ask::Piece {
+                nonce,
+                stream: asked,
+                end: which,
+                ..
+            } = hears(&rig.room)
+            else {
+                unreachable!()
+            };
+            assert_eq!((asked, which), (stream, end));
+            // Its end has been heard: a wait that runs out from here on
+            // is told how it came out, once its output is whole.
+            let (_, late) = also.get_or_insert_with(|| ask_job(&rig.door, "loud", Duration::ZERO));
+            assert!(unanswered(late), "told it runs when it had ended");
+            says(&rig.room, &Say::Piece { nonce, bytes: fill });
+        }
+        let (_, _, stdout) = outcome(&answered(&answer).1);
+        assert_eq!(stdout, long);
+        let (_, late) = also.unwrap();
+        assert_eq!(outcome(&answered(&late).1).2, long);
         drop(rig.door);
         assert_eq!(held.join().unwrap(), UNOWNED);
     });
+    let kept = opened(&rig.ledger).get(&job("loud")).cloned().unwrap();
+    assert_eq!(
+        kept.piece(Stream::Stdout, End::Head).unwrap().len(),
+        hatchling_core::room::PIECE_BYTES
+    );
+    assert_eq!(kept.piece(Stream::Stdout, End::Tail), Ok(b"end".to_vec()));
+    assert_eq!(kept.piece(Stream::Stderr, End::Head), Ok(b"err".to_vec()));
+    assert_eq!(kept.piece(Stream::Stderr, End::Tail), Ok(Vec::new()));
 }
 
-/// Whether the Room works is answered by a live session once its
+/// A live session answers a check that the Room works, once its
 /// supervisor is ready, and not before.
 #[test]
 fn a_live_session_says_the_room_works_once_it_is_ready() {
     let (rig, mut kept) = new_rig(limits());
     std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
         let held = scope.spawn(|| {
             kept.keep(&rig.supervisor, rig.launcher.as_fd())
                 .unwrap_err()
         });
         let early = ask_probe(&rig.door);
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(
-            early.try_recv().is_err(),
-            "an unready Room was said to work"
-        );
+        assert!(unanswered(&early), "an unready Room was said to work");
         say_ready(&rig.room);
         assert_eq!(wait(&early), Ok(()));
         assert_eq!(wait(&ask_probe(&rig.door)), Ok(()));
@@ -674,17 +1500,19 @@ fn a_live_session_says_the_room_works_once_it_is_ready() {
 }
 
 /// The disk under a session: what leaves it open is done by the session,
-/// in its own hold on the disk, even while a command runs. A close or a
-/// wipe ends the session, and is done only once the Room is down.
+/// in its own hold on the disk, even while a job runs. A close or a wipe
+/// ends the session, and is done only once the Room is down; the job that
+/// was running is lost with it.
 #[test]
 fn closing_or_wiping_the_disk_ends_the_session_first() {
     for closing in [RoomDiskOp::Close, RoomDiskOp::Wipe] {
         let (rig, mut kept) = new_rig(limits());
-        let (_broker, answer) = ask_run(&rig.door, &["/bin/true"]);
+        let (_broker, answer) = ask_run(&rig.door, "running");
         let closed = std::thread::scope(|scope| {
+            let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
             let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
             say_ready(&rig.room);
-            take_command(&rig.room);
+            starts(&rig.room, "running");
             for op in [RoomDiskOp::Status, RoomDiskOp::Open, RoomDiskOp::Create] {
                 assert_eq!(wait(&ask_disk(&rig.door, op)), Ok(None));
             }
@@ -710,24 +1538,58 @@ fn closing_or_wiping_the_disk_ends_the_session_first() {
         });
         assert_eq!(direct, [closing]);
         assert_eq!(wait(&closed), Err(String::from("done directly")));
-        assert_eq!(wait(&answer), Err(String::from(DISK_CLOSING)));
+        let lost = RoomJobState::Lost {
+            why: String::from(DISK_CLOSING),
+        };
+        assert_eq!(answered(&answer), (true, lost));
     }
 }
 
-/// Before anything is launched: a command whose requester has already
-/// gone launches nothing, and hears why the launch didn't happen; so
-/// does a session whose disk is being closed.
+/// A session that ends before the supervisor was given a job says why to
+/// whoever asked for it, and its name is free: nothing of it is lost,
+/// because nothing of it ran.
 #[test]
-fn nothing_is_launched_for_a_requester_that_has_gone() {
+fn a_job_never_given_to_the_supervisor_is_not_lost() {
+    let (rig, mut kept) = new_rig(limits());
+    let (_broker, answer) = ask_run(&rig.door, "ungiven");
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        std::thread::sleep(SHORT);
+        assert!(rig.door.send(Message::End { reason: "gone" }).is_ok());
+        held.join().unwrap();
+    });
+    kept.finish(Ok(()), |_| unreachable!());
+    assert_eq!(wait(&answer), Err(String::from("gone")));
+    assert!(opened(&rig.ledger).get(&job("ungiven")).is_none());
+}
+
+/// Before anything is launched: a job whose caller has already gone
+/// launches nothing, and hears why the launch didn't happen; so does a
+/// session whose disk is being closed.
+#[test]
+fn nothing_is_launched_for_a_caller_that_has_gone() {
     let (rig, mut kept) = new_rig(limits());
     assert_eq!(kept.begin(), Ok(()), "nothing asked is nothing against it");
-    let (_broker, answer) = ask_run(&rig.door, &["/bin/true"]);
+    let (_broker, answer) = ask_run(&rig.door, "wanted");
     assert_eq!(kept.begin(), Ok(()));
     kept.finish(Err(String::from("no launch")), |_| unreachable!());
     assert_eq!(wait(&answer), Err(String::from("no launch")));
 
     let (rig, mut kept) = new_rig(limits());
-    let (broker, answer) = ask_run(&rig.door, &["/bin/true"]);
+    let (broker, answer) = ask_run(&rig.door, "unwanted");
+    let (_staying, stayed) = ask_run(&rig.door, "wanted");
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()), "one caller is still there");
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+    assert!(kept.flights.contains_key(&job("wanted")));
+    assert!(!kept.flights.contains_key(&job("unwanted")));
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&stayed), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_run(&rig.door, "unwanted");
     gone(&broker);
     drop(broker);
     assert_eq!(kept.begin(), Err(String::from(REQUESTER_GONE)));
@@ -745,14 +1607,14 @@ fn nothing_is_launched_for_a_requester_that_has_gone() {
 }
 
 /// A launch that fails before the session took anything in still answers
-/// the command it was started for, and any other waiting for the same
-/// Room, with why there is none. A check that was waiting is let go
-/// unanswered, to be made again without a session.
+/// the job it was started for, and any other waiting for the same Room,
+/// with why there is none. A check that was waiting is let go unanswered,
+/// to be made again without a session.
 #[test]
-fn a_launch_that_fails_at_once_answers_every_waiting_command() {
+fn a_launch_that_fails_at_once_answers_every_waiting_job() {
     let (rig, kept) = new_rig(limits());
-    let (_first_broker, first) = ask_run(&rig.door, &["/bin/true"]);
-    let (_second_broker, second) = ask_run(&rig.door, &["/bin/false"]);
+    let (_first_broker, first) = ask_run(&rig.door, "first");
+    let (_second_broker, second) = ask_run(&rig.door, "second");
     let check = ask_probe(&rig.door);
     kept.finish(Err(String::from("no disk here")), |_| unreachable!());
     assert_eq!(wait(&first), Err(String::from("no disk here")));
@@ -761,6 +1623,7 @@ fn a_launch_that_fails_at_once_answers_every_waiting_command() {
         check.recv_timeout(LONG).is_err(),
         "a check was answered by a Room that never launched"
     );
+    assert!(opened(&rig.ledger).over.is_empty(), "a job was kept");
 }
 
 /// A Room that comes down at the first try is left at once, and nothing
@@ -769,7 +1632,7 @@ fn a_launch_that_fails_at_once_answers_every_waiting_command() {
 fn a_session_that_comes_down_is_left_at_once() {
     let (_rig, mut kept) = new_rig(limits());
     let (reply, answer) = mpsc::channel();
-    kept.owed = Some((reply, String::from("why it ended")));
+    kept.owed.push((reply, Err(String::from("why it ended"))));
     let mut tries = 0;
     kept.settle(&mut || {
         tries += 1;
@@ -829,8 +1692,9 @@ impl Drop for ClearedAtEnd<'_> {
 }
 
 /// A session whose Room can't be taken down stays in charge: it tries
-/// again on its own, refuses commands and checks with the reason, still
-/// answers for the disk it holds, and is left once the Room is down.
+/// again on its own, refuses jobs, stops and checks with the reason,
+/// still answers for the disk it holds, and is left once the Room is
+/// down.
 #[test]
 fn a_session_that_cannot_be_cleared_stays_held_and_says_so() {
     let (rig, mut kept) = new_rig(Limits {
@@ -838,7 +1702,7 @@ fn a_session_that_cannot_be_cleared_stays_held_and_says_so() {
         ..limits()
     });
     let (reply, owed) = mpsc::channel();
-    kept.owed = Some((reply, String::from("why it ended")));
+    kept.owed.push((reply, Err(String::from("why it ended"))));
     let cleanup = Cleanup::stuck(1000);
     std::thread::scope(|scope| {
         let settled = scope.spawn(|| kept.settle(&mut || cleanup.down()));
@@ -846,10 +1710,14 @@ fn a_session_that_cannot_be_cleared_stays_held_and_says_so() {
         assert_eq!(
             wait(&owed),
             Err(String::from(HELD)),
-            "a failed cleanup is what the command hears"
+            "a failed cleanup is what the caller hears"
         );
-        let (_broker, answer) = ask_run(&rig.door, &["/bin/true"]);
+        let (_broker, answer) = ask_run(&rig.door, "refused");
         assert_eq!(wait(&answer), Err(String::from(HELD)));
+        let (_job_broker, asked) = ask_job(&rig.door, "refused", LONG);
+        assert_eq!(wait(&asked), Err(String::from(HELD)));
+        let (_stop_broker, stopped) = ask_stop(&rig.door, "refused");
+        assert_eq!(wait(&stopped), Err(String::from(HELD)));
         assert_eq!(wait(&ask_probe(&rig.door)), Err(String::from(HELD)));
         assert_eq!(wait(&ask_disk(&rig.door, RoomDiskOp::Status)), Ok(None));
         let before = cleanup.tries();
@@ -931,31 +1799,37 @@ fn a_held_session_is_left_when_the_broker_has_gone() {
     );
 }
 
-pub(crate) fn result(generation: usize) -> RoomForegroundResult {
-    RoomForegroundResult {
-        status: RoomForegroundStatus::Exited(u8::try_from(generation).unwrap()),
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-        stdout_truncated: false,
-        stderr_truncated: false,
-    }
+/// What a stand-in session answers for the job `name`: that it runs, and
+/// has for as many milliseconds as the stand-in's number.
+pub(crate) fn stood_in(generation: usize, name: &str) -> RoomJobAnswer {
+    let ran_ms = u64::try_from(generation).unwrap();
+    told(&job(name), RoomJobState::Running { ran_ms }, true)
 }
 
 /// A stand-in for the thread that holds a session: it answers with its
-/// own number, and ends when told to or on the commands that say so.
+/// own number, and ends when told to or on the jobs that say so.
 fn stand_in(generation: usize, seat: &Seat) {
     while let Ok(message) = seat.inbox.recv() {
         match message {
-            Message::Run { argv, reply, .. } => match argv.first().map(String::as_str) {
-                Some("/vanish") => return,
-                Some("/once") => {
-                    let _ = reply.send(Ok(result(generation)));
+            Message::Run { run, reply, .. } => match run.job.as_str() {
+                "vanish" => return,
+                "once" => {
+                    let _ = reply.send(Ok(stood_in(generation, "once")));
                     return;
                 }
-                _ => {
-                    let _ = reply.send(Ok(result(generation)));
+                name => {
+                    let _ = reply.send(Ok(stood_in(generation, name)));
                 }
             },
+            Message::Job {
+                job, wait, reply, ..
+            } => {
+                let said = format!("session {generation} asked of {job} for {wait:?}");
+                let _ = reply.send(Err(said));
+            }
+            Message::Stop { job, reply, .. } => {
+                let _ = reply.send(Err(format!("session {generation} stopped {job}")));
+            }
             Message::Probe { reply } => {
                 let _ = reply.send(Ok(()));
             }
@@ -974,7 +1848,7 @@ pub(crate) fn stand_ins() -> (Sessions, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let started = Arc::new(AtomicUsize::new(0));
     let ended = Arc::new(AtomicUsize::new(0));
     let (count, done) = (Arc::clone(&started), Arc::clone(&ended));
-    let sessions = Sessions::new(move |seat| {
+    let sessions = Sessions::new(Arc::default(), move |seat| {
         let generation = count.fetch_add(1, Atomic::SeqCst) + 1;
         let done = Arc::clone(&done);
         std::thread::Builder::new().spawn(move || {
@@ -989,42 +1863,151 @@ pub(crate) fn stand_ins() -> (Sessions, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     (sessions, started, ended)
 }
 
-fn run(sessions: &Sessions, program: &str) -> RunReply {
+fn run(sessions: &Sessions, name: &str) -> JobReply {
     let (_broker, requester) = UnixStream::pair().unwrap();
-    sessions.run(&[String::from(program)], &requester)
+    sessions.run(&a_run(name, &["true"]), &requester)
 }
 
 #[test]
-fn the_first_command_starts_a_session_and_the_next_uses_it() {
+fn the_first_job_starts_a_session_and_the_next_uses_it() {
     let (sessions, started, ended) = stand_ins();
-    assert_eq!(run(&sessions, "/bin/true"), Ok(result(1)));
-    assert_eq!(run(&sessions, "/bin/true"), Ok(result(1)));
+    assert_eq!(run(&sessions, "a"), Ok(stood_in(1, "a")));
+    assert_eq!(run(&sessions, "b"), Ok(stood_in(1, "b")));
     assert_eq!(started.load(Atomic::SeqCst), 1);
     assert_eq!(ended.load(Atomic::SeqCst), 0);
 }
 
 #[test]
-fn a_session_that_ended_is_replaced_by_the_next_command() {
+fn a_session_that_ended_is_replaced_by_the_next_job() {
     let (sessions, started, _ended) = stand_ins();
-    assert_eq!(run(&sessions, "/once"), Ok(result(1)));
-    assert_eq!(run(&sessions, "/bin/true"), Ok(result(2)));
-    assert_eq!(run(&sessions, "/bin/true"), Ok(result(2)));
+    assert_eq!(run(&sessions, "once"), Ok(stood_in(1, "once")));
+    assert_eq!(run(&sessions, "a"), Ok(stood_in(2, "a")));
+    assert_eq!(run(&sessions, "b"), Ok(stood_in(2, "b")));
     assert_eq!(started.load(Atomic::SeqCst), 2);
 }
 
 #[test]
 fn a_session_that_keeps_ending_unanswered_is_given_up_on() {
     let (sessions, started, _ended) = stand_ins();
-    assert_eq!(run(&sessions, "/vanish"), Err(String::from(UNSETTLED)));
+    assert_eq!(run(&sessions, "vanish"), Err(String::from(UNSETTLED)));
     let tried = started.load(Atomic::SeqCst);
     assert!((2..=ATTEMPTS).contains(&tried), "started {tried} sessions");
     let (sessions, started, _ended) = stand_ins();
-    assert_eq!(run(&sessions, "/bin/true"), Ok(result(1)));
+    assert_eq!(run(&sessions, "a"), Ok(stood_in(1, "a")));
     assert_eq!(
         sessions.probe(|| unreachable!("a live session answers")),
         Ok(())
     );
     assert_eq!(started.load(Atomic::SeqCst), 1);
+}
+
+/// A job that may not be asked of the Room starts no session, and a name
+/// in the ledger is answered from it: no session is started or asked.
+#[test]
+fn a_run_is_checked_and_a_known_name_answered_before_any_session() {
+    let (sessions, started, _ended) = stand_ins();
+    let (_broker, requester) = UnixStream::pair().unwrap();
+    let said = sessions
+        .run(&a_run("j", &["./script"]), &requester)
+        .unwrap_err();
+    assert!(said.contains("interpreter"), "{said}");
+    opened(&sessions.ledger).put(job("over"), Over::lost("then"));
+    let lost = RoomJobState::Lost {
+        why: String::from("then"),
+    };
+    let known = Ok(told(&job("over"), lost, false));
+    assert_eq!(run(&sessions, "over"), known);
+    assert_eq!(
+        sessions.job(&job("over"), Duration::ZERO, &requester),
+        known
+    );
+    assert_eq!(sessions.stop(&job("over"), &requester), known);
+    assert_eq!(
+        sessions.output(&job("over"), Stream::Stdout, End::Head),
+        Err(String::from(LOST))
+    );
+    assert_eq!(started.load(Atomic::SeqCst), 0, "a session was started");
+}
+
+/// Asking of a job, stopping one and reading one's output start no
+/// session: with none, a name that isn't known is said not to be. With
+/// one, it is asked.
+#[test]
+fn asking_of_a_job_starts_no_session() {
+    let (sessions, started, _ended) = stand_ins();
+    let (_broker, requester) = UnixStream::pair().unwrap();
+    let none = Err(String::from(NO_JOB));
+    assert_eq!(sessions.job(&job("j"), LONG, &requester), none);
+    assert_eq!(sessions.stop(&job("j"), &requester), none);
+    assert_eq!(
+        sessions.output(&job("j"), Stream::Stdout, End::Head),
+        Err(String::from(NO_JOB))
+    );
+    assert_eq!(started.load(Atomic::SeqCst), 0, "a session was started");
+
+    assert_eq!(run(&sessions, "a"), Ok(stood_in(1, "a")));
+    assert_eq!(
+        sessions.job(&job("j"), LONG, &requester),
+        Err(String::from("session 1 asked of j for 10s"))
+    );
+    assert_eq!(
+        sessions.stop(&job("j"), &requester),
+        Err(String::from("session 1 stopped j"))
+    );
+    assert_eq!(
+        sessions.output(&job("j"), Stream::Stdout, End::Head),
+        Err(String::from("session 1 asked of j for 0ns"))
+    );
+    assert_eq!(started.load(Atomic::SeqCst), 1);
+}
+
+/// The output of a job is read from the ledger once it is over; of one
+/// that a session still has running, it is said not to be over.
+#[test]
+fn output_is_read_once_a_job_is_over() {
+    let ledger: Arc<Mutex<Ledger>> = Arc::default();
+    let sessions = Sessions::new(Arc::clone(&ledger), |seat: Seat| {
+        std::thread::Builder::new().spawn(move || {
+            while let Ok(message) = seat.inbox.recv() {
+                let (name, reply) = match message {
+                    Message::Run { run, reply, .. } => (run.job, reply),
+                    Message::Job { job, reply, .. } | Message::Stop { job, reply, .. } => {
+                        (job, reply)
+                    }
+                    Message::Probe { .. } | Message::Disk { .. } | Message::End { .. } => continue,
+                };
+                let state = RoomJobState::Running { ran_ms: 1 };
+                let _ = reply.send(Ok(told(&name, state, false)));
+            }
+        })
+    });
+    assert!(matches!(
+        run(&sessions, "running"),
+        Ok(RoomJobAnswer { .. })
+    ));
+    assert_eq!(
+        sessions.output(&job("running"), Stream::Stdout, End::Head),
+        Err(String::from(NOT_OVER))
+    );
+    let over = Over {
+        state: RoomJobState::Ended {
+            how: Ended::Exited(0),
+            stopped: None,
+            ran_ms: 3,
+            stdout: short(b"kept"),
+            stderr: Captured::default(),
+        },
+        pieces: [[b"kept".to_vec(), Vec::new()], Default::default()],
+    };
+    opened(&ledger).put(job("over"), over);
+    assert_eq!(
+        sessions.output(&job("over"), Stream::Stdout, End::Head),
+        Ok(b"kept".to_vec())
+    );
+    assert_eq!(
+        sessions.output(&job("over"), Stream::Stderr, End::Tail),
+        Ok(Vec::new())
+    );
 }
 
 /// With no session, a check or a disk operation is done directly; with
@@ -1043,7 +2026,7 @@ fn the_disk_and_the_check_go_through_a_live_session_only() {
     );
     assert_eq!(started.load(Atomic::SeqCst), 0, "a check started a session");
 
-    assert_eq!(run(&sessions, "/bin/true"), Ok(result(1)));
+    assert_eq!(run(&sessions, "a"), Ok(stood_in(1, "a")));
     assert_eq!(
         sessions.probe(|| unreachable!("a live session answers")),
         Ok(())
@@ -1053,7 +2036,7 @@ fn the_disk_and_the_check_go_through_a_live_session_only() {
         Err(String::from("session 1 Open"))
     );
 
-    assert_eq!(run(&sessions, "/once"), Ok(result(1)));
+    assert_eq!(run(&sessions, "once"), Ok(stood_in(1, "once")));
     let done = sessions.disk(RoomDiskOp::Close, |op| {
         assert_eq!(ended.load(Atomic::SeqCst), 1, "the session wasn't seen out");
         Err(format!("direct {op:?}"))
@@ -1067,10 +2050,10 @@ fn the_disk_and_the_check_go_through_a_live_session_only() {
 #[test]
 fn a_shut_spawner_ends_its_session_and_starts_no_other() {
     let (sessions, started, ended) = stand_ins();
-    assert_eq!(run(&sessions, "/bin/true"), Ok(result(1)));
+    assert_eq!(run(&sessions, "a"), Ok(stood_in(1, "a")));
     sessions.shut("the broker has gone");
     assert_eq!(ended.load(Atomic::SeqCst), 1, "the session wasn't seen out");
-    assert_eq!(run(&sessions, "/bin/true"), Err(String::from(LEAVING)));
+    assert_eq!(run(&sessions, "b"), Err(String::from(LEAVING)));
     assert_eq!(
         sessions.probe(|| unreachable!("nothing is done after")),
         Err(String::from(LEAVING))
@@ -1085,46 +2068,58 @@ fn a_shut_spawner_ends_its_session_and_starts_no_other() {
 
     let (idle, started, _ended) = stand_ins();
     idle.shut("the broker has gone");
-    assert_eq!(run(&idle, "/bin/true"), Err(String::from(LEAVING)));
+    assert_eq!(run(&idle, "a"), Err(String::from(LEAVING)));
     assert_eq!(started.load(Atomic::SeqCst), 0);
 }
 
 #[test]
 fn a_session_that_cannot_start_is_refused_with_why() {
-    let sessions = Sessions::new(|_| Err(io::Error::other("no threads left")));
-    let said = run(&sessions, "/bin/true").unwrap_err();
+    let sessions = Sessions::new(Arc::default(), |_| Err(io::Error::other("no threads left")));
+    let said = run(&sessions, "a").unwrap_err();
     assert_eq!(said, "cannot start the Room session: no threads left");
-    let said = run(&sessions, "/bin/true").unwrap_err();
+    let said = run(&sessions, "a").unwrap_err();
     assert_eq!(said, "cannot start the Room session: no threads left");
 }
 
-/// The command a session is started for is waiting for its thread when
-/// it starts, with the connection it was asked on.
+/// The job a session is started for is waiting for its thread when it
+/// starts, as it was asked for, with the connection it was asked on.
 #[test]
-fn a_started_session_finds_its_first_command_waiting() {
+fn a_started_session_finds_its_first_job_waiting() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let saw = Arc::clone(&seen);
-    let sessions = Sessions::new(move |seat: Seat| {
+    let sessions = Sessions::new(Arc::default(), move |seat: Seat| {
         let saw = Arc::clone(&saw);
         std::thread::Builder::new().spawn(move || {
             if let Ok(Message::Run {
-                argv,
+                run,
+                checked,
                 mut requester,
                 reply,
                 ..
             }) = seat.inbox.try_recv()
             {
-                saw.lock().unwrap().push(argv);
+                saw.lock().unwrap().push((*run, checked));
                 requester.write_all(b"!").unwrap();
-                let _ = reply.send(Ok(result(7)));
+                let _ = reply.send(Ok(stood_in(7, "echo")));
             }
         })
     });
     let (mut broker, requester) = UnixStream::pair().unwrap();
     broker.set_read_timeout(Some(LONG)).unwrap();
-    let argv = [String::from("/bin/echo"), String::from("hello")];
-    assert_eq!(sessions.run(&argv, &requester), Ok(result(7)));
-    assert_eq!(*seen.lock().unwrap(), [argv.to_vec()]);
+    let asked = RoomRun {
+        dir: Some(String::from("/session")),
+        stdin: b"in".to_vec(),
+        limit_secs: Some(30),
+        wait_secs: 2,
+        ..a_run("echo", &["echo", "hello"])
+    };
+    assert_eq!(sessions.run(&asked, &requester), Ok(stood_in(7, "echo")));
+    let held = Checked {
+        dir: String::from("/session"),
+        limit: Duration::from_secs(30),
+        wait: Duration::from_secs(2),
+    };
+    assert_eq!(*seen.lock().unwrap(), [(asked, held)]);
     let mut byte = [0_u8; 1];
     broker.read_exact(&mut byte).unwrap();
     assert_eq!(&byte, b"!");

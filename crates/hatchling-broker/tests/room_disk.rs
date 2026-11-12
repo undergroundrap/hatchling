@@ -25,7 +25,9 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use hatchling_broker::room_disk::{self, RoomDisk, RoomDiskOp, RoomDiskState, Rotated};
-use hatchling_broker::spawner::{RoomForegroundStatus, Spawner};
+use hatchling_broker::spawner::{
+    Captured, End, Ended, JobId, RoomJob, RoomJobState, RoomJobStopped, RoomRun, Spawner, Stream,
+};
 use hatchling_core::framing::{read_frame, write_frame};
 use sha2::{Digest as _, Sha256};
 
@@ -783,7 +785,7 @@ fn check_room_spawner_loss(program: &Path, image: &Place, stalled: bool) -> Resu
         drop(endpoint);
         write_frame(
             &request,
-            br#"{"request":"room-run","argv":["/bin/foreground","wait"]}"#,
+            br#"{"request":"room-run","run":{"job":"silent","argv":["/bin/foreground","sleep"],"dir":null,"stdin":"","limit_secs":null,"wait_secs":120}}"#,
         )?;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let marker = place.disk.mount_point().join("workspace/timeout-marker");
@@ -1001,12 +1003,14 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
         spawner.0.check_room_mount()?;
         check_workspace_persists(&spawner.0, &place, gid)?;
     } else if mode == 3 {
-        let reason = spawner
-            .0
-            .run_room_foreground(&[String::from("/bin/unused")])
-            .err()
-            .ok_or("the Room accepted a stale foreground reply")?;
-        assert!(reason.contains("different dispatch"), "{reason}");
+        // An answer to something that was never asked ends the Room,
+        // and the job it was given is lost with it.
+        let unused = RoomRun::new(job_name()?, vec![String::from("/bin/unused")]);
+        let answer = spawner.0.room_run(&unused)?;
+        let RoomJobState::Lost { why } = &answer.job.state else {
+            return Err("the Room took an answer to something it never asked".into());
+        };
+        assert!(why.contains("out of turn"), "{why}");
     } else {
         let started = std::time::Instant::now();
         let reason = spawner
@@ -1176,11 +1180,10 @@ fn check_installed_room_mount(
     assert!(closed.contains("isn't mapped"), "{closed}");
     // A command hears the same reason: no Room is launched for it, and it
     // isn't left to try again.
-    let unopened = spawner
-        .0
-        .run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))
+    let unopened = foreground(&spawner.0, &["kept"])
         .err()
-        .ok_or("a command ran with the room disk closed")?;
+        .ok_or("a command ran with the room disk closed")?
+        .to_string();
     assert!(unopened.contains("isn't mapped"), "{unopened}");
     spawner.0.room_disk(RoomDiskOp::Open)?;
     let mount = place.disk.mount_point();
@@ -1236,7 +1239,7 @@ fn check_installed_room_mount(
     );
     spawner.0.room_disk(RoomDiskOp::Open)?;
     if tag == "installed-broker-admission" {
-        check_room_foreground_limits(&spawner.0, &place, parent.path())?;
+        check_room_foreground_limits(&spawner.0, &place)?;
         check_room_stays_held_until_cleared(&spawner.0, &place)?;
         check_room_foreground_disconnect(program, parent.path())?;
         check_room_ends_with_its_broker(program, parent.path())?;
@@ -1252,30 +1255,104 @@ fn check_installed_room_mount(
     Ok(())
 }
 
+/// A name for a job of this test's own: no two are the same.
+fn job_name() -> Result<JobId, Failed> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let number = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Ok(format!("job-{number}").parse()?)
+}
+
+/// The fixture program with `arguments`, as a job to run in the Room.
+fn fixture_job(arguments: &[&str]) -> Result<RoomRun, Failed> {
+    let mut argv = vec![String::from("/bin/foreground")];
+    argv.extend(arguments.iter().map(|argument| (*argument).to_owned()));
+    Ok(RoomRun::new(job_name()?, argv))
+}
+
+/// Runs the fixture program in the Room as a job, and waits for it.
+fn foreground(spawner: &Spawner, arguments: &[&str]) -> Result<RoomJob, Failed> {
+    Ok(spawner.room_run(&fixture_job(arguments)?)?.job)
+}
+
+/// The exit code of a job that ended by itself.
+fn exit_code(job: &RoomJob) -> Result<u8, Failed> {
+    if let RoomJobState::Ended {
+        how: Ended::Exited(code),
+        stopped: None,
+        ..
+    } = &job.state
+    {
+        return Ok(*code);
+    }
+    Err(format!("the job didn't exit by itself: {job:?}").into())
+}
+
+/// Whether `job` was stopped, for `why`, and ended by the kill.
+fn was_stopped(job: &RoomJob, why: RoomJobStopped) -> bool {
+    matches!(
+        &job.state,
+        RoomJobState::Ended {
+            how: Ended::Signaled(9),
+            stopped: Some(stopped),
+            ..
+        } if *stopped == why
+    )
+}
+
+/// What was kept of one stream of a job that ended: its counts, its
+/// head and its tail.
+fn kept(
+    spawner: &Spawner,
+    job: &RoomJob,
+    stream: Stream,
+) -> Result<(Captured, Vec<u8>, Vec<u8>), Failed> {
+    let RoomJobState::Ended { stdout, stderr, .. } = &job.state else {
+        return Err(format!("the job didn't end: {job:?}").into());
+    };
+    let captured = match stream {
+        Stream::Stdout => *stdout,
+        Stream::Stderr => *stderr,
+    };
+    let head = spawner.room_output(&job.job, stream, End::Head)?;
+    let tail = spawner.room_output(&job.job, stream, End::Tail)?;
+    Ok((captured, head, tail))
+}
+
 fn check_room_foreground(
     spawner: &Spawner,
     place: &Place,
     before: &std::collections::BTreeSet<String>,
 ) -> Result<(), Failed> {
-    let first = spawner
-        .run_room_foreground(&["/bin/foreground", "seed", "room data"].map(str::to_owned))?;
-    assert_eq!(first.status, RoomForegroundStatus::Exited(23));
-    assert_eq!(first.stdout, b"/workspace");
-    assert_eq!(first.stderr, b"diagnostic");
-    assert!(!first.stdout_truncated && !first.stderr_truncated);
+    let first = foreground(spawner, &["seed", "room data"])?;
+    assert_eq!(exit_code(&first)?, 23);
+    let (stdout, head, tail) = kept(spawner, &first, Stream::Stdout)?;
+    assert_eq!(head, b"/workspace");
+    assert!(tail.is_empty());
+    assert_eq!((stdout.spilled, stdout.spill_cut), (10, false));
+    assert_eq!(kept(spawner, &first, Stream::Stderr)?.1, b"diagnostic");
     let path = place.disk.mount_point().join("workspace/foreground-file");
     let digest = Sha256::digest(std::fs::read(&path)?);
     assert_eq!(digest, Sha256::digest(b"room data"));
 
-    // The next command runs in the same Room: it finds the scratch the
-    // first one left, which no other Room has. A status and an open of
-    // the disk under it leave the Room as it is; so does a check.
-    let kept = spawner.run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))?;
-    assert_eq!(
-        kept.status,
-        RoomForegroundStatus::Exited(0),
-        "the second command ran in another Room"
-    );
+    // A name the spawner knows is never run again: asked for by it once
+    // more, the caller is told of the job that has it.
+    let mut again = fixture_job(&["seed", "other data"])?;
+    again.job = first.job.clone();
+    let again = spawner.room_run(&again)?;
+    assert!(!again.started, "a known name was run again");
+    assert_eq!(again.job, first);
+    assert_eq!(spawner.room_job(&first.job, 0)?.job, first);
+    let unknown = spawner
+        .room_job(&job_name()?, 0)
+        .err()
+        .ok_or("a job nobody asked for is known")?;
+    assert!(unknown.contains("no Room job by that name"), "{unknown}");
+
+    // The next job runs in the same Room: it finds the scratch the first
+    // one left, which no other Room has. A status and an open of the disk
+    // under it leave the Room as it is; so does a check.
+    let same = foreground(spawner, &["kept"])?;
+    assert_eq!(exit_code(&same)?, 0, "the second job ran in another Room");
     assert_eq!(
         spawner
             .room_disk(RoomDiskOp::Status)?
@@ -1284,15 +1361,17 @@ fn check_room_foreground(
     );
     spawner.room_disk(RoomDiskOp::Open)?;
     spawner.check_room_mount()?;
-    let kept = spawner.run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))?;
+    let same = foreground(spawner, &["kept"])?;
     assert_eq!(
-        kept.status,
-        RoomForegroundStatus::Exited(0),
+        exit_code(&same)?,
+        0,
         "a status, an open or a check ended the Room"
     );
 
+    check_room_job_surroundings(spawner)?;
+
     // Closing the disk ends the Room first: nothing of it is left, and
-    // the next command starts another, with scratch of its own.
+    // the next job starts another, with scratch of its own.
     spawner.room_disk(RoomDiskOp::Close)?;
     assert!(!place.mapped());
     assert_eq!(
@@ -1301,59 +1380,142 @@ fn check_room_foreground(
         "the closed disk's Room left its image mapped"
     );
     spawner.room_disk(RoomDiskOp::Open)?;
-    let next = spawner.run_room_foreground(&["/bin/foreground", "resume"].map(str::to_owned))?;
-    assert_eq!(next.status, RoomForegroundStatus::Exited(0));
-    assert_eq!(Sha256::digest(&next.stdout), digest);
+    let next = foreground(spawner, &["resume"])?;
+    assert_eq!(exit_code(&next)?, 0);
+    assert_eq!(
+        Sha256::digest(kept(spawner, &next, Stream::Stdout)?.1),
+        digest
+    );
+    // What the earlier Room's jobs wrote went with it; how they came out
+    // is still known.
+    assert_eq!(spawner.room_job(&first.job, 0)?.job, first);
 
-    // A large stderr write precedes stdout and must never stall its capture.
-    let capped = spawner.run_room_foreground(&["/bin/foreground", "output"].map(str::to_owned))?;
-    assert_eq!(capped.status, RoomForegroundStatus::Exited(0));
-    assert_eq!(capped.stdout, vec![0; 4096]);
-    assert_eq!(capped.stderr, vec![0; 4096]);
-    assert!(!capped.stdout_truncated && capped.stderr_truncated);
-    let missing = spawner.run_room_foreground(&[String::from("/bin/absent")])?;
-    assert_eq!(missing.status, RoomForegroundStatus::SpawnFailed);
+    check_room_job_output(spawner)
+}
+
+/// A job starts where it is asked to, with a fixed environment and
+/// nothing else, and reads what it was given.
+fn check_room_job_surroundings(spawner: &Spawner) -> Result<(), Failed> {
+    let mut placed = fixture_job(&["surroundings"])?;
+    placed.dir = Some(String::from("/session"));
+    let placed = spawner.room_run(&placed)?.job;
+    assert_eq!(exit_code(&placed)?, 0);
+    assert_eq!(
+        String::from_utf8(kept(spawner, &placed, Stream::Stdout)?.1)?,
+        "/session\nHOME=/session/home\nLANG=C.UTF-8\nPATH=/usr/bin:/bin\nTMPDIR=/session"
+    );
+    let mut fed = fixture_job(&["input"])?;
+    fed.stdin = b"given to the job\xff".to_vec();
+    let fed = spawner.room_run(&fed)?.job;
+    assert_eq!(exit_code(&fed)?, 0);
+    assert_eq!(
+        kept(spawner, &fed, Stream::Stdout)?.1,
+        b"given to the job\xff"
+    );
     Ok(())
 }
 
-fn check_room_foreground_limits(
-    spawner: &Spawner,
-    place: &Place,
-    parent: &Path,
-) -> Result<(), Failed> {
-    let full =
-        spawner.run_room_foreground(&["/bin/foreground", "fill-scratch"].map(str::to_owned))?;
-    assert_eq!(full.status, RoomForegroundStatus::Exited(1));
-    assert_eq!(full.stderr, b"ENOSPC");
-    let timeout = spawner.run_room_foreground(&["/bin/foreground", "wait"].map(str::to_owned));
-    let reason = timeout
-        .err()
-        .ok_or("the Room deadline allowed the job to finish")?;
-    assert!(
-        reason.contains("Room foreground deadline expired"),
-        "{reason}"
+/// What a job writes is kept: little of it whole, and much of it as a
+/// head and a tail, with the whole in its file in the Room.
+fn check_room_job_output(spawner: &Spawner) -> Result<(), Failed> {
+    // A large stderr write precedes stdout and must never stall its
+    // capture. Its head and its tail are kept, with the count of what
+    // fell between them, and the whole of it is in its file in the Room.
+    let loud = foreground(spawner, &["output"])?;
+    assert_eq!(exit_code(&loud)?, 0);
+    let (stdout, head, tail) = kept(spawner, &loud, Stream::Stdout)?;
+    assert_eq!(head, vec![0; 4096]);
+    assert!(tail.is_empty());
+    assert_eq!((stdout.dropped, stdout.spilled), (0, 4096));
+    let (stderr, head, tail) = kept(spawner, &loud, Stream::Stderr)?;
+    assert_eq!((head.len(), tail.len()), (16384, 16384));
+    assert_eq!(
+        (stderr.dropped, stderr.spilled, stderr.spill_cut),
+        (131_072 - 32_768, 131_072, false)
     );
+    let file = format!("/session/jobs/{}.stderr", loud.job);
+    let sized = foreground(spawner, &["size", &file])?;
+    assert_eq!(exit_code(&sized)?, 0);
+    assert_eq!(kept(spawner, &sized, Stream::Stdout)?.1, b"131072");
+
+    let absent = RoomRun::new(job_name()?, vec![String::from("/bin/absent")]);
+    let missing = spawner
+        .room_run(&absent)
+        .err()
+        .ok_or("a program that isn't there ran")?;
+    assert!(missing.contains("couldn't start that program"), "{missing}");
+    Ok(())
+}
+
+fn check_room_foreground_limits(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    let full = foreground(spawner, &["fill-scratch"])?;
+    assert_eq!(exit_code(&full)?, 1);
+    assert_eq!(kept(spawner, &full, Stream::Stderr)?.1, b"ENOSPC");
+    // With its scratch full the Room still runs a job, and still says
+    // what it wrote: only its file is short, and said to be.
+    let after = foreground(spawner, &["output"])?;
+    assert_eq!(exit_code(&after)?, 0);
+    let (stderr, head, _) = kept(spawner, &after, Stream::Stderr)?;
+    assert_eq!(head.len(), 16384);
+    assert!(stderr.spill_cut, "a full scratch held a whole file");
+
+    // A job still running at its limit is stopped, and the Room is kept.
+    let mut slow = fixture_job(&["sleep"])?;
+    slow.limit_secs = Some(2);
+    let started = std::time::Instant::now();
+    let stopped = spawner.room_run(&slow)?.job;
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "stopped before its limit"
+    );
+    assert!(was_stopped(&stopped, RoomJobStopped::Limit), "{stopped:?}");
     assert_eq!(
         std::fs::read(place.disk.mount_point().join("workspace/timeout-marker"))?,
         b"started"
     );
-    for entry in std::fs::read_dir(parent)? {
-        assert!(
-            !entry?.file_type()?.is_dir(),
-            "the timeout left a Room cgroup"
-        );
-    }
+
+    // A job is over when its first process ends, and what that left
+    // running in its group ends with it: it isn't waited for.
+    let started = std::time::Instant::now();
+    let left = foreground(spawner, &["wait"])?;
+    assert_eq!(exit_code(&left)?, 0);
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "a job's end waited for the child it left"
+    );
+
+    // A caller that doesn't wait is told its job is running. Another job
+    // runs beside it, in the same Room; and a stop that is asked for
+    // ends it, and says so.
+    let mut long = fixture_job(&["sleep"])?;
+    long.wait_secs = 0;
+    let running = spawner.room_run(&long)?;
+    assert!(running.started);
+    assert!(
+        matches!(running.job.state, RoomJobState::Running { .. }),
+        "{running:?}"
+    );
+    let beside = foreground(spawner, &["size", "/session/fill"])?;
+    assert_eq!(
+        exit_code(&beside)?,
+        0,
+        "no job ran beside another in the same Room"
+    );
+    assert!(matches!(
+        spawner.room_job(&running.job.job, 0)?.job.state,
+        RoomJobState::Running { .. }
+    ));
+    let asked = spawner.room_stop(&running.job.job)?.job;
+    assert!(was_stopped(&asked, RoomJobStopped::Asked), "{asked:?}");
+    assert_eq!(spawner.room_stop(&running.job.job)?.job, asked);
     Ok(())
 }
 
-/// One command at a time: a second is refused while one runs, and the
-/// disk under the Room still answers for itself.
-fn check_one_command_at_a_time(spawner: &Spawner) -> Result<(), Failed> {
-    let busy = spawner
-        .run_room_foreground(&["/bin/foreground", "kept"].map(str::to_owned))
-        .err()
-        .ok_or("a second command ran beside the first")?;
-    assert!(busy.contains("busy with another command"), "{busy}");
+/// Jobs run side by side: one runs to its end while another runs, and
+/// the disk under the Room still answers for itself.
+fn check_jobs_run_side_by_side(spawner: &Spawner) -> Result<(), Failed> {
+    let beside = foreground(spawner, &["output"])?;
+    assert_eq!(exit_code(&beside)?, 0, "no job ran beside the first");
     assert_eq!(
         spawner
             .room_disk(RoomDiskOp::Status)?
@@ -1393,7 +1555,7 @@ fn check_room_foreground_disconnect(program: &Path, cgroup: &Path) -> Result<(),
         drop(endpoint);
         write_frame(
             &request,
-            br#"{"request":"room-run","argv":["/bin/foreground","wait"]}"#,
+            br#"{"request":"room-run","run":{"job":"silent","argv":["/bin/foreground","sleep"],"dir":null,"stdin":"","limit_secs":null,"wait_secs":120}}"#,
         )?;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let marker = place.disk.mount_point().join("workspace/timeout-marker");
@@ -1409,7 +1571,7 @@ fn check_room_foreground_disconnect(program: &Path, cgroup: &Path) -> Result<(),
             before,
             "the workload did not keep the image mapped"
         );
-        check_one_command_at_a_time(&spawner.0)?;
+        check_jobs_run_side_by_side(&spawner.0)?;
         let (vault, keyring, old) = check_room_maintenance_refusals(&place, program)?;
         let started = std::time::Instant::now();
         drop(request);
@@ -1482,10 +1644,13 @@ fn check_room_stays_held_until_cleared(spawner: &Spawner, place: &Place) -> Resu
         ),
     )?;
     std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o700))?;
+    // From no Room at all: the one the jobs before this left is ended
+    // by closing its disk.
+    spawner.room_disk(RoomDiskOp::Close)?;
+    spawner.room_disk(RoomDiskOp::Open)?;
     let before = mapper_names()?;
-    let output = ["/bin/foreground", "output"].map(str::to_owned);
-    let ran = spawner.run_room_foreground(&output)?;
-    assert_eq!(ran.status, RoomForegroundStatus::Exited(0));
+    let ran = foreground(spawner, &["output"])?;
+    assert_eq!(exit_code(&ran)?, 0);
     assert!(
         Command::new("mount")
             .arg("--bind")
@@ -1502,10 +1667,10 @@ fn check_room_stays_held_until_cleared(spawner: &Spawner, place: &Place) -> Resu
             .ok_or("the disk closed under a Room that wasn't cleared")?;
         assert!(close.contains("isn't cleared yet"), "{close}");
         assert!(close.contains("cannot remove room mapper"), "{close}");
-        let beside = spawner
-            .run_room_foreground(&output)
+        let beside = foreground(spawner, &["output"])
             .err()
-            .ok_or("a command ran beside a Room that wasn't cleared")?;
+            .ok_or("a command ran beside a Room that wasn't cleared")?
+            .to_string();
         assert!(beside.contains("isn't cleared yet"), "{beside}");
         let check = spawner
             .check_room_mount()
@@ -1562,9 +1727,8 @@ fn check_room_ends_with_its_broker(program: &Path, cgroup: &Path) -> Result<(), 
         let spawner = Spawner::over(control.try_clone()?);
         spawner.room_disk(RoomDiskOp::Create)?;
         spawner.room_disk(RoomDiskOp::Open)?;
-        let seeded =
-            spawner.run_room_foreground(&["/bin/foreground", "seed", "kept"].map(str::to_owned))?;
-        assert_eq!(seeded.status, RoomForegroundStatus::Exited(23));
+        let seeded = foreground(&spawner, &["seed", "kept"])?;
+        assert_eq!(exit_code(&seeded)?, 23);
         assert_ne!(mapper_names()?, before, "the idle Room was not kept");
         assert!(place.mapped());
         Ok(())
