@@ -61,7 +61,8 @@ pub use fds::{
 pub use idmap::IdMap;
 pub use lock::{HeldLock, claim_dir, hold_dir, in_use, try_lock};
 pub use locked_mount::{
-    Space, is_mount_point, mount_locked_down, space, unmount_strict, verify_locked_down,
+    Space, is_mount_point, mount_locked_down, share_below, space, unmount_strict, unshare_below,
+    verify_locked_down,
 };
 pub use mounts::{BindMount, MountPlan};
 pub use namespaces::{unshare_ipc, unshare_mount, unshare_net, unshare_pid, unshare_user};

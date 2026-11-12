@@ -7,6 +7,11 @@
 //! and one that's free takes it down. A mount made without the flags is
 //! never taken as locked down.
 //!
+//! And a mount made in a directory comes down in a mount namespace made
+//! after it, when the directory's mounts were shared first
+//! ([`hatchling_sys::share_below`]), on a mount that isn't shared: without
+//! that, the copy stays.
+//!
 //! Not as root, mounting is refused, and these are skipped, saying so,
 //! unless `HATCHLING_REQUIRE_ROOT_MOUNTS=1` asks for them to run (the root
 //! pass sets it): then a skip is a failure.
@@ -14,7 +19,10 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
-use hatchling_sys::{is_mount_point, mount_locked_down, unmount_strict, verify_locked_down};
+use hatchling_sys::{
+    is_mount_point, mount_locked_down, share_below, unmount_strict, unshare_below,
+    verify_locked_down,
+};
 
 /// Whether these run here: as root. Not as root, they're skipped, unless
 /// the run asked for them.
@@ -127,4 +135,144 @@ fn a_mount_without_the_flags_is_not_locked_down() {
         "the missing flags weren't named, or a present one was"
     );
     unmount_strict(target).unwrap();
+}
+
+/// A process in a mount namespace of its own, made as a hardened service's
+/// is: a copy of every mount, each a slave of the one it was copied from.
+struct Service(std::process::Child);
+
+impl Service {
+    fn start() -> std::io::Result<Self> {
+        let child = std::process::Command::new("unshare")
+            .args(["--mount", "--propagation", "slave", "sleep", "60"])
+            .spawn()?;
+        let service = Self(child);
+        let own = std::fs::read_link("/proc/self/ns/mnt")?;
+        // It's a service once it's in its own namespace and is `sleep`.
+        for _ in 0..500 {
+            let theirs = std::fs::read_link(format!("/proc/{}/ns/mnt", service.0.id())).ok();
+            let name = std::fs::read_to_string(format!("/proc/{}/comm", service.0.id()));
+            if theirs.is_some_and(|theirs| theirs != own)
+                && name.is_ok_and(|name| name == "sleep\n")
+            {
+                return Ok(service);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Err(std::io::Error::other(
+            "the service never had a namespace of its own",
+        ))
+    }
+
+    /// Whether something is mounted at `path` in the service's namespace.
+    fn sees_mounted(&self, path: &Path) -> std::io::Result<bool> {
+        let mounts = std::fs::read_to_string(format!("/proc/{}/mountinfo", self.0.id()))?;
+        let path = path.to_string_lossy();
+        Ok(mounts
+            .lines()
+            .any(|line| line.split(' ').nth(4) == Some(&*path)))
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// A private mount to stand for a machine's root that isn't shared, with a
+/// room directory in it.
+fn private_root(name: &str) -> std::io::Result<(Scratch, PathBuf)> {
+    let scratch = Scratch::new(name)?;
+    rustix::mount::mount_bind(&scratch.0, &scratch.0)?;
+    rustix::mount::mount_change(&scratch.0, rustix::mount::MountPropagationFlags::PRIVATE)?;
+    let room = scratch.0.join("room");
+    std::fs::create_dir(&room)?;
+    std::fs::create_dir(room.join("mnt"))?;
+    Ok((scratch, room))
+}
+
+/// On a machine whose root mount isn't shared (WSL, a container), a
+/// service started while the room disk was mounted kept its own copy of
+/// the mount: the room disk came down here, stayed mounted there, and
+/// couldn't be closed. With the room directory's mounts shared first, the
+/// unmount reaches the copy.
+#[test]
+fn a_mount_comes_down_in_a_namespace_made_after_it() {
+    if !as_root("a_mount_comes_down_in_a_namespace_made_after_it") {
+        return;
+    }
+    // The fault, first: on a mount that isn't shared, the copy stays.
+    {
+        let (_scratch, room) = private_root("copy-stays").unwrap();
+        let mount = room.join("mnt");
+        mount_locked_down(Path::new("tmpfs"), &mount, "tmpfs", "size=1m").unwrap();
+        let service = Service::start().unwrap();
+        assert!(
+            service.sees_mounted(&mount).unwrap(),
+            "the service took no copy"
+        );
+        unmount_strict(&mount).unwrap();
+        assert!(
+            service.sees_mounted(&mount).unwrap(),
+            "the copy went by itself: this machine doesn't show the fault"
+        );
+    }
+    // Shared first, the unmount reaches it.
+    let (_scratch, room) = private_root("copy-goes").unwrap();
+    let mount = room.join("mnt");
+    assert!(
+        share_below(&room).unwrap(),
+        "a private mount needed no bind"
+    );
+    assert!(is_mount_point(&room).unwrap());
+    assert!(
+        !share_below(&room).unwrap(),
+        "shared already, and bound again"
+    );
+    mount_locked_down(Path::new("tmpfs"), &mount, "tmpfs", "size=1m").unwrap();
+    verify_locked_down(&mount).unwrap();
+    let service = Service::start().unwrap();
+    assert!(
+        service.sees_mounted(&mount).unwrap(),
+        "the service took no copy"
+    );
+    unmount_strict(&mount).unwrap();
+    assert!(
+        !service.sees_mounted(&mount).unwrap(),
+        "the mount came down here, and its copy stayed in the service"
+    );
+    // And the directory's own bind goes, once nothing's mounted in it.
+    assert!(unshare_below(&room).unwrap());
+    assert!(!is_mount_point(&room).unwrap());
+    assert!(
+        !unshare_below(&room).unwrap(),
+        "nothing there, and taken down"
+    );
+}
+
+/// A directory on a mount that's shared already needs nothing, and nothing
+/// is mounted on it; and only a directory's own bind is taken down, never
+/// another file system mounted there.
+#[test]
+fn a_shared_mount_is_left_as_it_is_and_another_mount_is_never_taken_down() {
+    if !as_root("a_shared_mount_is_left_as_it_is_and_another_mount_is_never_taken_down") {
+        return;
+    }
+    let (scratch, room) = private_root("shared-already").unwrap();
+    rustix::mount::mount_change(&scratch.0, rustix::mount::MountPropagationFlags::SHARED).unwrap();
+    assert!(
+        !share_below(&room).unwrap(),
+        "a shared mount was bound over"
+    );
+    assert!(!is_mount_point(&room).unwrap());
+    // A file system of its own at the room directory isn't this code's.
+    mount_locked_down(Path::new("tmpfs"), &room, "tmpfs", "size=1m").unwrap();
+    assert!(
+        !unshare_below(&room).unwrap(),
+        "another mount was taken down"
+    );
+    assert!(is_mount_point(&room).unwrap());
+    unmount_strict(&room).unwrap();
 }

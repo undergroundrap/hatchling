@@ -79,6 +79,15 @@ impl Place {
         Ok(Self { dir, disk })
     }
 
+    /// [`Place::new`], on a mount of its own that isn't shared: what a
+    /// machine's root is in WSL and in containers, wherever this runs.
+    fn private(tag: &str) -> Result<Self, Failed> {
+        let place = Self::new(tag)?;
+        rustix::mount::mount_bind(&place.dir, &place.dir)?;
+        rustix::mount::mount_change(&place.dir, rustix::mount::MountPropagationFlags::PRIVATE)?;
+        Ok(place)
+    }
+
     /// The mapping's name, once there's an image.
     fn mapping(&self) -> Option<String> {
         let head = hatchling_sys::read_file_head(&self.disk.image(), 208).ok()?;
@@ -108,7 +117,58 @@ impl Drop for Place {
                 .stderr(Stdio::null())
                 .status();
         }
+        // The room directory's own bind, and the place's, where there's
+        // one: nothing is mounted on either otherwise, and this says so.
+        for dir in [mount.parent(), Some(self.dir.as_path())]
+            .into_iter()
+            .flatten()
+        {
+            if hatchling_sys::is_mount_point(dir).unwrap_or(false) {
+                let _ = Command::new("umount").arg("-l").arg(dir).status();
+            }
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// A process in a mount namespace of its own, made as a hardened service's
+/// is: a copy of every mount, each a slave of the one it was copied from.
+struct Service(Child);
+
+impl Service {
+    fn start() -> Result<Self, Failed> {
+        let child = Command::new("unshare")
+            .args(["--mount", "--propagation", "slave", "sleep", "60"])
+            .spawn()?;
+        let service = Self(child);
+        let own = std::fs::read_link("/proc/self/ns/mnt")?;
+        for _ in 0..500 {
+            let theirs = std::fs::read_link(format!("/proc/{}/ns/mnt", service.0.id())).ok();
+            let name = std::fs::read_to_string(format!("/proc/{}/comm", service.0.id()));
+            if theirs.is_some_and(|theirs| theirs != own)
+                && name.is_ok_and(|name| name == "sleep\n")
+            {
+                return Ok(service);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Err("the service never had a namespace of its own".into())
+    }
+
+    /// Whether something is mounted at `path` in the service's namespace.
+    fn sees_mounted(&self, path: &Path) -> Result<bool, Failed> {
+        let mounts = std::fs::read_to_string(format!("/proc/{}/mountinfo", self.0.id()))?;
+        let path = path.to_string_lossy();
+        Ok(mounts
+            .lines()
+            .any(|line| line.split(' ').nth(4) == Some(&*path)))
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -2228,6 +2288,49 @@ fn a_room_disk_is_made_opened_closed_and_wiped_for_real() {
         "the image's header wasn't overwritten"
     );
     assert_eq!(state().state, RoomDiskState::Absent);
+}
+
+/// On a machine whose root mount isn't shared (WSL, a container), a
+/// service started while the room disk was open kept a copy of its mount:
+/// a close took the mount down here and left it there, the mapping stayed
+/// open with the disk's key in the kernel, and the next change to the
+/// vault's key was refused. The room disk's mount is under a shared mount
+/// now, so its unmount reaches the copy, and the mapping closes.
+#[test]
+fn a_service_started_while_the_room_disk_is_open_does_not_keep_it_open() {
+    let Some(_disk_tests) =
+        as_root("a_service_started_while_the_room_disk_is_open_does_not_keep_it_open")
+    else {
+        return;
+    };
+    let place = Place::private("service").unwrap();
+    let keeper = Keeper::start(&place, "keeper").unwrap();
+    let run = |op| room_disk::run(&place.disk, &keeper.spawner, op);
+    run(RoomDiskOp::Create).unwrap();
+    run(RoomDiskOp::Open).unwrap();
+    let mount = place.disk.mount_point();
+    let room = mount.parent().unwrap();
+
+    let service = Service::start().unwrap();
+    assert!(
+        service.sees_mounted(&mount).unwrap(),
+        "the service took no copy of the room disk's mount"
+    );
+    run(RoomDiskOp::Close).unwrap();
+    assert!(
+        !service.sees_mounted(&mount).unwrap(),
+        "the room disk came down here, and a service kept it mounted"
+    );
+    assert!(!place.mapped(), "a service's copy kept the mapping open");
+    assert!(
+        !hatchling_sys::is_mount_point(room).unwrap(),
+        "the room directory's own bind was left after the close"
+    );
+    // And it opens and closes again, the service still there.
+    run(RoomDiskOp::Open).unwrap();
+    run(RoomDiskOp::Close).unwrap();
+    assert!(!place.mapped());
+    drop(service);
 }
 
 /// A change of the vault's key, for real: the room disk's key slot moves
