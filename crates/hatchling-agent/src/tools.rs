@@ -606,7 +606,7 @@ impl Tool for SchedulePropose<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Ask the owner to schedule work: a reminder, or something to do later or again. They see when it runs, what it may do and your words in the app, and decide; nothing is scheduled unless they approve. Then it runs on their schedule and its result comes to this chat. timing is at (once, value \"YYYY-MM-DD HH:MM\"), every (value \"15m\", 1 to 59 minutes), daily or weekdays (value \"HH:MM\"), or cron (five fields), on the owner's clock. Write task as what should happen when it runs. Tell them you asked."
+        "Ask the owner to schedule work: a reminder, or something to do later or again. They see when it runs, what it may do and your words in the app, and decide; nothing is scheduled unless they approve. Then it runs on their schedule and its result comes to this chat. timing is at (once, value \"today HH:MM\", \"tomorrow HH:MM\" or \"YYYY-MM-DD HH:MM\"), every (value \"15m\", 1 to 59 minutes), daily or weekdays (value \"HH:MM\"), or cron (five fields), on the owner's clock. Write task as what should happen when it runs. Tell them you asked."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -620,7 +620,7 @@ impl Tool for SchedulePropose<'_> {
                 },
                 "value": {
                     "type": "string",
-                    "description": "The timing's value: \"2026-11-04 08:00\", \"15m\", \"07:30\" or a cron expression."
+                    "description": "The timing's value: \"tomorrow 08:00\", \"15m\", \"07:30\" or a cron expression."
                 },
                 "task": {
                     "type": "string",
@@ -3654,6 +3654,23 @@ mod tests {
             asked
         });
         (agent, handle)
+    }
+
+    /// The agent isn't told the date. The tool offers it days in words,
+    /// and shows it no date it could count "tomorrow" from.
+    #[test]
+    fn schedule_propose_offers_day_words_and_no_date_to_count_from() {
+        let (a, _b) = socket_pair();
+        let tool = SchedulePropose::new(&a);
+        let said = format!("{} {}", tool.description(), tool.parameters_schema());
+        for words in ["today HH:MM", "tomorrow HH:MM", "tomorrow 08:00"] {
+            assert!(said.contains(words), "{words}: {said}");
+        }
+        let a_year = said
+            .as_bytes()
+            .windows(4)
+            .any(|run| run.starts_with(b"20") && run.iter().all(u8::is_ascii_digit));
+        assert!(!a_year, "an example date is a date to count from: {said}");
     }
 
     #[test]

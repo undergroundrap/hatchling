@@ -117,6 +117,20 @@ pub fn local_time(seconds: i64, tz: &str) -> Option<String> {
     Some(at.strftime("%Y-%m-%d %H:%M").to_string())
 }
 
+/// The date `days` after the one `seconds` (Unix) falls on, on the clock of
+/// the time zone `tz`, as `YYYY-MM-DD`: today for 0, tomorrow for 1.
+///
+/// Days are calendar days there, so a day the clocks change is still one
+/// day. `None` for a zone it doesn't know or a date out of range.
+#[must_use]
+pub fn local_date(seconds: i64, tz: &str, days: i8) -> Option<String> {
+    let zone = timezone(tz).ok()?;
+    let today = Timestamp::from_second(seconds).ok()?.to_zoned(zone).date();
+    let span = jiff::Span::new().try_days(i64::from(days)).ok()?;
+    let date = today.checked_add(span).ok()?;
+    Some(date.strftime("%Y-%m-%d").to_string())
+}
+
 /// The `days` dates up to the one `seconds` (Unix) falls on, newest first.
 ///
 /// Each is `YYYY-MM-DD` on the clock of `tz`, or of this machine when `tz`
@@ -580,6 +594,44 @@ mod tests {
         );
         assert_eq!(local_time(1_790_000_000, "Mars/Olympus"), None);
         assert_eq!(local_time(i64::MAX, "UTC"), None);
+    }
+
+    /// Today and tomorrow are days on the zone's own calendar: the date
+    /// there, not the date in UTC, and one day on however long the day is.
+    #[test]
+    fn a_date_some_days_on_is_a_calendar_day_on_the_zones_clock() {
+        let at = |instant: &str| instant.parse::<Timestamp>().unwrap().as_second();
+        let late = at("2026-11-11T23:30:00Z");
+        assert_eq!(local_date(late, "UTC", 0).as_deref(), Some("2026-11-11"));
+        assert_eq!(local_date(late, "UTC", 1).as_deref(), Some("2026-11-12"));
+        assert_eq!(local_date(late, "UTC", -1).as_deref(), Some("2026-11-10"));
+        assert_eq!(
+            local_date(late, "Asia/Tokyo", 0).as_deref(),
+            Some("2026-11-12"),
+            "already tomorrow there"
+        );
+        assert_eq!(
+            local_date(late, "America/New_York", 1).as_deref(),
+            Some("2026-11-12")
+        );
+        assert_eq!(
+            local_date(at("2026-12-31T12:00:00Z"), "UTC", 1).as_deref(),
+            Some("2027-01-01")
+        );
+        // The clocks go back in New York on 2026-11-01, a day of 25 hours:
+        // half past midnight and a day on is the 2nd, not still the 1st.
+        let long_day = at("2026-11-01T04:30:00Z");
+        assert_eq!(
+            local_date(long_day, "America/New_York", 0).as_deref(),
+            Some("2026-11-01")
+        );
+        assert_eq!(
+            local_date(long_day, "America/New_York", 1).as_deref(),
+            Some("2026-11-02")
+        );
+        assert_eq!(local_date(late, "Mars/Olympus", 0), None);
+        assert_eq!(local_date(late, "", 0), None);
+        assert_eq!(local_date(i64::MAX, "UTC", 0), None);
     }
 
     #[test]

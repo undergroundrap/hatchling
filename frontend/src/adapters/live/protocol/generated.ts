@@ -2602,9 +2602,10 @@ export type ScheduleOp = {
      */
     readonly task: string;
     /**
-     * How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,
-     * 1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`
-     * (five fields), on the owner's clock.
+     * How it repeats: `at` (once, `today HH:MM`, `tomorrow HH:MM` or
+     * `YYYY-MM-DD HH:MM`), `every` (`15m`, 1 to 59 minutes), `daily`
+     * or `weekdays` (`HH:MM`), or `cron` (five fields), on the
+     * owner's clock.
      */
     readonly timing: string;
     /**
@@ -3182,9 +3183,10 @@ export type SessionRequest = {
      */
     readonly task: string;
     /**
-     * How it repeats: `at` (once, `YYYY-MM-DD HH:MM`), `every` (`15m`,
-     * 1 to 59 minutes), `daily` or `weekdays` (`HH:MM`), or `cron`
-     * (five fields), on the owner's clock.
+     * How it repeats: `at` (once, `today HH:MM`, `tomorrow HH:MM` or
+     * `YYYY-MM-DD HH:MM`), `every` (`15m`, 1 to 59 minutes), `daily`
+     * or `weekdays` (`HH:MM`), or `cron` (five fields), on the
+     * owner's clock.
      */
     readonly timing: string;
     /**

@@ -423,7 +423,7 @@ impl Board {
                 action: json!({ "format": 1, "op": "schedule.create", "when": when, "task": task, "grants": grants }),
                 fingerprint: json!({ "op": "schedule.create", "when": when, "task": task }),
                 task: asking.to_owned(),
-                decide_secs: UNWAITED_DECIDE_SECS,
+                decide_secs: schedule_wait(when, now),
                 session: false,
                 always: false,
             },
@@ -666,6 +666,19 @@ impl Board {
             true
         })
     }
+}
+
+/// How long a proposed schedule waits for the owner's answer at `now`: a
+/// day, or, for one that runs once, until its time. Approving it after
+/// that could schedule nothing.
+fn schedule_wait(when: &hatchling_core::ScheduleSpec, now: i64) -> i64 {
+    let once = hatchling_scheduler::Timing::parse(when)
+        .ok()
+        .filter(hatchling_scheduler::Timing::is_once)
+        .and_then(|timing| timing.next_after(Timestamp::from_second(now).ok()?));
+    once.map_or(UNWAITED_DECIDE_SECS, |at| {
+        at.as_second().saturating_sub(now).min(UNWAITED_DECIDE_SECS)
+    })
 }
 
 /// The record a site's approval binds: the site, and the page the owner
@@ -1187,6 +1200,46 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// A schedule that runs once waits for the owner until its time, and
+    /// no longer than a day; one that repeats waits a day.
+    #[test]
+    fn a_one_time_schedule_waits_only_until_its_time() {
+        let now = "2026-11-11T12:00:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_second();
+        let once = |at: &str| hatchling_core::ScheduleSpec::Once {
+            at: at.to_owned(),
+            tz: String::from("UTC"),
+        };
+        assert_eq!(schedule_wait(&once("2026-11-11T14:00"), now), 2 * 60 * 60);
+        assert_eq!(
+            schedule_wait(&once("2026-11-12T12:00"), now),
+            UNWAITED_DECIDE_SECS
+        );
+        assert_eq!(
+            schedule_wait(&once("2026-11-12T11:59"), now),
+            UNWAITED_DECIDE_SECS - 60
+        );
+        assert_eq!(
+            schedule_wait(&once("2026-11-14T09:00"), now),
+            UNWAITED_DECIDE_SECS
+        );
+        let daily = hatchling_core::ScheduleSpec::Cron {
+            expr: String::from("0 13 * * *"),
+            tz: String::from("UTC"),
+        };
+        assert_eq!(
+            schedule_wait(&daily, now),
+            UNWAITED_DECIDE_SECS,
+            "a repeating one's next time is not its last"
+        );
+        assert_eq!(
+            schedule_wait(&once("no time at all"), now),
+            UNWAITED_DECIDE_SECS
+        );
     }
 
     /// A request the owner can no longer answer is said so on the stream,

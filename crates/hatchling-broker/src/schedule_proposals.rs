@@ -8,9 +8,14 @@
 //! when it runs and what it may do, in its own words, and the task as the
 //! agent's. Approved, the worker creates it as theirs, with the grants of
 //! the session that asked, delivering to the chat.
+//!
+//! The agent isn't told the date, so a one-time proposal may name its day
+//! in words (`today 17:00`, `tomorrow 09:00`), which the broker reads on
+//! the owner's clock. A time that has already passed is never put to the
+//! owner: the agent hears that, with the time it is now, and can ask again.
 
-use hatchling_core::{ScheduleGrant, ScheduleOp, ScheduleResult, ScheduleSpec};
-use hatchling_scheduler::{Creator, MAX_TASK_BYTES, Timestamp};
+use hatchling_core::{ScheduleGrant, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec};
+use hatchling_scheduler::{Creator, MAX_TASK_BYTES, Timestamp, Timing};
 use hatchling_vault::OpensStores;
 
 use crate::Config;
@@ -31,6 +36,26 @@ pub fn propose(
     value: &str,
     task: &str,
 ) -> ScheduleResult {
+    let zone = hatchling_scheduler::system_zone().unwrap_or_else(|| String::from("UTC"));
+    propose_at(
+        config,
+        asking,
+        (timing, value),
+        task,
+        Timestamp::now(),
+        &zone,
+    )
+}
+
+/// [`propose`], at `now` on the clock of the time zone `zone`.
+fn propose_at(
+    config: &Config,
+    asking: &str,
+    (timing, value): (&str, &str),
+    task: &str,
+    now: Timestamp,
+    zone: &str,
+) -> ScheduleResult {
     let grants: Vec<ScheduleGrant> = crate::held_grants(config).into_iter().collect();
     let posts = grants.contains(&ScheduleGrant::ChannelSend {
         channel: String::from(CHANNEL),
@@ -45,13 +70,26 @@ pub fn propose(
     {
         return unasked("the task must be some text, at most 4 KiB, with no control characters");
     }
-    let zone = hatchling_scheduler::system_zone().unwrap_or_else(|| String::from("UTC"));
-    let when = match crate::schedule_cli::when(&format!("--{timing}"), value, zone) {
+    let clock = hatchling_scheduler::local_time(now.as_second(), zone).unwrap_or_default();
+    let value = if timing == "at" {
+        dated(value, now.as_second(), zone)
+    } else {
+        value.to_owned()
+    };
+    let when = match crate::schedule_cli::when(&format!("--{timing}"), &value, zone.to_owned()) {
         Ok(when) => when,
+        Err(_) if timing == "at" => {
+            return unasked(&format!(
+                "at takes \"YYYY-MM-DD HH:MM\", \"today HH:MM\" or \"tomorrow HH:MM\"; it is now {clock} ({zone})"
+            ));
+        }
         Err(reason) => return unasked(&reason.replace("--", "")),
     };
+    if let Some(reason) = never_runs(&when, now, &clock) {
+        return unasked(&reason);
+    }
     let words = crate::schedule_cli::describe(&when);
-    let now = Timestamp::now().as_second();
+    let now = now.as_second();
     match board(config).propose_schedule(&when, task, &grants, &words, asking, now) {
         Ok(_) => ScheduleResult::Proposed { when: words },
         Err(refusal) => unasked(match refusal {
@@ -63,6 +101,91 @@ pub fn propose(
                 "it couldn't be put to the owner"
             }
         }),
+    }
+}
+
+/// `value` for a one-time proposal, with a day named in words made its
+/// date on the clock of `zone` at `now`: `today 17:00`, `tomorrow at 9:00`.
+/// Anything else is left as it is, for the timing's own reading.
+fn dated(value: &str, now: i64, zone: &str) -> String {
+    let asked = value.trim().to_ascii_lowercase();
+    let on = |word: &str, days: i8| {
+        let time = asked.strip_prefix(word)?.trim();
+        let time = time.strip_prefix("at ").unwrap_or(time).trim();
+        let date = hatchling_scheduler::local_date(now, zone, days)?;
+        // `9:00` is read as `09:00`.
+        let pad = if time.find(':') == Some(1) { "0" } else { "" };
+        Some(format!("{date} {pad}{time}"))
+    };
+    on("today ", 0)
+        .or_else(|| on("tomorrow ", 1))
+        .unwrap_or_else(|| value.to_owned())
+}
+
+/// Why `when` could never run after `now`, if it couldn't: what the agent
+/// is told, with the time it is now (`clock`), so it can ask again.
+fn never_runs(when: &ScheduleSpec, now: Timestamp, clock: &str) -> Option<String> {
+    let timing = match Timing::parse(when) {
+        Ok(timing) => timing,
+        Err(ScheduleRefusal::NotInFuture) => {
+            return Some(String::from(
+                "that time doesn't exist on the owner's clock: the clocks skip it that day",
+            ));
+        }
+        Err(_) => return Some(String::from("that timing can't be read")),
+    };
+    if timing.next_after(now).is_some() {
+        return None;
+    }
+    Some(match when {
+        ScheduleSpec::Once { at, tz } => format!(
+            "{} has already passed: it is now {clock} ({tz}). Ask again with a time that is still to come",
+            at.replace('T', " ")
+        ),
+        ScheduleSpec::Cron { .. } => String::from("that timing never comes round"),
+    })
+}
+
+/// Why an approved schedule wasn't created, in the owner's words.
+fn why_not(created: &ScheduleResult, when: &ScheduleSpec) -> String {
+    let refused = |reason: ScheduleRefusal| match reason {
+        ScheduleRefusal::NotInFuture => format!(
+            "its time had already passed ({})",
+            crate::schedule_cli::describe(when)
+        ),
+        ScheduleRefusal::Full => {
+            String::from("the schedule list is full. Remove one in Schedule, then ask again")
+        }
+        ScheduleRefusal::ExceedsGrants
+        | ScheduleRefusal::ChannelNotGranted
+        | ScheduleRefusal::TooManyGrants => {
+            String::from("it asked for more than the chat that proposed it may do")
+        }
+        ScheduleRefusal::MissingTimezone
+        | ScheduleRefusal::UnknownTimezone
+        | ScheduleRefusal::InvalidSpec => String::from("its timing can't be read"),
+        ScheduleRefusal::BadTask => String::from("its task text can't be used"),
+        ScheduleRefusal::UnknownSource
+        | ScheduleRefusal::MaxFollowupDepth
+        | ScheduleRefusal::FollowupTaken
+        | ScheduleRefusal::BadDelay => String::from("the broker refused it"),
+    };
+    match created {
+        ScheduleResult::Refused { reason } => refused(*reason),
+        ScheduleResult::Denied => String::from("scheduling is turned off on this broker"),
+        ScheduleResult::ScheduleError => String::from(
+            "the schedule store couldn't be written. `sudo hatchling-broker doctor` checks it",
+        ),
+        ScheduleResult::Created { .. }
+        | ScheduleResult::Cancelled
+        | ScheduleResult::NotFound
+        | ScheduleResult::Listed { .. }
+        | ScheduleResult::Resolved
+        | ScheduleResult::Retried
+        | ScheduleResult::Parked { .. }
+        | ScheduleResult::Dismissed
+        | ScheduleResult::Proposed { .. }
+        | ScheduleResult::Unasked { .. } => String::from("the broker refused it"),
     }
 }
 
@@ -100,8 +223,9 @@ pub fn create(
         ));
     }
     tracing::warn!(result = ?created, "an approved schedule wasn't created");
-    Err(String::from(
-        "Approved, but it wasn't scheduled: the broker refused it. Its log says why.",
+    Err(format!(
+        "Approved, but it wasn't scheduled: {}.",
+        why_not(&created, when)
     ))
 }
 
@@ -256,6 +380,193 @@ mod tests {
         assert_eq!(
             fields.last().map(|f| (f.1, f.2)),
             Some(("Stretch for five minutes.", FieldSource::Agent))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Noon on 2026-11-11, UTC.
+    fn noon() -> Timestamp {
+        "2026-11-11T12:00:00Z".parse().unwrap()
+    }
+
+    fn unasked_for(result: ScheduleResult) -> String {
+        if let ScheduleResult::Unasked { reason } = result {
+            reason
+        } else {
+            format!("it was not refused: {result:?}")
+        }
+    }
+
+    /// A day named in words is that day on the owner's clock, whatever the
+    /// date is elsewhere; anything else is left for the timing to read.
+    #[test]
+    fn a_day_named_in_words_is_read_on_the_owners_clock() {
+        let now = noon().as_second();
+        assert_eq!(dated("tomorrow 09:00", now, "UTC"), "2026-11-12 09:00");
+        assert_eq!(dated("  Tomorrow at 9:00 ", now, "UTC"), "2026-11-12 09:00");
+        assert_eq!(dated("today 17:30", now, "UTC"), "2026-11-11 17:30");
+        assert_eq!(dated("TODAY  at  7:05", now, "UTC"), "2026-11-11 07:05");
+        let late = "2026-11-11T23:30:00Z".parse::<Timestamp>().unwrap();
+        assert_eq!(
+            dated("today 08:00", late.as_second(), "Asia/Tokyo"),
+            "2026-11-12 08:00",
+            "today is the owner's today"
+        );
+        for untouched in ["2026-11-20 08:00", "tomorrowish 09:00", "next tuesday"] {
+            assert_eq!(dated(untouched, now, "UTC"), untouched);
+        }
+        assert_eq!(
+            dated("tomorrow 09:00", now, "Mars/Olympus"),
+            "tomorrow 09:00",
+            "no clock to read it on"
+        );
+    }
+
+    /// A time that can never come is never put to the owner. The agent
+    /// hears why, with the time it is now, so it can ask again; a time
+    /// still to come is asked, by its date.
+    #[test]
+    fn a_time_that_has_passed_is_never_put_to_the_owner() {
+        let (config, dir) = config("passed", &["localhost:11434"]);
+        let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(std::sync::Arc::clone(&bus));
+        let ask = |timing: &str, value: &str| {
+            propose_at(
+                &config,
+                "task-1",
+                (timing, value),
+                "Water the plants.",
+                noon(),
+                "UTC",
+            )
+        };
+        assert_eq!(
+            unasked_for(ask("at", "2026-11-05 09:00")),
+            "2026-11-05 09:00 has already passed: it is now 2026-11-11 12:00 (UTC). Ask again with a time that is still to come"
+        );
+        for passed in ["today 09:00", "2026-11-11 12:00"] {
+            let reason = unasked_for(ask("at", passed));
+            assert!(reason.contains("has already passed"), "{passed}: {reason}");
+        }
+        assert_eq!(
+            unasked_for(ask("at", "next tuesday")),
+            "at takes \"YYYY-MM-DD HH:MM\", \"today HH:MM\" or \"tomorrow HH:MM\"; it is now 2026-11-11 12:00 (UTC)"
+        );
+        assert_eq!(
+            unasked_for(ask("cron", "0 0 31 2 *")),
+            "that timing never comes round"
+        );
+        assert_eq!(unasked_for(ask("every", "90m")), "every takes 1m to 59m");
+        assert!(
+            bus.after(None).is_empty(),
+            "a time that can never come was put to the owner"
+        );
+
+        assert_eq!(
+            ask("at", "tomorrow 09:00"),
+            ScheduleResult::Proposed {
+                when: String::from("Once, 2026-11-12 at 09:00 (UTC)")
+            }
+        );
+        let card = bus
+            .after(None)
+            .into_iter()
+            .find_map(|event| {
+                if let UiEventBody::Confirmation(card) = event.body {
+                    Some(card)
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            card.fields.first().map(|field| field.value.as_str()),
+            Some("Once, 2026-11-12 at 09:00 (UTC)")
+        );
+        // It waits for the owner until its time, and no longer.
+        assert_eq!(card.expires_at.as_deref(), Some("2026-11-12T09:00:00Z"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A time the clocks skip is said as that, and a timing that can't be
+    /// read as that: neither is called passed.
+    #[test]
+    fn a_time_that_cannot_run_says_which_way() {
+        let once = |at: &str| ScheduleSpec::Once {
+            at: at.to_owned(),
+            tz: String::from("America/New_York"),
+        };
+        let early = "2026-03-01T12:00:00Z".parse::<Timestamp>().unwrap();
+        // The clocks go forward at 02:00 on 2026-03-08 there.
+        assert_eq!(
+            never_runs(&once("2026-03-08T02:30"), early, "x").as_deref(),
+            Some("that time doesn't exist on the owner's clock: the clocks skip it that day")
+        );
+        assert_eq!(
+            never_runs(&once("the 8th at half two"), early, "x").as_deref(),
+            Some("that timing can't be read")
+        );
+        assert_eq!(never_runs(&once("2026-03-08T03:30"), early, "x"), None);
+        assert_eq!(
+            never_runs(&once("2026-02-28T03:30"), early, "the clock").as_deref(),
+            Some(
+                "2026-02-28 03:30 has already passed: it is now the clock (America/New_York). Ask again with a time that is still to come"
+            )
+        );
+    }
+
+    /// An approved schedule that isn't created says why, in the chat.
+    #[test]
+    fn a_schedule_that_was_not_created_says_why() {
+        let when = ScheduleSpec::Once {
+            at: String::from("2026-11-05T09:00"),
+            tz: String::from("UTC"),
+        };
+        let refused = |reason| why_not(&ScheduleResult::Refused { reason }, &when);
+        assert_eq!(
+            refused(ScheduleRefusal::NotInFuture),
+            "its time had already passed (Once, 2026-11-05 at 09:00 (UTC))"
+        );
+        assert!(refused(ScheduleRefusal::Full).contains("the schedule list is full"));
+        for more in [
+            ScheduleRefusal::ExceedsGrants,
+            ScheduleRefusal::ChannelNotGranted,
+            ScheduleRefusal::TooManyGrants,
+        ] {
+            assert!(refused(more).contains("more than the chat that proposed it may do"));
+        }
+        for unread in [
+            ScheduleRefusal::MissingTimezone,
+            ScheduleRefusal::UnknownTimezone,
+            ScheduleRefusal::InvalidSpec,
+        ] {
+            assert_eq!(refused(unread), "its timing can't be read");
+        }
+        assert_eq!(
+            refused(ScheduleRefusal::BadTask),
+            "its task text can't be used"
+        );
+        assert_eq!(refused(ScheduleRefusal::BadDelay), "the broker refused it");
+        assert_eq!(
+            why_not(&ScheduleResult::Denied, &when),
+            "scheduling is turned off on this broker"
+        );
+        assert!(why_not(&ScheduleResult::ScheduleError, &when).contains("schedule store"));
+        assert_eq!(
+            why_not(&ScheduleResult::Cancelled, &when),
+            "the broker refused it"
+        );
+
+        // As the owner hears it, for a time that passed while it waited.
+        let (mut config, dir) = config("why-not", &["localhost:11434"]);
+        config.scheduler.root = dir.join("schedules");
+        let key = hatchling_vault::MasterKey::generate().unwrap();
+        let grants: Vec<ScheduleGrant> = crate::held_grants(&config).into_iter().collect();
+        assert_eq!(
+            create(&config, &key, &when, "Water the plants.", &grants, noon()),
+            Err(String::from(
+                "Approved, but it wasn't scheduled: its time had already passed (Once, 2026-11-05 at 09:00 (UTC))."
+            ))
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
