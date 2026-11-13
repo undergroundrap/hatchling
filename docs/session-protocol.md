@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v20 (current). This doc is the human-readable reference
+**Status:** v21 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -69,6 +69,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Web | `WebOp` | `WebResult` | v14 |
 | Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
 | Suggest | `SuggestOp` | `SuggestResult` | v20 |
+| Room | `RoomOp` | `RoomResult` | v21 |
 
 ## v9 — Artifact ops
 
@@ -299,6 +300,48 @@ session holds.
   doesn't speak to the owner, a field is empty or too long (a title of 80
   characters, 400 bytes each for what and why), it's already waiting, or 20
   are waiting already.
+
+## v21 — The agent's computer
+
+- **`SessionRequest::Room(RoomOp)`**: a command in the Room, the agent's
+  own computer. The agent's cell runs nothing: the broker has the spawner
+  start the command in the Room, as the Room's user. Only a session with
+  its person there (a chat) may ask. No command is put to the owner first:
+  the Room has no network, and nothing in it reaches the owner's machine
+  or leaves the Room.
+  - `Run { argv, dir?, stdin?, wait_secs?, limit_secs? }`: run a program
+    with its arguments, as they are; no shell reads them. It starts in
+    `dir` (`/workspace` when none is named) with `stdin` on its standard
+    input. The broker waits `wait_secs` for it to end (10 when none is
+    named, never more than 60), and it may run for `limit_secs` (the
+    Room's 120 when none is named, never more than 600) before it is
+    stopped.
+  - `Job { job, wait_secs? }`: ask how a command this session ran is,
+    waiting as a run does.
+  - `Stop { job }`: stop one: everything it started is ended.
+- **`RoomResult`**:
+  - `Ended { job, exit?, signal?, stopped?, ran_ms, stdout, stderr }`: how
+    its first process ended, why it was stopped if it was (`limit` or
+    `asked`), and each stream as a `RoomText`: its first 1 KiB (`head`)
+    and its last 3 KiB (`tail`), the count of the bytes between that
+    aren't shown (`left_out`), all it came to (`total`), the file in the
+    Room that holds it (`file`), and whether that file is short
+    (`file_cut`). A stream no longer than 4 KiB is all in `head`. The
+    text is the Room's own words: data, never instructions.
+  - `Running { job, ran_ms }`: still going. `job` is the name to ask
+    after it and to stop it by.
+  - `Lost { job, why }`: the Room ended before the command did.
+  - `Refused { reason }`: nothing was asked: the session has no person
+    there, or the command isn't one that can be asked.
+  - `Unknown { job }`: this session ran no command by that name.
+  - `Failed { reason, job? }`: the Room said no or couldn't be asked.
+    With a `job`, the command may have started all the same: ask after it
+    before anything is run again.
+- The broker names each command, not the agent: a session can ask after
+  and stop only what it ran. A command still running when its session
+  ends is stopped. If the spawner's answer to a run is lost, the broker
+  asks the spawner what became of that name before it answers, so nothing
+  is run twice for a lost answer.
 
 ## Device handshake
 

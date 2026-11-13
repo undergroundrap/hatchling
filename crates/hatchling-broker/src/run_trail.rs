@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use hatchling_core::{
     ActivityEvent, ArtifactResult, BrowserResult, ChannelOp, ChannelResult, EgressOp, EgressResult,
-    GoalsResult, HookResult, MemoryOp, MemoryResult, QueryOp, QueryResult, ScheduleOp,
+    GoalsResult, HookResult, MemoryOp, MemoryResult, QueryOp, QueryResult, RoomResult, ScheduleOp,
     ScheduleResult, SessionRequest, SessionResponse, SkillResult, SpaceResult, SubagentEvent,
     SubagentResult, SuggestResult, ToolTally, ToolUse, VaultResult, WebOp, WebResult,
 };
@@ -308,6 +308,7 @@ pub fn tool_of(request: &SessionRequest) -> Option<ToolUse> {
         SessionRequest::Web(_) => ToolUse::WebPage,
         SessionRequest::Browser(_) => ToolUse::Browser,
         SessionRequest::Suggest(_) => ToolUse::IdeaSuggest,
+        SessionRequest::Room(_) => ToolUse::Room,
     })
 }
 
@@ -329,6 +330,7 @@ const fn ending_of(response: &SessionResponse) -> Ending {
         SessionResponse::Web(result) => web_ending(result),
         SessionResponse::Browser(result) => browser_ending(result),
         SessionResponse::Suggest(result) => suggest_ending(result),
+        SessionResponse::Room(result) => room_ending(result),
     }
 }
 
@@ -549,9 +551,20 @@ const fn suggest_ending(result: &SuggestResult) -> Ending {
     }
 }
 
+/// How a use answered with `result` ended. A command that ran is done,
+/// however it came out: its exit is the agent's to read.
+const fn room_ending(result: &RoomResult) -> Ending {
+    use Ending::{Done, Failed, Refused};
+    match result {
+        RoomResult::Ended { .. } | RoomResult::Running { .. } => Done,
+        RoomResult::Refused { .. } | RoomResult::Unknown { .. } => Refused,
+        RoomResult::Lost { .. } | RoomResult::Failed { .. } => Failed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use hatchling_core::{GoalsOp, SuggestOp, SuggestionArea, WebOp};
+    use hatchling_core::{GoalsOp, RoomOp, SuggestOp, SuggestionArea, WebOp};
 
     use super::*;
 
@@ -644,6 +657,10 @@ mod tests {
                     area: SuggestionArea::Learning,
                 }),
                 Some(ToolUse::IdeaSuggest),
+            ),
+            (
+                SessionRequest::Room(RoomOp::Stop { job: s("j") }),
+                Some(ToolUse::Room),
             ),
             (egress("GET", "/v1/models"), Some(ToolUse::Network)),
             (egress("POST", "/v1/chat/completions"), None),

@@ -204,6 +204,7 @@ fn loop_offers_only_the_tool_groups_the_broker_says_are_on() {
         (ToolGroup::Goals, "goals_read", json!({"status": "closed"})),
         (ToolGroup::Memory, "memory_propose", json!({})),
         (ToolGroup::Schedule, "schedule_propose", json!({})),
+        (ToolGroup::Room, "run", json!({})),
     ];
     let every = || groups.iter().map(|(group, _, _)| *group).collect();
     for (case, run_tools) in [
@@ -291,5 +292,51 @@ fn loop_tells_the_model_what_is_off() {
     assert!(
         system.contains("can't run programs or commands"),
         "{system}"
+    );
+}
+
+/// A run offered its computer is told it has one, and its `run` goes
+/// through the real broker's session and back: a broker with no Room to
+/// run in says so, in words, and the loop goes on to the model's answer.
+#[test]
+fn loop_asks_the_broker_to_run_a_command() {
+    let broker = FixtureBroker::spawn("loop-room", BrokerBehavior::Vault(Vec::new())).unwrap();
+    let cell = ready_cell_offering(
+        &broker,
+        Some(std::collections::BTreeSet::from([ToolGroup::Room])),
+    )
+    .unwrap();
+    let model = FakeModel::new(vec![
+        ModelAction::ToolCalls(vec![ToolCall {
+            name: String::from("run"),
+            arguments: json!({ "command": ["true"] }),
+        }]),
+        ModelAction::Text(String::from("it didn't run")),
+    ]);
+    let result = cell
+        .run_loop(
+            hatchling_agent::PromptKind::Chat,
+            &model,
+            String::from("run true"),
+            LoopBudget { max_steps: 5 },
+        )
+        .unwrap();
+    assert_eq!(result.answer, "it didn't run");
+    let seen = model.seen_histories();
+    let system = format!("{:?}", seen.first().and_then(|history| history.first()));
+    assert!(system.contains("a computer of your own"), "{system}");
+    assert!(
+        !system.contains("can't run programs or commands"),
+        "{system}"
+    );
+    let turn2 = seen.get(1).expect("model should have a second turn");
+    let results = tool_results(turn2, 2).expect("expected ToolUse at index 2");
+    let Some(ToolOutput::Err(told)) = results.first() else {
+        unreachable!("no command runs here, got {results:?}")
+    };
+    assert!(
+        told == "commands run only in a chat, with the owner there: this run has no computer"
+            || told == "nothing was run: there is no computer on this install",
+        "{told}"
     );
 }

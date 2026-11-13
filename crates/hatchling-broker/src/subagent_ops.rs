@@ -454,7 +454,12 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             history: Vec::new(),
             earlier: Vec::new(),
             builders: BTreeMap::new(),
-            tools: Some(crate::run_launcher::run_tools(self.config, capabilities)),
+            // A subagent has no person there: it gets no computer.
+            tools: Some(crate::run_launcher::run_tools(
+                self.config,
+                capabilities,
+                false,
+            )),
         };
         let config = self.config;
         let started = launcher.launch_cell("subagent", run, self.hit.clone(), |token, socket| {

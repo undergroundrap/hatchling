@@ -130,6 +130,7 @@ const TOOLS: Readonly<Record<ToolUse, string>> = {
     artifact: 'Worked on a build',
     space: 'Used a shared space',
     network: 'Made a network request',
+    room: 'Ran a command in its computer',
 };
 const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 /** How a tool's uses ended, in a few words: `2 done · 1 refused`. */

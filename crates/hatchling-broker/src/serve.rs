@@ -896,6 +896,9 @@ fn serve_session(
     // when the session ends.
     let mut browser = crate::browser_ops::BrowserSession::new(crate::browser_ops::configured())
         .with_board(crate::browser_board::board(config));
+    // The session's commands in the Room: named here, and stopped when
+    // the session ends.
+    let mut room = crate::room_ops::RoomSession::new(config);
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
     // What the session does, as the broker serves it: summarized in the
     // owner's Activity when the session ends, however it ends.
@@ -1039,6 +1042,7 @@ fn serve_session(
                 SessionRequest::Suggest(op) => {
                     SessionResponse::Suggest(crate::suggestions::suggest(config, &op))
                 }
+                SessionRequest::Room(op) => SessionResponse::Room(room.handle(&op)),
             };
             trail.note(used, &response);
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
@@ -1186,6 +1190,9 @@ const fn oversize_reply(response: &SessionResponse) -> SessionResponse {
                 reason: String::new(),
             })
         }
+        SessionResponse::Room(_) => SessionResponse::Room(hatchling_core::RoomResult::Refused {
+            reason: String::new(),
+        }),
     }
 }
 
@@ -2369,6 +2376,11 @@ mod gate_scope_tests {
         let config = crate::api_auth::tests::owner_config(None);
         let key = MasterKey::generate().unwrap();
         let (agent, broker) = UnixStream::pair().unwrap();
+        // A session that ends early leaves the agent's end unanswered: it
+        // gives up, and this test fails, where it would wait for good.
+        agent
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
         let creds = peer_credentials(&broker).unwrap();
         let cell_id: CellId = "cell-gate".parse().unwrap();
         let skills = Skills::default();

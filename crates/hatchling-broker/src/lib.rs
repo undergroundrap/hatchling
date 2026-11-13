@@ -105,6 +105,11 @@ mod room_job;
 mod room_launch;
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "the session loop and the run launcher share the session's Room"
+)]
+mod room_ops;
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "the spawner and the launcher share the kept session"
 )]
 mod room_session;

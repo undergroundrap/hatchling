@@ -465,6 +465,11 @@ impl Cell<Ready> {
                 self.connection(),
             )));
         }
+        if on(hatchling_core::run_tools::ToolGroup::Room) {
+            registry.register(Box::new(crate::tools::RunTool::new(self.connection())));
+            registry.register(Box::new(crate::tools::RunCheckTool::new(self.connection())));
+            registry.register(Box::new(crate::tools::RunStopTool::new(self.connection())));
+        }
         if on(hatchling_core::run_tools::ToolGroup::Browser) {
             registry.register(Box::new(crate::tools::BrowserOpenTool::new(
                 self.connection(),

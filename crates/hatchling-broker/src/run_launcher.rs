@@ -868,7 +868,11 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         history: request.history.clone(),
         earlier: request.earlier.clone(),
         builders: run_artifacts(config, request).builders,
-        tools: Some(run_tools(config, &request.grants)),
+        tools: Some(run_tools(
+            config,
+            &request.grants,
+            crate::room_ops::offered(request.chat, crate::room_ops::open),
+        )),
     }
 }
 
@@ -877,10 +881,12 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
 /// one was set up, skills if a skills directory was, reading the owner's
 /// goals if there's a goals store and the run may read it, and asking to
 /// keep something in their memory if there's a memory store and the run
-/// may ask.
+/// may ask. Its own computer, the Room, if `room` says it is offered one
+/// ([`crate::room_ops::offered`]).
 pub(crate) fn run_tools(
     config: &Config,
     grants: &[ScheduleGrant],
+    room: bool,
 ) -> std::collections::BTreeSet<hatchling_core::run_tools::ToolGroup> {
     use hatchling_core::run_tools::ToolGroup;
     let reads_goals = grants.contains(&ScheduleGrant::Goals {
@@ -918,6 +924,7 @@ pub(crate) fn run_tools(
             (posts || grants.contains(&crate::schedule_ops::ideas_send()))
                 && config.scheduler.enabled(),
         ),
+        (ToolGroup::Room, room),
     ]
     .into_iter()
     .filter_map(|(group, on)| on.then_some(group))
@@ -1388,7 +1395,11 @@ mod tests {
             .filter_map(|(group, on)| on.then_some(group))
             .collect();
             assert_eq!(scheduled_run(&config, &asked).tools, Some(on.clone()));
-            assert_eq!(run_tools(&config, &[]), on);
+            assert_eq!(run_tools(&config, &[], false), on);
+            // Its computer is the one group the settings don't decide.
+            let mut with_room = on.clone();
+            with_room.insert(ToolGroup::Room);
+            assert_eq!(run_tools(&config, &[], true), with_room);
         }
     }
 
@@ -1405,7 +1416,7 @@ mod tests {
             action: String::from("goal-create"),
         }];
         let offered = |config: &Config, grants: &[ScheduleGrant]| {
-            run_tools(config, grants).contains(&ToolGroup::Goals)
+            run_tools(config, grants, false).contains(&ToolGroup::Goals)
         };
         config.goals.root = PathBuf::new();
         assert!(!offered(&config, &reads), "no store");
@@ -1423,7 +1434,7 @@ mod tests {
             action: String::from("write"),
         }];
         let asks = |config: &Config, grants: &[ScheduleGrant]| {
-            run_tools(config, grants).contains(&ToolGroup::Memory)
+            run_tools(config, grants, false).contains(&ToolGroup::Memory)
         };
         config.memory.root = PathBuf::new();
         assert!(!asks(&config, &proposes), "no store");
@@ -1436,7 +1447,7 @@ mod tests {
             channel: String::from("local"),
         }];
         let schedules = |config: &Config, grants: &[ScheduleGrant]| {
-            run_tools(config, grants).contains(&ToolGroup::Schedule)
+            run_tools(config, grants, false).contains(&ToolGroup::Schedule)
         };
         config.channels = vec![String::from("local")];
         assert!(schedules(&config, &local));
@@ -1450,7 +1461,7 @@ mod tests {
         // Suggesting ideas: a run that speaks to the owner, in the chat or
         // on their Ideas page, where there's a page to keep them.
         let suggests = |config: &Config, grants: &[ScheduleGrant]| {
-            run_tools(config, grants).contains(&ToolGroup::Suggest)
+            run_tools(config, grants, false).contains(&ToolGroup::Suggest)
         };
         assert!(suggests(&config, &local));
         assert!(suggests(&config, &[crate::schedule_ops::ideas_send()]));
@@ -1609,15 +1620,20 @@ mod tests {
         broker.web.attended = true;
         let scheduled = scoped_config(&broker, &request(Vec::new()), "run-1", run_socket());
         assert!(!scheduled.web.attended);
+        assert!(
+            !crate::room_ops::attended(&scheduled),
+            "a scheduled run has no person there: it runs no commands"
+        );
         let chat = RunRequest {
             chat: true,
             ..request(Vec::new())
         };
         broker.web.attended = false;
+        let chat = scoped_config(&broker, &chat, "run-1", run_socket());
+        assert!(chat.web.attended);
         assert!(
-            scoped_config(&broker, &chat, "run-1", run_socket())
-                .web
-                .attended
+            crate::room_ops::attended(&chat),
+            "a chat has its person there: it may run commands"
         );
     }
 
