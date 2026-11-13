@@ -47,7 +47,8 @@ pub fn request(stream: &UnixStream, op: SubagentOp) -> Result<SubagentResult, Er
         | SessionResponse::Space(_)
         | SessionResponse::Web(_)
         | SessionResponse::Browser(_)
-        | SessionResponse::Suggest(_) => Err(Error::SubagentProtocol {
+        | SessionResponse::Suggest(_)
+        | SessionResponse::Room(_) => Err(Error::SubagentProtocol {
             reason: String::from("broker gave another kind of reply to a subagent op"),
         }),
     }

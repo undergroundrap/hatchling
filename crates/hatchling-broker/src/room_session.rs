@@ -46,7 +46,7 @@ use crate::room_job::{
 use crate::room_launch::Session;
 
 const FULL: &str = "the Room is running as many jobs as it may";
-const NO_JOB: &str = "there is no Room job by that name";
+pub(crate) const NO_JOB: &str = "there is no Room job by that name";
 const NOT_OVER: &str =
     "the job is still running: what it has written so far is in its file in the Room";
 const LOST: &str = "the job was lost with its Room, and what it wrote went with it";

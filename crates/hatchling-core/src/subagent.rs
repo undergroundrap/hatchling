@@ -467,6 +467,8 @@ pub enum ToolUse {
     Space,
     /// Sent a request through the egress that isn't a model call.
     Network,
+    /// Ran a command in its own computer, or asked after or stopped one.
+    Room,
 }
 
 /// How often a session used one tool, by how each use ended.

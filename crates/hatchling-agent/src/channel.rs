@@ -241,7 +241,8 @@ impl<'s> ChannelClient<'s> {
             | SessionResponse::Subagent(_)
             | SessionResponse::Web(_)
             | SessionResponse::Browser(_)
-            | SessionResponse::Suggest(_) => Err(Error::ChannelProtocol {
+            | SessionResponse::Suggest(_)
+            | SessionResponse::Room(_) => Err(Error::ChannelProtocol {
                 reason: String::from("broker gave a goals or query reply to a channel op"),
             }),
         }

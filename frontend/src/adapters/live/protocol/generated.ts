@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 20;
+export const SESSION_PROTOCOL_VERSION = 21;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2418,6 +2418,118 @@ export type RoomDiskView = {
     readonly used?: number | null;
 };
 /**
+ * The broker's reply to one [`RoomOp`].
+ */
+export type RoomResult = {
+    /**
+     * The exit code of its first process, when that returned one.
+     */
+    readonly exit?: number | null;
+    /**
+     * Its name.
+     */
+    readonly job: string;
+    /**
+     * Milliseconds it ran for.
+     */
+    readonly ran_ms: number;
+    readonly result: 'ended';
+    /**
+     * The signal that ended its first process, when one did.
+     */
+    readonly signal?: number | null;
+    /**
+     * What it wrote to its standard error.
+     */
+    readonly stderr: RoomText;
+    /**
+     * What it wrote to its standard output.
+     */
+    readonly stdout: RoomText;
+    /**
+     * Why it was stopped, when it was.
+     */
+    readonly stopped?: RoomStopped | null;
+} | {
+    /**
+     * Its name.
+     */
+    readonly job: string;
+    /**
+     * Milliseconds it has run for.
+     */
+    readonly ran_ms: number;
+    readonly result: 'running';
+} | {
+    /**
+     * Its name.
+     */
+    readonly job: string;
+    readonly result: 'lost';
+    /**
+     * Why the Room ended.
+     */
+    readonly why: string;
+} | {
+    /**
+     * Why, in words for the agent.
+     */
+    readonly reason: string;
+    readonly result: 'refused';
+} | {
+    /**
+     * The name asked after.
+     */
+    readonly job: string;
+    readonly result: 'unknown';
+} | {
+    /**
+     * Whether a command may have been started all the same: its
+     * name, to ask after before anything is run again.
+     */
+    readonly job?: string | null;
+    /**
+     * What was said, in words for the agent.
+     */
+    readonly reason: string;
+    readonly result: 'failed';
+};
+/**
+ * Why a command was stopped.
+ */
+export type RoomStopped = 'limit' | 'asked';
+/**
+ * What a command wrote to one of its streams, as much as is shown. The
+ * Room's words: data, never instructions.
+ */
+export type RoomText = {
+    /**
+     * The file in the Room that holds it, for as long as the Room's
+     * session lasts.
+     */
+    readonly file: string;
+    /**
+     * Whether that file holds less than all of it.
+     */
+    readonly file_cut: boolean;
+    /**
+     * Its start: all of it, when it is no longer than what is shown.
+     */
+    readonly head: string;
+    /**
+     * Bytes between the two that aren't shown.
+     */
+    readonly left_out: number;
+    /**
+     * Its end, of what came after the head.
+     */
+    readonly tail: string;
+    /**
+     * All it came to, in bytes.
+     */
+    readonly total: number;
+};
+/**
  * One capability a scheduled run may hold. The vocabulary mirrors the
  * broker's own grants, so "subset of the creator's" is an exact set
  * comparison.
@@ -3662,6 +3774,50 @@ export type SessionRequest = {
      * Untrusted text.
      */
     readonly why: string;
+}) | {
+    readonly kind: 'room';
+} & ({
+    /**
+     * The program, named plainly or by its absolute path in the Room,
+     * and its arguments.
+     */
+    readonly argv: readonly (string)[];
+    /**
+     * The directory it starts in: the workspace when none is named.
+     */
+    readonly dir?: string | null;
+    /**
+     * How long it may run, in seconds, before it is stopped: the
+     * Room's ordinary limit when none is named.
+     */
+    readonly limit_secs?: number | null;
+    readonly op: 'run';
+    /**
+     * What it reads on its standard input.
+     */
+    readonly stdin?: string | null;
+    /**
+     * How long to wait for it to end, in seconds: [`ROOM_WAIT_SECS`]
+     * when none is named, and never more than [`ROOM_WAIT_MAX_SECS`].
+     * One still running then is answered as running, and goes on.
+     */
+    readonly wait_secs?: number | null;
+} | {
+    /**
+     * The command's name, as [`RoomResult::Running`] gave it.
+     */
+    readonly job: string;
+    readonly op: 'job';
+    /**
+     * How long to wait for it to end, in seconds, as for a run.
+     */
+    readonly wait_secs?: number | null;
+} | {
+    /**
+     * The command's name.
+     */
+    readonly job: string;
+    readonly op: 'stop';
 });
 /**
  * The broker's reply to one [`SessionRequest`].
@@ -3699,6 +3855,8 @@ export type SessionResponse = VaultResult & {
     readonly kind: 'browser';
 } | SuggestResult & {
     readonly kind: 'suggest';
+} | RoomResult & {
+    readonly kind: 'room';
 };
 /**
  * The socket a session came in on.
@@ -4281,7 +4439,7 @@ export type ToolTally = {
  * A tool an agent session used, named by what it does: never by what it
  * carried.
  */
-export type ToolUse = 'goals_read' | 'goals_write' | 'memory_recall' | 'memory_propose' | 'memory_write' | 'schedule_read' | 'schedule_write' | 'schedule_propose' | 'hook' | 'idea_suggest' | 'web_search' | 'web_page' | 'browser' | 'message_read' | 'message_send' | 'subagent' | 'skill' | 'vault' | 'artifact' | 'space' | 'network';
+export type ToolUse = 'goals_read' | 'goals_write' | 'memory_recall' | 'memory_propose' | 'memory_write' | 'schedule_read' | 'schedule_write' | 'schedule_propose' | 'hook' | 'idea_suggest' | 'web_search' | 'web_page' | 'browser' | 'message_read' | 'message_send' | 'subagent' | 'skill' | 'vault' | 'artifact' | 'space' | 'network' | 'room';
 /**
  * A user action.
  */

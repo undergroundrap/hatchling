@@ -184,6 +184,25 @@ twice. A job still running when its session ends is lost with it, and is
 recorded so. One the supervisor was never given didn't start, and its
 name stays free.
 
+An agent reaches the Room only through its broker session (`RoomOp`): the
+agent's cell runs nothing itself. Only a session with its person there, a
+chat, may ask. A scheduled run, a hook's and a subagent are refused, and
+aren't offered the tools. The broker gives each command its name, so a
+session can ask after and stop only what it ran, and the broker stops
+what a session left running when that session ends. No command is put to
+the owner first: the Room has no network, and nothing in it reaches the
+owner's machine or leaves the Room. Each use is counted in the owner's
+Activity, by what it was and how it ended, and the broker's log names the
+job and its program. What a command wrote reaches the model as the Room's
+words, marked untrusted like every tool's result: the first 1 KiB and the
+last 3 KiB of each stream, with the count of the bytes between and the
+name of the file in the Room that holds all of it.
+
+The Activity doesn't keep a command's text: in a chat the conversation
+shows what was run. Before any run without its person there is given
+these tools, the Activity must keep each command's text. That is the day
+it becomes the record of what ran with nobody watching.
+
 A session ends:
 
 - after one hour, whatever it is doing;

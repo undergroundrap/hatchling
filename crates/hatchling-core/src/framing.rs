@@ -15,6 +15,9 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v21 adds the agent's computer (`SessionRequest::Room`, `RoomOp`,
+/// `RoomResult`): a command run in the Room, for a session with its
+/// person there.
 /// v20 adds the agent's suggestions (`SessionRequest::Suggest`,
 /// `SuggestOp::Suggest`, `SuggestResult`): ideas for the owner's Ideas
 /// page, which run nothing until the owner starts one themselves.
@@ -52,7 +55,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 20;
+pub const PROTOCOL_VERSION: u16 = 21;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

@@ -4009,6 +4009,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "network",
                 "type": "string"
+            },
+            {
+                "const": "room",
+                "type": "string"
             }
         ]
     },

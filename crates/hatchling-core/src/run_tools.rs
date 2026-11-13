@@ -38,11 +38,13 @@ pub enum ToolGroup {
     Schedule,
     /// Suggesting ideas for the owner's Ideas page.
     Suggest,
+    /// Running commands in its own computer, the Room.
+    Room,
 }
 
 impl ToolGroup {
     /// Every group, in order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Web,
         Self::Search,
         Self::Browser,
@@ -51,6 +53,7 @@ impl ToolGroup {
         Self::Memory,
         Self::Schedule,
         Self::Suggest,
+        Self::Room,
     ];
 
     /// The group's name in [`format`] and [`parse`].
@@ -65,6 +68,7 @@ impl ToolGroup {
             Self::Memory => "memory",
             Self::Schedule => "schedule",
             Self::Suggest => "suggest",
+            Self::Room => "room",
         }
     }
 }
@@ -101,7 +105,7 @@ pub fn parse(raw: &str) -> Result<BTreeSet<ToolGroup>, String> {
                 .find(|group| group.as_str() == name)
                 .ok_or_else(|| {
                     format!(
-                        "{name:?} is not a tool group: web, search, browser, skills, goals, memory or schedule"
+                        "{name:?} is not a tool group: web, search, browser, skills, goals, memory, schedule, suggest or room"
                     )
                 })
         })
@@ -114,7 +118,7 @@ mod tests {
 
     #[test]
     fn every_set_of_groups_round_trips() {
-        for bits in 0..128_u8 {
+        for bits in 0..512_u16 {
             let on: BTreeSet<ToolGroup> = ToolGroup::ALL
                 .into_iter()
                 .enumerate()
@@ -126,7 +130,7 @@ mod tests {
         assert_eq!(format(&BTreeSet::new()), "none");
         assert_eq!(
             format(&ToolGroup::ALL.into_iter().collect()),
-            "web,search,browser,skills,goals,memory,schedule,suggest"
+            "web,search,browser,skills,goals,memory,schedule,suggest,room"
         );
     }
 

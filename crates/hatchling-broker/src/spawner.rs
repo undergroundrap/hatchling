@@ -2340,6 +2340,22 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 .unwrap_err(),
             "there is no Room job by that name"
         );
+        // What a session's Room asks through is these same asks.
+        {
+            use crate::room_ops::Rooms;
+            let refused = Rooms::run(&spawner, &run("j", &["./relative"])).unwrap_err();
+            assert!(refused.contains("interpreter"), "{refused}");
+            for asked in [
+                Rooms::job(&spawner, &job("j"), 0),
+                Rooms::stop(&spawner, &job("j")),
+            ] {
+                assert_eq!(asked.unwrap_err(), crate::room_session::NO_JOB);
+            }
+            assert_eq!(
+                Rooms::output(&spawner, &job("j"), Stream::Stdout, End::Head).unwrap_err(),
+                crate::room_session::NO_JOB
+            );
+        }
         assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
 
         let ran = spawner.room_run(&run("j", &["true"]));
