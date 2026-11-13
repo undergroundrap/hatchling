@@ -116,8 +116,8 @@ an ended job wrote. Each answer must echo its ask's nonce. The one thing
 the supervisor says unasked is that a job it was given has ended.
 
 A command is a job, named by whoever asks for it. It is a program named
-plainly (found on the fixed path `/usr/bin:/bin`) or by its absolute Room
-path, with direct argv and no shell, a working directory (`/workspace`
+plainly (found on the fixed path `/usr/local/bin:/usr/bin:/bin`, all of it
+in the read-only image) or by its absolute Room path, with direct argv and no shell, a working directory (`/workspace`
 unless one is named), and up to 32 KiB on its standard input. A job gets a
 fixed environment (`PATH`, `HOME=/session/home`, `TMPDIR=/session`,
 `LANG=C.UTF-8`) and a process group of its own. Its home goes with the

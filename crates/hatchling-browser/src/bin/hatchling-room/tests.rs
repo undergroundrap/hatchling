@@ -303,7 +303,7 @@ fn a_job_is_given_its_directory_a_fixed_environment_and_its_input() {
     bench.ended("env");
     assert_eq!(
         bench.output("env", Stream::Stdout),
-        format!("HOME={dir}/home\nLANG=C.UTF-8\nPATH=/usr/bin:/bin\nTMPDIR={dir}\n")
+        format!("HOME={dir}/home\nLANG=C.UTF-8\nPATH=/usr/local/bin:/usr/bin:/bin\nTMPDIR={dir}\n")
     );
     assert!(bench.dir.join("home").is_dir());
     // Its input is what it was given, and the file it came from goes
