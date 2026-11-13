@@ -238,7 +238,61 @@ mod tests {
         assert_eq!(byte, *b"x");
         assert!(unix_stream_quiet(ours.as_fd()).unwrap());
         drop(peer);
+        readable(&ours);
         assert!(!unix_stream_quiet(ours.as_fd()).unwrap());
+    }
+
+    /// Waits until `socket` has input or its end to show.
+    ///
+    /// The other end's close shows only once every copy of that end is
+    /// closed. The tests here run beside tests that start programs, and a
+    /// child one of those forked holds a copy of every descriptor this
+    /// process had open until it goes on to its own program.
+    fn readable(socket: &UnixStream) {
+        use rustix::event::{PollFd, PollFlags, poll};
+        let mut waited = [PollFd::new(socket, PollFlags::IN)];
+        // A signal meant for another test's work may end the wait early:
+        // it is taken up again.
+        let ready = loop {
+            match poll(&mut waited, 10_000) {
+                Err(rustix::io::Errno::INTR) => {}
+                waited => break waited.unwrap(),
+            }
+        };
+        assert_eq!(ready, 1, "nothing showed in ten seconds");
+    }
+
+    /// The fault the wait is for, made to happen every time: with a copy
+    /// of the other end still open, its close doesn't show, and the wait
+    /// ends only when the copy is closed.
+    #[test]
+    fn a_close_shows_only_when_the_last_copy_of_the_other_end_is_closed() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let (ours, peer) = UnixStream::pair().unwrap();
+        let copy = peer.try_clone().unwrap();
+        drop(peer);
+        assert!(
+            unix_stream_quiet(ours.as_fd()).unwrap(),
+            "a copy of the other end is open"
+        );
+        let let_go = Arc::new(AtomicBool::new(false));
+        let closer = {
+            let let_go = Arc::clone(&let_go);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                let_go.store(true, Ordering::SeqCst);
+                drop(copy);
+            })
+        };
+        readable(&ours);
+        assert!(
+            let_go.load(Ordering::SeqCst),
+            "the wait ended with the copy still open"
+        );
+        assert!(!unix_stream_quiet(ours.as_fd()).unwrap());
+        closer.join().unwrap();
     }
 
     #[test]
