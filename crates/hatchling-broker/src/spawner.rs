@@ -3304,7 +3304,10 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert!(matches!(receive(&stream).unwrap(), Reply::Refused { .. }));
         drop((stream, spawner));
         served.join().unwrap();
+        // Shut, and not only dropped: another test's forked child may hold
+        // a copy of the far end for a moment, and it must be seen gone now.
         let (ours, theirs) = UnixStream::pair().unwrap();
+        theirs.shutdown(std::net::Shutdown::Both).unwrap();
         drop(theirs);
         let gone_spawner = Spawner::over(ours);
         let (stdio, _) = stdio();
