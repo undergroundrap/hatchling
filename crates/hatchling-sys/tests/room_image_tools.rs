@@ -8,7 +8,8 @@
 //! thread, so a forked child may allocate while it prepares its exec.
 //!
 //! It needs root, and a directory laid out as a Room's root is: the image,
-//! with a workspace and a session directory the Room's user may write.
+//! with a workspace and a session directory the Room's user may write, and
+//! a `/proc` of processes only.
 //! `scripts/room-image-tools-proof.sh` makes one from a built image and
 //! names it in `HATCHLING_ROOM_IMAGE_ROOT`, with the user's id in
 //! `HATCHLING_ROOM_IMAGE_USER`. With no root named this does nothing,
@@ -351,6 +352,21 @@ mod proof {
             hatchling_sys::euid(),
             0,
             "root is needed, to give it up as the launcher does"
+        );
+
+        // The root's `/proc` is a Room's: processes, and nothing else of
+        // the machine (its memory, its processors, the kernel's settings,
+        // which a whole one has together). A program that reads the
+        // machine there must find here what it finds in a Room.
+        let proc = root.join("proc");
+        assert!(
+            proc.join("self").exists(),
+            "the root named has no /proc mounted"
+        );
+        assert!(
+            !proc.join("sys").exists(),
+            "the root's /proc has the kernel's settings (`sys`), so it is a whole one: \
+             a Room's is mounted with subset=pid"
         );
 
         // The directory the commands work in, and what they read, the
