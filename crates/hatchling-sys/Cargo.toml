@@ -20,6 +20,12 @@ workspace = true
 name = "room_mounts"
 harness = false
 
+# The proof gives root up and installs the Room's profile in forked
+# children: its main must stay the only thread.
+[[test]]
+name = "room_image_tools"
+harness = false
+
 [dependencies]
 # Raw fork/execve/prctl: the few syscalls rustix does not wrap.
 # Reviewed in docs/dependency-review.md.

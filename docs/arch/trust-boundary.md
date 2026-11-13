@@ -23,33 +23,62 @@ Unix datagram socket without `bind`. The profile returns `ENOSYS` for
 The installed launcher applies the profile before executing the Room
 supervisor. Its kernel fixture also checks the profile at that exec boundary.
 
-The Room's image is made of the GNU file tools, and at ordinary work they
-ask the kernel for nine calls the CLI profile doesn't have. Eight are
-allowed, in the Room alone: `fadvise64`, `fchdir`, `creat`, `fstatfs`,
-`symlinkat`, `dup3`, `openat2` and `llistxattr`. Each is an operation the
-profile already allows, asked another way (`fchdir` for `chdir`, `creat`
-for `open`, `fstatfs` for `statfs`, `symlinkat` for `symlink`, `dup3` for
-`dup2`, `openat2` for `openat`, `llistxattr` for `listxattr`), or a hint
-that changes nothing (`fadvise64`). The source says of each what it can
-and can't do, and which tool asked. The ninth, `fsetxattr`, is not
-granted: no call that sets an extended attribute is. `install` asks it of
-every file it copies, so the Room answers it `ENOTSUP`, as a file system
-with no extended attributes does, and `install` goes on.
+The Room's image is its own programs: the GNU file tools, a shell, Git,
+Python and its libraries, Node, and a few more. At everyday work they ask
+the kernel for calls the CLI profile doesn't have, and a call outside a
+profile ends the process. The Room's profile decides each of them, in the
+Room alone, and the source says of each what it can and can't do and
+which program asked.
 
-That answer follows one rule. A call an ordinary tool makes in ordinary
-use, and that isn't granted, is answered with an error the tool already
-handles. Every other call outside the profile still kills the process,
+Twenty are allowed. Thirteen are an operation the profile already allows,
+asked another way (`fchdir` for `chdir`, `creat` for `open`, `fstatfs` for
+`statfs`, `symlinkat` for `symlink`, `dup3` for `dup2`, `openat2` for
+`openat`, `llistxattr` and `flistxattr` for `listxattr`, `sendfile` for
+`copy_file_range`, `fchownat` for `fchown`, `fchmodat2` for `fchmodat`,
+`inotify_init` for `inotify_init1`), or a hint that changes nothing
+(`fadvise64`). Seven are small things of a process's own: waiting for a
+signal (`rt_sigsuspend`), a timer that signals the process that made it
+(`timer_create`, `timer_settime`, `timer_delete`), reading how a process
+is scheduled or what capabilities it has (`getpriority`, `capget`), and
+asking to be scheduled after others (`setpriority`). That last reaches
+every process of the Room's user, the supervisor among them, and can only
+lower: a job can make the supervisor wait its turn, as it could by keeping
+the processor busy.
+
+Seven are not granted, and are answered with an error instead of ending
+the process:
+
+- `fsetxattr` and `fgetxattr`, `ENOTSUP`: no call that sets an extended
+  attribute or reads one's value is allowed. `install` and `sed -i` ask,
+  and go on as on a file system that has none.
+- `link` and `linkat`, `EPERM`: there are no hard links in the Room. Git
+  asks for one as it stores an object and renames the file when it can't;
+  `ln` says it isn't permitted.
+- `sync`, `ENOSYS`: it writes out every file system on the kernel, which
+  isn't the Room's alone. `fsync` of a job's own file is allowed.
+- `mknodat`, `EPERM`: no device files or named pipes are made. `make -j`
+  goes on with a pipe that has no name.
+- `io_uring_setup`, `ENOSYS`: `io_uring` asks the kernel for work through
+  a queue the filter can't see into, so there is none. Node goes on
+  without.
+
+Those answers follow one rule. A call an ordinary program makes in
+ordinary use, and that isn't granted, is answered with an error the
+program already handles: it goes on without, or says plainly what it was
+refused. Every other call outside the profile still kills the process,
 and that kill is kept as a signal: a job that dies of it asked for
-something no ordinary tool asks. A call is answered this way only once a
-tool was seen making it and seen going on without it. The other calls
-that set or remove an extended attribute still kill.
+something no ordinary program asks. A call is answered this way only once
+a program was seen making it and seen handling the answer. The calls
+beside these (setting or removing an attribute another way, reading one
+by name, the rest of `io_uring`) still kill.
 
-This is the tools at their plain use, as the Room's own account. Some of
-their options ask for more: `cp -a` and a `mv` between file systems read
-extended attributes, `sed -i` reads an access list, `chmod -R` and `tar`
-unpacking a directory inside another change a mode without following a
-link, and a hard link is its own call. None of those calls is decided
-here, so each still kills.
+What is decided is what the image's programs were seen to ask, run in the
+image under the profile: 127 commands, in
+`scripts/room-image-tools-proof.sh`, which the release's checks run on
+the image they build. One allowed call is ahead of the image: `openat2`,
+which a newer `tar` than the image's asks for as it unpacks. Python's process pools don't work in the Room: they
+need `/dev/shm`, and the Room has none. That is the Room's mounts and not
+its profile.
 
 The room image admission helper takes the expected verity root and image SHA-256
 from a trusted caller. It pins both installer-owned regular files, verifies

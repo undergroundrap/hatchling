@@ -332,7 +332,7 @@ jobs:
     name: reproducible room image and kernel proof
     needs: room-image
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -353,6 +353,20 @@ jobs:
           sudo unshare --mount --net --propagation private bash scripts/room-image-probe.sh builds/room-build-a
       - name: Check offline Room publication from the Setup manifest
         run: sudo bash scripts/room-installer-proof.sh builds/room-build-a
+      - name: Install Rust
+        # dtolnay/rust-toolchain, master as of 2026-09-12
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
+        with:
+          toolchain: 1.98.1
+      # The image's own programs at everyday work under the Room's syscall
+      # profile, started as the Room's launcher starts them. A change to the
+      # image or to the profile that ends one of them fails here.
+      - name: Run the image's programs under the Room's profile
+        run: |
+          proof=$(cargo test -q --locked -p hatchling-sys --test room_image_tools --no-run --message-format=json \
+            | grep -o '"executable":"[^"]*room_image_tools[^"]*"' | tail -1 | cut -d'"' -f4)
+          test -x "$proof"
+          sudo bash scripts/room-image-tools-proof.sh builds/room-build-a "$proof"
       - name: Upload the verified release candidate
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
