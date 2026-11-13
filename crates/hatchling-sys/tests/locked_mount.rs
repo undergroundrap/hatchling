@@ -18,6 +18,9 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use hatchling_sys::{
     is_mount_point, mount_locked_down, share_below, unmount_strict, unshare_below,
@@ -107,9 +110,54 @@ fn a_locked_down_mount_holds_and_comes_down_only_when_free() {
         is_mount_point(target).unwrap(),
         "a mount in use was taken from its path"
     );
+    // It is in use until every copy of the open file is closed. A copy is
+    // kept here, as a child another test forks keeps one for the moment
+    // before it goes on to its own program, and let go a little later.
+    let copy = held.try_clone().unwrap();
     drop(held);
-    unmount_strict(target).unwrap();
+    assert!(
+        unmount_strict(target).is_err(),
+        "a mount a copy of its file held open came down"
+    );
+    let let_go = Arc::new(AtomicBool::new(false));
+    let later = {
+        let let_go = Arc::clone(&let_go);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            let_go.store(true, Ordering::SeqCst);
+            drop(copy);
+        })
+    };
+    unmount_once_free(target).unwrap();
+    assert!(
+        let_go.load(Ordering::SeqCst),
+        "the mount came down with a copy of its file still open"
+    );
+    later.join().unwrap();
     assert!(!is_mount_point(target).unwrap());
+}
+
+/// How long a mount nothing should hold may take to be free.
+const FREE_WITHIN: Duration = Duration::from_secs(10);
+
+/// Takes down the mount at `target` as [`unmount_strict`] does, once
+/// nothing holds it. These tests run in parallel in one process, and some
+/// start a program: the child forked for it has a copy of every file this
+/// process has open until it goes on to that program, so a file closed
+/// here may hold its mount a moment longer. A mount still in use after
+/// [`FREE_WITHIN`], or refused for any other reason, is the error it was.
+fn unmount_once_free(target: &Path) -> Result<(), hatchling_sys::Error> {
+    let until = Instant::now() + FREE_WITHIN;
+    loop {
+        match unmount_strict(target) {
+            Err(hatchling_sys::Error::Mount { source, .. })
+                if source.raw_os_error() == Some(libc::EBUSY) && Instant::now() < until =>
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            done => return done,
+        }
+    }
 }
 
 /// A mount made without the three flags is never taken as locked down:
@@ -157,7 +205,7 @@ impl Service {
             {
                 return Ok(service);
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         }
         Err(std::io::Error::other(
             "the service never had a namespace of its own",
