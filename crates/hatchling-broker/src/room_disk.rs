@@ -353,11 +353,9 @@ impl RoomDisk {
         }
         hatchling_sys::trusted_dir_chain_from(&self.top, parent, &self.trusted)
             .map_err(|error| format!("the room directory can't be trusted: {error}"))?;
-        hatchling_sys::claim_dir(parent).map(Some).ok_or_else(|| {
-            String::from(
-                "the room disk is in use by another process; stop Hatchling and retry maintenance",
-            )
-        })
+        hatchling_sys::claim_dir(parent)
+            .map(Some)
+            .ok_or_else(|| format!("{IN_USE}; stop Hatchling and retry maintenance"))
     }
 
     /// Why `program` can't be run as root, if it can't: it must be a
@@ -1531,6 +1529,12 @@ fn off(reason: String) -> AtStart {
 
 /// Why the room is off when no spawner keeps a room disk.
 const NO_SPAWNER: &str = "no spawner keeps one";
+
+/// How an operation's refusal starts when another process has the disk.
+///
+/// A Room that is running has it for as long as it runs, and so has
+/// maintenance. Nothing is wrong with a disk refused this way.
+pub const IN_USE: &str = "the room disk is in use by another process";
 
 /// The spawner's refusal of every room disk op where it keeps none: not
 /// root, or no vault keeper.
