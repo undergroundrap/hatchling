@@ -10,6 +10,7 @@ enum Asked {
     Job(String, u32),
     Stop(String),
     Output(String, Stream, End),
+    Page(String, u64, u32),
 }
 
 /// A stand-in for the spawner: it answers each ask from what it was told
@@ -23,6 +24,8 @@ struct Fake {
     jobs: RefCell<BTreeMap<String, Result<RoomJobState, String>>>,
     /// The kept pieces of what a job wrote.
     pieces: RefCell<BTreeMap<(String, Stream, End), Vec<u8>>>,
+    /// What each ask for a page is answered, in order.
+    pages: RefCell<Vec<Result<Page, String>>>,
 }
 
 impl Fake {
@@ -36,6 +39,10 @@ impl Fake {
 
     fn knows(&self, job: &str, state: Result<RoomJobState, String>) {
         self.jobs.borrow_mut().insert(job.to_owned(), state);
+    }
+
+    fn hands_back(&self, page: Result<Page, String>) {
+        self.pages.borrow_mut().push(page);
     }
 
     fn keeps(&self, job: &str, stream: Stream, end: End, bytes: &[u8]) {
@@ -96,6 +103,21 @@ impl Rooms for Fake {
             .get(&(job.as_str().to_owned(), stream, end))
             .cloned()
             .ok_or_else(|| String::from("no such piece"))
+    }
+
+    fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String> {
+        self.asked
+            .borrow_mut()
+            .push(Asked::Page(path.to_owned(), from, lines));
+        self.pages.borrow_mut().remove(0)
+    }
+}
+
+fn read(path: &str, from: Option<u64>, lines: Option<u32>) -> RoomOp {
+    RoomOp::Read {
+        path: path.to_owned(),
+        from,
+        lines,
     }
 }
 
@@ -339,6 +361,7 @@ fn what_may_not_be_asked_is_never_asked() {
         RoomOp::Stop {
             job: String::from("j-1"),
         },
+        read("notes.txt", None, None),
     ] {
         assert_eq!(
             unattended.handle(&op),
@@ -749,5 +772,154 @@ fn the_longest_reply_fits_one_frame() {
                 "{written}"
             );
         }
+    }
+}
+
+/// A file is read as the session names it: under the workspace unless
+/// its path is absolute, from the first line and the ordinary count
+/// unless it says. What comes back is told as it came, with the path the
+/// Room was asked for; bytes that aren't text are shown as the
+/// replacement character. A read is no command: it is given no name.
+#[test]
+fn a_file_is_read_a_page_at_a_time() {
+    let fake = Fake::default();
+    let mut room = session(&fake);
+    fake.hands_back(Ok(Page {
+        bytes: b"one\ntwo\n".to_vec(),
+        more: true,
+        cut: false,
+        size: 40,
+    }));
+    assert_eq!(
+        room.handle(&read("notes/today.txt", None, None)),
+        RoomResult::Page {
+            path: String::from("/workspace/notes/today.txt"),
+            from: 1,
+            text: String::from("one\ntwo\n"),
+            more: true,
+            cut: false,
+            size: 40,
+        }
+    );
+    fake.hands_back(Ok(Page {
+        bytes: b"caf\xe9 \xff".to_vec(),
+        more: true,
+        cut: true,
+        size: 9000,
+    }));
+    assert_eq!(
+        room.handle(&read("/etc/os-release", Some(7), Some(3))),
+        RoomResult::Page {
+            path: String::from("/etc/os-release"),
+            from: 7,
+            text: String::from("caf\u{fffd} \u{fffd}"),
+            more: true,
+            cut: true,
+            size: 9000,
+        }
+    );
+    // The most lines there are to ask for, and a file with nothing in it.
+    fake.hands_back(Ok(Page::default()));
+    assert_eq!(
+        room.handle(&read("empty", Some(1), Some(2000))),
+        RoomResult::Page {
+            path: String::from("/workspace/empty"),
+            from: 1,
+            text: String::new(),
+            more: false,
+            cut: false,
+            size: 0,
+        }
+    );
+    assert_eq!(
+        fake.asked(),
+        [
+            Asked::Page(String::from("/workspace/notes/today.txt"), 1, 200),
+            Asked::Page(String::from("/etc/os-release"), 7, 3),
+            Asked::Page(String::from("/workspace/empty"), 1, 2000),
+        ]
+    );
+    // The next command has the first name: a read took none.
+    fake.answers_run(Ok(ended(0, Captured::default(), Captured::default())));
+    assert!(matches!(
+        room.handle(&run(&["true"])),
+        RoomResult::Ended { job, .. } if job == "jabc-1"
+    ));
+    drop(room);
+    assert_eq!(fake.asked().len(), 4, "a read was stopped as a command is");
+}
+
+/// Why there is no page is told in the Room's words, and a read that may
+/// not be asked for never is.
+#[test]
+fn a_file_that_cannot_be_read_says_why() {
+    let fake = Fake::default();
+    let mut room = session(&fake);
+    fake.hands_back(Err(String::from("the Room has no such file")));
+    assert_eq!(
+        room.handle(&read("absent", None, None)),
+        RoomResult::NoPage {
+            reason: String::from("the Room has no such file")
+        }
+    );
+    assert_eq!(fake.asked().len(), 1);
+    let long = "f".repeat(hatchling_core::room::PATH_BYTES);
+    for (op, why) in [
+        (read("notes.txt", Some(0), None), "counted from 1"),
+        (read("notes.txt", None, Some(0)), "2000 lines"),
+        (read("notes.txt", None, Some(2001)), "2000 lines"),
+        (read("a\0b", None, None), "path"),
+        (read(&long, None, None), "path"),
+    ] {
+        let RoomResult::Refused { reason } = room.handle(&op) else {
+            unreachable!("{op:?} was asked for");
+        };
+        assert!(reason.contains(why), "{reason}");
+    }
+    assert_eq!(fake.asked().len(), 1, "what may not be asked for was");
+    let mut nowhere = RoomSession::over_rooms(true, None, Some(String::from("j")));
+    assert_eq!(
+        nowhere.handle(&read("notes.txt", None, None)),
+        RoomResult::NoPage {
+            reason: String::from(NO_ROOM)
+        }
+    );
+}
+
+#[test]
+fn a_path_that_is_not_absolute_is_under_the_workspace() {
+    assert_eq!(placed("notes.txt"), "/workspace/notes.txt");
+    assert_eq!(placed("a/b.txt"), "/workspace/a/b.txt");
+    assert_eq!(
+        placed("/session/jobs/j-1.stdout"),
+        "/session/jobs/j-1.stdout"
+    );
+    assert_eq!(placed("/"), "/");
+    assert_eq!(placed(""), "/workspace/");
+}
+
+/// The longest page there can be, of the bytes that are longest written,
+/// under the longest path, is a reply that fits one frame: a page is
+/// never replaced for its size.
+#[test]
+fn the_longest_page_fits_one_frame() {
+    for byte in [1_u8, 0xff, b'"'] {
+        let fake = Fake::default();
+        let mut room = session(&fake);
+        fake.hands_back(Ok(Page {
+            bytes: vec![byte; hatchling_core::room::PAGE_BYTES],
+            more: true,
+            cut: true,
+            size: u64::MAX,
+        }));
+        let path = format!("/{}", "\u{1}".repeat(hatchling_core::room::PATH_BYTES - 1));
+        let result = room.handle(&read(&path, Some(u64::MAX), Some(2000)));
+        assert!(matches!(result, RoomResult::Page { .. }), "{result:?}");
+        let reply = hatchling_core::SessionResponse::Room(result);
+        let written = serde_json::to_vec(&reply).unwrap().len();
+        assert!(
+            written <= hatchling_core::framing::MAX_FRAME_BYTES,
+            "{written} bytes for a page of {byte:#x}"
+        );
     }
 }

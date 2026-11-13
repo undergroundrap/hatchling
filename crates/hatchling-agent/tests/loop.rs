@@ -340,3 +340,45 @@ fn loop_asks_the_broker_to_run_a_command() {
         "{told}"
     );
 }
+
+/// Its `read` goes through the real broker's session and back the same
+/// way: with no Room to read in, the broker says so, in words about a
+/// read, and the loop goes on to the model's answer.
+#[test]
+fn loop_asks_the_broker_to_read_a_file() {
+    let broker = FixtureBroker::spawn("loop-read", BrokerBehavior::Vault(Vec::new())).unwrap();
+    let cell = ready_cell_offering(
+        &broker,
+        Some(std::collections::BTreeSet::from([ToolGroup::Room])),
+    )
+    .unwrap();
+    let model = FakeModel::new(vec![
+        ModelAction::ToolCalls(vec![ToolCall {
+            name: String::from("read"),
+            arguments: json!({ "path": "notes.txt" }),
+        }]),
+        ModelAction::Text(String::from("it wasn't read")),
+    ]);
+    let result = cell
+        .run_loop(
+            hatchling_agent::PromptKind::Chat,
+            &model,
+            String::from("read my notes"),
+            LoopBudget { max_steps: 5 },
+        )
+        .unwrap();
+    assert_eq!(result.answer, "it wasn't read");
+    let seen = model.seen_histories();
+    let system = format!("{:?}", seen.first().and_then(|history| history.first()));
+    assert!(system.contains("`read` reads a file there"), "{system}");
+    let turn2 = seen.get(1).expect("model should have a second turn");
+    let results = tool_results(turn2, 2).expect("expected ToolUse at index 2");
+    let Some(ToolOutput::Err(told)) = results.first() else {
+        unreachable!("no file is read here, got {results:?}")
+    };
+    assert!(
+        told == "commands run only in a chat, with the owner there: this run has no computer"
+            || told == "nothing was read: there is no computer on this install",
+        "{told}"
+    );
+}

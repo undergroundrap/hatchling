@@ -2502,6 +2502,11 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             spawner.room_page("/etc/os-release", 1, 2000),
             Ok(stood_page(1, "/etc/os-release", 1, 2000))
         );
+        // What a session's Room asks through is this same ask.
+        assert_eq!(
+            crate::room_ops::Rooms::page(&spawner, "/workspace/b", 2, 9),
+            Ok(stood_page(1, "/workspace/b", 2, 9))
+        );
         assert_eq!(started.load(Ordering::SeqCst), 1);
         drop((asked, spawner));
         served.join().unwrap();

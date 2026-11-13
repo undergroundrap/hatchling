@@ -10,14 +10,21 @@
 //! session can ask after another's. A command still running when its
 //! session ends is stopped, since nothing would be there to hear how it
 //! came out.
+//!
+//! The same session may read a page of a file there. The Room's
+//! supervisor reads it: no command is run, and nothing here looks into
+//! what the file holds. It is carried as it came, with what isn't text
+//! shown as the replacement character.
 
 use std::collections::BTreeSet;
 
-use hatchling_core::room::{Captured, End, Ended, JobId, Stream, spill_path};
+use hatchling_core::room::{
+    Captured, End, Ended, JobId, Page, Stream, WORKSPACE, check_page, spill_path,
+};
 use hatchling_core::ui::{RoomDiskCondition, RoomDiskView};
 use hatchling_core::{
-    ROOM_HEAD_BYTES, ROOM_TAIL_BYTES, ROOM_WAIT_MAX_SECS, ROOM_WAIT_SECS, RoomOp, RoomResult,
-    RoomStopped, RoomText,
+    ROOM_HEAD_BYTES, ROOM_READ_LINES, ROOM_TAIL_BYTES, ROOM_WAIT_MAX_SECS, ROOM_WAIT_SECS, RoomOp,
+    RoomResult, RoomStopped, RoomText,
 };
 
 use crate::config::Config;
@@ -40,6 +47,8 @@ pub(crate) trait Rooms {
     fn stop(&self, job: &JobId) -> Result<RoomJobAnswer, String>;
     /// As [`crate::spawner::Spawner::room_output`].
     fn output(&self, job: &JobId, stream: Stream, end: End) -> Result<Vec<u8>, String>;
+    /// As [`crate::spawner::Spawner::room_page`].
+    fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String>;
 }
 
 impl Rooms for crate::spawner::Spawner {
@@ -57,6 +66,10 @@ impl Rooms for crate::spawner::Spawner {
 
     fn output(&self, job: &JobId, stream: Stream, end: End) -> Result<Vec<u8>, String> {
         self.room_output(job, stream, end)
+    }
+
+    fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String> {
+        self.room_page(path, from, lines)
     }
 }
 
@@ -158,9 +171,11 @@ impl<'r> RoomSession<'r> {
             return refused(UNATTENDED);
         }
         let Some(rooms) = self.rooms else {
-            return RoomResult::Failed {
-                reason: String::from(NO_ROOM),
-                job: None,
+            let reason = String::from(NO_ROOM);
+            return if matches!(op, RoomOp::Read { .. }) {
+                RoomResult::NoPage { reason }
+            } else {
+                RoomResult::Failed { reason, job: None }
             };
         };
         match op {
@@ -220,6 +235,28 @@ impl<'r> RoomSession<'r> {
                         reason,
                         job: Some(job.as_str().to_owned()),
                     },
+                }
+            }
+            RoomOp::Read { path, from, lines } => {
+                let path = placed(path);
+                let from = from.unwrap_or(1);
+                let lines = lines.unwrap_or(ROOM_READ_LINES);
+                // What can't be asked is known here, before anything is.
+                if let Err(reason) = check_page(&path, from, lines) {
+                    return refused(reason);
+                }
+                // The log says a file was read, and not which.
+                tracing::info!(from, lines, "a session reads a file in the Room");
+                match rooms.page(&path, from, lines) {
+                    Ok(page) => RoomResult::Page {
+                        path,
+                        from,
+                        text: words(&page.bytes),
+                        more: page.more,
+                        cut: page.cut,
+                        size: page.size,
+                    },
+                    Err(reason) => RoomResult::NoPage { reason },
                 }
             }
         }
@@ -299,6 +336,15 @@ fn refused(reason: &str) -> RoomResult {
     RoomResult::Refused {
         reason: reason.to_owned(),
     }
+}
+
+/// The file a session names, as the Room is asked for it: a path that
+/// isn't absolute is under the workspace.
+fn placed(path: &str) -> String {
+    if path.starts_with('/') {
+        return path.to_owned();
+    }
+    format!("{WORKSPACE}/{path}")
 }
 
 /// How long an op waits for its command to end, of the wait it names.

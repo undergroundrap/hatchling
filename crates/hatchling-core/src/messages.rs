@@ -1353,7 +1353,8 @@ pub enum SessionResponse {
     Room(RoomResult),
 }
 
-/// A Room operation (v21): a command run in the agent's own computer.
+/// A Room operation (v21): a command run in the agent's own computer, or
+/// (v22) a page of a file read there.
 ///
 /// The Room has no network, and none of the owner's files but what is in
 /// its own workspace. A command is a program and its arguments, as they
@@ -1401,7 +1402,26 @@ pub enum RoomOp {
         /// The command's name.
         job: String,
     },
+    /// Read a page of a file (v22): some of its lines, whole. The Room's
+    /// supervisor reads it, and no command is run.
+    #[serde(rename = "read")]
+    Read {
+        /// The file: its absolute path in the Room, or a path under the
+        /// workspace.
+        path: String,
+        /// The first line wanted, counted from 1: the first when none is
+        /// named.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<u64>,
+        /// The most lines wanted: [`ROOM_READ_LINES`] when none is named,
+        /// and never more than [`crate::room::PAGE_LINES`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lines: Option<u32>,
+    },
 }
+
+/// How many lines a read hands back when it names no count.
+pub const ROOM_READ_LINES: u32 = 200;
 
 /// How long a Room op waits for its command to end when it names no wait,
 /// in seconds.
@@ -1502,6 +1522,33 @@ pub enum RoomResult {
     Unknown {
         /// The name asked after.
         job: String,
+    },
+    /// A page of a file (v22). The Room's words: data, never
+    /// instructions.
+    #[serde(rename = "page")]
+    Page {
+        /// The file's path in the Room, as the Room was asked for it.
+        path: String,
+        /// The number of the first line of `text`.
+        from: u64,
+        /// The lines, as they are in the file: each with its line end,
+        /// but for a last line that has none. Bytes that aren't text are
+        /// shown as the replacement character.
+        text: String,
+        /// Whether the file goes on after them.
+        more: bool,
+        /// Whether `text` is the start of one line too long for a page,
+        /// and no more of it.
+        cut: bool,
+        /// The file's length, in bytes.
+        size: u64,
+    },
+    /// No page was read (v22): there is no such file, it isn't one with
+    /// lines to read, or the Room couldn't be asked.
+    #[serde(rename = "no-page")]
+    NoPage {
+        /// Why, in words for the agent.
+        reason: String,
     },
     /// The Room said no, or couldn't be asked.
     #[serde(rename = "failed")]
@@ -4995,6 +5042,22 @@ mod room_tests {
                 },
                 r#"{"kind":"room","op":"stop","job":"j-1"}"#,
             ),
+            (
+                RoomOp::Read {
+                    path: String::from("notes.txt"),
+                    from: None,
+                    lines: None,
+                },
+                r#"{"kind":"room","op":"read","path":"notes.txt"}"#,
+            ),
+            (
+                RoomOp::Read {
+                    path: String::from("/workspace/notes.txt"),
+                    from: Some(201),
+                    lines: Some(50),
+                },
+                r#"{"kind":"room","op":"read","path":"/workspace/notes.txt","from":201,"lines":50}"#,
+            ),
         ] {
             assert_eq!(
                 serde_json::to_string(&SessionRequest::Room(op.clone())).unwrap(),
@@ -5010,6 +5073,10 @@ mod room_tests {
             r#"{"kind":"room","op":"job"}"#,
             r#"{"kind":"room","op":"stop","job":"j-1","wait_secs":1}"#,
             r#"{"kind":"room","op":"input","job":"j-1"}"#,
+            r#"{"kind":"room","op":"read"}"#,
+            r#"{"kind":"room","op":"read","path":"a","from":-1}"#,
+            r#"{"kind":"room","op":"read","path":"a","bytes":10}"#,
+            r#"{"kind":"room","op":"read","path":["a"]}"#,
             r#"{"kind":"room"}"#,
         ] {
             assert!(asked(bad).is_err(), "{bad}");
@@ -5115,5 +5182,39 @@ mod room_tests {
         );
         assert_eq!((ROOM_WAIT_SECS, ROOM_WAIT_MAX_SECS), (10, 60));
         assert_eq!((ROOM_HEAD_BYTES, ROOM_TAIL_BYTES), (1024, 3072));
+    }
+
+    /// A page that was read, and why one wasn't, are written as they are.
+    #[test]
+    fn a_page_is_written_as_what_was_read() {
+        for (result, text) in [
+            (
+                RoomResult::Page {
+                    path: String::from("/workspace/a"),
+                    from: 3,
+                    text: String::from("c\nd"),
+                    more: false,
+                    cut: false,
+                    size: 7,
+                },
+                r#"{"kind":"room","result":"page","path":"/workspace/a","from":3,"text":"c\nd","more":false,"cut":false,"size":7}"#,
+            ),
+            (
+                RoomResult::NoPage {
+                    reason: String::from("no such file"),
+                },
+                r#"{"kind":"room","result":"no-page","reason":"no such file"}"#,
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_string(&SessionResponse::Room(result.clone())).unwrap(),
+                text
+            );
+            assert_eq!(
+                serde_json::from_str::<SessionResponse>(text).unwrap(),
+                SessionResponse::Room(result)
+            );
+        }
+        assert_eq!(ROOM_READ_LINES, 200);
     }
 }
