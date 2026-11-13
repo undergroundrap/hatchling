@@ -2,8 +2,9 @@
 # Run the room image's own programs at everyday work under the Room's
 # syscall profile, in a root laid out as a Room's is: the kernel-verified
 # image read-only, a workspace on this machine's disk and a session in
-# memory, both without exec, the Room's three devices, and a user the
-# image's files don't name, as they don't name the Room's account.
+# memory, both without exec, the Room's three devices, a /proc of
+# processes only, and a user the image's files don't name, as they don't
+# name the Room's account.
 #
 #   sudo bash scripts/room-image-tools-proof.sh IMAGE_DIRECTORY TEST_BINARY
 #
@@ -85,7 +86,10 @@ mknod -m 0666 "$tmp/mount/dev/null" c 1 3
 mknod -m 0666 "$tmp/mount/dev/zero" c 1 5
 mknod -m 0666 "$tmp/mount/dev/urandom" c 1 9
 mount -o remount,ro,nosuid,noexec "$tmp/mount/dev"
-mount -t proc -o ro,nosuid,nodev,noexec proc "$tmp/mount/proc"
+# The Room's /proc: processes, and nothing else of the machine. A program
+# that reads the machine's memory or processors there finds what it finds
+# in a Room, which is nothing.
+mount -t proc -o ro,nosuid,nodev,noexec,subset=pid proc "$tmp/mount/proc"
 # The workspace, on this machine's disk as the Room's is on its own, and
 # the session, in memory: two file systems, neither one's files runnable.
 chown "$user:$user" "$tmp/workspace"
