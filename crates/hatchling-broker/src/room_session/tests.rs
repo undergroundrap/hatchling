@@ -1036,11 +1036,13 @@ fn a_job_that_does_not_end_when_stopped_ends_the_session() {
         let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
         say_ready(&rig.room);
         starts(&rig.room, "stuck");
+        // The clock starts before the stop is asked for: the session's
+        // own starts when it takes the stop in, which is no earlier.
+        let stopped_at = Instant::now();
         let (_stop_broker, stop) = ask_stop(&rig.door, "stuck");
         let Ask::Stop { nonce, .. } = hears(&rig.room) else {
             unreachable!()
         };
-        let stopped_at = Instant::now();
         says(&rig.room, &Say::Stopping { nonce });
         seen_out(held, &rig.room);
         (stop, stopped_at)
@@ -1078,8 +1080,10 @@ fn an_idle_session_ends_at_its_idle_limit_counted_from_its_last_job() {
         say_ready(far.room());
         starts(far.room(), "first");
         std::thread::sleep(SHORT * 3);
-        ends(far.room(), "first", Ended::Exited(0), b"");
+        // The clock starts before the end is said: the session's own
+        // starts when it hears it, which is no earlier.
         finished = Some(Instant::now());
+        ends(far.room(), "first", Ended::Exited(0), b"");
     });
     assert_eq!(said, IDLE, "a session with a job in hand isn't idle");
     assert!(
@@ -1182,9 +1186,12 @@ fn a_job_the_supervisor_does_not_start_is_let_go_with_why() {
             kept.keep(&rig.supervisor, rig.launcher.as_fd())
                 .unwrap_err()
         });
-        say_ready(&rig.room);
+        // Both are asked before the supervisor is ready, so the session has
+        // taken both in before it asks the supervisor anything: the second
+        // must be waiting when the job is let go.
         let (_broker, answer) = ask_run(&rig.door, "absent");
         let (_also_broker, also) = ask_job(&rig.door, "absent", LONG);
+        say_ready(&rig.room);
         let Ask::Start { nonce, .. } = hears(&rig.room) else {
             unreachable!()
         };
