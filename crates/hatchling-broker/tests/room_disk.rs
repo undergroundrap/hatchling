@@ -1402,7 +1402,7 @@ fn check_room_job_surroundings(spawner: &Spawner) -> Result<(), Failed> {
     assert_eq!(exit_code(&placed)?, 0);
     assert_eq!(
         String::from_utf8(kept(spawner, &placed, Stream::Stdout)?.1)?,
-        "/session\nHOME=/session/home\nLANG=C.UTF-8\nPATH=/usr/bin:/bin\nTMPDIR=/session"
+        "/session\nHOME=/session/home\nLANG=C.UTF-8\nPATH=/usr/local/bin:/usr/bin:/bin\nTMPDIR=/session"
     );
     let mut fed = fixture_job(&["input"])?;
     fed.stdin = b"given to the job\xff".to_vec();

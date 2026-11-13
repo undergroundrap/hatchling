@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use hatchling_core::framing::{read_frame_or_eof, write_frame};
 use hatchling_core::room::{
-    Ask, Captured, End, Ended, JobId, NotStarted, PIECE_BYTES, RUNNING_MAX, SESSION_DIR,
+    Ask, Captured, End, Ended, JOB_PATH, JobId, NotStarted, PIECE_BYTES, RUNNING_MAX, SESSION_DIR,
     SPILL_BYTES, Say, Stream, spill_path,
 };
 use rustix::event::{PollFd, PollFlags, poll};
@@ -507,7 +507,7 @@ impl Room<'_> {
             .args(arguments)
             .current_dir(dir)
             .env_clear()
-            .env("PATH", "/usr/bin:/bin")
+            .env("PATH", JOB_PATH)
             .env("HOME", &self.place.home)
             .env("TMPDIR", &self.place.scratch)
             .env("LANG", "C.UTF-8")

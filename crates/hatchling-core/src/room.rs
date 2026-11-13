@@ -59,6 +59,14 @@ pub const SESSION_DIR: &str = "/session";
 /// Where the supervisor keeps what jobs wrote, in the Room.
 pub const JOBS_DIR: &str = "/session/jobs";
 
+/// A job's `PATH`: where its programs are looked for.
+///
+/// The image keeps what it adds to its distribution (Node) in
+/// `/usr/local/bin`, and the distribution's own programs in the other
+/// two. All three are in the read-only image: no job can put a program in
+/// any of them.
+pub const JOB_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+
 /// The name of a job, chosen by whoever asks for it.
 ///
 /// 1 to [`JOB_ID_MAX_LEN`] ASCII letters, digits, `-`, `_` or `.`, and not
@@ -549,6 +557,7 @@ mod tests {
         );
         assert_eq!(Stream::BOTH, [Stream::Stdout, Stream::Stderr]);
         assert_eq!(JOBS_DIR, [SESSION_DIR, "jobs"].join("/"));
+        assert_eq!(JOB_PATH, "/usr/local/bin:/usr/bin:/bin");
     }
 
     #[test]
