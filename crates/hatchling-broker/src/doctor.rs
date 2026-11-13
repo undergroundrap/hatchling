@@ -561,7 +561,10 @@ fn bytes_said(bytes: u64) -> String {
 
 /// What doctor says of the room disk, from `facts`. Off is a note, not a
 /// problem: Hatchling works without the agent's computer. Open while the
-/// vault is locked is a problem: a locked install mustn't hold it open.
+/// vault is locked is a problem: a locked install mustn't hold it open. In
+/// use by another process is fine, and not looked at: the agent's computer
+/// has its disk while it runs. In use while the vault is locked is a
+/// problem: it can't be seen to be closed.
 fn room_said(facts: &RoomFacts) -> Finding {
     use crate::room_disk::RoomDiskState;
     let off = |what: String, fix: &str| Finding::Note {
@@ -596,6 +599,21 @@ fn room_said(facts: &RoomFacts) -> Finding {
     };
     let status = match status {
         Ok(status) => status,
+        // The agent's computer has its disk for as long as it runs, and
+        // maintenance has it while it works: the disk can't be looked at
+        // from here, and nothing is wrong with it. With the vault locked
+        // nothing should have it, and that it is closed can't be seen.
+        Err(why) if why.starts_with(crate::room_disk::IN_USE) => {
+            if facts.waiting {
+                return Finding::problem(
+                    "the room disk is in use while the vault is locked, so it can't be seen to be closed",
+                    "End any hatchling-broker command still running, then run doctor again; if none is, sudo systemctl restart hatchling.",
+                );
+            }
+            return Finding::Fine(format!(
+                "{version}; in use now, by the agent's computer or by maintenance, so it isn't looked at"
+            ));
+        }
         Err(why) => {
             return Finding::problem(
                 format!("the room disk can't be used: {why}"),
@@ -1709,6 +1727,46 @@ mod tests {
         assert_eq!(problems, 0, "a note was counted as a problem");
         assert!(text.contains("  note     room disk"), "{text}");
         assert!(text.contains("Nothing found wrong."), "{text}");
+    }
+
+    /// A room disk another process has is fine, and said so: the agent's
+    /// computer has its disk while it runs, and a report with it says
+    /// nothing's wrong. With the vault locked nothing should have the
+    /// disk, and that is a problem. A refusal that only goes on to say so
+    /// is a room disk that can't be used, as any other refusal is.
+    #[test]
+    fn a_room_disk_in_use_is_fine_unless_the_vault_is_locked() {
+        let in_use = |waiting| RoomFacts {
+            status: Some(Err(format!(
+                "{}; stop Hatchling and retry maintenance",
+                crate::room_disk::IN_USE
+            ))),
+            waiting,
+            ..room_facts()
+        };
+        assert_eq!(
+            room_said(&in_use(false)),
+            Finding::Fine(String::from(
+                "cryptsetup 2.8.4; in use now, by the agent's computer or by maintenance, so it isn't looked at"
+            ))
+        );
+        let (text, problems) = rendered("here", &[("room disk", room_said(&in_use(false)))]);
+        assert_eq!(problems, 0, "a room disk in use was counted as a problem");
+        assert!(text.contains("  ok       room disk"), "{text}");
+        assert!(text.contains("Nothing found wrong."), "{text}");
+        let (what, fix) = problem(room_said(&in_use(true)));
+        assert!(what.contains("in use while the vault is locked"), "{what}");
+        assert!(fix.contains("sudo systemctl restart hatchling"), "{fix}");
+        let other = RoomFacts {
+            status: Some(Err(format!(
+                "the room directory can't be trusted: {}",
+                crate::room_disk::IN_USE
+            ))),
+            ..room_facts()
+        };
+        let (what, fix) = problem(room_said(&other));
+        assert!(what.starts_with("the room disk can't be used: "), "{what}");
+        assert!(fix.contains("HATCHLING_ROOM_DISK_DIR"), "{fix}");
     }
 
     /// A room disk that's fine is said in numbers: cryptsetup's version,

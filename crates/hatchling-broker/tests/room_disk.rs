@@ -1687,6 +1687,12 @@ fn check_room_stays_held_until_cleared(spawner: &Spawner, place: &Place) -> Resu
             .err()
             .ok_or("maintenance closed the disk under a Room that wasn't cleared")?;
         assert!(reason.contains("in use by another process"), "{reason}");
+        // Looking at it is refused the same way: what doctor reads as a
+        // disk in use, and not one that's broken.
+        let looked = room_disk::status(&place.disk)
+            .err()
+            .ok_or("maintenance looked at the disk under a Room that wasn't cleared")?;
+        assert!(looked.starts_with(room_disk::IN_USE), "{looked}");
         assert_ne!(mapper_names()?, before, "the fixture left nothing to clear");
         assert!(place.mapped());
         Ok(())

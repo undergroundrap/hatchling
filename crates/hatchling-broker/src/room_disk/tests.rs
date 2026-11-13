@@ -150,6 +150,10 @@ fn room_operations_share_the_kernel_claim() {
     ] {
         assert!(reason.contains("in use by another process"), "{reason}");
     }
+    // A look at it is refused in the words doctor reads as a disk in use,
+    // and not one that's broken.
+    let looked = status(&bench.disk).unwrap_err();
+    assert!(looked.starts_with(IN_USE), "{looked}");
     assert!(bench.ran().is_empty(), "a refused operation ran a tool");
     drop(claim);
     assert_eq!(status(&bench.disk).unwrap().state, RoomDiskState::Closed);
