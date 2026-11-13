@@ -142,6 +142,8 @@ Download the new Setup and [verify it](#verify-setup-before-running-it) before r
 
 Hatchling never checks for updates by itself, because it sends nothing out on its own. New versions are on [the releases page](https://github.com/undergroundrap/hatchling/releases).
 
+To put the whole install back as it was if a new version doesn't suit you, take a snapshot of the distro before updating: [Updating Hatchling](updating.md#a-safety-copy) says how, and what it costs in disk space.
+
 ## If you'd rather use a terminal
 
 The rest of these docs show commands for Linux, with `sudo`. On Windows, type them in PowerShell, like this:
