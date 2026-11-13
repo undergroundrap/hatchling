@@ -272,8 +272,9 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     // Refused in a CLI cell: glibc's resolver sends a name's two queries
     // with it. Seen only in a real cell, from OpenCode (WO-018).
     ("sendmmsg", 307),
-    // What the Room image's own file tools ask for (`ROOM_TOOL_CALLS`,
-    // `ROOM_UNGRANTED`), with `fstatfs` above. Numbers verified against
+    // What the Room image's own programs ask for (`ROOM_TOOL_CALLS`,
+    // `ROOM_UNGRANTED`), with `fstatfs`, `link`, `getpriority`,
+    // `setpriority` and `inotify_init` above. Numbers verified against
     // /usr/include/x86_64-linux-gnu/asm/unistd_64.h.
     ("fchdir", 81),
     ("creat", 85),
@@ -283,6 +284,20 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     ("symlinkat", 266),
     ("dup3", 292),
     ("openat2", 437),
+    ("sendfile", 40),
+    ("capget", 125),
+    ("rt_sigsuspend", 130),
+    ("sync", 162),
+    ("fgetxattr", 193),
+    ("flistxattr", 196),
+    ("timer_create", 222),
+    ("timer_settime", 223),
+    ("timer_delete", 226),
+    ("mknodat", 259),
+    ("fchownat", 260),
+    ("linkat", 265),
+    ("io_uring_setup", 425),
+    ("fchmodat2", 452),
 ];
 
 /// aarch64 has no `arch_prctl`; the rest of the surface is the same
@@ -490,15 +505,14 @@ const CLI_CALLS: [&str; 63] = [
     "pwritev2",
 ];
 
-/// What the Room image's own file tools ask of the kernel beyond the CLI
-/// profile's. Found by tracing GNU coreutils, findutils and tar at
-/// ordinary work and comparing with the Room's profile: under it, a tool
-/// that made any of these was killed. Each is an operation the profile
-/// already allows, asked another way, or a hint: none opens a way the
-/// Room didn't have. They are the Room's alone: no other profile has
-/// them from here.
+/// What the Room image's own programs ask of the kernel beyond the CLI
+/// profile's. Found by running them at everyday work, in the image, under
+/// the Room's profile: a program that made any of these was killed. Most
+/// are an operation the profile already allows, asked another way, or a
+/// hint. The rest are small, and each says what it reaches. They are the
+/// Room's alone: no other profile has them from here.
 #[cfg(target_arch = "x86_64")]
-const ROOM_TOOL_CALLS: [&str; 8] = [
+const ROOM_TOOL_CALLS: [&str; 20] = [
     // A hint about how a file will be read. It reads, writes and changes
     // nothing. (`cat`, `cp`, `sort`, `wc`, and ten more.)
     "fadvise64",
@@ -516,30 +530,89 @@ const ROOM_TOOL_CALLS: [&str; 8] = [
     "dup3",
     // `openat`, with limits on how the path may resolve: it can refuse
     // what `openat` would open, and opens nothing `openat` can't.
-    // (`tar`, unpacking.)
+    // (`tar`, unpacking, as newer distributions build it. The image's
+    // own `tar` doesn't ask for it yet.)
     "openat2",
     // `listxattr`, of a link itself and not what it points to. It lists
     // names, and reads no values. (`ls -l`.)
     "llistxattr",
+    // `listxattr`, of a file already open. Names, and no values.
+    // (`cp -a`, `cp -p`, `mv` between file systems.)
+    "flistxattr",
+    // Copies bytes from one open file to another, as `copy_file_range`
+    // and `splice` do. It opens nothing. (Python's `shutil`, Node's
+    // `fs.copyFile`.)
+    "sendfile",
+    // `fchown`, of a file named from an open directory. The Room's user
+    // has no privilege: it can give a file of its own to a group of its
+    // own, and nothing else. (`cp -a`, `chown`, `mv` of a directory
+    // between file systems.)
+    "fchownat",
+    // `fchmodat`, told not to follow a link. (`chmod -R`, `tar` unpacking
+    // a directory inside another.)
+    "fchmodat2",
+    // `inotify_init1`, with no flags. (`tail -f`.)
+    "inotify_init",
+    // Waits for a signal, and does nothing else. (`wait` in `sh`,
+    // `timeout`.)
+    "rt_sigsuspend",
+    // A timer of the process's own, which signals the process that made
+    // it and no other: made, set, and removed. (`timeout`.)
+    "timer_create",
+    "timer_settime",
+    "timer_delete",
+    // Reads how a process is scheduled. (`nice`.)
+    "getpriority",
+    // Asks for a process to be scheduled after others. It can't ask for
+    // sooner: that takes a privilege the Room's user doesn't have. It
+    // reaches every process of the Room's user, the Room's supervisor
+    // among them: a job can make the supervisor wait its turn, as it
+    // could by keeping the processor busy. (`nice`.)
+    "setpriority",
+    // Reads a process's capabilities, and changes none. The Room's
+    // processes have none. (Node, as it starts.)
+    "capget",
 ];
 
-/// What the Room's tools ask for in ordinary work and the Room doesn't
-/// grant: answered with an error the tool already handles, so it goes on
-/// without.
+/// What the Room's programs ask for in everyday work and the Room doesn't
+/// grant: answered with an error the program already handles, so it goes
+/// on without, or says plainly what it was refused.
 ///
-/// The rule this follows: a call an ordinary tool makes in ordinary use,
-/// and that isn't granted, is answered. Everything else that isn't
+/// The rule this follows: a call an ordinary program makes in ordinary
+/// use, and that isn't granted, is answered. Everything else that isn't
 /// allowed still kills the process, and that kill is a signal worth
-/// having. A call belongs here only when a tool was seen making it and
-/// seen going on without it.
-///
-/// `fsetxattr` sets an extended attribute on a file already open, and no
-/// call that sets one is allowed. `install` asks it of each file it
-/// copies. Told the file system doesn't support it (`ENOTSUP`), as one
-/// with no extended attributes says, it carries on; told anything else,
-/// it fails.
+/// having. A call belongs here only when a program was seen making it and
+/// seen handling the answer.
 #[cfg(target_arch = "x86_64")]
-const ROOM_UNGRANTED: [(&str, u32); 1] = [("fsetxattr", ENOTSUP)];
+const ROOM_UNGRANTED: [(&str, u32); 7] = [
+    // Sets an extended attribute on a file already open, and no call
+    // that sets one is allowed. `install` asks it of each file it copies.
+    // Told the file system doesn't support it, as one with no extended
+    // attributes says, it carries on; told anything else, it fails.
+    ("fsetxattr", ENOTSUP),
+    // Reads an extended attribute's value, and no call that reads one is
+    // allowed: the Room's files show the names of their attributes and
+    // nothing of what they hold. `sed -i` asks for a file's access list,
+    // to give the same to the file it writes, and goes on without.
+    ("fgetxattr", ENOTSUP),
+    // A second name for a file: there are no hard links in the Room, by
+    // either call. Git asks for one as it stores an object and renames
+    // the file when it can't. `ln` says it isn't permitted.
+    ("link", EPERM),
+    ("linkat", EPERM),
+    // Writes out every file system on the kernel, and a machine's kernel
+    // isn't the Room's alone. `sync` takes no notice of the answer.
+    // `fsync` and `fdatasync`, of a file the job has open, are allowed.
+    ("sync", ENOSYS),
+    // Makes a device file or a named pipe. `make -j` asks for a named
+    // pipe, says it was refused, and goes on with one that has no name.
+    // `mkfifo` says it isn't permitted.
+    ("mknodat", EPERM),
+    // `io_uring` asks the kernel for work through a queue this filter
+    // can't see into, so there is none in the Room. Node asks as it
+    // starts and goes on without.
+    ("io_uring_setup", ENOSYS),
+];
 
 /// The calls a headless Chromium makes beyond the CLI profile's (WO-029),
 /// found by tracing it and then leaving each out in a real cell: without
@@ -1989,13 +2062,11 @@ mod tests {
         assert_eq!(call(&prog, "clone", [17, 0, 0, 0, 0, 0]), SECCOMP_RET_ALLOW);
     }
 
-    /// What the Room's tools ask for is allowed in the Room, and what it
-    /// doesn't grant them is answered with the one error they go on
-    /// from. The calls beside it that set or remove an attribute still
-    /// kill. No other profile gets any of this from the Room's lists.
+    /// The Room's two lists are what was decided, call for call and error
+    /// for error, and each name is the kernel's number for that call.
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn room_allows_what_its_tools_ask_and_answers_what_it_does_not_grant() {
+    fn the_rooms_lists_are_what_was_decided_by_the_kernels_numbers() {
         assert_eq!(
             ROOM_TOOL_CALLS,
             [
@@ -2006,12 +2077,35 @@ mod tests {
                 "symlinkat",
                 "dup3",
                 "openat2",
-                "llistxattr"
+                "llistxattr",
+                "flistxattr",
+                "sendfile",
+                "fchownat",
+                "fchmodat2",
+                "inotify_init",
+                "rt_sigsuspend",
+                "timer_create",
+                "timer_settime",
+                "timer_delete",
+                "getpriority",
+                "setpriority",
+                "capget"
             ]
         );
-        assert_eq!(ROOM_UNGRANTED, [("fsetxattr", 95)]);
+        assert_eq!(
+            ROOM_UNGRANTED,
+            [
+                ("fsetxattr", 95),
+                ("fgetxattr", 95),
+                ("link", 1),
+                ("linkat", 1),
+                ("sync", 38),
+                ("mknodat", 1),
+                ("io_uring_setup", 38)
+            ]
+        );
         // Each name is the kernel's number for it.
-        for (name, number) in [
+        let numbers = [
             ("fadvise64", libc::SYS_fadvise64),
             ("fchdir", libc::SYS_fchdir),
             ("creat", libc::SYS_creat),
@@ -2020,30 +2114,69 @@ mod tests {
             ("dup3", libc::SYS_dup3),
             ("openat2", libc::SYS_openat2),
             ("llistxattr", libc::SYS_llistxattr),
+            ("flistxattr", libc::SYS_flistxattr),
+            ("sendfile", libc::SYS_sendfile),
+            ("fchownat", libc::SYS_fchownat),
+            ("fchmodat2", libc::SYS_fchmodat2),
+            ("inotify_init", libc::SYS_inotify_init),
+            ("rt_sigsuspend", libc::SYS_rt_sigsuspend),
+            ("timer_create", libc::SYS_timer_create),
+            ("timer_settime", libc::SYS_timer_settime),
+            ("timer_delete", libc::SYS_timer_delete),
+            ("getpriority", libc::SYS_getpriority),
+            ("setpriority", libc::SYS_setpriority),
+            ("capget", libc::SYS_capget),
             ("fsetxattr", libc::SYS_fsetxattr),
-        ] {
+            ("fgetxattr", libc::SYS_fgetxattr),
+            ("link", libc::SYS_link),
+            ("linkat", libc::SYS_linkat),
+            ("sync", libc::SYS_sync),
+            ("mknodat", libc::SYS_mknodat),
+            ("io_uring_setup", libc::SYS_io_uring_setup),
+        ];
+        assert_eq!(numbers.len(), ROOM_TOOL_CALLS.len() + ROOM_UNGRANTED.len());
+        for (name, number) in numbers {
             assert_eq!(
                 syscall_number(name),
                 Some(u32::try_from(number).unwrap()),
                 "{name}"
             );
         }
+    }
+
+    /// What the Room's programs ask is allowed in the Room, and what it
+    /// doesn't grant them is answered with the error each handles. The
+    /// calls beside the answered ones still kill.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn room_allows_what_its_tools_ask_and_answers_what_it_does_not_grant() {
         let no = [0; 6];
         let room = SeccompProfile::room().unwrap().build();
         for name in ROOM_TOOL_CALLS {
             assert_eq!(call(&room, name, no), SECCOMP_RET_ALLOW, "{name}");
         }
-        assert_eq!(
-            call(&room, "fsetxattr", no),
-            SECCOMP_RET_ERRNO + ENOTSUP,
-            "what isn't granted is answered"
-        );
+        for (name, errno) in ROOM_UNGRANTED {
+            assert_eq!(
+                call(&room, name, no),
+                SECCOMP_RET_ERRNO + errno,
+                "{name}: what isn't granted is answered"
+            );
+        }
+        // What is beside the answered calls is neither allowed nor
+        // answered: setting, removing or reading an attribute another
+        // way, the rest of `io_uring`, the older call that makes a
+        // device file.
         for number in [
             libc::SYS_setxattr,
             libc::SYS_lsetxattr,
             libc::SYS_removexattr,
             libc::SYS_lremovexattr,
             libc::SYS_fremovexattr,
+            libc::SYS_getxattr,
+            libc::SYS_lgetxattr,
+            libc::SYS_io_uring_enter,
+            libc::SYS_io_uring_register,
+            libc::SYS_mknod,
         ] {
             assert_eq!(
                 run(&room, AUDIT_ARCH, u32::try_from(number).unwrap(), no),
@@ -2051,26 +2184,48 @@ mod tests {
                 "syscall {number}"
             );
         }
-        // The browser's profile has `fstatfs` by its own list, and
-        // nothing else of these.
-        let others = [
-            ("agent", SeccompProfile::agent().unwrap(), ""),
-            ("harness", SeccompProfile::harness().unwrap(), ""),
-            ("harness CLI", SeccompProfile::harness_cli().unwrap(), ""),
-            ("browser", SeccompProfile::browser().unwrap(), "fstatfs"),
-        ];
-        for (label, profile, own) in others {
+    }
+
+    /// No other profile has any of this from the Room's lists. The cells'
+    /// profiles kill every one of these calls. The browser's decides five
+    /// of them by lists of its own, as it did.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn no_other_profile_has_what_the_room_allows_or_answers() {
+        let no = [0; 6];
+        let names = ROOM_TOOL_CALLS
+            .into_iter()
+            .chain(ROOM_UNGRANTED.map(|(name, _)| name));
+        for (label, profile) in [
+            ("agent", SeccompProfile::agent().unwrap()),
+            ("harness", SeccompProfile::harness().unwrap()),
+            ("harness CLI", SeccompProfile::harness_cli().unwrap()),
+        ] {
             let prog = profile.build();
-            for name in ROOM_TOOL_CALLS.into_iter().chain(["fsetxattr"]) {
-                if name != own {
-                    assert_eq!(
-                        call(&prog, name, no),
-                        SECCOMP_RET_KILL_PROCESS,
-                        "{label}: {name}"
-                    );
-                }
+            for name in names.clone() {
+                assert_eq!(
+                    call(&prog, name, no),
+                    SECCOMP_RET_KILL_PROCESS,
+                    "{label}: {name}"
+                );
             }
         }
+        let browser = SeccompProfile::browser().unwrap().build();
+        let decided: Vec<(&str, u32)> = names
+            .map(|name| (name, call(&browser, name, no)))
+            .filter(|(_, verdict)| *verdict != SECCOMP_RET_KILL_PROCESS)
+            .collect();
+        assert_eq!(
+            decided,
+            [
+                ("fstatfs", SECCOMP_RET_ALLOW),
+                ("inotify_init", SECCOMP_RET_ERRNO + ENOSYS),
+                ("getpriority", SECCOMP_RET_ERRNO + EPERM),
+                ("setpriority", SECCOMP_RET_ERRNO + EPERM),
+                ("link", SECCOMP_RET_ERRNO + EPERM),
+            ],
+            "the browser's own"
+        );
     }
 
     /// A tool the Room's image is made of, at ordinary work: its
