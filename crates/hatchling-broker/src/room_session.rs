@@ -18,6 +18,11 @@
 //! it; the one thing it says unasked is that a job has ended. Anything
 //! else it says, or doesn't say in time, ends the session.
 //!
+//! A page of a file in the Room is asked of the supervisor the same way,
+//! in its turn. It is no job: nothing is kept of it, and asking again
+//! reads the file again. Like a job, it starts a session when there is
+//! none.
+//!
 //! A session ends at its time limit, when it has been idle, when a job in
 //! it doesn't end after it was stopped, when its supervisor says what it
 //! may not or goes quiet, when the disk under it is closed or wiped, and
@@ -37,7 +42,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use hatchling_core::room::{Ask, Captured, End, Ended, JobId, RUNNING_MAX, Say, Stream};
+use hatchling_core::room::{
+    Ask, Captured, End, Ended, JobId, NoPage, Page, RUNNING_MAX, Say, Stream, check_page,
+};
 
 use crate::room_disk::{RoomDiskOp, RoomDiskStatus};
 use crate::room_job::{
@@ -63,6 +70,7 @@ const BAD_READY: &str = "the Room supervisor sent invalid readiness";
 const BAD_SAY: &str = "the Room supervisor said something that can't be read";
 const BAD_END: &str = "the Room supervisor said a job ended in a way it can't have";
 const BAD_PIECE: &str = "the Room supervisor sent a piece of output of the wrong length";
+const BAD_PAGE: &str = "the Room supervisor sent a page of a file that can't be one";
 const UNANSWERED: &str = "the Room supervisor didn't answer in time";
 const UNSTOPPED: &str = "a Room job didn't end when it was stopped";
 const UNSENT: &str = "could not send to the Room supervisor";
@@ -84,6 +92,26 @@ const LEDGER_MAX: usize = 64;
 pub(crate) type JobReply = Result<RoomJobAnswer, String>;
 /// What a room disk operation comes to.
 pub(crate) type DiskReply = Result<Option<RoomDiskStatus>, String>;
+/// What asking for a page of a file comes to.
+pub(crate) type PageReply = Result<Page, String>;
+
+/// Why the supervisor handed back no page, in words for whoever asked.
+fn no_page(why: NoPage) -> String {
+    match why {
+        NoPage::NoSuchFile => String::from("the Room has no such file"),
+        NoPage::Denied => String::from("the Room's user may not read that file"),
+        NoPage::NotAFile => {
+            String::from("that is a directory or a special file, not a file with lines to read")
+        }
+        NoPage::NotText => String::from("those lines of the file are not text"),
+        NoPage::TooFar => {
+            String::from("those lines are too far into the file: past its first 32 MiB")
+        }
+        NoPage::PastEnd(0) => String::from("the file is empty"),
+        NoPage::PastEnd(last) => format!("the file's last line is line {last}"),
+        NoPage::Failed => String::from("the Room couldn't read that file"),
+    }
+}
 
 /// How long a session, and each wait in it, may last.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -221,6 +249,14 @@ pub(crate) enum Message {
         requester: UnixStream,
         reply: Sender<JobReply>,
     },
+    /// Hand back a page of a file, for the connection at `requester`.
+    Page {
+        path: String,
+        from: u64,
+        lines: u32,
+        requester: UnixStream,
+        reply: Sender<PageReply>,
+    },
     /// Say whether the installed Room works.
     Probe { reply: Sender<Result<(), String>> },
     /// Do this to the room disk.
@@ -337,6 +373,8 @@ enum Asking {
     Start(JobId),
     Stop(JobId),
     Piece(JobId, Stream, End),
+    /// The page the first connection waiting for one wants.
+    Page,
 }
 
 /// A job's end as the supervisor said it, while its kept output is
@@ -375,6 +413,49 @@ struct Waiter {
     until: Instant,
     /// Whether its ask is what started the job.
     started: bool,
+}
+
+/// A connection waiting for a page of a file.
+struct Reader {
+    path: String,
+    from: u64,
+    lines: u32,
+    requester: UnixStream,
+    reply: Sender<PageReply>,
+}
+
+/// An answer kept until the Room is down.
+enum Owed {
+    /// How a job came out, or why it isn't known.
+    Job(Sender<JobReply>, JobReply),
+    /// Why there is no page.
+    Page(Sender<PageReply>, String),
+}
+
+impl Owed {
+    /// Gives the answer.
+    fn pay(self) {
+        match self {
+            Self::Job(reply, answer) => {
+                let _ = reply.send(answer);
+            }
+            Self::Page(reply, reason) => {
+                let _ = reply.send(Err(reason));
+            }
+        }
+    }
+
+    /// Says instead that nothing can be answered, and why.
+    fn refuse(self, reason: &str) {
+        match self {
+            Self::Job(reply, _) => {
+                let _ = reply.send(Err(reason.to_owned()));
+            }
+            Self::Page(reply, _) => {
+                let _ = reply.send(Err(reason.to_owned()));
+            }
+        }
+    }
 }
 
 /// Reads what the supervisor has sent so far into `heard`: never more
@@ -442,6 +523,10 @@ pub(crate) struct Kept<D> {
     /// The jobs in hand: running, or ended with output still to fetch.
     flights: BTreeMap<JobId, Flight>,
     waiters: Vec<Waiter>,
+    /// The connections waiting for a page that hasn't been asked for.
+    readers: VecDeque<Reader>,
+    /// Who is told of the page the supervisor has been asked for.
+    reading: Option<Sender<PageReply>>,
     /// What is still to be asked of the supervisor.
     asks: VecDeque<Asking>,
     /// What it has been asked and hasn't answered: its nonce, and when.
@@ -450,7 +535,7 @@ pub(crate) struct Kept<D> {
     probes: Vec<Sender<Result<(), String>>>,
     /// Who was waiting when the session ended: they hear once the Room is
     /// down, so nothing they then see is still being taken apart.
-    owed: Vec<(Sender<JobReply>, JobReply)>,
+    owed: Vec<Owed>,
     /// The close or wipe that ended the session, done once it is down.
     after: Option<(RoomDiskOp, Sender<DiskReply>)>,
     /// The broker has gone: nothing waits on a cleanup that fails.
@@ -471,6 +556,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
             disk,
             flights: BTreeMap::new(),
             waiters: Vec::new(),
+            readers: VecDeque::new(),
+            reading: None,
             asks: VecDeque::new(),
             asked: None,
             probes: Vec::new(),
@@ -485,10 +572,11 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
         opened(&self.ledger).get(job).map(|over| over.state.clone())
     }
 
-    /// Whether the session has anything in hand: a job, or an ask the
-    /// supervisor hasn't answered. Whoever waits, waits for a job in hand.
+    /// Whether the session has anything in hand: a job, a page still to
+    /// ask for, or an ask the supervisor hasn't answered. Whoever waits,
+    /// waits for one of them.
     fn busy(&self) -> bool {
-        !self.flights.is_empty() || self.asked.is_some()
+        !self.flights.is_empty() || !self.readers.is_empty() || self.asked.is_some()
     }
 
     /// Takes what has been asked of the session so far. `Err` is why it
@@ -520,6 +608,22 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                     // A stopped job ends within its grace, or the session
                     // does: this is answered then, and not before.
                     self.wait_for(job, requester, reply, now);
+                }
+                Message::Page {
+                    path,
+                    from,
+                    lines,
+                    requester,
+                    reply,
+                } => {
+                    self.readers.push_back(Reader {
+                        path,
+                        from,
+                        lines,
+                        requester,
+                        reply,
+                    });
+                    self.asks.push_back(Asking::Page);
                 }
                 Message::Probe { reply } => self.probes.push(reply),
                 Message::Disk {
@@ -679,6 +783,18 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
         }
     }
 
+    /// Lets go of every caller waiting for a page that has gone.
+    fn unread(&mut self) {
+        let (staying, gone): (VecDeque<Reader>, VecDeque<Reader>) =
+            std::mem::take(&mut self.readers)
+                .into_iter()
+                .partition(|reader| quiet(&reader.requester));
+        self.readers = staying;
+        for reader in gone {
+            let _ = reader.reply.send(Err(String::from(REQUESTER_GONE)));
+        }
+    }
+
     /// Sends the supervisor the next thing to ask, when it isn't still
     /// answering the last. One ask is with the supervisor at a time, so
     /// its socket has room for a whole one: a supervisor that can't take
@@ -714,6 +830,19 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                     stream: *stream,
                     end: *end,
                 }),
+                // Nothing is read for a caller that has gone.
+                Asking::Page => {
+                    self.unread();
+                    self.readers.pop_front().map(|reader| {
+                        self.reading = Some(reader.reply);
+                        Ask::Page {
+                            nonce: nonce.clone(),
+                            path: reader.path,
+                            from: reader.from,
+                            lines: reader.lines,
+                        }
+                    })
+                }
             };
             let Some(ask) = ask else {
                 continue;
@@ -933,7 +1062,25 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
             (Asking::Piece(job, stream, end), Say::Piece { bytes, .. }) => {
                 self.piece(&job, stream, end, bytes)
             }
+            (Asking::Page, Say::Page { page, .. }) => {
+                if page.check().is_err() {
+                    return Err(String::from(BAD_PAGE));
+                }
+                self.read(Ok(page));
+                Ok(())
+            }
+            (Asking::Page, Say::NoPage { why, .. }) => {
+                self.read(Err(no_page(why)));
+                Ok(())
+            }
             _ => Err(String::from(OUT_OF_TURN)),
+        }
+    }
+
+    /// Tells whoever waits for the page the supervisor was asked for.
+    fn read(&mut self, page: PageReply) {
+        if let Some(reply) = self.reading.take() {
+            let _ = reply.send(page);
         }
     }
 
@@ -1057,8 +1204,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
     /// Everyone still waiting on this session hears that it can't answer.
     fn refuse(&mut self, reason: &str) {
         let reason = held(reason);
-        for (reply, _) in self.owed.drain(..) {
-            let _ = reply.send(Err(reason.clone()));
+        for owed in self.owed.drain(..) {
+            owed.refuse(&reason);
         }
         if let Some((_, reply)) = self.after.take() {
             let _ = reply.send(Err(reason.clone()));
@@ -1082,6 +1229,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                 Message::Run { reply, .. }
                 | Message::Job { reply, .. }
                 | Message::Stop { reply, .. } => {
+                    let _ = reply.send(Err(held(reason)));
+                }
+                Message::Page { reply, .. } => {
                     let _ = reply.send(Err(held(reason)));
                 }
                 Message::Probe { reply } => {
@@ -1115,22 +1265,35 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
     ) {
         if let Err(reason) = launched {
             // A launch can fail before anything was taken in: with no
-            // disk to open, say. Nothing was started, so every job that
-            // was waiting for this Room hears why there is none, and its
-            // name is free. Whatever else was asked is let go unanswered,
-            // and is asked again without a session.
+            // disk to open, say. Nothing was started, so every job and
+            // every page that was waiting for this Room hears why there
+            // is none, and a job's name is free. Whatever else was asked
+            // is let go unanswered, and is asked again without a session.
             self.flights.clear();
             for waiter in self.waiters.drain(..) {
                 let _ = waiter.reply.send(Err(reason.clone()));
             }
+            for reader in self.readers.drain(..) {
+                let _ = reader.reply.send(Err(reason.clone()));
+            }
             while let Ok(message) = self.seat.inbox.try_recv() {
-                if let Message::Run { reply, .. } = message {
-                    let _ = reply.send(Err(reason.clone()));
+                match message {
+                    Message::Run { reply, .. } => {
+                        let _ = reply.send(Err(reason.clone()));
+                    }
+                    Message::Page { reply, .. } => {
+                        let _ = reply.send(Err(reason.clone()));
+                    }
+                    Message::Job { .. }
+                    | Message::Stop { .. }
+                    | Message::Probe { .. }
+                    | Message::Disk { .. }
+                    | Message::End { .. } => {}
                 }
             }
         }
-        for (reply, answer) in self.owed.drain(..) {
-            let _ = reply.send(answer);
+        for owed in self.owed.drain(..) {
+            owed.pay();
         }
         if let Some((op, reply)) = self.after.take() {
             let _ = reply.send(direct(op));
@@ -1142,9 +1305,10 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Session for Kept<D> {
     fn begin(&mut self) -> Result<(), String> {
         self.intake()?;
         // Nothing is launched for callers that have all gone.
-        let asked = !self.flights.is_empty();
+        let asked = !self.flights.is_empty() || !self.readers.is_empty();
         self.part(|waiter| !quiet(&waiter.requester));
-        if asked && self.flights.is_empty() {
+        self.unread();
+        if asked && self.flights.is_empty() && self.readers.is_empty() {
             return Err(String::from(REQUESTER_GONE));
         }
         Ok(())
@@ -1170,7 +1334,12 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Session for Kept<D> {
                 || Err(reason.clone()),
                 |state| Ok(told(&waiter.job, state, waiter.started)),
             );
-            self.owed.push((waiter.reply, answer));
+            self.owed.push(Owed::Job(waiter.reply, answer));
+        }
+        // A page that wasn't handed back isn't going to be.
+        let unread = self.readers.drain(..).map(|reader| reader.reply);
+        for reply in self.reading.take().into_iter().chain(unread) {
+            self.owed.push(Owed::Page(reply, reason.clone()));
         }
     }
 
@@ -1321,11 +1490,45 @@ impl Sessions {
                 reply,
             })
         };
+        self.ask_or_start(&message, || self.over(&run.job))
+    }
+
+    /// Hands back a page of the file at `path` in the kept Room: its
+    /// lines from line `from`, at most `lines` of them, for the connection
+    /// at `requester`. A session is started when there is none.
+    pub(crate) fn page(
+        &self,
+        path: &str,
+        from: u64,
+        lines: u32,
+        requester: &UnixStream,
+    ) -> PageReply {
+        check_page(path, from, lines)?;
+        let message = |reply: Sender<PageReply>| -> Result<Message, String> {
+            Ok(Message::Page {
+                path: path.to_owned(),
+                from,
+                lines,
+                requester: requester.try_clone().map_err(|error| error.to_string())?,
+                reply,
+            })
+        };
+        self.ask_or_start(&message, || None)
+    }
+
+    /// Asks the live session, or starts one for what is asked when there
+    /// is none. What `known` answers is the answer, and nothing is asked:
+    /// it is looked at before each try.
+    fn ask_or_start<T>(
+        &self,
+        message: &impl Fn(Sender<Result<T, String>>) -> Result<Message, String>,
+        known: impl Fn() -> Option<T>,
+    ) -> Result<T, String> {
         for _ in 0..ATTEMPTS {
-            if let Some(known) = self.over(&run.job) {
+            if let Some(known) = known() {
                 return Ok(known);
             }
-            match self.ask(&message)? {
+            match self.ask(message)? {
                 Asked::Answered(answer) => return answer,
                 Asked::Dropped => {}
                 Asked::Alone(mut slot, first, answer) => {

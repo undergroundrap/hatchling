@@ -580,6 +580,9 @@ enum Request {
         stream: Stream,
         end: End,
     },
+    /// Hand back a page of a file in the installed Room: its lines from
+    /// line `from`, at most `lines` of them.
+    RoomPage { path: String, from: u64, lines: u32 },
 }
 
 /// What the spawner answers.
@@ -605,7 +608,11 @@ enum Reply {
         #[serde(with = "hatchling_core::room::b64")]
         bytes: Vec<u8>,
     },
+    /// A page of a file in the Room.
+    RoomPage { page: Page },
 }
+
+pub use hatchling_core::room::Page;
 
 pub use crate::room_job::{
     Captured, End, Ended, JOB_CEILING_SECS, JOB_DEFAULT_SECS, JobId, RoomJob, RoomJobAnswer,
@@ -800,7 +807,8 @@ impl Spawner {
             | Reply::Done
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
-            | Reply::RoomOutput { .. } => {
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -873,7 +881,8 @@ impl Spawner {
             | Reply::Exited { .. }
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
-            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -900,7 +909,8 @@ impl Spawner {
             Reply::Started { .. }
             | Reply::Exited { .. }
             | Reply::RoomJob { .. }
-            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -922,7 +932,8 @@ impl Spawner {
             | Reply::Started { .. }
             | Reply::Exited { .. }
             | Reply::RoomJob { .. }
-            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1013,7 +1024,47 @@ impl Spawner {
             | Reply::Exited { .. }
             | Reply::Done
             | Reply::RoomDisk { .. }
-            | Reply::RoomJob { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomJob { .. }
+            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Hands back a page of the file at `path` in the Room: its lines
+    /// from line `from` (the first is 1), at most `lines` of them and at
+    /// most [`hatchling_core::room::PAGE_BYTES`], whole. A first line
+    /// longer than that comes back cut, and is said to be.
+    ///
+    /// The supervisor confined in the Room reads the file, as the Room's
+    /// user: no job is started, and none of those the Room remembers is
+    /// forgotten for it. Like a job, a page starts the Room when it isn't
+    /// running. What comes back is the Room's own, and untrusted.
+    ///
+    /// # Errors
+    ///
+    /// When there is no such file, it isn't a file with lines to read, or
+    /// the lines aren't there; and as a job's are, when the Room can't be
+    /// started or asked.
+    pub fn room_page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String> {
+        hatchling_core::room::check_page(path, from, lines)?;
+        let connection = self.connect().map_err(|error| error.to_string())?;
+        connection
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        let request = Request::RoomPage {
+            path: path.to_owned(),
+            from,
+            lines,
+        };
+        send(&connection, &request).map_err(|error| error.to_string())?;
+        match receive(&connection).map_err(|error| error.to_string())? {
+            Reply::RoomPage { page } => Ok(page),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1033,7 +1084,8 @@ impl Spawner {
             | Reply::Exited { .. }
             | Reply::Done
             | Reply::RoomDisk { .. }
-            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1068,7 +1120,8 @@ impl Spawner {
             | Reply::Exited { .. }
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
-            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 }
@@ -1110,7 +1163,8 @@ impl SpawnedProcess {
                     | Reply::Done
                     | Reply::RoomDisk { .. }
                     | Reply::RoomJob { .. }
-                    | Reply::RoomOutput { .. },
+                    | Reply::RoomOutput { .. }
+                    | Reply::RoomPage { .. },
                 ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
@@ -1551,6 +1605,13 @@ fn serve_connection(
         } => {
             let reply = match sessions.output(&job, which, end) {
                 Ok(bytes) => Reply::RoomOutput { bytes },
+                Err(reason) => Reply::Refused { reason },
+            };
+            send(stream, &reply)
+        }
+        Request::RoomPage { path, from, lines } => {
+            let reply = match sessions.page(&path, from, lines, stream) {
+                Ok(page) => Reply::RoomPage { page },
                 Err(reason) => Reply::Refused { reason },
             };
             send(stream, &reply)
@@ -2398,6 +2459,70 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             sessions.run(&run("k", &["true"]), &requester),
             Err(String::from("the spawner is leaving"))
         );
+    }
+
+    /// A page of a file reaches the spawner's one session, as it was
+    /// asked for, and starts it when there is none. One that may not be
+    /// asked for is refused by the spawner, and starts nothing.
+    #[test]
+    fn a_page_reaches_the_session_and_starts_it() {
+        use crate::room_job::tests::run;
+        use crate::room_session::tests::{stand_ins, stood_in, stood_page};
+        let (sessions, started, _ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let asked = spawner.connect().unwrap();
+        let invalid = Request::RoomPage {
+            path: String::from("workspace/a"),
+            from: 1,
+            lines: 1,
+        };
+        send(&asked, &invalid).unwrap();
+        assert!(matches!(
+            receive(&asked).unwrap(),
+            Reply::Refused { reason } if reason.contains("absolute")
+        ));
+        assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
+        assert_eq!(
+            spawner.room_page("/workspace/a", 3, 7),
+            Ok(stood_page(1, "/workspace/a", 3, 7))
+        );
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        // A job is run in the session a page started, and a page read in
+        // it after.
+        let ran = spawner.room_run(&run("j", &["true"]));
+        assert_eq!(ran, Ok(stood_in(1, "j")));
+        assert_eq!(
+            spawner.room_page("/etc/os-release", 1, 2000),
+            Ok(stood_page(1, "/etc/os-release", 1, 2000))
+        );
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        drop((asked, spawner));
+        served.join().unwrap();
+    }
+
+    /// A page that may not be asked for is refused by whoever asks,
+    /// before the spawner is asked anything.
+    #[test]
+    fn a_page_that_may_not_be_asked_for_never_reaches_the_spawner() {
+        // Shut, and not only dropped: another test's forked child may hold
+        // a copy of the far end for a moment, and it must be seen gone now.
+        let (alone, closed) = UnixStream::pair().unwrap();
+        closed.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(closed);
+        let nobody = Spawner::over(alone);
+        let refused = nobody.room_page("workspace/a", 1, 1).unwrap_err();
+        assert!(refused.contains("absolute"), "{refused}");
+        let refused = nobody.room_page("/workspace/a", 0, 1).unwrap_err();
+        assert!(refused.contains("counted from 1"), "{refused}");
+        let unasked = nobody.room_page("/workspace/a", 1, 1).unwrap_err();
+        assert!(!unasked.contains("absolute"), "{unasked}");
     }
 
     /// A session asks for the disk it holds from inside its own claim on

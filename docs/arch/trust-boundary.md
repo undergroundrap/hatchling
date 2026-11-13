@@ -140,9 +140,10 @@ socket crosses exec.
 
 After the fixed readiness frame, the private spawner channel asks the
 supervisor one thing at a time, in typed frames whose unknown fields never
-decode: to start a job, to stop one, or to hand over a kept piece of what
-an ended job wrote. Each answer must echo its ask's nonce. The one thing
-the supervisor says unasked is that a job it was given has ended.
+decode: to start a job, to stop one, to hand over a kept piece of what
+an ended job wrote, or to hand back a page of a file. Each answer must
+echo its ask's nonce. The one thing the supervisor says unasked is that a
+job it was given has ended.
 
 A command is a job, named by whoever asks for it. It is a program named
 plainly (found on the fixed path `/usr/local/bin:/usr/bin:/bin`, all of it
@@ -161,15 +162,29 @@ of the bytes between them, and writes the whole of each stream, up to
 8 MiB, to a file in `/session/jobs`. A session directory that is full
 still runs a job: its files are then short, and said to be.
 
+A page is some of a file's lines: from a line the asker names, counted
+from 1, as many whole lines as were asked for (never more than 2000) and
+as fit in 8 KiB. The supervisor reads the file itself, as the Room's user:
+no job is started, and none of the ended jobs it remembers is forgotten
+for it. It opens the file without waiting and reads only a file, so a
+pipe or a device can't hold it; it looks no further than the first 32 MiB
+for the lines; a first line longer than a page comes back cut, and said
+to be; and lines with a byte no text has aren't handed back. The path is
+absolute and at most 1024 bytes. Nothing in the spawner or the broker
+reads the file's bytes: they are carried as they came. A page is not
+kept: asking again reads the file again. No agent is given pages yet:
+only the spawner's own caller can ask for one.
+
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
 together, takes each kept piece only at the length the supervisor said it
-had, and names each stream's file itself, from the job's name.
+had, takes a page only if it is no longer than a page and cut only where
+it could be, and names each stream's file itself, from the job's name.
 
 The Room is kept between jobs, as one session for the install. One
 spawner thread holds it from its launch until it is down, and holds the
-disk's exclusive claim for as long. The first job starts the session and
-later jobs run in it.
+disk's exclusive claim for as long. The first job or page starts the
+session, and later ones use it.
 
 A job has a limit: 120 seconds unless its caller names one, and never
 more than 600. A job still running at its limit is stopped, which kills
@@ -206,20 +221,21 @@ it becomes the record of what ran with nobody watching.
 A session ends:
 
 - after one hour, whatever it is doing;
-- after fifteen minutes with no job in hand;
+- after fifteen minutes with no job or page in hand;
 - when a job that was stopped hasn't ended five seconds later;
 - when the supervisor isn't ready within 30 seconds, doesn't answer an
   ask within ten, closes, says something that can't be read, answers
   something it wasn't asked, says a job ended that it wasn't given or
-  hasn't said started, or says an end or a piece of output that can't be
-  true;
+  hasn't said started, or says an end, a piece of output or a page that
+  can't be true;
 - when the Room's first process exits;
 - when the room disk is closed or wiped, before either is done;
 - when the broker goes, before the spawner closes the disk and leaves.
 
 A connection that asked for a job and then closes, or sends more, is let
 go. Its job, once the supervisor has it, runs on to its end or its limit;
-one not yet given to the supervisor is dropped with it.
+one not yet given to the supervisor is dropped with it. A page whose
+asker has gone before the supervisor was asked for it isn't asked for.
 
 It always ends the same way: the launcher is stopped and confirmed
 exited, the cgroup drains, and the verified image mapper closes. A

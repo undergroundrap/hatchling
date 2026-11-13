@@ -20,7 +20,7 @@ mod proof {
     use std::time::Duration;
 
     use hatchling_core::framing::{read_frame, write_frame};
-    use hatchling_core::room::{Ask, Captured, End, Ended, JobId, Say, Stream};
+    use hatchling_core::room::{Ask, Captured, End, Ended, JobId, NoPage, Say, Stream};
     use hatchling_sys::{Child, ForkResult, SeccompProfile};
     use rustix::event::{PollFd, PollFlags, poll};
     use rustix::process::{
@@ -178,9 +178,78 @@ mod proof {
         assert_eq!(std::fs::read(kept.join("writer.stdout")).unwrap(), b"fed\n");
         assert_eq!(std::fs::read(kept.join("writer.stderr")).unwrap(), b"err\n");
         assert!(!kept.join("writer.stdin").exists());
+        the_supervisor_hands_back_pages(&peer, &dir);
         drop(peer);
         assert_eq!(supervisor.wait_deadline(Duration::from_secs(4)).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The supervisor, under the filter, hands back a page of a file in
+    /// `dir`'s jobs, and none of what isn't a file with lines.
+    fn the_supervisor_hands_back_pages(peer: &UnixStream, dir: &Path) {
+        let kept = dir.join("jobs");
+        // A page of a file is read under the filter too: the supervisor
+        // opens it without waiting, looks at what it is, and reads it. A
+        // pipe nobody writes to is made here, outside the filter.
+        let page = |path: &Path, from: u64| {
+            let asked = Ask::Page {
+                nonce: format!("page-{from}"),
+                path: path.to_str().unwrap().to_owned(),
+                from,
+                lines: 5,
+            };
+            ask(peer, &asked)
+        };
+        let said = page(&kept.join("writer.stdout"), 1);
+        let Say::Page { page: read, .. } = said else {
+            unreachable!("{said:?} isn't a page");
+        };
+        assert_eq!(read.bytes, b"fed\n");
+        assert_eq!((read.more, read.cut, read.size), (false, false, 4));
+        let past = page(&kept.join("writer.stdout"), 2);
+        assert!(
+            matches!(
+                past,
+                Say::NoPage {
+                    why: NoPage::PastEnd(1),
+                    ..
+                }
+            ),
+            "{past:?}"
+        );
+        let absent = page(&kept.join("absent"), 1);
+        assert!(
+            matches!(
+                absent,
+                Say::NoPage {
+                    why: NoPage::NoSuchFile,
+                    ..
+                }
+            ),
+            "{absent:?}"
+        );
+        let pipe = dir.join("pipe");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &pipe,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        for other in [kept.as_path(), pipe.as_path()] {
+            let said = page(other, 1);
+            assert!(
+                matches!(
+                    said,
+                    Say::NoPage {
+                        why: NoPage::NotAFile,
+                        ..
+                    }
+                ),
+                "{said:?}"
+            );
+        }
     }
 
     fn the_supervisor_ends_on_what_it_cannot_read() {
