@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 21;
+export const SESSION_PROTOCOL_VERSION = 22;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2484,6 +2484,41 @@ export type RoomResult = {
     readonly result: 'unknown';
 } | {
     /**
+     * Whether `text` is the start of one line too long for a page,
+     * and no more of it.
+     */
+    readonly cut: boolean;
+    /**
+     * The number of the first line of `text`.
+     */
+    readonly from: number;
+    /**
+     * Whether the file goes on after them.
+     */
+    readonly more: boolean;
+    /**
+     * The file's path in the Room, as the Room was asked for it.
+     */
+    readonly path: string;
+    readonly result: 'page';
+    /**
+     * The file's length, in bytes.
+     */
+    readonly size: number;
+    /**
+     * The lines, as they are in the file: each with its line end,
+     * but for a last line that has none. Bytes that aren't text are
+     * shown as the replacement character.
+     */
+    readonly text: string;
+} | {
+    /**
+     * Why, in words for the agent.
+     */
+    readonly reason: string;
+    readonly result: 'no-page';
+} | {
+    /**
      * Whether a command may have been started all the same: its
      * name, to ask after before anything is run again.
      */
@@ -3818,6 +3853,23 @@ export type SessionRequest = {
      */
     readonly job: string;
     readonly op: 'stop';
+} | {
+    /**
+     * The first line wanted, counted from 1: the first when none is
+     * named.
+     */
+    readonly from?: number | null;
+    /**
+     * The most lines wanted: [`ROOM_READ_LINES`] when none is named,
+     * and never more than [`crate::room::PAGE_LINES`].
+     */
+    readonly lines?: number | null;
+    readonly op: 'read';
+    /**
+     * The file: its absolute path in the Room, or a path under the
+     * workspace.
+     */
+    readonly path: string;
 });
 /**
  * The broker's reply to one [`SessionRequest`].

@@ -172,8 +172,7 @@ for the lines; a first line longer than a page comes back cut, and said
 to be; and lines with a byte no text has aren't handed back. The path is
 absolute and at most 1024 bytes. Nothing in the spawner or the broker
 reads the file's bytes: they are carried as they came. A page is not
-kept: asking again reads the file again. No agent is given pages yet:
-only the spawner's own caller can ask for one.
+kept: asking again reads the file again.
 
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
@@ -213,10 +212,22 @@ words, marked untrusted like every tool's result: the first 1 KiB and the
 last 3 KiB of each stream, with the count of the bytes between and the
 name of the file in the Room that holds all of it.
 
-The Activity doesn't keep a command's text: in a chat the conversation
-shows what was run. Before any run without its person there is given
-these tools, the Activity must keep each command's text. That is the day
-it becomes the record of what ran with nobody watching.
+The same session may read a page of a file in the Room
+(`RoomOp::Read`), and only that session: a chat. A path that isn't
+absolute is taken under `/workspace`. Any file the Room's user can read
+may be asked for: a command the session ran could read it too. No read
+is put to the owner first, for the reason no command is. The broker
+carries the page as it came, with bytes that aren't text shown as the
+replacement character, and the agent's cell puts a number in front of
+each line for the model. Each read is counted in the owner's Activity
+with the commands, by how it ended, and the broker's log says that a
+file was read, and not which.
+
+The Activity doesn't keep a command's text or the path of a file that
+was read: in a chat the conversation shows both. Before any run without
+its person there is given these tools, the Activity must keep each
+command's text and each path read. That is the day it becomes the record
+of what ran with nobody watching.
 
 A session ends:
 

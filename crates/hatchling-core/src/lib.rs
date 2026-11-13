@@ -47,11 +47,12 @@ pub use messages::{
     HeldFire, HookOp, HookResult, HookSource, IdeaRef, IdeaRefusal, IdeaSource, IdeaState,
     IdeaSummary, InspectionFinding, InspectionVerdict, MAX_SKILL_INPUT_BYTES,
     MAX_SKILL_OUTPUT_BYTES, MediaHeader, MemoryOp, MemoryResult, ParkedSummary, QueryOp,
-    QueryResult, ROOM_HEAD_BYTES, ROOM_TAIL_BYTES, ROOM_WAIT_MAX_SECS, ROOM_WAIT_SECS, RoomOp,
-    RoomResult, RoomStopped, RoomText, ScheduleGrant, ScheduleKind, ScheduleOp, ScheduleRefusal,
-    ScheduleResult, ScheduleSpec, ScheduleSummary, SessionRequest, SessionResponse, SkillOp,
-    SkillResult, SpaceOp, SpaceRefusal, SpaceResult, SuggestOp, SuggestResult, SuggestionArea,
-    SyncChange, SyncItem, VaultAction, VaultOp, VaultResult, WebHit, WebOp, WebResult,
+    QueryResult, ROOM_HEAD_BYTES, ROOM_READ_LINES, ROOM_TAIL_BYTES, ROOM_WAIT_MAX_SECS,
+    ROOM_WAIT_SECS, RoomOp, RoomResult, RoomStopped, RoomText, ScheduleGrant, ScheduleKind,
+    ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary, SessionRequest,
+    SessionResponse, SkillOp, SkillResult, SpaceOp, SpaceRefusal, SpaceResult, SuggestOp,
+    SuggestResult, SuggestionArea, SyncChange, SyncItem, VaultAction, VaultOp, VaultResult, WebHit,
+    WebOp, WebResult,
 };
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};

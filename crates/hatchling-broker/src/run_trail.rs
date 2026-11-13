@@ -552,13 +552,14 @@ const fn suggest_ending(result: &SuggestResult) -> Ending {
 }
 
 /// How a use answered with `result` ended. A command that ran is done,
-/// however it came out: its exit is the agent's to read.
+/// however it came out: its exit is the agent's to read. So is a page of
+/// a file that was read; a file that couldn't be read is a failure.
 const fn room_ending(result: &RoomResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-        RoomResult::Ended { .. } | RoomResult::Running { .. } => Done,
+        RoomResult::Ended { .. } | RoomResult::Running { .. } | RoomResult::Page { .. } => Done,
         RoomResult::Refused { .. } | RoomResult::Unknown { .. } => Refused,
-        RoomResult::Lost { .. } | RoomResult::Failed { .. } => Failed,
+        RoomResult::Lost { .. } | RoomResult::Failed { .. } | RoomResult::NoPage { .. } => Failed,
     }
 }
 
@@ -988,6 +989,63 @@ mod tests {
             (
                 SessionResponse::Suggest(SuggestResult::Unasked { reason: s("full") }),
                 Refused,
+            ),
+        ];
+        for (response, ending) in cases {
+            assert_eq!(ending_of(&response), ending, "{response:?}");
+        }
+    }
+
+    /// A command that ran and a page that was read are done; what the
+    /// session may not ask is refused; a Room that couldn't answer, and
+    /// a file that couldn't be read, are failures.
+    #[test]
+    fn each_answer_about_the_room_ends_one_way() {
+        use Ending::{Done, Failed, Refused};
+        let cases = [
+            (
+                SessionResponse::Room(RoomResult::Running {
+                    job: s("j"),
+                    ran_ms: 1,
+                }),
+                Done,
+            ),
+            (
+                SessionResponse::Room(RoomResult::Page {
+                    path: s("/a"),
+                    from: 1,
+                    text: s("x"),
+                    more: false,
+                    cut: false,
+                    size: 1,
+                }),
+                Done,
+            ),
+            (
+                SessionResponse::Room(RoomResult::Refused { reason: s("no") }),
+                Refused,
+            ),
+            (
+                SessionResponse::Room(RoomResult::Unknown { job: s("j") }),
+                Refused,
+            ),
+            (
+                SessionResponse::Room(RoomResult::NoPage { reason: s("none") }),
+                Failed,
+            ),
+            (
+                SessionResponse::Room(RoomResult::Lost {
+                    job: s("j"),
+                    why: s("gone"),
+                }),
+                Failed,
+            ),
+            (
+                SessionResponse::Room(RoomResult::Failed {
+                    reason: s("why"),
+                    job: None,
+                }),
+                Failed,
             ),
         ];
         for (response, ending) in cases {

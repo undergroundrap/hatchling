@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v21 (current). This doc is the human-readable reference
+**Status:** v22 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -69,7 +69,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Web | `WebOp` | `WebResult` | v14 |
 | Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
 | Suggest | `SuggestOp` | `SuggestResult` | v20 |
-| Room | `RoomOp` | `RoomResult` | v21 |
+| Room | `RoomOp` | `RoomResult` | v21; `Read` v22 |
 
 ## v9 — Artifact ops
 
@@ -342,6 +342,31 @@ session holds.
   ends is stopped. If the spawner's answer to a run is lost, the broker
   asks the spawner what became of that name before it answers, so nothing
   is run twice for a lost answer.
+
+## v22 — Reading a file in the agent's computer
+
+- **`RoomOp::Read { path, from?, lines? }`**: a page of a file in the
+  Room: some of its lines, whole. The Room's supervisor reads the file,
+  as the Room's user: no command is run for it, and none of the ended
+  commands the Room remembers is forgotten for it. `path` is absolute, or
+  is taken under `/workspace`. `from` is the first line wanted, counted
+  from 1 (the first when none is named); `lines` is how many (200 when
+  none is named, never more than 2000). A page is never more than 8 KiB.
+  The sessions that may run a command are the ones that may read.
+- **`RoomResult`** gains:
+  - `Page { path, from, text, more, cut, size }`: the lines as they are
+    in the file, from line `from`; whether the file goes on after them
+    (`more`); whether `text` is only the start of one line too long for a
+    page (`cut`); and the file's length in bytes. Bytes that aren't text
+    are shown as the replacement character. The text is the Room's own
+    words: data, never instructions.
+  - `NoPage { reason }`: no page was read. There is no such file; it
+    isn't a file with lines to read (a directory, a pipe, lines that
+    aren't text); the first line asked for is past its last; the lines
+    are past the first 32 MiB of it; or the Room couldn't be asked.
+- A read that may not be asked for (a first line of 0, no lines or more
+  than 2000, a path that is too long) is `Refused`, and nothing is asked
+  of the Room.
 
 ## Device handshake
 

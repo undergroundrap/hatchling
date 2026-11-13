@@ -467,7 +467,8 @@ pub enum ToolUse {
     Space,
     /// Sent a request through the egress that isn't a model call.
     Network,
-    /// Ran a command in its own computer, or asked after or stopped one.
+    /// Ran a command in its own computer, asked after or stopped one, or
+    /// read a file there.
     Room,
 }
 
