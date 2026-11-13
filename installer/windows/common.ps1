@@ -41,6 +41,28 @@ function Copy-BundledRelease([string] $Distro, [string] $Release, [string] $Dest
     if ($Distro -notmatch '^[A-Za-z0-9._-]+$' -or $Destination -notmatch '^/root/hatchling-release\.[A-Za-z0-9]{8}$') {
         throw 'Invalid WSL release destination.'
     }
+    # Windows PowerShell gives a child its input through a writer in the
+    # console's input encoding, and that writer puts the encoding's byte-order
+    # mark ahead of everything else. On a console set to UTF-8 every file
+    # arrived three bytes longer and failed its checksum. For the copy, the
+    # console's input is UTF-8 with no mark; it is put back after. Where it
+    # can't be changed, the checksums still refuse what arrives changed.
+    $console = [Console]::InputEncoding
+    $marked = $console.GetPreamble().Length -gt 0
+    if ($marked) {
+        try { [Console]::InputEncoding = New-Object Text.UTF8Encoding $false }
+        catch { $marked = $false }
+    }
+    try {
+        Copy-ReleaseFiles $Distro $Release $Destination
+    }
+    finally {
+        if ($marked) { [Console]::InputEncoding = $console }
+    }
+}
+
+# Each file of the release, written by `dd` as root from this process's pipe.
+function Copy-ReleaseFiles([string] $Distro, [string] $Release, [string] $Destination) {
     foreach ($file in Get-ChildItem -LiteralPath $Release -File -ErrorAction Stop) {
         if ($file.Name -notmatch '^[A-Za-z0-9._-]+$' -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw "Unexpected file in the bundled release: $($file.Name)"
