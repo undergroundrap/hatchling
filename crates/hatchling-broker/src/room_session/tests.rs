@@ -2,7 +2,7 @@ use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as Atomic};
 
 use hatchling_core::framing::{read_frame, write_frame};
-use hatchling_core::room::NotStarted;
+use hatchling_core::room::{NotStarted, PAGE_BYTES};
 
 use super::*;
 use crate::room_job::tests::{job, run as a_run};
@@ -122,6 +122,48 @@ fn ask_stop(door: &Door, name: &str) -> (UnixStream, Receiver<JobReply>) {
     });
     assert!(sent.is_ok(), "the session had ended");
     (broker, answer)
+}
+
+/// Asks the session for a page of the file at `path`: the broker's end of
+/// the connection it is asked on, and where its answer comes.
+fn ask_page(door: &Door, path: &str, from: u64, lines: u32) -> (UnixStream, Receiver<PageReply>) {
+    let (broker, requester) = UnixStream::pair().unwrap();
+    let (reply, answer) = mpsc::channel();
+    let sent = door.send(Message::Page {
+        path: path.to_owned(),
+        from,
+        lines,
+        requester,
+        reply,
+    });
+    assert!(sent.is_ok(), "the session had ended");
+    (broker, answer)
+}
+
+/// Takes the ask for a page as the supervisor hears it: its nonce, and
+/// what it asks for.
+fn page_asked(room: &UnixStream) -> (String, (String, u64, u32)) {
+    let ask = hears(room);
+    let Ask::Page {
+        nonce,
+        path,
+        from,
+        lines,
+    } = ask
+    else {
+        unreachable!("asked {ask:?}, not for a page");
+    };
+    (nonce, (path, from, lines))
+}
+
+/// A page of `text`, with more of its file after it.
+fn page_of(text: &[u8]) -> Page {
+    Page {
+        bytes: text.to_vec(),
+        more: true,
+        cut: false,
+        size: 99,
+    }
 }
 
 fn ask_disk(door: &Door, op: RoomDiskOp) -> Receiver<DiskReply> {
@@ -1615,10 +1657,12 @@ fn a_launch_that_fails_at_once_answers_every_waiting_job() {
     let (rig, kept) = new_rig(limits());
     let (_first_broker, first) = ask_run(&rig.door, "first");
     let (_second_broker, second) = ask_run(&rig.door, "second");
+    let (_page_broker, read) = ask_page(&rig.door, "/workspace/a", 1, 1);
     let check = ask_probe(&rig.door);
     kept.finish(Err(String::from("no disk here")), |_| unreachable!());
     assert_eq!(wait(&first), Err(String::from("no disk here")));
     assert_eq!(wait(&second), Err(String::from("no disk here")));
+    assert_eq!(wait(&read), Err(String::from("no disk here")));
     assert!(
         check.recv_timeout(LONG).is_err(),
         "a check was answered by a Room that never launched"
@@ -1632,7 +1676,11 @@ fn a_launch_that_fails_at_once_answers_every_waiting_job() {
 fn a_session_that_comes_down_is_left_at_once() {
     let (_rig, mut kept) = new_rig(limits());
     let (reply, answer) = mpsc::channel();
-    kept.owed.push((reply, Err(String::from("why it ended"))));
+    kept.owed
+        .push(Owed::Job(reply, Err(String::from("why it ended"))));
+    let (reply, read) = mpsc::channel();
+    kept.owed
+        .push(Owed::Page(reply, String::from("why it ended")));
     let mut tries = 0;
     kept.settle(&mut || {
         tries += 1;
@@ -1641,6 +1689,7 @@ fn a_session_that_comes_down_is_left_at_once() {
     assert_eq!(tries, 1);
     kept.finish(Ok(()), |_| unreachable!());
     assert_eq!(wait(&answer), Err(String::from("why it ended")));
+    assert_eq!(wait(&read), Err(String::from("why it ended")));
 }
 
 /// What a held session says to whoever asks of it, for a cleanup that
@@ -1702,7 +1751,11 @@ fn a_session_that_cannot_be_cleared_stays_held_and_says_so() {
         ..limits()
     });
     let (reply, owed) = mpsc::channel();
-    kept.owed.push((reply, Err(String::from("why it ended"))));
+    kept.owed
+        .push(Owed::Job(reply, Err(String::from("why it ended"))));
+    let (reply, unread) = mpsc::channel();
+    kept.owed
+        .push(Owed::Page(reply, String::from("why it ended")));
     let cleanup = Cleanup::stuck(1000);
     std::thread::scope(|scope| {
         let settled = scope.spawn(|| kept.settle(&mut || cleanup.down()));
@@ -1712,6 +1765,9 @@ fn a_session_that_cannot_be_cleared_stays_held_and_says_so() {
             Err(String::from(HELD)),
             "a failed cleanup is what the caller hears"
         );
+        assert_eq!(wait(&unread), Err(String::from(HELD)));
+        let (_page_broker, read) = ask_page(&rig.door, "/workspace/a", 1, 1);
+        assert_eq!(wait(&read), Err(String::from(HELD)));
         let (_broker, answer) = ask_run(&rig.door, "refused");
         assert_eq!(wait(&answer), Err(String::from(HELD)));
         let (_job_broker, asked) = ask_job(&rig.door, "refused", LONG);
@@ -1806,6 +1862,15 @@ pub(crate) fn stood_in(generation: usize, name: &str) -> RoomJobAnswer {
     told(&job(name), RoomJobState::Running { ran_ms }, true)
 }
 
+/// The page a stand-in session hands back: what it was asked for, and
+/// the stand-in's number.
+pub(crate) fn stood_page(generation: usize, path: &str, from: u64, lines: u32) -> Page {
+    Page {
+        bytes: format!("session {generation}: {lines} lines of {path} from {from}").into_bytes(),
+        ..Page::default()
+    }
+}
+
 /// A stand-in for the thread that holds a session: it answers with its
 /// own number, and ends when told to or on the jobs that say so.
 fn stand_in(generation: usize, seat: &Seat) {
@@ -1829,6 +1894,18 @@ fn stand_in(generation: usize, seat: &Seat) {
             }
             Message::Stop { job, reply, .. } => {
                 let _ = reply.send(Err(format!("session {generation} stopped {job}")));
+            }
+            Message::Page {
+                path,
+                from,
+                lines,
+                reply,
+                ..
+            } => {
+                if path == "/vanish" {
+                    return;
+                }
+                let _ = reply.send(Ok(stood_page(generation, &path, from, lines)));
             }
             Message::Probe { reply } => {
                 let _ = reply.send(Ok(()));
@@ -1974,7 +2051,10 @@ fn output_is_read_once_a_job_is_over() {
                     Message::Job { job, reply, .. } | Message::Stop { job, reply, .. } => {
                         (job, reply)
                     }
-                    Message::Probe { .. } | Message::Disk { .. } | Message::End { .. } => continue,
+                    Message::Page { .. }
+                    | Message::Probe { .. }
+                    | Message::Disk { .. }
+                    | Message::End { .. } => continue,
                 };
                 let state = RoomJobState::Running { ran_ms: 1 };
                 let _ = reply.send(Ok(told(&name, state, false)));
@@ -2120,6 +2200,364 @@ fn a_started_session_finds_its_first_job_waiting() {
         wait: Duration::from_secs(2),
     };
     assert_eq!(*seen.lock().unwrap(), [(asked, held)]);
+    let mut byte = [0_u8; 1];
+    broker.read_exact(&mut byte).unwrap();
+    assert_eq!(&byte, b"!");
+}
+
+/// A page is asked of the supervisor in its turn, as it was asked for,
+/// one thing at a time, and its answer goes to whoever asked. That a file
+/// isn't there is no fault of the session's. Nothing of a page is kept.
+#[test]
+fn a_page_is_asked_of_the_supervisor_in_its_turn_and_handed_back() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        // Asked for before the supervisor is ready, it waits, as a job
+        // does.
+        let (_first_broker, first) = ask_page(&rig.door, "/workspace/notes.txt", 3, 40);
+        let (_job_broker, ran) = ask_run(&rig.door, "between");
+        let (_second_broker, second) = ask_page(&rig.door, "/etc/os-release", 1, 1);
+        assert!(unasked(&rig.room, SHORT), "asked before it was ready");
+        say_ready(&rig.room);
+        let (nonce, asked) = page_asked(&rig.room);
+        assert_eq!(asked, (String::from("/workspace/notes.txt"), 3, 40));
+        assert!(unasked(&rig.room, SHORT), "asked two things at once");
+        assert!(unanswered(&first));
+        let said = Say::Page {
+            nonce,
+            page: page_of(b"three\n"),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&first), Ok(page_of(b"three\n")));
+        starts(&rig.room, "between");
+        let (nonce, asked) = page_asked(&rig.room);
+        assert_eq!(asked, (String::from("/etc/os-release"), 1, 1));
+        let said = Say::NoPage {
+            nonce,
+            why: NoPage::NoSuchFile,
+        };
+        says(&rig.room, &said);
+        assert_eq!(
+            wait(&second),
+            Err(String::from("the Room has no such file"))
+        );
+        ends(&rig.room, "between", Ended::Exited(0), b"");
+        assert_eq!(outcome(&answered(&ran).1).0, Ended::Exited(0));
+        // The longest page there can be is one.
+        let (_third_broker, third) = ask_page(&rig.door, "/workspace/long", 1, 1);
+        let (nonce, _) = page_asked(&rig.room);
+        let full = Page {
+            bytes: vec![b'x'; PAGE_BYTES],
+            more: true,
+            cut: true,
+            size: 0,
+        };
+        let said = Say::Page {
+            nonce,
+            page: full.clone(),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&third), Ok(full));
+        assert!(!held.is_finished(), "the session ended over a page");
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+    assert_eq!(
+        opened(&rig.ledger).over.len(),
+        1,
+        "a page was kept as a job"
+    );
+}
+
+/// How a page comes out when the session that was asked for it ends on
+/// what `script` has its supervisor do with the ask's nonce: nothing is
+/// heard until the Room is down, and then why it ended.
+fn read_by(script: impl FnOnce(&UnixStream, String)) -> PageReply {
+    let (rig, mut kept) = new_rig(limits());
+    let (_broker, answer) = ask_page(&rig.door, "/workspace/a", 1, 1);
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (nonce, _) = page_asked(&rig.room);
+        script(&rig.room, nonce);
+        seen_out(held, &rig.room);
+    });
+    assert!(
+        answer.try_recv().is_err(),
+        "answered before the Room was down"
+    );
+    kept.finish(Ok(()), |_| unreachable!());
+    wait(&answer)
+}
+
+/// A page that can't be one, an answer to something else, and anything
+/// but a page in answer to the ask for one end the session, and whoever
+/// asked hears why.
+#[test]
+fn a_page_that_cannot_be_one_ends_the_session() {
+    let page = |length: usize, more: bool, cut: bool| Page {
+        bytes: vec![b'x'; length],
+        more,
+        cut,
+        size: 0,
+    };
+    for bad in [
+        page(PAGE_BYTES + 1, true, false),
+        page(PAGE_BYTES - 1, true, true),
+        page(PAGE_BYTES, false, true),
+    ] {
+        let read = read_by(|room, nonce| says(room, &Say::Page { nonce, page: bad }));
+        assert_eq!(read, Err(String::from(BAD_PAGE)));
+    }
+    let read = read_by(|room, _| {
+        let said = Say::Page {
+            nonce: "0".repeat(64),
+            page: Page::default(),
+        };
+        says(room, &said);
+    });
+    assert_eq!(read, Err(String::from(OUT_OF_TURN)));
+    let read = read_by(|room, nonce| says(room, &Say::Started { nonce }));
+    assert_eq!(read, Err(String::from(OUT_OF_TURN)));
+    let read = read_by(|room, nonce| {
+        let said = Say::Piece {
+            nonce,
+            bytes: b"text".to_vec(),
+        };
+        says(room, &said);
+    });
+    assert_eq!(read, Err(String::from(OUT_OF_TURN)));
+    let read = read_by(|room, _| gone(room));
+    assert_eq!(read, Err(String::from(CLOSED)));
+    // A page in answer to anything else is out of turn too.
+    let wrong: [fn(String) -> Say; 2] = [
+        |nonce| Say::Page {
+            nonce,
+            page: Page::default(),
+        },
+        |nonce| Say::NoPage {
+            nonce,
+            why: NoPage::Failed,
+        },
+    ];
+    for said in wrong {
+        let ended = ended_by(true, |far| {
+            say_ready(far.room());
+            let asked = hears(far.room());
+            says(far.room(), &said(asked.nonce().to_owned()));
+        });
+        assert_eq!(ended, OUT_OF_TURN);
+    }
+}
+
+/// When a session ends, a page it was asked for and one still waiting
+/// are answered once the Room is down, with why it ended.
+#[test]
+fn a_page_not_handed_back_is_answered_once_the_room_is_down() {
+    let (rig, mut kept) = new_rig(limits());
+    let (_asked_broker, asked) = ask_page(&rig.door, "/workspace/a", 1, 1);
+    let (_waiting_broker, waiting) = ask_page(&rig.door, "/workspace/b", 1, 1);
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (_nonce, of) = page_asked(&rig.room);
+        assert_eq!(of.0, "/workspace/a");
+        assert!(rig.door.send(Message::End { reason: "gone" }).is_ok());
+        held.join().unwrap();
+    });
+    assert!(asked.try_recv().is_err() && waiting.try_recv().is_err());
+    assert_eq!(kept.owed.len(), 2);
+    assert!(kept.readers.is_empty() && kept.reading.is_none());
+    kept.finish(Ok(()), |_| unreachable!());
+    assert_eq!(wait(&asked), Err(String::from("gone")));
+    assert_eq!(wait(&waiting), Err(String::from("gone")));
+}
+
+/// Before anything is launched: a page whose caller has gone launches
+/// nothing, and a page to ask for is something in hand.
+#[test]
+fn nothing_is_launched_for_a_reader_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    assert!(!kept.busy());
+    let (_broker, answer) = ask_page(&rig.door, "/workspace/a", 1, 1);
+    assert_eq!(kept.begin(), Ok(()));
+    assert!(kept.busy(), "a page to ask for is something in hand");
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&answer), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_page(&rig.door, "/workspace/unwanted", 1, 1);
+    let (_staying, stayed) = ask_page(&rig.door, "/workspace/wanted", 1, 1);
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()), "one caller is still there");
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+    let left: Vec<&str> = kept
+        .readers
+        .iter()
+        .map(|reader| reader.path.as_str())
+        .collect();
+    assert_eq!(left, ["/workspace/wanted"]);
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&stayed), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_page(&rig.door, "/workspace/unwanted", 1, 1);
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Err(String::from(REQUESTER_GONE)));
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+
+    // A job's caller that is still there is a reason to launch when a
+    // page's has gone, and a page's when a job's has.
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, _answer) = ask_page(&rig.door, "/workspace/unwanted", 1, 1);
+    let (_staying, _ran) = ask_run(&rig.door, "wanted");
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()));
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, _ran) = ask_run(&rig.door, "unwanted");
+    let (_staying, _answer) = ask_page(&rig.door, "/workspace/wanted", 1, 1);
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()));
+}
+
+/// A caller that goes while its page waits its turn isn't read for: the
+/// supervisor is asked only for the page of the one still there.
+#[test]
+fn nothing_is_read_for_a_caller_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let (broker, answer) = ask_page(&rig.door, "/workspace/unwanted", 1, 1);
+        let (_staying, stayed) = ask_page(&rig.door, "/workspace/wanted", 2, 3);
+        gone(&broker);
+        drop(broker);
+        say_ready(&rig.room);
+        let (nonce, asked) = page_asked(&rig.room);
+        assert_eq!(asked, (String::from("/workspace/wanted"), 2, 3));
+        assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+        let said = Say::Page {
+            nonce,
+            page: page_of(b"two\n"),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&stayed), Ok(page_of(b"two\n")));
+        assert!(unasked(&rig.room, SHORT), "asked for a page nobody wants");
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+}
+
+#[test]
+fn every_reason_there_is_no_page_has_its_words() {
+    let words = [
+        NoPage::NoSuchFile,
+        NoPage::Denied,
+        NoPage::NotAFile,
+        NoPage::NotText,
+        NoPage::TooFar,
+        NoPage::PastEnd(0),
+        NoPage::PastEnd(12),
+        NoPage::Failed,
+    ]
+    .map(no_page);
+    let mut distinct = words.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), words.len());
+    assert!(no_page(NoPage::NoSuchFile).contains("no such file"));
+    assert!(no_page(NoPage::Denied).contains("may not read"));
+    assert!(no_page(NoPage::NotAFile).contains("directory"));
+    assert!(no_page(NoPage::NotText).contains("not text"));
+    assert!(no_page(NoPage::TooFar).contains("32 MiB"));
+    assert_eq!(no_page(NoPage::PastEnd(0)), "the file is empty");
+    assert_eq!(
+        no_page(NoPage::PastEnd(12)),
+        "the file's last line is line 12"
+    );
+    assert_eq!(
+        no_page(NoPage::PastEnd(1)),
+        "the file's last line is line 1"
+    );
+    assert!(no_page(NoPage::Failed).contains("couldn't read"));
+}
+
+fn read(sessions: &Sessions, path: &str) -> PageReply {
+    let (_broker, requester) = UnixStream::pair().unwrap();
+    sessions.page(path, 2, 30, &requester)
+}
+
+/// A page starts a session when there is none, as a job does, and is
+/// asked of the one there is. One that may not be asked for starts none.
+#[test]
+fn a_page_starts_a_session_and_the_next_uses_it() {
+    let (sessions, started, ended) = stand_ins();
+    assert_eq!(
+        read(&sessions, "/workspace/a"),
+        Ok(stood_page(1, "/workspace/a", 2, 30))
+    );
+    assert_eq!(
+        read(&sessions, "/workspace/b"),
+        Ok(stood_page(1, "/workspace/b", 2, 30))
+    );
+    assert_eq!(run(&sessions, "j"), Ok(stood_in(1, "j")));
+    assert_eq!(started.load(Atomic::SeqCst), 1);
+    assert_eq!(ended.load(Atomic::SeqCst), 0);
+
+    let (sessions, started, _ended) = stand_ins();
+    let (_broker, requester) = UnixStream::pair().unwrap();
+    let said = read(&sessions, "workspace/a").unwrap_err();
+    assert!(said.contains("absolute"), "{said}");
+    let said = sessions.page("/a", 0, 1, &requester).unwrap_err();
+    assert!(said.contains("counted from 1"), "{said}");
+    let said = sessions.page("/a", 1, 0, &requester).unwrap_err();
+    assert!(said.contains("2000 lines"), "{said}");
+    assert_eq!(started.load(Atomic::SeqCst), 0, "a session was started");
+    // A session that keeps ending before it answers is given up on.
+    assert_eq!(read(&sessions, "/vanish"), Err(String::from(UNSETTLED)));
+    let tried = started.load(Atomic::SeqCst);
+    assert!((2..=ATTEMPTS).contains(&tried), "started {tried} sessions");
+}
+
+/// The page a session is started for is waiting for its thread when it
+/// starts, as it was asked for, with the connection it was asked on.
+#[test]
+fn a_started_session_finds_its_first_page_waiting() {
+    let sessions = Sessions::new(Arc::default(), |seat: Seat| {
+        std::thread::Builder::new().spawn(move || {
+            if let Ok(Message::Page {
+                path,
+                from,
+                lines,
+                mut requester,
+                reply,
+            }) = seat.inbox.try_recv()
+            {
+                requester.write_all(b"!").unwrap();
+                let _ = reply.send(Ok(stood_page(7, &path, from, lines)));
+            }
+        })
+    });
+    let (mut broker, requester) = UnixStream::pair().unwrap();
+    broker.set_read_timeout(Some(LONG)).unwrap();
+    assert_eq!(
+        sessions.page("/workspace/a", 5, 9, &requester),
+        Ok(stood_page(7, "/workspace/a", 5, 9))
+    );
     let mut byte = [0_u8; 1];
     broker.read_exact(&mut byte).unwrap();
     assert_eq!(&byte, b"!");

@@ -16,6 +16,12 @@
 //! remembers only so many ended jobs: the oldest goes, with its files,
 //! when another ends.
 //!
+//! The spawner may also ask for a page of a file in the Room
+//! ([`Ask::Page`]): some of its lines, from one it names, as many as fit
+//! [`PAGE_BYTES`]. The supervisor reads the file itself, as the Room's
+//! user, so a page starts no job and takes no job's place among those it
+//! remembers.
+//!
 //! The supervisor runs in the Room, as the Room's user: everything it says
 //! is untrusted. [`Captured::check`] and [`Ended::check`] are what the
 //! spawner holds its words to; unknown fields never decode.
@@ -49,6 +55,19 @@ pub const DIR_BYTES: usize = 1024;
 
 /// How many jobs run in the Room at once.
 pub const RUNNING_MAX: usize = 4;
+
+/// The most of a file one page hands back, in bytes.
+pub const PAGE_BYTES: usize = 8 * 1024;
+
+/// The most lines one page may be asked for.
+pub const PAGE_LINES: u32 = 2000;
+
+/// How much of a file the supervisor reads, from its start, to find a
+/// page. A page that isn't within it isn't handed back.
+pub const PAGE_SCAN_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The longest a file's path may be, in bytes.
+pub const PATH_BYTES: usize = 1024;
 
 /// Where a job starts when its caller names no directory.
 pub const WORKSPACE: &str = "/workspace";
@@ -229,6 +248,29 @@ pub fn check_dir(dir: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Whether a page may be asked for: `path` absolute and at most
+/// [`PATH_BYTES`], lines counted from 1, and 1 to [`PAGE_LINES`] of them.
+/// The Room decides whether the file is there.
+///
+/// # Errors
+///
+/// Why it may not.
+pub fn check_page(path: &str, from: u64, lines: u32) -> Result<(), &'static str> {
+    if !path.starts_with('/') {
+        return Err("a Room file is named by its absolute path");
+    }
+    if path.len() > PATH_BYTES || path.contains('\0') {
+        return Err("a Room file's path is invalid or too long");
+    }
+    if from == 0 {
+        return Err("a file's lines are counted from 1");
+    }
+    if lines == 0 || lines > PAGE_LINES {
+        return Err("a page is 1 to 2000 lines");
+    }
+    Ok(())
+}
+
 /// What the spawner asks the supervisor. Each carries a nonce the answer
 /// must echo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,6 +309,18 @@ pub enum Ask {
         /// Which piece of it.
         end: End,
     },
+    /// Hand back a page of the file at `path`: its lines from line `from`,
+    /// at most `lines` of them and at most [`PAGE_BYTES`].
+    Page {
+        /// Echoed by the answer.
+        nonce: String,
+        /// The file's absolute path in the Room.
+        path: String,
+        /// The first line wanted, counted from 1.
+        from: u64,
+        /// The most lines wanted.
+        lines: u32,
+    },
 }
 
 impl Ask {
@@ -274,9 +328,10 @@ impl Ask {
     #[must_use]
     pub fn nonce(&self) -> &str {
         match self {
-            Self::Start { nonce, .. } | Self::Stop { nonce, .. } | Self::Piece { nonce, .. } => {
-                nonce
-            }
+            Self::Start { nonce, .. }
+            | Self::Stop { nonce, .. }
+            | Self::Piece { nonce, .. }
+            | Self::Page { nonce, .. } => nonce,
         }
     }
 }
@@ -297,6 +352,62 @@ pub enum NotStarted {
     /// be put in the session directory, or its first process couldn't
     /// be watched.
     NoSession,
+}
+
+/// Why the supervisor handed back no page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoPage {
+    /// There is no file at that path.
+    NoSuchFile,
+    /// The Room's user may not read it.
+    Denied,
+    /// It is a directory, or something else that isn't a file.
+    NotAFile,
+    /// The lines asked for have a byte no text has.
+    NotText,
+    /// The lines asked for aren't within [`PAGE_SCAN_BYTES`] of its start.
+    TooFar,
+    /// It has only this many lines, and the first one asked for is past
+    /// them.
+    PastEnd(u64),
+    /// It couldn't be read.
+    Failed,
+}
+
+/// Some of a file's lines, as the supervisor read them.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Page {
+    /// The lines, as they are in the file: each with its line end, but
+    /// for a last line that has none.
+    #[serde(with = "b64")]
+    pub bytes: Vec<u8>,
+    /// Whether the file goes on after them.
+    pub more: bool,
+    /// Whether they are the start of one line too long for a page, and
+    /// no more of it.
+    pub cut: bool,
+    /// The file's length, in bytes.
+    pub size: u64,
+}
+
+impl Page {
+    /// Whether this can be a page: no longer than [`PAGE_BYTES`], and cut
+    /// only when it is that long and the file goes on.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.bytes.len() > PAGE_BYTES {
+            return Err("a page of a file is too long");
+        }
+        if self.cut && (self.bytes.len() < PAGE_BYTES || !self.more) {
+            return Err("a page is said to be cut that can't be");
+        }
+        Ok(())
+    }
 }
 
 /// What the supervisor says. All but [`Say::Ended`] answer an [`Ask`],
@@ -335,6 +446,20 @@ pub enum Say {
         #[serde(with = "b64")]
         bytes: Vec<u8>,
     },
+    /// A page of a file.
+    Page {
+        /// The ask's nonce.
+        nonce: String,
+        /// The page.
+        page: Page,
+    },
+    /// No page of the file was handed back.
+    NoPage {
+        /// The ask's nonce.
+        nonce: String,
+        /// Why not.
+        why: NoPage,
+    },
     /// A job has ended. Said once for each job that was started, unasked.
     Ended {
         /// The job's name.
@@ -357,7 +482,9 @@ impl Say {
             | Self::NotStarted { nonce, .. }
             | Self::Stopping { nonce }
             | Self::NoJob { nonce }
-            | Self::Piece { nonce, .. } => Some(nonce),
+            | Self::Piece { nonce, .. }
+            | Self::Page { nonce, .. }
+            | Self::NoPage { nonce, .. } => Some(nonce),
             Self::Ended { .. } => None,
         }
     }
@@ -486,6 +613,10 @@ mod tests {
         assert_eq!(ARGV_BYTES, 8_192);
         assert_eq!(DIR_BYTES, 1_024);
         assert_eq!(RUNNING_MAX, 4);
+        assert_eq!(PAGE_BYTES, 8_192);
+        assert_eq!(PAGE_LINES, 2_000);
+        assert_eq!(PAGE_SCAN_BYTES, 33_554_432);
+        assert_eq!(PATH_BYTES, 1_024);
     }
 
     #[test]
@@ -604,6 +735,67 @@ mod tests {
     }
 
     #[test]
+    fn a_page_is_of_an_absolute_path_from_a_line_that_is_one() {
+        assert!(check_page("/workspace/notes.txt", 1, 1).is_ok());
+        assert!(check_page("/workspace/notes.txt", u64::MAX, PAGE_LINES).is_ok());
+        assert!(
+            check_page("notes.txt", 1, 1)
+                .unwrap_err()
+                .contains("absolute")
+        );
+        assert!(check_page("", 1, 1).unwrap_err().contains("absolute"));
+        assert!(check_page("/a\0", 1, 1).unwrap_err().contains("path"));
+        let longest = format!("/{}", "f".repeat(PATH_BYTES - 1));
+        assert!(check_page(&longest, 1, 1).is_ok());
+        let over = format!("{longest}f");
+        assert!(check_page(&over, 1, 1).unwrap_err().contains("path"));
+        assert!(
+            check_page("/a", 0, 1)
+                .unwrap_err()
+                .contains("counted from 1")
+        );
+        assert!(check_page("/a", 1, 0).unwrap_err().contains("2000 lines"));
+        assert!(
+            check_page("/a", 1, PAGE_LINES + 1)
+                .unwrap_err()
+                .contains("2000 lines")
+        );
+    }
+
+    #[test]
+    fn a_page_is_no_longer_than_one_and_cut_only_when_full() {
+        let page = |length: usize, more: bool, cut: bool| Page {
+            bytes: vec![b'x'; length],
+            more,
+            cut,
+            size: 0,
+        };
+        assert!(Page::default().check().is_ok());
+        assert!(page(PAGE_BYTES, false, false).check().is_ok());
+        assert!(page(PAGE_BYTES, true, false).check().is_ok());
+        assert!(page(PAGE_BYTES, true, true).check().is_ok());
+        assert!(
+            page(PAGE_BYTES + 1, true, false)
+                .check()
+                .unwrap_err()
+                .contains("too long")
+        );
+        // A line is cut only where it filled the page, and went on.
+        assert!(
+            page(PAGE_BYTES - 1, true, true)
+                .check()
+                .unwrap_err()
+                .contains("cut")
+        );
+        assert!(
+            page(PAGE_BYTES, false, true)
+                .check()
+                .unwrap_err()
+                .contains("cut")
+        );
+    }
+
+    #[test]
     fn the_wire_is_as_written_and_takes_nothing_unknown() {
         let start = Ask::Start {
             nonce: String::from("n1"),
@@ -635,6 +827,16 @@ mod tests {
                 r#"{"ask":"piece","nonce":"n3","job":"j","stream":"stderr","end":"tail"}"#,
                 "n3",
             ),
+            (
+                Ask::Page {
+                    nonce: String::from("n4"),
+                    path: String::from("/workspace/a.txt"),
+                    from: 3,
+                    lines: 200,
+                },
+                r#"{"ask":"page","nonce":"n4","path":"/workspace/a.txt","from":3,"lines":200}"#,
+                "n4",
+            ),
         ];
         for (ask, wire, nonce) in asks {
             assert_eq!(serde_json::to_string(&ask).unwrap(), wire);
@@ -647,6 +849,8 @@ mod tests {
             r#"{"ask":"run","nonce":"n","job":"j"}"#,
             r#"{"ask":"start","nonce":"n","job":"j","argv":[],"dir":"/","stdin":"not base64!"}"#,
             r#"{"ask":"piece","nonce":"n","job":"j","stream":"stdin","end":"head"}"#,
+            r#"{"ask":"page","nonce":"n","path":"/a","from":1,"lines":1,"bytes":9}"#,
+            r#"{"ask":"page","nonce":"n","path":"/a","from":-1,"lines":1}"#,
         ] {
             assert!(
                 serde_json::from_str::<Ask>(refused).is_err(),
@@ -722,6 +926,63 @@ mod tests {
             r#"{"say":"ended","job":"j","how":{"signaled":9},"stdout":{"head":0,"tail":0,"dropped":0,"spilled":0,"spill_cut":false,"more":1},"stderr":{"head":0,"tail":0,"dropped":0,"spilled":0,"spill_cut":false}}"#,
             r#"{"say":"piece","nonce":"n","bytes":[1,2]}"#,
             r#"{"say":"done","nonce":"n"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<Say>(refused).is_err(),
+                "taken: {refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_page_is_said_as_written_and_takes_nothing_unknown() {
+        let nonce = || String::from("n");
+        let said = [
+            (
+                Say::Page {
+                    nonce: nonce(),
+                    page: Page {
+                        bytes: b"a\nb".to_vec(),
+                        more: true,
+                        cut: false,
+                        size: 9,
+                    },
+                },
+                r#"{"say":"page","nonce":"n","page":{"bytes":"YQpi","more":true,"cut":false,"size":9}}"#,
+            ),
+            (
+                Say::NoPage {
+                    nonce: nonce(),
+                    why: NoPage::PastEnd(3),
+                },
+                r#"{"say":"no-page","nonce":"n","why":{"past-end":3}}"#,
+            ),
+            (
+                Say::NoPage {
+                    nonce: nonce(),
+                    why: NoPage::NoSuchFile,
+                },
+                r#"{"say":"no-page","nonce":"n","why":"no-such-file"}"#,
+            ),
+        ];
+        for (say, wire) in said {
+            assert_eq!(serde_json::to_string(&say).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<Say>(wire).unwrap(), say);
+            assert_eq!(say.nonce(), Some("n"));
+        }
+        for why in [
+            (NoPage::Denied, r#""denied""#),
+            (NoPage::NotAFile, r#""not-a-file""#),
+            (NoPage::NotText, r#""not-text""#),
+            (NoPage::TooFar, r#""too-far""#),
+            (NoPage::Failed, r#""failed""#),
+        ] {
+            assert_eq!(serde_json::to_string(&why.0).unwrap(), why.1);
+        }
+        for refused in [
+            r#"{"say":"page","nonce":"n","page":{"bytes":"","more":false,"cut":false,"size":0,"lines":1}}"#,
+            r#"{"say":"page","nonce":"n","page":{"bytes":"","more":false,"cut":false}}"#,
+            r#"{"say":"no-page","nonce":"n","why":"gone"}"#,
         ] {
             assert!(
                 serde_json::from_str::<Say>(refused).is_err(),

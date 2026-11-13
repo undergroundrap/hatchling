@@ -127,6 +127,25 @@ impl Bench {
         None
     }
 
+    /// A page of `path`, or why there is none.
+    fn page(&mut self, path: &Path, from: u64, lines: u32) -> std::result::Result<Page, NoPage> {
+        let ask = Ask::Page {
+            nonce: self.nonce(),
+            path: path.to_string_lossy().into_owned(),
+            from,
+            lines,
+        };
+        let said = self.ask(&ask);
+        if let Say::Page { page, .. } = said {
+            return Ok(page);
+        }
+        assert!(matches!(said, Say::NoPage { .. }), "{said:?}");
+        let Say::NoPage { why, .. } = said else {
+            return Err(NoPage::Failed);
+        };
+        Err(why)
+    }
+
     /// The end of `job`, once it's said: how, and what each stream kept.
     fn ended(&mut self, job: &str) -> (Ended, Captured, Captured) {
         self.next(|said| {
@@ -677,4 +696,294 @@ fn a_stream_is_kept_piece_by_piece() {
     capture.read().unwrap();
     assert_eq!(capture.captured().head, 3);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What `paged` makes of `text`, read `chunk` bytes at a time.
+fn pages(
+    text: &[u8],
+    chunk: usize,
+    from: u64,
+    lines: u32,
+    scan: u64,
+) -> std::result::Result<Page, NoPage> {
+    struct Slow<'a>(&'a [u8], usize);
+    impl io::Read for Slow<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let count = self.0.len().min(self.1).min(buffer.len());
+            let (now, later) = self.0.split_at(count);
+            buffer.get_mut(..count).unwrap().copy_from_slice(now);
+            self.0 = later;
+            Ok(count)
+        }
+    }
+    paged(Slow(text, chunk), from, lines, scan)
+}
+
+/// A page of `bytes`, with more after it or none, that isn't cut.
+fn lines_of(bytes: &[u8], more: bool) -> Page {
+    Page {
+        bytes: bytes.to_vec(),
+        more,
+        cut: false,
+        size: 0,
+    }
+}
+
+#[test]
+fn a_page_is_whole_lines_from_the_one_asked_for() {
+    let text = b"one\ntwo\nthree\nfour\n";
+    // However it comes off the disk: all at once, or a byte at a time.
+    for chunk in [1, 2, 3, 5, 64] {
+        let page = |from, lines| pages(text, chunk, from, lines, u64::MAX);
+        assert_eq!(page(1, 4), Ok(lines_of(text, false)), "{chunk}");
+        assert_eq!(page(1, 9), Ok(lines_of(text, false)), "{chunk}");
+        assert_eq!(page(1, 1), Ok(lines_of(b"one\n", true)), "{chunk}");
+        assert_eq!(page(2, 2), Ok(lines_of(b"two\nthree\n", true)), "{chunk}");
+        assert_eq!(page(3, 2), Ok(lines_of(b"three\nfour\n", false)), "{chunk}");
+        assert_eq!(page(4, 1), Ok(lines_of(b"four\n", false)), "{chunk}");
+        // The first line past the last isn't an empty page.
+        assert_eq!(page(5, 1), Err(NoPage::PastEnd(4)), "{chunk}");
+        assert_eq!(page(90, 1), Err(NoPage::PastEnd(4)), "{chunk}");
+    }
+    // A last line with no line end is a line.
+    for chunk in [1, 4, 64] {
+        let page = |from, lines| pages(b"one\ntwo", chunk, from, lines, u64::MAX);
+        assert_eq!(page(1, 2), Ok(lines_of(b"one\ntwo", false)));
+        assert_eq!(page(2, 1), Ok(lines_of(b"two", false)));
+        assert_eq!(page(2, 5), Ok(lines_of(b"two", false)));
+        assert_eq!(page(3, 1), Err(NoPage::PastEnd(2)));
+        assert_eq!(page(1, 1), Ok(lines_of(b"one\n", true)));
+    }
+    // Lines with nothing in them are lines.
+    assert_eq!(
+        pages(b"\n\n\n", 1, 2, 1, u64::MAX),
+        Ok(lines_of(b"\n", true))
+    );
+    assert_eq!(
+        pages(b"\n\n\n", 2, 3, 5, u64::MAX),
+        Ok(lines_of(b"\n", false))
+    );
+    assert_eq!(pages(b"\n\n\n", 2, 4, 5, u64::MAX), Err(NoPage::PastEnd(3)));
+    // A file with nothing in it has a first page with nothing in it.
+    assert_eq!(pages(b"", 8, 1, 5, u64::MAX), Ok(lines_of(b"", false)));
+    assert_eq!(pages(b"", 8, 2, 5, u64::MAX), Err(NoPage::PastEnd(0)));
+    // Line 0 is read as the first, and no lines as none.
+    assert_eq!(pages(b"", 8, 0, 5, u64::MAX), Ok(lines_of(b"", false)));
+    assert_eq!(
+        pages(b"a\nb\n", 8, 0, 1, u64::MAX),
+        Ok(lines_of(b"a\n", true))
+    );
+    assert_eq!(pages(b"a\nb\n", 8, 1, 0, u64::MAX), Ok(lines_of(b"", true)));
+}
+
+#[test]
+fn a_page_stops_at_the_last_whole_line_that_fits() {
+    let line = |fill: u8, length: usize| {
+        let mut line = vec![fill; length - 1];
+        line.push(b'\n');
+        line
+    };
+    // Two lines that fill a page to the byte, and a third.
+    let half = PAGE_BYTES / 2;
+    let text = [line(b'a', half), line(b'b', half), line(b'c', 10)].concat();
+    for chunk in [1000, 64 * 1024] {
+        let page = pages(&text, chunk, 1, 9, u64::MAX).unwrap();
+        assert_eq!(page.bytes, text.get(..PAGE_BYTES).unwrap(), "{chunk}");
+        assert!(page.more && !page.cut);
+        let next = pages(&text, chunk, 3, 9, u64::MAX).unwrap();
+        assert_eq!(next.bytes, line(b'c', 10));
+        assert!(!next.more && !next.cut);
+    }
+    // One byte more in the second line, and it waits for the next page.
+    let text = [line(b'a', half), line(b'b', half + 1), line(b'c', 10)].concat();
+    for chunk in [1000, 64 * 1024] {
+        let page = pages(&text, chunk, 1, 9, u64::MAX).unwrap();
+        assert_eq!(page.bytes, line(b'a', half), "{chunk}");
+        assert!(page.more && !page.cut);
+        let next = pages(&text, chunk, 2, 9, u64::MAX).unwrap();
+        assert_eq!(next.bytes, text.get(half..).unwrap());
+        assert!(!next.more && !next.cut);
+    }
+    // A page of exactly a page's lines, with nothing after it.
+    let text = [line(b'a', half), line(b'b', half)].concat();
+    let page = pages(&text, 1000, 1, 9, u64::MAX).unwrap();
+    assert_eq!(page.bytes, text);
+    assert!(!page.more && !page.cut);
+}
+
+#[test]
+fn a_first_line_too_long_for_a_page_is_cut_and_said_to_be() {
+    let long = [vec![b'x'; PAGE_BYTES + 5], b"\nnext\n".to_vec()].concat();
+    for chunk in [1000, PAGE_BYTES, 64 * 1024] {
+        let page = pages(&long, chunk, 1, 9, u64::MAX).unwrap();
+        assert_eq!(page.bytes, vec![b'x'; PAGE_BYTES], "{chunk}");
+        assert!(page.more && page.cut);
+        assert!(page.check().is_ok());
+        // The line after it is found past all of it.
+        let next = pages(&long, chunk, 2, 9, u64::MAX).unwrap();
+        assert_eq!(next.bytes, b"next\n");
+        assert!(!next.more && !next.cut);
+    }
+    // A line as long as a page, with its line end or at the file's end,
+    // is whole.
+    let exact = [vec![b'x'; PAGE_BYTES - 1], b"\n".to_vec()].concat();
+    let page = pages(&exact, 1000, 1, 9, u64::MAX).unwrap();
+    assert_eq!(page.bytes, exact);
+    assert!(!page.more && !page.cut);
+    let bare = vec![b'x'; PAGE_BYTES];
+    let page = pages(&bare, 1000, 1, 9, u64::MAX).unwrap();
+    assert_eq!(page.bytes, bare);
+    assert!(!page.more && !page.cut);
+    // One byte longer, and it is cut.
+    let over = vec![b'x'; PAGE_BYTES + 1];
+    let page = pages(&over, 1000, 1, 9, u64::MAX).unwrap();
+    assert_eq!(page.bytes, bare);
+    assert!(page.more && page.cut);
+    // A long line after a short one waits for its own page.
+    let after = [b"short\n".to_vec(), over].concat();
+    let page = pages(&after, 1000, 1, 9, u64::MAX).unwrap();
+    assert_eq!(page.bytes, b"short\n");
+    assert!(page.more && !page.cut);
+}
+
+#[test]
+fn a_page_is_looked_for_only_so_far_into_a_file() {
+    let text = b"aa\nbb\ncc\ndd\n";
+    // Within what is read, a page is as it would be.
+    assert_eq!(pages(text, 4, 1, 2, 12), Ok(lines_of(b"aa\nbb\n", true)));
+    assert_eq!(pages(text, 4, 4, 1, 12), Ok(lines_of(b"dd\n", false)));
+    // Whole lines found by the end of what is read are the page, and
+    // whether the file goes on is looked at past it.
+    assert_eq!(pages(text, 4, 1, 9, 6), Ok(lines_of(b"aa\nbb\n", true)));
+    assert_eq!(pages(text, 4, 1, 9, 7), Ok(lines_of(b"aa\nbb\n", true)));
+    assert_eq!(pages(text, 4, 1, 9, 12), Ok(lines_of(text, false)));
+    assert_eq!(pages(text, 4, 4, 9, 12), Ok(lines_of(b"dd\n", false)));
+    // A line that isn't whole by then isn't one, and a page with no
+    // whole line isn't a page.
+    assert_eq!(pages(text, 4, 1, 9, 2), Err(NoPage::TooFar));
+    assert_eq!(pages(text, 4, 3, 1, 8), Err(NoPage::TooFar));
+    assert_eq!(pages(text, 4, 3, 1, 6), Err(NoPage::TooFar));
+    assert_eq!(pages(text, 4, 4, 1, 9), Err(NoPage::TooFar));
+    // Nothing at all may be read, of a file that has something in it.
+    assert_eq!(pages(text, 4, 1, 1, 0), Err(NoPage::TooFar));
+    assert_eq!(pages(b"", 4, 1, 1, 0), Ok(lines_of(b"", false)));
+    // A file that ends where the look does is read to its end: its last
+    // line is whole, with a line end or none, and a line past it is past
+    // its end.
+    assert_eq!(pages(b"aa\nbb", 4, 1, 9, 5), Ok(lines_of(b"aa\nbb", false)));
+    assert_eq!(pages(b"aa\nbb", 4, 2, 9, 5), Ok(lines_of(b"bb", false)));
+    assert_eq!(pages(b"aa\nbb", 4, 1, 1, 5), Ok(lines_of(b"aa\n", true)));
+    assert_eq!(pages(b"aa\n", 4, 2, 9, 3), Err(NoPage::PastEnd(1)));
+    // One byte longer, and the line that isn't whole by then isn't one.
+    assert_eq!(pages(b"aa\nbbb", 4, 1, 9, 5), Ok(lines_of(b"aa\n", true)));
+    assert_eq!(pages(b"aa\nbbb", 4, 2, 9, 5), Err(NoPage::TooFar));
+}
+
+#[test]
+fn a_page_with_a_byte_no_text_has_is_not_one() {
+    assert_eq!(pages(b"a\0b\n", 8, 1, 1, u64::MAX), Err(NoPage::NotText));
+    // Only the lines asked for are looked at.
+    let text = b"text\nbin\0ary\nmore\n";
+    assert_eq!(
+        pages(text, 8, 1, 1, u64::MAX),
+        Ok(lines_of(b"text\n", true))
+    );
+    assert_eq!(pages(text, 8, 2, 1, u64::MAX), Err(NoPage::NotText));
+    assert_eq!(
+        pages(text, 8, 3, 1, u64::MAX),
+        Ok(lines_of(b"more\n", false))
+    );
+    // Bytes that aren't UTF-8 are handed back as they are.
+    assert_eq!(
+        pages(b"caf\xe9\n", 8, 1, 1, u64::MAX),
+        Ok(lines_of(b"caf\xe9\n", false))
+    );
+}
+
+#[test]
+fn a_read_that_fails_is_not_the_end_of_the_file() {
+    struct Broken(u8);
+    impl io::Read for Broken {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.0 += 1;
+            match self.0 {
+                1 => Err(io::ErrorKind::Interrupted.into()),
+                2 => {
+                    buffer.get_mut(..2).unwrap().copy_from_slice(b"a\n");
+                    Ok(2)
+                }
+                _ => Err(io::Error::other("the disk went")),
+            }
+        }
+    }
+    // What interrupts a read is read again; what fails it fails the page.
+    assert_eq!(paged(Broken(0), 1, 1, u64::MAX), Err(NoPage::Failed));
+    assert_eq!(paged(Broken(0), 2, 1, u64::MAX), Err(NoPage::Failed));
+    let mut two = [0_u8; 2];
+    assert_eq!(read_some(&mut Broken(0), &mut two), Ok(2));
+    assert_eq!(&two, b"a\n");
+}
+
+#[test]
+fn the_supervisor_hands_back_a_page_of_a_file_and_says_why_not() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut bench = Bench::new("page");
+    let notes = bench.dir.join("notes.txt");
+    std::fs::write(&notes, b"one\ntwo\nthree\n").unwrap();
+    let page = bench.page(&notes, 2, 1).unwrap();
+    assert_eq!(page.bytes, b"two\n");
+    assert!(page.more && !page.cut);
+    assert_eq!(page.size, 14);
+    assert!(page.check().is_ok());
+    let last = bench.page(&notes, 3, 50).unwrap();
+    assert_eq!(last.bytes, b"three\n");
+    assert!(!last.more);
+    assert_eq!(bench.page(&notes, 4, 1), Err(NoPage::PastEnd(3)));
+    // What isn't there, and what is in the way of it.
+    assert_eq!(
+        bench.page(&bench.dir.join("none.txt"), 1, 1),
+        Err(NoPage::NoSuchFile)
+    );
+    assert_eq!(
+        bench.page(&notes.join("under"), 1, 1),
+        Err(NoPage::NoSuchFile)
+    );
+    // What isn't a file: a directory, and a pipe nobody writes to, which
+    // is not waited for.
+    let dir = bench.dir.clone();
+    assert_eq!(bench.page(&dir, 1, 1), Err(NoPage::NotAFile));
+    let pipe = bench.dir.join("pipe");
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        &pipe,
+        rustix::fs::FileType::Fifo,
+        Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    assert_eq!(bench.page(&pipe, 1, 1), Err(NoPage::NotAFile));
+    // What can't be opened for some other reason.
+    let looped = bench.dir.join("loop");
+    std::os::unix::fs::symlink(&looped, &looped).unwrap();
+    assert_eq!(bench.page(&looped, 1, 1), Err(NoPage::Failed));
+    // A file its user may not read, where there is such a thing: root
+    // reads what it likes.
+    let closed = bench.dir.join("closed.txt");
+    std::fs::write(&closed, b"kept\n").unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if rustix::process::geteuid().is_root() {
+        assert!(bench.page(&closed, 1, 1).is_ok());
+    } else {
+        assert_eq!(bench.page(&closed, 1, 1), Err(NoPage::Denied));
+    }
+    // A file with no text in it.
+    let binary = bench.dir.join("binary");
+    std::fs::write(&binary, [0_u8, 1, 2, b'\n']).unwrap();
+    assert_eq!(bench.page(&binary, 1, 1), Err(NoPage::NotText));
+    // A page starts no job, and is still answered while one runs.
+    bench.shell("sleeper", "sleep 30");
+    assert_eq!(bench.page(&notes, 1, 1).unwrap().bytes, b"one\n");
+    assert!(matches!(bench.stop("sleeper"), Say::Stopping { .. }));
+    bench.ended("sleeper");
 }

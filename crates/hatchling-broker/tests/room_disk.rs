@@ -1369,9 +1369,11 @@ fn check_room_foreground(
     );
 
     check_room_job_surroundings(spawner)?;
+    check_room_pages(spawner)?;
 
     // Closing the disk ends the Room first: nothing of it is left, and
-    // the next job starts another, with scratch of its own.
+    // the next job starts another, with scratch of its own. A page starts
+    // a Room as a job does, and the job after it runs in that one.
     spawner.room_disk(RoomDiskOp::Close)?;
     assert!(!place.mapped());
     assert_eq!(
@@ -1380,6 +1382,8 @@ fn check_room_foreground(
         "the closed disk's Room left its image mapped"
     );
     spawner.room_disk(RoomDiskOp::Open)?;
+    let kept_page = spawner.room_page("/workspace/foreground-file", 1, 1)?;
+    assert_eq!(kept_page.bytes, b"room data", "what the workspace kept");
     let next = foreground(spawner, &["resume"])?;
     assert_eq!(exit_code(&next)?, 0);
     assert_eq!(
@@ -1412,6 +1416,42 @@ fn check_room_job_surroundings(spawner: &Spawner) -> Result<(), Failed> {
         kept(spawner, &fed, Stream::Stdout)?.1,
         b"given to the job\xff"
     );
+    Ok(())
+}
+
+/// A page of a file is read by the Room's supervisor, under the Room's
+/// filter and as its user: a file a job wrote, one of the kernel's about
+/// the supervisor itself, and no page where there is no file with lines.
+/// No job is started for a page.
+fn check_room_pages(spawner: &Spawner) -> Result<(), Failed> {
+    let page = spawner.room_page("/workspace/foreground-file", 1, 5)?;
+    assert_eq!(page.bytes, b"room data");
+    assert!(!page.more && !page.cut);
+    assert_eq!(page.size, 9);
+    let own = spawner.room_page("/proc/self/status", 1, 1)?;
+    assert!(own.bytes.starts_with(b"Name:\t"), "{:?}", own.bytes);
+    assert!(own.bytes.ends_with(b"\n") && own.more);
+    let refused = |path: &str, from: u64| -> Result<String, Failed> {
+        Ok(spawner
+            .room_page(path, from, 1)
+            .err()
+            .ok_or_else(|| format!("a page of {path} from line {from} was handed back"))?)
+    };
+    assert_eq!(
+        refused("/workspace/foreground-file", 2)?,
+        "the file's last line is line 1"
+    );
+    assert_eq!(
+        refused("/workspace/absent", 1)?,
+        "the Room has no such file"
+    );
+    let directory = refused("/workspace", 1)?;
+    assert!(directory.contains("directory"), "{directory}");
+    let relative = refused("workspace/foreground-file", 1)?;
+    assert!(relative.contains("absolute"), "{relative}");
+    // The Room it was read in is the one the jobs ran in, and still is.
+    let same = foreground(spawner, &["kept"])?;
+    assert_eq!(exit_code(&same)?, 0, "a page ended the Room");
     Ok(())
 }
 

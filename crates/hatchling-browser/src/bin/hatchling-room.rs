@@ -9,6 +9,9 @@
 //! has ended. Whatever that process left in its process group is killed
 //! with it.
 //!
+//! It also hands back a page of a file ([`page`]): it reads the file
+//! itself, as the Room's user, and no job is started for it.
+//!
 //! One thread does all of it, waiting on the spawner's socket, every
 //! running job's pipes and every job's first process at once, so no job
 //! holds up another, a stop, or an answer.
@@ -32,10 +35,12 @@ use std::time::{Duration, Instant};
 
 use hatchling_core::framing::{read_frame_or_eof, write_frame};
 use hatchling_core::room::{
-    Ask, Captured, End, Ended, JOB_PATH, JobId, NotStarted, PIECE_BYTES, RUNNING_MAX, SESSION_DIR,
-    SPILL_BYTES, Say, Stream, spill_path,
+    Ask, Captured, End, Ended, JOB_PATH, JobId, NoPage, NotStarted, PAGE_BYTES, PAGE_SCAN_BYTES,
+    PIECE_BYTES, Page, RUNNING_MAX, SESSION_DIR, SPILL_BYTES, Say, Stream, spill_path,
 };
 use rustix::event::{PollFd, PollFlags, poll};
+use rustix::fs::{Mode, OFlags};
+use rustix::io::Errno;
 use rustix::process::{Pid, PidfdFlags, Signal, kill_process_group, pidfd_open};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -122,6 +127,129 @@ fn private(path: &Path) -> io::Result<File> {
         .truncate(true)
         .mode(0o600)
         .open(path)
+}
+
+/// A page of the file at `path`: its lines from line `from`, at most
+/// `lines` of them.
+///
+/// The file is opened without waiting, and only a file is read: a pipe
+/// with nobody writing to it would hold the one thread there is.
+fn page(path: &Path, from: u64, lines: u32) -> std::result::Result<Page, NoPage> {
+    let flags = OFlags::RDONLY
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::NOCTTY)
+        .union(OFlags::CLOEXEC);
+    let file = match rustix::fs::open(path, flags, Mode::empty()) {
+        Ok(opened) => File::from(opened),
+        Err(Errno::NOENT | Errno::NOTDIR) => return Err(NoPage::NoSuchFile),
+        Err(Errno::ACCESS | Errno::PERM) => return Err(NoPage::Denied),
+        Err(_) => return Err(NoPage::Failed),
+    };
+    let meta = file.metadata().map_err(|_| NoPage::Failed)?;
+    if !meta.is_file() {
+        return Err(NoPage::NotAFile);
+    }
+    let page = paged(file, from, lines, PAGE_SCAN_BYTES)?;
+    Ok(Page {
+        size: meta.len(),
+        ..page
+    })
+}
+
+/// Reads once from `file`, whatever interrupts it.
+fn read_some(file: &mut impl io::Read, buffer: &mut [u8]) -> std::result::Result<usize, NoPage> {
+    loop {
+        match file.read(buffer) {
+            Ok(count) => return Ok(count),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(NoPage::Failed),
+        }
+    }
+}
+
+/// The lines of `file` from line `from`: at most `lines` of them, whole,
+/// and at most [`PAGE_BYTES`] in all. A first line longer than that is
+/// handed back cut. Nothing past the first `scan` bytes of the file is
+/// read, but one byte to see whether it goes on.
+fn paged(
+    mut file: impl io::Read,
+    from: u64,
+    lines: u32,
+    scan: u64,
+) -> std::result::Result<Page, NoPage> {
+    // The page so far, how much of it is whole lines, and how many.
+    let mut bytes = Vec::new();
+    let mut whole = 0_usize;
+    let mut taken = 0_u32;
+    // The line the next byte is of, and whether that line has begun.
+    let mut line = 1_u64;
+    let mut begun = false;
+    let mut scanned = 0_u64;
+    let mut buffer = vec![0_u8; 64 * 1024];
+    let done = |bytes: Vec<u8>, more: bool, cut: bool| {
+        if bytes.contains(&0) {
+            return Err(NoPage::NotText);
+        }
+        Ok(Page {
+            bytes,
+            more,
+            cut,
+            size: 0,
+        })
+    };
+    loop {
+        // Past what may be read, one byte still is: a file that ends there
+        // is read to its end.
+        let left = usize::try_from(scan.saturating_sub(scanned)).unwrap_or(usize::MAX);
+        let room = buffer.len().min(left).max(1);
+        let chunk = buffer.get_mut(..room).unwrap_or_default();
+        let count = read_some(&mut file, chunk)?;
+        if count == 0 {
+            if !bytes.is_empty() || from <= 1 {
+                return done(bytes, false, false);
+            }
+            let had = line.saturating_sub(1).saturating_add(u64::from(begun));
+            return Err(NoPage::PastEnd(had));
+        }
+        if left == 0 {
+            // The file goes on: the whole lines found by here are a page.
+            if taken == 0 {
+                return Err(NoPage::TooFar);
+            }
+            bytes.truncate(whole);
+            return done(bytes, true, false);
+        }
+        scanned = scanned.saturating_add(u64::try_from(count).unwrap_or(u64::MAX));
+        let mut rest = chunk.get(..count).unwrap_or_default();
+        while !rest.is_empty() {
+            if taken >= lines {
+                return done(bytes, true, false);
+            }
+            let end = rest.iter().position(|byte| *byte == b'\n');
+            let (part, after) = rest.split_at(end.map_or(rest.len(), |at| at.saturating_add(1)));
+            rest = after;
+            if line >= from {
+                let fits = PAGE_BYTES.saturating_sub(bytes.len());
+                if part.len() > fits {
+                    if taken > 0 {
+                        bytes.truncate(whole);
+                        return done(bytes, true, false);
+                    }
+                    bytes.extend_from_slice(part.get(..fits).unwrap_or_default());
+                    return done(bytes, true, true);
+                }
+                bytes.extend_from_slice(part);
+            }
+            begun = end.is_none();
+            if end.is_some() {
+                if line >= from {
+                    whole = bytes.len();
+                    taken = taken.saturating_add(1);
+                }
+                line = line.saturating_add(1);
+            }
+        }
+    }
 }
 
 /// One stream of a job, as it is captured.
@@ -342,7 +470,7 @@ impl Room<'_> {
         });
         match poll(&mut fds, timeout) {
             Ok(_) => {}
-            Err(rustix::io::Errno::INTR) => return Ok((false, Vec::new())),
+            Err(Errno::INTR) => return Ok((false, Vec::new())),
             Err(error) => return Err(error.into()),
         }
         let mut ready = fds.iter().map(|fd| !fd.revents().is_empty());
@@ -461,6 +589,15 @@ impl Room<'_> {
                     None => Say::NoJob { nonce },
                 }
             }
+            Ask::Page {
+                nonce,
+                path,
+                from,
+                lines,
+            } => match page(Path::new(&path), from, lines) {
+                Ok(page) => Say::Page { nonce, page },
+                Err(why) => Say::NoPage { nonce, why },
+            },
         }
     }
 
