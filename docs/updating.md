@@ -129,6 +129,6 @@ For maintainers and collaborators: what shows an update is safe is updating a re
 - **Give it something to lose.** Say a few things, let it remember one, schedule something, switch a setting, protect the vault if the change touches that.
 - **Update to the candidate**, the way that install was made.
 - **Check what an owner would**: the installer's own words, `doctor`, that it's locked and unlocks if protected, that the conversation, memory, schedule and setting are as they were, and that the change you're testing works in the app.
-- **Read the broker's log since it started** (`journalctl -u hatchling -b`) for errors and warnings, after opening each part of the app. `doctor` doesn't see everything: on the install this page was written from, it found nothing wrong while the feed's read of an older version's goals store was failing.
+- **Read the broker's log since it started** (`journalctl -u hatchling -b`) for errors and warnings, after opening each part of the app. `doctor` doesn't see everything: on the install this page was written from, it found nothing wrong while the feed's read of the goals store was failing.
 - **Record what ran**: the release you started from, the candidate's commit and the hash of each program installed, the commands, and what you didn't try. [What completes a run](testing-with-an-agent.md#what-completes-a-run) says what counts as proof.
 - **Clean up**: delete the disposable distro, or the snapshot once you're sure, and stop anything you started to keep the distro awake.

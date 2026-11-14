@@ -117,12 +117,37 @@ build cache (`gate.log`, `gate-1.*.log`):
 The filter's tests were run as root too, as CI runs them: 29 passed
 (`root/as-root.log`).
 
+## On the install it was found on
+
+Added on 2026-11-14, after the change was merged (`b914a7a8`). The
+install the fault was found on was updated to the fix, from the dry run
+of the release workflow on the pull request, whose commit has main's
+tree (`19cc715688fba03808207e61475f4c0e9bba46b5`); its owner unlocked
+it. The files are in a second bundle,
+`hatchling-room-ls-long-rerun-results.tar.gz`, 5852 bytes, sha256
+`5f9c6c8fc5657bdd209ed519ae649e596f6e741e53a31dfc26a655bce2e47e8b`.
+
+With the same hosted model, each in a new conversation
+(`chat-hosted-rerun.txt`):
+
+| Task | Before the fix | With it |
+|---|---|---|
+| Make the test's files, and show what `ls -la` printed | ran out of its ten steps | the listing, `.` and `..` among its lines, in one command |
+| A file that isn't text | "The /workspace directory is empty" | "a 2048-byte binary file", after `ls`, `file`, `xxd` and `od` |
+| A directory | "exists but is empty" | its five entries, with their sizes |
+| A line too long for a page | no reply from the model's server in 334 seconds | right: its start, and that the rest wasn't read |
+
+The kernel recorded nothing ended by the Room's filter since that start
+(`rerun-filter-kills.txt`), with `ls` run three times in the Room.
+
+The last row isn't this change's. The model answered by writing the
+line's first 2937 characters back out, which is slow to write: that is
+what ran past the wait the first time. It is still a finding of the
+update drill that a reply which never comes is reported as a fault of
+Hatchling's own.
+
 ## What wasn't tried
 
-- The fixed build on the install the fault was found on. Installing it
-  restarts that install, and its vault opens only with its owner's key.
-  The two tasks that were answered wrongly there are to be asked again
-  when it has been.
 - aarch64: the Room's profile is x86_64's alone.
 - Other programs that might ask for an attribute's value by name. The
   check runs 136 commands; one not among them that asks another way
