@@ -27,6 +27,9 @@ pub enum RefusalKind {
     BadSurrogate,
     /// Anything else: the request was allowed, and failed.
     Failed,
+    /// The request was allowed and sent, and no answer came in the time
+    /// the broker waits for one: what was asked was still answering.
+    NoAnswer,
 }
 
 /// A refused or failed egress request, and why, for the broker's log.
@@ -71,7 +74,19 @@ impl Refusal {
             reason: reason.into(),
         }
     }
+
+    /// A request no answer came for in the time the broker waits.
+    #[must_use]
+    pub fn no_answer() -> Self {
+        Self {
+            kind: RefusalKind::NoAnswer,
+            reason: String::from(NO_ANSWER),
+        }
+    }
 }
+
+/// What the broker's log says of a request no answer came for in time.
+pub const NO_ANSWER: &str = "no answer came in the time the broker waits for one";
 
 /// Where a session's egress goes: the authority, or a proxy of the
 /// broker's own.

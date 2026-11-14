@@ -124,27 +124,54 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
     }
 }
 
-/// What the person is told when a run failed as `ending` says, `reached`
-/// being a usage limit the owner set, if one is reached now.
+/// What the person is told when a run failed as `ending` says.
+///
+/// `reached` is a usage limit the owner set, if one is reached now, and
+/// `quiet` whether the broker's wait for the run's model ran out with the
+/// model still answering.
 ///
 /// A run whose model couldn't be reached while a limit is reached was the
 /// broker refusing its model calls: the person is told which limit, and
-/// when it turns. Otherwise as [`chat_failed`] says.
+/// when it turns. One whose model was still answering is told that, and
+/// not to look for a model that isn't running ([`model_quiet`]).
+/// Otherwise as [`chat_failed`] says.
 #[must_use]
 pub fn failed_with(
     ending: Option<hatchling_scheduler::Ending>,
     model: Option<&str>,
     reached: Option<&crate::usage::Reached>,
+    quiet: bool,
 ) -> String {
     use hatchling_core::run_failure::RunFailure;
-    match (ending, reached) {
-        (Some(hatchling_scheduler::Ending::Exited(code)), Some(reached))
-            if RunFailure::from_code(code) == Some(RunFailure::ModelUnavailable) =>
-        {
-            reached.told()
-        }
+    let unavailable = matches!(
+        ending,
+        Some(hatchling_scheduler::Ending::Exited(code))
+            if RunFailure::from_code(code) == Some(RunFailure::ModelUnavailable)
+    );
+    match reached {
+        Some(reached) if unavailable => reached.told(),
+        _ if unavailable && quiet => model_quiet(model),
         _ => chat_failed(ending, model),
     }
+}
+
+/// How a hosted model that costs nothing is named, at its end.
+const FREE_MODEL: &str = ":free";
+
+/// What the person is told when the broker's wait for `model`'s answer ran
+/// out with the model still answering: it is there, and it is slow, or
+/// its answer is long. Only the broker's own words.
+#[must_use]
+pub fn model_quiet(model: Option<&str>) -> String {
+    let named = model.map_or_else(String::new, |model| format!(" ({model})"));
+    let free = if model.is_some_and(|model| model.ends_with(FREE_MODEL)) {
+        " It is a free hosted model, and those are slow when many people are using them."
+    } else {
+        ""
+    };
+    format!(
+        "The model{named} was still working on its answer after more than five minutes, so Hatchling stopped waiting.{free} A very long answer takes this long too: try again, or ask for less at once."
+    )
 }
 
 /// What the person is told the first time, in a conversation, that
@@ -404,7 +431,10 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                         self.model.as_deref(),
                         self.other.as_ref(),
                     );
-                    let told = failed_with(ending, model.as_deref(), reached.as_ref());
+                    let quiet = cell
+                        .as_deref()
+                        .is_some_and(crate::machine::took_quiet_model);
+                    let told = failed_with(ending, model.as_deref(), reached.as_ref(), quiet);
                     return answer_with(delivery, &told);
                 }
             };
@@ -1110,6 +1140,65 @@ mod tests {
         }
     }
 
+    /// A run that fails as its ending says, at once, in the cell named.
+    #[derive(Debug)]
+    struct EndedIn(hatchling_scheduler::Ending, &'static str);
+
+    impl Run for EndedIn {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            Some(Err(String::from("the run exited")))
+        }
+
+        fn ending(&self) -> Option<hatchling_scheduler::Ending> {
+            Some(self.0)
+        }
+
+        fn cell_id(&self) -> Option<String> {
+            Some(self.1.to_owned())
+        }
+    }
+
+    /// Launches one [`EndedIn`] run.
+    struct OneEndedIn(RefCell<Option<EndedIn>>);
+
+    impl Launcher for OneEndedIn {
+        type Run = EndedIn;
+
+        fn launch(&self, _: RunRequest) -> Result<EndedIn, String> {
+            self.0.borrow_mut().take().ok_or_else(String::new)
+        }
+    }
+
+    /// A chat run whose model was still answering when the broker stopped
+    /// waiting is told so, by its cell, and once: the next run in a cell of
+    /// that name, and a run in any other cell, are told as they always are.
+    #[test]
+    fn a_chat_run_whose_model_was_still_answering_is_told_so_once() {
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_scheduler::Ending;
+        let unreachable = Ending::Exited(RunFailure::ModelUnavailable.code().into());
+        let failed = |cell: &'static str| {
+            let mut chat: Chat<EndedIn> =
+                Chat::new(vec![send_local()]).with_model(Some(String::from("m")));
+            let launches = OneEndedIn(RefCell::new(Some(EndedIn(unreachable, cell))));
+            let answers = Answers::default();
+            let now = Timestamp::now();
+            chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now);
+            chat.step(|| None, 0, &launches, &answers, now);
+            let delivered = answers.delivered.borrow();
+            delivered
+                .first()
+                .map(|(_, told)| told.clone())
+                .unwrap_or_default()
+        };
+        let usual = chat_failed(Some(unreachable), Some("m"));
+        assert_eq!(failed("run-quiet-chat"), usual, "nothing known of it");
+        crate::machine::model_was_quiet("run-quiet-chat");
+        assert_eq!(failed("run-quiet-other"), usual, "another cell's");
+        assert_eq!(failed("run-quiet-chat"), model_quiet(Some("m")));
+        assert_eq!(failed("run-quiet-chat"), usual, "told once");
+    }
+
     /// The person is told why a run failed in plain words, and what to do,
     /// from how it ended alone: nothing the run wrote reaches them.
     #[test]
@@ -1386,11 +1475,11 @@ mod tests {
         };
         let unreachable = Some(Ending::Exited(RunFailure::ModelUnavailable.code().into()));
         assert_eq!(
-            failed_with(unreachable, Some("m"), Some(&reached)),
+            failed_with(unreachable, Some("m"), Some(&reached), false),
             reached.told()
         );
         assert_eq!(
-            failed_with(unreachable, Some("m"), None),
+            failed_with(unreachable, Some("m"), None, false),
             chat_failed(unreachable, Some("m"))
         );
         for other in [
@@ -1400,7 +1489,58 @@ mod tests {
             None,
         ] {
             assert_eq!(
-                failed_with(other, Some("m"), Some(&reached)),
+                failed_with(other, Some("m"), Some(&reached), false),
+                chat_failed(other, Some("m")),
+                "{other:?}"
+            );
+        }
+    }
+
+    /// A run whose model was still answering when the broker stopped
+    /// waiting is told that, and isn't sent to look for a model that isn't
+    /// running. A limit reached is told first, and any other ending is told
+    /// as it always is.
+    #[test]
+    fn a_model_still_answering_is_said_to_be_slow_and_not_missing() {
+        use hatchling_core::run_failure::RunFailure;
+        use hatchling_scheduler::Ending;
+        let unreachable = Some(Ending::Exited(RunFailure::ModelUnavailable.code().into()));
+        let told = failed_with(unreachable, Some("m"), None, true);
+        assert_eq!(told, model_quiet(Some("m")));
+        assert_ne!(told, chat_failed(unreachable, Some("m")));
+        assert!(
+            told.starts_with("The model (m) was still working"),
+            "{told}"
+        );
+        assert!(!told.contains("running and reachable"), "{told}");
+        assert!(!told.contains("free"), "{told}");
+        assert!(model_quiet(None).starts_with("The model was still working"));
+        // A model that costs nothing is said to be one, by its name's end.
+        let free = model_quiet(Some("vendor/model:free"));
+        assert!(free.contains("It is a free hosted model"), "{free}");
+        assert!(!model_quiet(Some("free-model")).contains("free hosted"));
+        assert!(!model_quiet(Some("vendor/model:free:other")).contains("free hosted"));
+        // "More than five minutes" is the broker's own wait.
+        assert!(crate::egress_authority::ANSWER_TIMEOUT.as_secs() > 5 * 60);
+        assert!(crate::egress_authority::ANSWER_TIMEOUT.as_secs() < 6 * 60);
+        // A limit reached is why its calls were refused: that is told.
+        let reached = crate::usage::Reached {
+            span: crate::usage::Span::Month,
+            spent: 20,
+            limit: 10,
+        };
+        assert_eq!(
+            failed_with(unreachable, Some("m"), Some(&reached), true),
+            reached.told()
+        );
+        for other in [
+            Some(Ending::Exited(RunFailure::OutOfSteps.code().into())),
+            Some(Ending::Exited(1)),
+            Some(Ending::TimedOut),
+            None,
+        ] {
+            assert_eq!(
+                failed_with(other, Some("m"), None, true),
                 chat_failed(other, Some("m")),
                 "{other:?}"
             );

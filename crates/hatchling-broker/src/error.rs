@@ -277,6 +277,12 @@ pub enum Error {
         reason: String,
     },
 
+    /// The egress authority gave no answer in the time the broker waits
+    /// for one. It is there: what it asked was still answering, or it is
+    /// stuck.
+    #[error("egress authority: no answer in the time waited")]
+    AuthorityQuiet,
+
     /// The broker's own user, run as root, is missing, or its stores
     /// couldn't be handed to it (WO-017).
     #[error("the broker's user: {reason}")]

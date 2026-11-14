@@ -1452,25 +1452,50 @@ pub(crate) fn handle_egress_op(
                     );
                     Ok(ok_reply(response, pages))
                 }
-                Err(refusal) if refusal.kind == RefusalKind::Failed => {
-                    tracing::error!(
-                        cell_id = %cell_id,
-                        destination = %destination,
-                        reason = %refusal.reason,
-                        "egress request failed"
-                    );
-                    Ok(EgressResult::EgressError)
-                }
-                Err(refusal) => {
-                    tracing::warn!(
-                        cell_id = %cell_id,
-                        destination = %destination,
-                        reason = %refusal.reason,
-                        "egress request denied"
-                    );
-                    Ok(EgressResult::Denied)
-                }
+                Err(refusal) => Ok(refused_reply(&refusal, cell_id, &request)),
             }
+        }
+    }
+}
+
+/// What a session is told of a forwarded `request` that was refused or
+/// failed, with what the broker's log says of it.
+///
+/// One no answer came for in time is remembered against `cell_id` when it
+/// was a model call. The agent is told what it is told of any failure:
+/// why is the broker's to tell its owner.
+fn refused_reply(refusal: &Refusal, cell_id: &CellId, request: &EgressRequest) -> EgressResult {
+    let destination = &request.destination;
+    match refusal.kind {
+        RefusalKind::NoAnswer => {
+            tracing::error!(
+                cell_id = %cell_id,
+                destination = %destination,
+                reason = %refusal.reason,
+                "egress request got no answer in time"
+            );
+            if crate::usage::is_model_call(&request.method, &request.path) {
+                crate::machine::model_was_quiet(cell_id.as_str());
+            }
+            EgressResult::EgressError
+        }
+        RefusalKind::Failed => {
+            tracing::error!(
+                cell_id = %cell_id,
+                destination = %destination,
+                reason = %refusal.reason,
+                "egress request failed"
+            );
+            EgressResult::EgressError
+        }
+        RefusalKind::NotAllowed | RefusalKind::Policy | RefusalKind::BadSurrogate => {
+            tracing::warn!(
+                cell_id = %cell_id,
+                destination = %destination,
+                reason = %refusal.reason,
+                "egress request denied"
+            );
+            EgressResult::Denied
         }
     }
 }
@@ -1515,7 +1540,9 @@ const fn egress_verdict<T>(forwarded: &Result<T, Refusal>) -> EgressVerdict {
             RefusalKind::NotAllowed => EgressVerdict::NotAllowed,
             RefusalKind::Policy => EgressVerdict::Policy,
             RefusalKind::BadSurrogate => EgressVerdict::BadSurrogate,
-            RefusalKind::Failed => EgressVerdict::Failed,
+            // Allowed, and it didn't come to anything: the operator's
+            // verdict is the same.
+            RefusalKind::Failed | RefusalKind::NoAnswer => EgressVerdict::Failed,
         },
     }
 }
@@ -1997,6 +2024,7 @@ mod tests {
             (RefusalKind::Policy, EgressVerdict::Policy),
             (RefusalKind::BadSurrogate, EgressVerdict::BadSurrogate),
             (RefusalKind::Failed, EgressVerdict::Failed),
+            (RefusalKind::NoAnswer, EgressVerdict::Failed),
         ] {
             let refused: Result<(), Refusal> = Err(Refusal {
                 kind,
@@ -2570,6 +2598,69 @@ mod gate_scope_tests {
         }
 
         let _ = std::fs::remove_dir_all(&usage);
+    }
+
+    /// A model call no answer came for in time is remembered against its
+    /// cell, for the words its owner is told. The agent is told what it is
+    /// told of any failure, and a request that isn't a model call isn't
+    /// remembered.
+    #[test]
+    fn a_model_call_with_no_answer_in_time_is_remembered_for_its_owner() {
+        struct Quiet;
+        impl EgressPath for Quiet {
+            fn mint(&self, _: u32, _: &str, _: u64) -> Result<String, Refusal> {
+                Ok(String::from("s"))
+            }
+
+            fn forward(
+                &self,
+                _: u32,
+                _: &EgressRequest,
+            ) -> Result<hatchling_egress::EgressResponse, Refusal> {
+                Err(Refusal::no_answer())
+            }
+        }
+        let destination = String::from("localhost:443");
+        let allowlist = format!("local-keyless:{destination}");
+        let egress = EgressConfig {
+            allowlist: crate::EgressAllowlist::new(&allowlist),
+            grants: vec![destination.clone()],
+        };
+        let cell_id: CellId = "cell-quiet".parse().unwrap();
+        let mut pages = crate::egress_pages::Pages::default();
+        let mut trail = crate::run_trail::Trail::new(None, "session", "cell-quiet");
+        let op = |method: &str, path: &str| EgressOp::Egress {
+            method: method.to_owned(),
+            destination: destination.clone(),
+            path: path.to_owned(),
+            headers: Vec::new(),
+            body_b64: encode_secret(br#"{"model":"m","messages":[]}"#),
+            surrogate_b64: String::from("s"),
+            staged: 0,
+        };
+        let mut ask = |method: &str, path: &str| {
+            handle_egress_op(
+                &Quiet,
+                &egress,
+                &op(method, path),
+                &cell_id,
+                1000,
+                &mut pages,
+                &mut trail,
+            )
+            .unwrap()
+        };
+        assert_eq!(ask("GET", "/v1/models"), EgressResult::EgressError);
+        assert!(
+            !crate::machine::took_quiet_model("cell-quiet"),
+            "a listing isn't a model call"
+        );
+        assert_eq!(
+            ask("POST", "/v1/chat/completions"),
+            EgressResult::EgressError
+        );
+        assert!(crate::machine::took_quiet_model("cell-quiet"));
+        assert!(!crate::machine::took_quiet_model("cell-quiet"), "once");
     }
 
     /// At a usage limit the owner set, a model call is refused before it
