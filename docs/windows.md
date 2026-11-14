@@ -162,6 +162,8 @@ Everything still works: this isn't a smaller version of Hatchling.
 
 WSL distros share their control groups and their network, so two copies of Hatchling in two distros can't run together. The setup checks for this, and says so if another copy is running.
 
+Another distro that isn't Hatchling can get in the way of one thing: unlocking. If a distro that runs systemd (another Ubuntu, say) starts while Hatchling is locked, `sudo hatchling-broker unlock` may say the service's cgroup has no cpu controller, and stop before it asks for your key. Run `sudo systemctl daemon-reload` in Hatchling's distro, and unlock again. Once Hatchling is unlocked and working, another distro starting changes nothing.
+
 ## Removing it
 
 Uninstall Hatchling from Windows' Settings, under Apps. It asks whether to delete your data as well. The answer **No** is the default, and keeps the distro and everything in it. **Yes** removes your vault, conversations and memory, and that can't be undone.
