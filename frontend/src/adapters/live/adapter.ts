@@ -310,6 +310,9 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'agent_step':
                 this.#activity.step(body.tool ?? null, event.ts);
                 return undefined;
+            case 'messages_joined':
+                this.#activity.joined(body.count, event.ts);
+                return undefined;
             case 'artifact':
             case 'agent_status':
             case 'artifact_listed':

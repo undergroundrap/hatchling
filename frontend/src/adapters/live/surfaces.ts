@@ -101,6 +101,7 @@ export class Surfaces {
                 return undefined;
             case 'activity':
             case 'agent_step':
+            case 'messages_joined':
             case 'chat_message':
             case 'artifact':
             case 'schedule':

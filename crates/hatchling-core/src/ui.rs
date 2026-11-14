@@ -235,6 +235,14 @@ pub enum UiEventBody {
         /// it waits for its model.
         tool: Option<ToolUse>,
     },
+    /// The run answering the owner took more of their messages into it
+    /// (v24): the oldest `count` of those sent since the one it was
+    /// started for. Its answer is for all of them, and no run is started
+    /// for them.
+    MessagesJoined {
+        /// How many.
+        count: u32,
+    },
     /// An artifact was listed or changed: its whole record (v2).
     ArtifactListed(UiArtifact),
     /// A file was sent in a chat, as an artifact revision (v2).

@@ -20,6 +20,7 @@ pub mod browser;
 pub mod capabilities;
 pub mod cell;
 pub mod channel;
+pub mod chat;
 pub mod cli;
 pub mod config;
 pub mod egress;

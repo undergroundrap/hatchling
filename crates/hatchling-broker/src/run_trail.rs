@@ -135,6 +135,21 @@ impl Trail {
         self.step = Some(step);
     }
 
+    /// Tells the owner's app that a chat run took `count` more of their
+    /// messages into the task it is on, when it took any: its answer is
+    /// for those too, and no run is started for them.
+    pub fn joined(&self, count: usize) {
+        let Ok(count) = u32::try_from(count) else {
+            return;
+        };
+        if !self.chat || count == 0 {
+            return;
+        }
+        if let Some(app) = &self.app {
+            app.joined(count);
+        }
+    }
+
     /// The trail, of a chat run when `chat` is set: answering the owner.
     #[must_use]
     pub const fn of_chat(mut self, chat: bool) -> Self {
@@ -325,7 +340,8 @@ pub fn tool_of(request: &SessionRequest) -> Option<ToolUse> {
             }
             ToolUse::Network
         }
-        SessionRequest::Egress(_) => return None,
+        // Asking after the owner's further messages is no tool's use.
+        SessionRequest::Egress(_) | SessionRequest::Chat(_) => return None,
         SessionRequest::Channel(ChannelOp::Send { .. }) => ToolUse::MessageSend,
         SessionRequest::Channel(_) => ToolUse::MessageRead,
         SessionRequest::Memory(MemoryOp::Propose { .. }) => ToolUse::MemoryPropose,
@@ -373,6 +389,7 @@ const fn ending_of(response: &SessionResponse) -> Ending {
         SessionResponse::Browser(result) => browser_ending(result),
         SessionResponse::Suggest(result) => suggest_ending(result),
         SessionResponse::Room(result) => room_ending(result),
+        SessionResponse::Chat(_) => Ending::Done,
     }
 }
 
@@ -778,6 +795,48 @@ mod tests {
         let mut alone = Trail::new(None, "run", "cell").of_chat(true);
         alone.starting(None);
         alone.starting(Some(ToolUse::Room));
+    }
+
+    /// A chat run that took some of the owner's further messages tells
+    /// their app how many, each time. One that took none, a run that
+    /// isn't answering the owner, and a trail with no app tell nothing;
+    /// and asking after them is no tool's use, and no step.
+    #[test]
+    fn a_chat_run_tells_the_app_the_messages_it_took() {
+        let joined_told = |bus: &crate::api_stream::Bus| {
+            bus.after(None)
+                .into_iter()
+                .filter_map(|event| {
+                    if let hatchling_core::ui::UiEventBody::MessagesJoined { count } = event.body {
+                        Some(count)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let (app, bus) = attached();
+        let trail = Trail::new(None, "run", "cell").of_chat(true).telling(app);
+        trail.joined(0);
+        trail.joined(2);
+        trail.joined(1);
+        assert_eq!(joined_told(&bus), [2, 1]);
+        assert_eq!(steps_told(&bus), [], "taking them is no step");
+
+        let (app, bus) = attached();
+        Trail::new(None, "run", "cell").telling(app).joined(2);
+        assert_eq!(joined_told(&bus), [0_u32; 0], "not a chat run");
+        Trail::new(None, "run", "cell").of_chat(true).joined(2);
+
+        let asking = SessionRequest::Chat(hatchling_core::ChatOp::More {});
+        assert_eq!(tool_of(&asking), None);
+        let given = SessionResponse::Chat(hatchling_core::ChatResult::More {
+            messages: vec![String::from("more")],
+        });
+        let mut counted = Trail::new(None, "run", "cell");
+        counted.note(tool_of(&asking), &given);
+        assert_eq!(counted.summary(), None, "nothing was used");
+        assert!(matches!(ending_of(&given), Ending::Done));
     }
 
     /// Each use is counted by how it ended, under its tool, in the order

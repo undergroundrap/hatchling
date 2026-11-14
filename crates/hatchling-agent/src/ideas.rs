@@ -47,7 +47,8 @@ pub fn request(stream: &UnixStream, op: ArtifactOp) -> Result<ArtifactResult, Er
         | SessionResponse::Subagent(_)
         | SessionResponse::Browser(_)
         | SessionResponse::Suggest(_)
-        | SessionResponse::Room(_) => Err(Error::IdeaProtocol {
+        | SessionResponse::Room(_)
+        | SessionResponse::Chat(_) => Err(Error::IdeaProtocol {
             reason: String::from("broker gave another kind of reply to an idea op"),
         }),
     }

@@ -113,7 +113,8 @@ pub fn ask(stream: &UnixStream, op: RoomOp) -> Result<RoomResult, Error> {
         | SessionResponse::Subagent(_)
         | SessionResponse::Web(_)
         | SessionResponse::Browser(_)
-        | SessionResponse::Suggest(_) => Err(Error::RoomProtocol {
+        | SessionResponse::Suggest(_)
+        | SessionResponse::Chat(_) => Err(Error::RoomProtocol {
             reason: String::from("broker gave another kind of reply to a Room op"),
         }),
     }

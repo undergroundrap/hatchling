@@ -1047,6 +1047,13 @@ fn serve_session(
                     SessionResponse::Suggest(crate::suggestions::suggest(config, &op))
                 }
                 SessionRequest::Room(op) => SessionResponse::Room(room.handle(&op)),
+                // Only the chat's run in flight is given anything: the
+                // chat named its cell, and any other gets none.
+                SessionRequest::Chat(hatchling_core::ChatOp::More {}) => {
+                    let messages = crate::follow_ups::more(cell_id.as_str());
+                    trail.joined(messages.len());
+                    SessionResponse::Chat(hatchling_core::ChatResult::More { messages })
+                }
             };
             trail.note(used, &response);
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
@@ -1196,6 +1203,11 @@ const fn oversize_reply(response: &SessionResponse) -> SessionResponse {
         }
         SessionResponse::Room(_) => SessionResponse::Room(hatchling_core::RoomResult::Refused {
             reason: String::new(),
+        }),
+        // Never met: what a reply carries is held inside a frame as it
+        // is taken ([`crate::follow_ups`]).
+        SessionResponse::Chat(_) => SessionResponse::Chat(hatchling_core::ChatResult::More {
+            messages: Vec::new(),
         }),
     }
 }
@@ -2484,6 +2496,154 @@ mod gate_scope_tests {
             flagging.0.lock().unwrap().last(),
             Some(&(session.clone(), 0))
         );
+    }
+
+    /// A chat run's session settings, with everything it keeps under
+    /// `root`.
+    fn chat_run_config(root: &std::path::Path) -> Config {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        // A vault root of its own: the app's stream is found by it.
+        config.vault.root = root.join("vault");
+        config.web.attended = true;
+        config.scheduler.followup = Some(crate::FollowupScope {
+            root: root.join("schedules"),
+            run: String::from("run-more"),
+            grants: Vec::new(),
+            channel: String::from("local"),
+            depth: 0,
+        });
+        config
+    }
+
+    /// Asks, as a run's cell, for what its owner sent since.
+    fn ask_more(agent: &UnixStream) -> Vec<String> {
+        let asking = SessionRequest::Chat(hatchling_core::ChatOp::More {});
+        write_frame(agent, &serde_json::to_vec(&asking).unwrap()).unwrap();
+        let response: SessionResponse =
+            serde_json::from_slice(&read_frame(agent).unwrap()).unwrap();
+        let SessionResponse::Chat(hatchling_core::ChatResult::More { messages }) = response else {
+            unreachable!("not a chat reply: {response:?}");
+        };
+        messages
+    }
+
+    /// What `bus` holds of the messages a run took and of its steps, in
+    /// order: "joined" and how many, or "step".
+    fn joins_and_steps(bus: &crate::api_stream::Bus) -> Vec<String> {
+        use hatchling_core::ui::UiEventBody;
+        bus.after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::MessagesJoined { count } = &event.body {
+                    Some(format!("joined {count}"))
+                } else if matches!(event.body, UiEventBody::AgentStep { .. }) {
+                    Some(String::from("step"))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// The chat's run in flight is given what its owner sent since, by
+    /// its session, and their app is told how many it took, each time it
+    /// took any. A session the chat didn't name is given nothing, and the
+    /// messages stay where they wait.
+    #[test]
+    fn the_chats_run_in_flight_is_given_the_owners_further_messages() {
+        let asked = |named: bool, cell: &str| {
+            let waiting = LocalHub::new(OutputGate::disabled());
+            let root = std::env::temp_dir().join(format!(
+                "hatchling-serve-more-{cell}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let config = chat_run_config(&root);
+            let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+            crate::app_stream::stream(&config).attach(Arc::clone(&bus));
+            let key = MasterKey::generate().unwrap();
+            let (agent, broker) = UnixStream::pair().unwrap();
+            agent
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let creds = peer_credentials(&broker).unwrap();
+            let cell_id: CellId = cell.parse().unwrap();
+            let skills = Skills::default();
+            if named {
+                crate::follow_ups::began(cell, &waiting, 0);
+            }
+            let send = |text: &str| {
+                let _ = waiting.inject(Message {
+                    sender: SenderId(String::from("owner")),
+                    channel: ChannelId::local(),
+                    text: text.to_owned(),
+                });
+            };
+            let more = ask_more;
+            let given = std::thread::scope(|scope| {
+                let served = scope.spawn(|| {
+                    serve_session(
+                        &broker,
+                        &config,
+                        &key,
+                        &skills,
+                        &cell_id,
+                        false,
+                        creds,
+                        None,
+                        None,
+                        &HeldHit::default(),
+                    )
+                });
+                let mut given = vec![more(&agent)];
+                send("and make it blue");
+                send("with a border");
+                given.push(more(&agent));
+                given.push(more(&agent));
+                send("thanks");
+                given.push(more(&agent));
+                drop(agent);
+                served.join().unwrap().unwrap();
+                given
+            });
+            let kept = crate::follow_ups::ended(cell);
+            let _ = std::fs::remove_dir_all(&root);
+            let told = joins_and_steps(&bus);
+            (given, told, kept, waiting.queued())
+        };
+        let texts = |texts: &[&str]| {
+            texts
+                .iter()
+                .map(|text| (*text).to_owned())
+                .collect::<Vec<_>>()
+        };
+        let (given, told, kept, queued) = asked(true, "cell-more-chat");
+        assert_eq!(
+            given,
+            [
+                texts(&[]),
+                texts(&["and make it blue", "with a border"]),
+                texts(&[]),
+                texts(&["thanks"])
+            ]
+        );
+        assert_eq!(
+            told,
+            ["joined 2", "joined 1"],
+            "told when it took any, and no step"
+        );
+        assert_eq!(
+            kept,
+            texts(&["and make it blue", "with a border", "thanks"])
+        );
+        assert_eq!(queued, 0);
+
+        let (given, told, kept, queued) = asked(false, "cell-more-other");
+        assert_eq!(given, [texts(&[]), texts(&[]), texts(&[]), texts(&[])]);
+        assert_eq!(told, Vec::<String>::new());
+        assert_eq!(kept, texts(&[]));
+        assert_eq!(queued, 3, "they wait for the run they are for");
     }
 
     /// A chat run's steps reach the owner's app as its session is served:

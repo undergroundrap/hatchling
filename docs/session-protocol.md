@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v23 (current). This doc is the human-readable reference
+**Status:** v24 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -70,6 +70,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
 | Suggest | `SuggestOp` | `SuggestResult` | v20 |
 | Room | `RoomOp` | `RoomResult` | v21; `Read` v22 |
+| Chat | `ChatOp` | `ChatResult` | v24 |
 
 ## v9 — Artifact ops
 
@@ -386,6 +387,43 @@ No session op changes. The owner's app is told one more thing.
   (`run_summary`). It is among the events the app's stream keeps in
   memory for an app that reconnects, the most recent of them, and goes
   when the broker stops.
+
+## v24 — What the owner sends while a run works
+
+The chat answers one message at a time. What the owner sent while a run
+was working used to wait, each message for a run of its own, after the
+answer to the last. A chat run can now take it into the task it is on.
+
+- **`ChatOp::More`**: what the owner has sent since the message the run
+  was started for, in the same conversation. It has no fields.
+- **`ChatResult::More { messages }`**: those messages, oldest first,
+  each as the owner wrote it. Empty when they sent none.
+- **Who is given anything.** Only the chat's run in flight: the chat
+  names it to the broker by its cell when it starts it, and forgets it
+  when it ends. Any other session (a scheduled run, a subagent, a chat
+  run that has ended) is answered with no messages, and learns no more
+  than that. No grant is asked for it: the run already holds the
+  owner's message as its task, and these are more of the same.
+- **What being given means.** The messages are taken off the queue, so
+  no run is started for them, and they aren't given again. When the run
+  ends and its answer is shown, the chat keeps them with the run's own
+  message as what the owner said in that exchange. A run that fails
+  takes what it was given with it, as it does its own message.
+- **Which messages.** Only ones sent in the conversation the run's own
+  message was sent in. One sent after the owner started a new
+  conversation stays where it is, and so does everything behind it.
+- **How much at once.** A reply carries at most 48 KiB of messages, as
+  JSON writes them (`CHAT_MORE_BYTES`), so it always fits a frame. A
+  message that doesn't fit in what is left waits for the next asking.
+- **When a run asks.** Before each turn of its model, and only then: a
+  message that arrives while the model writes its answer waits for the
+  next run, as before.
+- **`UiEventBody::MessagesJoined { count }`**: told to the owner's app
+  each time the run took any, with how many: the oldest `count` of the
+  owner's messages still waiting behind the one being answered. The
+  app shows the run's answer as the answer to all of them. Like
+  `AgentStep`, it goes to the app alone and isn't written to the
+  activity log.
 
 ## Device handshake
 

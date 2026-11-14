@@ -554,8 +554,22 @@ impl Cell<Ready> {
         // What this install allows, said to the model from the broker's
         // word, so it neither offers nor tries what's off.
         let note = crate::capabilities::note(self.config().run_tools.as_ref());
-        let result = hatchling_loop::Loop::new(&registry, kind)
-            .with_system_note(&note)
+        let asking = hatchling_loop::Loop::new(&registry, kind).with_system_note(&note);
+        // A chat run is given what its owner sends while it works. No
+        // other run asks: the broker would give it nothing.
+        let asking = if self.config().run_chat {
+            asking
+                .with_system_note(crate::chat::NOTE)
+                .with_more(Box::new(|| {
+                    crate::chat::more(self.connection()).unwrap_or_else(|error| {
+                        tracing::debug!(%error, "the owner's further messages weren't read");
+                        Vec::new()
+                    })
+                }))
+        } else {
+            asking
+        };
+        let result = asking
             .with_budget(budget)
             .with_ledger(ledger)
             .with_unfinished(Box::new(|| running.unfinished()))
@@ -866,6 +880,96 @@ mod tests {
             }
             ops
         })
+    }
+
+    /// A chat run asks its broker, before each of its model's turns, for
+    /// what its owner sent since, and the model is shown it as theirs,
+    /// with a word in its instructions on what to do with it. A run that
+    /// isn't a chat's asks nothing.
+    #[test]
+    fn a_chat_run_takes_what_its_owner_sends_while_it_works() {
+        use hatchling_core::framing::{read_frame, write_frame};
+        use hatchling_core::{ChatOp, ChatResult, SessionRequest, SessionResponse};
+        use hatchling_loop::{FakeModel, Message, ModelAction};
+        use std::os::fd::IntoRawFd as _;
+        let run = |chat: bool| {
+            let (broker, agent) = UnixStream::pair().unwrap();
+            let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
+            config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+            config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
+            config.run_chat = chat;
+            // The broker welcomes the cell, then answers each asking: the
+            // second time with two messages, and with none otherwise.
+            // Anything else it is asked gets a chat reply too, which the
+            // asker takes as a failure.
+            let serve = std::thread::spawn(move || {
+                read_frame(&broker).unwrap();
+                let welcome = serde_json::to_vec(&hatchling_core::BrokerMessage::Welcome {
+                    v: hatchling_core::PROTOCOL_VERSION,
+                })
+                .unwrap();
+                write_frame(&broker, &welcome).unwrap();
+                let mut asked = 0_u32;
+                while let Ok(frame) = read_frame(&broker) {
+                    let request: SessionRequest = serde_json::from_slice(&frame).unwrap();
+                    let mut messages = Vec::new();
+                    if request == SessionRequest::Chat(ChatOp::More {}) {
+                        asked += 1;
+                        if asked == 2 {
+                            messages =
+                                vec![String::from("and make it blue"), String::from("thanks")];
+                        }
+                    }
+                    let reply = SessionResponse::Chat(ChatResult::More { messages });
+                    write_frame(&broker, &serde_json::to_vec(&reply).unwrap()).unwrap();
+                }
+                asked
+            });
+            let cell = Cell::new(config)
+                .check_preconditions()
+                .and_then(Cell::connect_broker)
+                .and_then(Cell::authorize)
+                .and_then(Cell::handshake)
+                .unwrap();
+            let model = FakeModel::new(vec![
+                ModelAction::ToolCalls(Vec::new()),
+                ModelAction::Text(String::from("Blue it is.")),
+            ]);
+            let result = cell
+                .run_loop_delegating(
+                    hatchling_loop::PromptKind::Chat,
+                    &model,
+                    String::from("Paint the fence"),
+                    hatchling_loop::LoopBudget { max_steps: 4 },
+                    None,
+                )
+                .unwrap();
+            drop(cell);
+            let last = model.seen_histories().pop().unwrap();
+            let users: Vec<String> = last
+                .iter()
+                .filter_map(|message| {
+                    if let Message::User(text) = message {
+                        Some(text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let told = matches!(last.first(), Some(Message::System(prompt)) if prompt.ends_with(crate::chat::NOTE));
+            (result.answer, users, told, serve.join().unwrap())
+        };
+        let (answer, users, told, asked) = run(true);
+        assert_eq!(answer, "Blue it is.");
+        assert_eq!(users, ["Paint the fence", "and make it blue", "thanks"]);
+        assert!(told, "a chat run is told what a further message is");
+        assert_eq!(asked, 2, "before each of its two turns");
+
+        let (answer, users, told, asked) = run(false);
+        assert_eq!(answer, "Blue it is.");
+        assert_eq!(users, ["Paint the fence"]);
+        assert!(!told);
+        assert_eq!(asked, 0, "a run that isn't a chat's asks nothing");
     }
 
     /// A run's loop holds an answer given while a program the run

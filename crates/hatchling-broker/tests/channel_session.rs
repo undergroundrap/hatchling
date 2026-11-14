@@ -162,7 +162,8 @@ fn send_op(stream: &UnixStream, op: &ChannelOp) -> io::Result<ChannelResult> {
         | SessionResponse::Web(_)
         | SessionResponse::Browser(_)
         | SessionResponse::Suggest(_)
-        | SessionResponse::Room(_) => Err(io::Error::new(
+        | SessionResponse::Room(_)
+        | SessionResponse::Chat(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a non-channel reply to a channel op",
         )),

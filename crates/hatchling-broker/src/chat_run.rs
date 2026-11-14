@@ -290,6 +290,9 @@ pub struct Chat<R, K = ()> {
     told: Told,
     /// Where the broker counts model usage, and keeps the owner's limits.
     usage: Option<std::path::PathBuf>,
+    /// Where the owner's messages wait, when a run in flight may be given
+    /// what they send while it works ([`crate::follow_ups`]).
+    waiting: Option<LocalHub>,
 }
 
 impl<R: Run> Chat<R> {
@@ -327,6 +330,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             choice: None,
             other: None,
             usage: None,
+            waiting: None,
         }
     }
 
@@ -358,6 +362,14 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     #[must_use]
     pub fn with_usage(mut self, usage: std::path::PathBuf) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    /// The chat, whose run in flight is given what the owner sends while
+    /// it works, from `hub`, where their messages wait.
+    #[must_use]
+    pub fn with_follow_ups(mut self, hub: LocalHub) -> Self {
+        self.waiting = Some(hub);
         self
     }
 
@@ -421,6 +433,16 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             let Some((_, user, sent_in)) = self.running.take() else {
                 return Step::Idle;
             };
+            // What the run was given of the owner's further messages is
+            // part of what they said in this exchange. The run is given no
+            // more, however it ended.
+            let user = said(
+                user,
+                &cell
+                    .as_deref()
+                    .map(crate::follow_ups::ended)
+                    .unwrap_or_default(),
+            );
             let answer = match outcome {
                 Ok(answer) => answer,
                 Err(reason) => {
@@ -487,6 +509,9 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         };
         match launcher.launch(request) {
             Ok(run) => {
+                if let (Some(hub), Some(cell)) = (&self.waiting, run.cell_id()) {
+                    crate::follow_ups::began(&cell, hub, sent_in);
+                }
                 self.running = Some((run, message.text, sent_in));
                 Step::Started
             }
@@ -496,6 +521,16 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             }
         }
     }
+}
+
+/// What the owner said in an exchange: the message its run was started
+/// for, then each further one the run was given, a blank line between.
+fn said(first: String, more: &[String]) -> String {
+    more.iter().fold(first, |mut all, next| {
+        all.push_str("\n\n");
+        all.push_str(next);
+        all
+    })
 }
 
 /// Delivers `answer`, Hatchling's own words, on the local channel: a
@@ -537,7 +572,8 @@ pub fn chat_forever<'scope, 'env>(
                 .enabled()
                 .then(|| config.scheduler.owner_dir()),
         )
-        .with_usage(config.scheduler.usage.clone());
+        .with_usage(config.scheduler.usage.clone())
+        .with_follow_ups(hub.clone());
     loop {
         let step = chat.step(
             || hub.take_in_conversation(),
@@ -1167,6 +1203,114 @@ mod tests {
         fn launch(&self, _: RunRequest) -> Result<EndedIn, String> {
             self.0.borrow_mut().take().ok_or_else(String::new)
         }
+    }
+
+    /// A run that answers "done" at once, in the cell named.
+    #[derive(Debug)]
+    struct AnswersIn(&'static str);
+
+    impl Run for AnswersIn {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            Some(Ok(String::from("done")))
+        }
+
+        fn cell_id(&self) -> Option<String> {
+            Some(self.0.to_owned())
+        }
+    }
+
+    /// Launches one [`AnswersIn`] run.
+    struct OneAnswersIn(RefCell<Option<AnswersIn>>);
+
+    impl Launcher for OneAnswersIn {
+        type Run = AnswersIn;
+
+        fn launch(&self, _: RunRequest) -> Result<AnswersIn, String> {
+            self.0.borrow_mut().take().ok_or_else(String::new)
+        }
+    }
+
+    /// What the owner sends while a run works is that run's, once the chat
+    /// knows where their messages wait: the run's session is given it, and
+    /// the chat keeps it as part of what they said in that exchange. A run
+    /// that has ended is given no more, and a chat that wasn't told where
+    /// messages wait names no run.
+    #[test]
+    fn what_the_owner_sends_while_a_run_works_is_kept_with_its_exchange() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let answers = Answers::default();
+        let now = Timestamp::now();
+        let mut chat: Chat<AnswersIn> = Chat::new(vec![send_local()]).with_follow_ups(hub.clone());
+        let launches = OneAnswersIn(RefCell::new(Some(AnswersIn("run-follow-chat"))));
+        chat.step(
+            || Some((message("Sort my notes"), 0)),
+            0,
+            &launches,
+            &answers,
+            now,
+        );
+        let _ = hub.inject(message("by date"));
+        let _ = hub.inject(message("newest first"));
+        // The run's session asks, between two of its steps.
+        assert_eq!(
+            crate::follow_ups::more("run-follow-chat"),
+            ["by date", "newest first"]
+        );
+        assert_eq!(hub.queued(), 0, "no run is started for them");
+        chat.step(|| hub.take_in_conversation(), 0, &launches, &answers, now);
+        let kept = chat.history();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(
+            kept.first()
+                .map(|exchange| (exchange.user.as_str(), exchange.assistant.as_str())),
+            Some(("Sort my notes\n\nby date\n\nnewest first", "done"))
+        );
+        let _ = hub.inject(message("thanks"));
+        assert!(
+            crate::follow_ups::more("run-follow-chat").is_empty(),
+            "the run has ended"
+        );
+        assert_eq!(hub.queued(), 1, "it waits for a run of its own");
+
+        let mut plain: Chat<AnswersIn> = Chat::new(vec![send_local()]);
+        let launches = OneAnswersIn(RefCell::new(Some(AnswersIn("run-follow-plain"))));
+        plain.step(|| Some((message("one"), 0)), 0, &launches, &answers, now);
+        assert!(crate::follow_ups::more("run-follow-plain").is_empty());
+        assert_eq!(hub.queued(), 1);
+        plain.step(|| None, 0, &launches, &answers, now);
+        assert_eq!(
+            plain
+                .history()
+                .first()
+                .map(|exchange| exchange.user.clone()),
+            Some(String::from("one"))
+        );
+        assert_eq!(super::said(String::from("one"), &[]), "one");
+    }
+
+    /// A run that fails is given no more either: what it took is gone
+    /// with it, and what the owner sends next waits for the next run.
+    #[test]
+    fn a_failed_run_is_given_no_more() {
+        use hatchling_core::run_failure::RunFailure;
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let answers = Answers::default();
+        let now = Timestamp::now();
+        let mut chat: Chat<EndedIn> = Chat::new(vec![send_local()]).with_follow_ups(hub.clone());
+        let ending =
+            hatchling_scheduler::Ending::Exited(RunFailure::ModelUnavailable.code().into());
+        let launches = OneEndedIn(RefCell::new(Some(EndedIn(ending, "run-follow-failed"))));
+        chat.step(|| Some((message("one"), 0)), 0, &launches, &answers, now);
+        let _ = hub.inject(message("two"));
+        assert_eq!(crate::follow_ups::more("run-follow-failed"), ["two"]);
+        chat.step(|| None, 0, &launches, &answers, now);
+        assert!(
+            chat.history().is_empty(),
+            "a failed run's exchange isn't kept"
+        );
+        let _ = hub.inject(message("three"));
+        assert!(crate::follow_ups::more("run-follow-failed").is_empty());
+        assert_eq!(hub.queued(), 1);
     }
 
     /// A chat run whose model was still answering when the broker stopped

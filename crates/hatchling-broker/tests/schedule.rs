@@ -185,7 +185,8 @@ fn op(stream: &UnixStream, op: ScheduleOp) -> io::Result<ScheduleResult> {
         | SessionResponse::Web(_)
         | SessionResponse::Browser(_)
         | SessionResponse::Suggest(_)
-        | SessionResponse::Room(_)) => {
+        | SessionResponse::Room(_)
+        | SessionResponse::Chat(_)) => {
             Err(io::Error::other(format!("not a schedule reply: {other:?}")))
         }
     }

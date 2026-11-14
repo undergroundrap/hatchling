@@ -155,6 +155,19 @@ impl LocalHub {
         self.state().inbound.pop_front()
     }
 
+    /// Takes the oldest queued message if `wanted` says so of it and of
+    /// the number of the conversation it was sent in. One that isn't
+    /// wanted stays where it is, first in the queue.
+    #[must_use]
+    pub fn take_if(&self, wanted: impl FnOnce(&Message, u64) -> bool) -> Option<Message> {
+        let mut state = self.state();
+        let (message, sent_in) = state.inbound.front()?;
+        if !wanted(message, *sent_in) {
+            return None;
+        }
+        state.inbound.pop_front().map(|(message, _)| message)
+    }
+
     /// The number of the conversation now: messages queued from here on
     /// are sent in it.
     #[must_use]
@@ -556,5 +569,49 @@ mod tests {
             assert_eq!(serde_json::to_string(&event).unwrap(), json);
             assert_eq!(serde_json::from_str::<IngressEvent>(json).unwrap(), event);
         }
+    }
+
+    /// The oldest message is taken only if it is wanted, by its words and
+    /// the conversation it was sent in. One that isn't stays first, and
+    /// what is behind it stays behind it.
+    #[test]
+    fn the_oldest_message_is_taken_only_if_it_is_wanted() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        let said = |text: &str| Message {
+            sender: SenderId(String::from("owner")),
+            channel: ChannelId::local(),
+            text: text.to_owned(),
+        };
+        assert_eq!(hub.take_if(|_, _| true), None, "nothing waits");
+        let _ = hub.inject(said("first"));
+        hub.new_conversation();
+        let _ = hub.inject(said("second"));
+        // The first is asked about, with its conversation, and left.
+        let mut asked = Vec::new();
+        assert_eq!(
+            hub.take_if(|message, sent_in| {
+                asked.push((message.text.clone(), sent_in));
+                false
+            }),
+            None
+        );
+        assert_eq!(asked, [(String::from("first"), 0)]);
+        assert_eq!(hub.queued(), 2);
+        assert_eq!(
+            hub.take_if(|message, sent_in| message.text == "second" && sent_in == 1),
+            None,
+            "the second isn't the oldest"
+        );
+        assert_eq!(
+            hub.take_if(|_, sent_in| sent_in == 0)
+                .map(|message| message.text),
+            Some(String::from("first"))
+        );
+        assert_eq!(
+            hub.take_if(|_, sent_in| sent_in == 1)
+                .map(|message| message.text),
+            Some(String::from("second"))
+        );
+        assert_eq!(hub.queued(), 0);
     }
 }

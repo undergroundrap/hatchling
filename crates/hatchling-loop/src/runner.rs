@@ -35,6 +35,9 @@ pub const ANSWER_HOLDS: u32 = 2;
 /// `None` when nothing is left.
 type Unfinished<'m> = Box<dyn Fn() -> Option<String> + 'm>;
 
+/// What the person has sent since the loop last asked, oldest first.
+type More<'m> = Box<dyn Fn() -> Vec<String> + 'm>;
+
 /// How long the loop may run. The bound is enforced by the loop,
 //  not requested by the model.
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +76,7 @@ pub struct Loop<'t, 'r, 'm> {
     prior_turns: Vec<(String, String)>,
     earlier: Option<String>,
     unfinished: Option<Unfinished<'m>>,
+    more: Option<More<'m>>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -84,6 +88,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("prior_turns", &self.prior_turns.len())
             .field("earlier", &self.earlier.is_some())
             .field("unfinished", &self.unfinished.is_some())
+            .field("more", &self.more.is_some())
             .finish()
     }
 }
@@ -106,7 +111,21 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             prior_turns: Vec::new(),
             earlier: None,
             unfinished: None,
+            more: None,
         }
+    }
+
+    /// Ask `more` before each of the model's turns: what the person has
+    /// sent since the loop last asked, oldest first. Each becomes a
+    /// [`Message::User`] where the history then stands, after what the
+    /// run has done so far, so the model takes it into the task it is on.
+    ///
+    /// It is asked only when a turn is to follow: a run with no step left
+    /// takes nothing it couldn't act on.
+    #[must_use]
+    pub fn with_more(mut self, more: More<'m>) -> Self {
+        self.more = Some(more);
+        self
     }
 
     /// Ask `unfinished` each time the model answers: what the run started
@@ -281,6 +300,9 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         let mut holds = 0;
         let mut held = None;
         while ledger.take_step() {
+            if let Some(more) = &self.more {
+                history.extend(more().into_iter().map(Message::User));
+            }
             let action = model.next_action(&history, &tool_descriptions)?;
             step += 1;
             match action {
@@ -1077,5 +1099,103 @@ mod tests {
                 .with_unfinished(Box::new(|| None))
         );
         assert!(with.contains("unfinished: true"), "{with}");
+    }
+
+    /// What the person sent while the run worked is asked for before each
+    /// of the model's turns, and joins the history where it then stands,
+    /// in order, as their own messages.
+    #[test]
+    fn what_the_person_sent_since_joins_the_history_before_each_turn() {
+        let registry = empty_registry();
+        let waiting = std::cell::RefCell::new(vec![
+            vec![],
+            vec![String::from("and make it blue"), String::from("thanks")],
+            vec![],
+        ]);
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::ToolCalls(Vec::new()),
+            ModelAction::ToolCalls(Vec::new()),
+            ModelAction::Text(String::from("Blue it is.")),
+        ]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_more(Box::new(|| {
+                asked.set(asked.get() + 1);
+                waiting.borrow_mut().remove(0)
+            }))
+            .run(&model, String::from("Paint the fence"))
+            .unwrap();
+        assert_eq!(result.answer, "Blue it is.");
+        assert_eq!(asked.get(), 3, "once before each turn");
+        let users = |history: &[Message]| {
+            history
+                .iter()
+                .filter_map(|message| match message {
+                    Message::User(text) => Some(text.clone()),
+                    Message::System(_)
+                    | Message::Assistant(_)
+                    | Message::ToolUse { .. }
+                    | Message::RecalledMemory(_)
+                    | Message::Evidence(_)
+                    | Message::Note(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let seen = model.seen_histories();
+        assert_eq!(users(seen.first().unwrap()), ["Paint the fence"]);
+        let second = seen.get(1).unwrap();
+        assert_eq!(
+            users(second),
+            ["Paint the fence", "and make it blue", "thanks"]
+        );
+        // After what the run had done so far: the first turn's tool use.
+        assert!(
+            matches!(
+                second.as_slice(),
+                [
+                    ..,
+                    Message::ToolUse { .. },
+                    Message::User(_),
+                    Message::User(_)
+                ]
+            ),
+            "{second:?}"
+        );
+        assert_eq!(users(seen.get(2).unwrap()).len(), 3, "given once");
+    }
+
+    /// A run with no step left asks for nothing: it couldn't act on it.
+    #[test]
+    fn nothing_is_asked_for_when_no_turn_is_to_follow() {
+        let registry = empty_registry();
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::ToolCalls(Vec::new()),
+            ModelAction::ToolCalls(Vec::new()),
+        ]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .with_more(Box::new(|| {
+                asked.set(asked.get() + 1);
+                vec![String::from("more")]
+            }))
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(matches!(error, Error::BudgetExhausted { steps: 2 }));
+        assert_eq!(
+            asked.get(),
+            2,
+            "before each of the two turns, and not after"
+        );
+        let bare = format!(
+            "{:?}",
+            Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+        );
+        assert!(bare.contains("more: false"), "{bare}");
+        let with = format!(
+            "{:?}",
+            Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_more(Box::new(Vec::new))
+        );
+        assert!(with.contains("more: true"), "{with}");
     }
 }

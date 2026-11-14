@@ -2343,6 +2343,32 @@
       ],
       "type": "object"
     },
+    "ChatResult": {
+      "description": "The broker's reply to one [`ChatOp`] (v24).",
+      "oneOf": [
+        {
+          "description": "The owner's further messages, oldest first, each as they wrote it.\nNone when they sent none, or when this session isn't the chat's\nrun in flight. The owner's words: the run's task, like the message\nit was started for.",
+          "properties": {
+            "messages": {
+              "description": "The messages.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "more",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "messages"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ChildFailure": {
       "description": "Why a child failed on its own.",
       "oneOf": [
@@ -9409,6 +9435,34 @@
             "kind"
           ],
           "type": "object"
+        },
+        {
+          "description": "What a chat run asks of the conversation it is answering in (v24).",
+          "oneOf": [
+            {
+              "description": "What the owner has sent since the message the run was started for,\nin the same conversation. What is given is the run's to answer: it\nisn't given again, and no run is started for it.\n\nIt has no fields, and is written as a variant that could have:\none written without is read with any field it is sent, and a\nsession request refuses a field it doesn't name.",
+              "properties": {
+                "op": {
+                  "const": "more",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "kind": {
+              "const": "chat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -9631,6 +9685,20 @@
           "properties": {
             "kind": {
               "const": "room",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/ChatResult",
+          "description": "Reply to a chat op (v24).",
+          "properties": {
+            "kind": {
+              "const": "chat",
               "type": "string"
             }
           },
@@ -12866,6 +12934,26 @@
           "type": "object"
         },
         {
+          "description": "The run answering the owner took more of their messages into it\n(v24): the oldest `count` of those sent since the one it was\nstarted for. Its answer is for all of them, and no run is started\nfor them.",
+          "properties": {
+            "count": {
+              "description": "How many.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "messages_joined",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "count"
+          ],
+          "type": "object"
+        },
+        {
           "$ref": "#/$defs/UiArtifact",
           "description": "An artifact was listed or changed: its whole record (v2).",
           "properties": {
@@ -13790,7 +13878,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 23,
+    "session_protocol": 24,
     "ui_schema_version": 4
   },
   "x-roots": {
