@@ -100,7 +100,7 @@ const KEEPER_FD: &str = crate::environment::HATCHLING_AUTHORITY_KEEPER_FD.name;
 /// How long the broker waits for each of a connection's frames: past the
 /// longest the authority itself waits on an upstream read (a local model
 /// may think for minutes).
-const ANSWER_TIMEOUT: Duration =
+pub(crate) const ANSWER_TIMEOUT: Duration =
     Duration::from_secs(hatchling_egress::local::IO_TIMEOUT.as_secs() + 30);
 
 /// The most bytes of a body one frame carries: a body moves as many.
@@ -571,6 +571,14 @@ impl EgressLink {
                 tracing::error!("the egress authority answered out of step");
                 Err(Refusal::failed(UNAVAILABLE))
             }
+            // The wait ran out with the authority still there: what it
+            // asked hadn't finished answering. The link is lost all the
+            // same, as a late answer could be read as the next one's.
+            Err(Error::AuthorityQuiet) => {
+                self.lost.store(true, Ordering::SeqCst);
+                tracing::error!("the egress authority gave no answer in the time waited");
+                Err(Refusal::no_answer())
+            }
             Err(error) => {
                 self.lost.store(true, Ordering::SeqCst);
                 tracing::error!(%error, "the egress authority can't be reached");
@@ -649,7 +657,7 @@ fn send(stream: &UnixStream, message: &impl Serialize) -> Result<(), Error> {
 
 /// Reads one reply.
 fn receive(stream: &UnixStream) -> Result<Reply, Error> {
-    let frame = read_frame(stream).map_err(gone)?;
+    let frame = read_frame(stream).map_err(unread)?;
     serde_json::from_slice(&frame).map_err(|e| Error::Authority {
         reason: format!("an answer that doesn't parse: {e}"),
     })
@@ -666,7 +674,7 @@ fn read_parts(stream: &UnixStream, parts: usize, max: usize) -> Result<Vec<u8>, 
     }
     let mut body = Vec::new();
     for _ in 0..parts {
-        let part = read_frame(stream).map_err(gone)?;
+        let part = read_frame(stream).map_err(unread)?;
         if part.len() > PART_BYTES || body.len() + part.len() > max {
             return Err(too_large());
         }
@@ -678,6 +686,23 @@ fn read_parts(stream: &UnixStream, parts: usize, max: usize) -> Result<Vec<u8>, 
 fn gone(error: impl std::fmt::Display) -> Error {
     Error::Authority {
         reason: format!("cannot be reached: {error}"),
+    }
+}
+
+/// A frame that wasn't read: the wait for it ran out, which says the
+/// authority is there and hasn't answered, or anything else, which says
+/// it can't be reached.
+fn unread(error: hatchling_core::Error) -> Error {
+    use std::io::ErrorKind;
+    let waited = matches!(
+        &error,
+        hatchling_core::Error::FrameIo { source }
+            if matches!(source.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+    );
+    if waited {
+        Error::AuthorityQuiet
+    } else {
+        gone(error)
     }
 }
 
@@ -1511,6 +1536,83 @@ mod tests {
         ));
         drop(authority);
         served.join().unwrap();
+    }
+
+    /// A link whose stream waits `wait` for each of the authority's frames.
+    fn link_waiting(broker: UnixStream, wait: Duration) -> EgressLink {
+        broker.set_read_timeout(Some(wait)).unwrap();
+        EgressLink {
+            stream: Mutex::new(broker),
+            lost: AtomicBool::new(false),
+        }
+    }
+
+    /// An answer that doesn't come in the time waited is said as that, and
+    /// not as an authority that can't be reached: it took the request and
+    /// is still there. The link is lost all the same, and nothing more is
+    /// sent on it. So is an answer whose body stops coming.
+    #[test]
+    fn an_answer_that_does_not_come_in_time_is_said_as_that() {
+        let wait = Duration::from_millis(150);
+        // It takes the request and answers nothing.
+        let (broker, theirs) = UnixStream::pair().unwrap();
+        let stand_in = std::thread::spawn(move || {
+            let _ = read_frame(&theirs);
+            read_frame_or_eof(&theirs).unwrap()
+        });
+        let link = link_waiting(broker, wait);
+        assert_eq!(
+            link.mint(1000, "localhost:443", 60),
+            Err(Refusal::no_answer())
+        );
+        assert_eq!(
+            link.mint(1000, "localhost:443", 60),
+            Err(Refusal::failed(UNAVAILABLE)),
+            "lost"
+        );
+        drop(link);
+        assert!(
+            stand_in.join().unwrap().is_none(),
+            "a request was sent after it was lost"
+        );
+
+        // It says an answer is coming, and its body doesn't.
+        let (broker, theirs) = UnixStream::pair().unwrap();
+        let stand_in = std::thread::spawn(move || {
+            let _ = read_frame(&theirs);
+            write_frame(
+                &theirs,
+                br#"{"reply":"answer","status":200,"headers":[],"parts":1}"#,
+            )
+            .unwrap();
+            read_frame_or_eof(&theirs).unwrap()
+        });
+        let link = link_waiting(broker, wait);
+        let request = EgressRequest {
+            method: String::from("POST"),
+            destination: String::from("localhost:443"),
+            path: String::from("/v1/chat/completions"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::from("s"),
+        };
+        assert_eq!(
+            link.forward(1000, &request).map(|_| ()),
+            Err(Refusal::no_answer())
+        );
+        drop(link);
+        assert!(stand_in.join().unwrap().is_none());
+
+        // An authority that's gone is still one that can't be reached.
+        let (broker, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let link = link_waiting(broker, wait);
+        assert_eq!(
+            link.mint(1000, "localhost:443", 60),
+            Err(Refusal::failed(UNAVAILABLE))
+        );
+        assert_eq!(Refusal::no_answer().kind, RefusalKind::NoAnswer);
+        assert_ne!(Refusal::no_answer(), Refusal::failed(UNAVAILABLE));
     }
 
     /// A link answered out of step is lost: nothing more is sent on it.

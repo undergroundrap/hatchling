@@ -1374,12 +1374,12 @@ pub fn failure_notice(
     if stopped {
         format!(
             "{what} didn't finish. {} {STOPPED_HELD}",
-            crate::chat_run::failed_with(failure.ending, model, reached)
+            crate::chat_run::failed_with(failure.ending, model, reached, false)
         )
     } else if failure.started {
         format!(
             "{what} didn't finish. {} It's kept for you to review.",
-            crate::chat_run::failed_with(failure.ending, model, reached)
+            crate::chat_run::failed_with(failure.ending, model, reached, false)
         )
     } else {
         format!(

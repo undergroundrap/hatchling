@@ -41,6 +41,14 @@ static SESSIONS: Mutex<BTreeMap<u64, OperatorSession>> = Mutex::new(BTreeMap::ne
 /// The egress decisions kept, oldest first.
 static DECISIONS: Mutex<VecDeque<EgressDecision>> = Mutex::new(VecDeque::new());
 
+/// How many cells are remembered as having a model that didn't answer in
+/// time: the most recent. One is forgotten when its run's failure is told.
+pub const MAX_QUIET_MODELS: usize = 64;
+
+/// The cells whose model was still answering when the broker's wait for it
+/// ran out, oldest first.
+static QUIET_MODELS: Mutex<VecDeque<String>> = Mutex::new(VecDeque::new());
+
 /// Held by a test that fills the decisions to their bound, and by one that
 /// needs its own decision still kept: tests share the one process.
 #[cfg(test)]
@@ -155,6 +163,37 @@ pub fn decisions() -> Vec<EgressDecision> {
     decisions_now().iter().cloned().collect()
 }
 
+/// The quiet models kept, even if a holder panicked.
+fn quiet_models_now() -> MutexGuard<'static, VecDeque<String>> {
+    QUIET_MODELS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Remembers that `cell_id`'s model was still answering when the broker's
+/// wait for it ran out, dropping the oldest past [`MAX_QUIET_MODELS`].
+///
+/// The agent is told only that its request failed. This is the broker's
+/// own knowledge of why, kept for the words its owner is told.
+pub fn model_was_quiet(cell_id: &str) {
+    let mut kept = quiet_models_now();
+    if kept.iter().any(|known| known == cell_id) {
+        return;
+    }
+    if kept.len() >= MAX_QUIET_MODELS {
+        kept.pop_front();
+    }
+    kept.push_back(cell_id.to_owned());
+}
+
+/// Whether `cell_id`'s model was still answering when the wait for it ran
+/// out, forgetting it: it is told once.
+#[must_use]
+pub fn took_quiet_model(cell_id: &str) -> bool {
+    let mut kept = quiet_models_now();
+    let before = kept.len();
+    kept.retain(|known| known != cell_id);
+    kept.len() != before
+}
+
 /// A cell's limits as the operator's protocol carries them.
 const fn operator_limits(limits: &crate::CellLimits) -> CellLimits {
     CellLimits {
@@ -170,6 +209,32 @@ const fn operator_limits(limits: &crate::CellLimits) -> CellLimits {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cell whose model didn't answer in time is remembered until it is
+    /// asked after, once, and only the most recent are kept.
+    #[test]
+    fn a_quiet_model_is_remembered_until_it_is_told() {
+        assert!(!took_quiet_model("quiet-none"), "never noted");
+        model_was_quiet("quiet-a");
+        model_was_quiet("quiet-a");
+        model_was_quiet("quiet-b");
+        assert!(took_quiet_model("quiet-a"));
+        assert!(
+            !took_quiet_model("quiet-a"),
+            "told once, though noted twice"
+        );
+        assert!(took_quiet_model("quiet-b"), "another's stays");
+        // Past the bound the oldest goes.
+        model_was_quiet("quiet-first");
+        for n in 0..MAX_QUIET_MODELS {
+            model_was_quiet(&format!("quiet-fill-{n}"));
+        }
+        assert!(!took_quiet_model("quiet-first"), "the oldest was dropped");
+        assert!(took_quiet_model("quiet-fill-0"));
+        for n in 1..MAX_QUIET_MODELS {
+            assert!(took_quiet_model(&format!("quiet-fill-{n}")), "{n}");
+        }
+    }
 
     /// The listings of `ids` only: other tests start cells too.
     fn listed(ids: &[&str]) -> Vec<(String, CellKind)> {
