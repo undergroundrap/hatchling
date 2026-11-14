@@ -11,7 +11,8 @@ pub enum ModelReasoning {
     /// Leave the request unchanged and let the provider choose.
     #[default]
     ProviderDefault,
-    /// Send `reasoning: {"enabled": false}`; an endpoint may refuse it.
+    /// Send `reasoning: {"enabled": false, "effort": "none"}`; an endpoint
+    /// may refuse it.
     Disabled,
 }
 

@@ -49,6 +49,11 @@ pub enum Error {
     #[error("model failed: {0}")]
     ModelSilent(String),
 
+    /// The model thought and then said nothing, every time it was asked,
+    /// with its thinking turned off too where that could be asked for.
+    #[error("model failed: {0}")]
+    ModelThoughtOnly(String),
+
     /// A tool's execution failed. This normally feeds back to the
     /// model as `ToolResult::Err`; it surfaces as `Error` only when
     /// the failure happens outside the feedback path.

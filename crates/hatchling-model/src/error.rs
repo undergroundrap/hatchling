@@ -49,6 +49,14 @@ pub enum Error {
     /// ([`crate::ATTEMPTS`]) before this is the answer.
     #[error("uninterpretable provider response: message has no usable content or tool calls")]
     EmptyReply,
+    /// The model thought and then said nothing: its reply carries its
+    /// reasoning, and no text and no tool call. A thinking model does
+    /// this when its whole answer lands in its thinking. The provider
+    /// asks again with thinking off before this is the answer.
+    #[error(
+        "uninterpretable provider response: the reply was all thinking, with no content or tool calls"
+    )]
+    ThoughtOnly,
 }
 
 impl Error {

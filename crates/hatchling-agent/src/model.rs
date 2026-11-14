@@ -173,7 +173,8 @@ impl Cell<Ready> {
                 | hatchling_model::Error::Transport(_)
                 | hatchling_model::Error::CutOff
                 | hatchling_model::Error::BadResponse { .. }
-                | hatchling_model::Error::EmptyReply => Error::ModelRefused(error.to_string()),
+                | hatchling_model::Error::EmptyReply
+                | hatchling_model::Error::ThoughtOnly => Error::ModelRefused(error.to_string()),
             })?;
         let model_grant = hatchling_core::ScheduleGrant::Egress {
             destination: endpoint.destination().to_owned(),
@@ -192,6 +193,9 @@ impl Cell<Ready> {
             hatchling_loop::Error::ModelFailed(_) => Error::ModelFailed(error.to_string()),
             hatchling_loop::Error::ModelCutOff(_) => Error::ModelCutOff(error.to_string()),
             hatchling_loop::Error::ModelSilent(_) => Error::ModelSilent(error.to_string()),
+            hatchling_loop::Error::ModelThoughtOnly(_) => {
+                Error::ModelThoughtOnly(error.to_string())
+            }
             hatchling_loop::Error::UnknownTool(_)
             | hatchling_loop::Error::InvalidArguments { .. } => {
                 Error::ToolsMisused(error.to_string())
