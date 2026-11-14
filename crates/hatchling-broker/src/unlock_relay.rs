@@ -405,6 +405,23 @@ fn protocol(why: &str) -> Error {
     }
 }
 
+/// What `unlock` says of the cells' cgroup before it asks for anything:
+/// nothing when nothing was wrong, a line to say and go on when it was
+/// put right, and, as the error, the line to stop with when it wasn't.
+fn limits_told(program: &str, limits: crate::doctor::CellLimits) -> Result<Option<String>, String> {
+    use crate::doctor::CellLimits;
+    match limits {
+        CellLimits::Fine => Ok(None),
+        CellLimits::Restored(controllers) => Ok(Some(format!(
+            "{program} unlock: the service's cgroup had lost its {} controller, and has it back.",
+            controllers.join(", ")
+        ))),
+        CellLimits::Problem(what, fix) => Err(format!(
+            "{program} unlock: not asking for your key yet: {what}. {fix}"
+        )),
+    }
+}
+
 /// `sudo hatchling-broker unlock`: unlocks a vault waiting for it, asking
 /// what it needs in this terminal.
 #[must_use]
@@ -417,15 +434,24 @@ pub fn unlock_main(program: &str, vault: &VaultConfig) -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let limits = std::env::var(env::HATCHLING_CELL_CGROUP.name)
-        .ok()
-        .or_else(crate::doctor::service_cell_cgroup);
-    if let Some((what, fix)) = crate::doctor::cell_limits_problem(limits.as_deref()) {
-        let _ = writeln!(
-            stderr,
-            "{program} unlock: not asking for your key yet: {what}. {fix}"
-        );
-        return ExitCode::FAILURE;
+    // The service's own cgroup, short of a controller, is put right here,
+    // where it can be: the owner is at the terminal with their key, and
+    // shouldn't be sent away for something root can do itself. A cgroup
+    // named in this command's own settings isn't the service's unit's to
+    // give back, and is only looked at.
+    let limits = std::env::var(env::HATCHLING_CELL_CGROUP.name).map_or_else(
+        |_| crate::doctor::cell_limits_restored(crate::doctor::service_cell_cgroup().as_deref()),
+        |named| crate::doctor::cell_limits_seen(Some(&named)),
+    );
+    match limits_told(program, limits) {
+        Ok(None) => {}
+        Ok(Some(restored)) => {
+            let _ = writeln!(stderr, "{restored}");
+        }
+        Err(refused) => {
+            let _ = writeln!(stderr, "{refused}");
+            return ExitCode::FAILURE;
+        }
     }
     let path = socket_path(vault);
     let Ok(stream) = UnixStream::connect(&path) else {

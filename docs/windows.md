@@ -162,7 +162,9 @@ Everything still works: this isn't a smaller version of Hatchling.
 
 WSL distros share their control groups and their network, so two copies of Hatchling in two distros can't run together. The setup checks for this, and says so if another copy is running.
 
-Another distro that isn't Hatchling can get in the way of one thing: unlocking. If a distro that runs systemd (another Ubuntu, say) starts while Hatchling is locked, `sudo hatchling-broker unlock` may say the service's cgroup has no cpu controller, and stop before it asks for your key. Run `sudo systemctl daemon-reload` in Hatchling's distro, and unlock again. Once Hatchling is unlocked and working, another distro starting changes nothing.
+One copy is also what a machine has room for. Every WSL distro draws on the one allowance of memory Windows gives WSL, and on the one GPU. A model running on your machine can need most of both, so a second copy, or any other heavy distro, takes from the first. It matters less with a hosted model, which runs elsewhere.
+
+Another distro that isn't Hatchling can get in the way of one more thing. If a distro that runs systemd (another Ubuntu, say) starts while Hatchling is locked, it takes the cpu controller away from Hatchling's service. `sudo hatchling-broker unlock` puts it back itself before it asks for your key, and says that it did; if it can't, it stops and says what to run. Once Hatchling is unlocked and working, another distro starting changes nothing.
 
 ## Removing it
 

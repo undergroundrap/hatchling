@@ -302,6 +302,136 @@ pub(crate) fn cell_limits_problem(parent: Option<&str>) -> Option<(String, &'sta
         .map(|problem| cell_limits_said(parent, &problem))
 }
 
+/// What became of the delegated cgroup, looked at by something that may
+/// put it right ([`cell_limits_restored`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CellLimits {
+    /// Nothing is wrong, or cells aren't given a cgroup at all.
+    Fine,
+    /// It was short of these controllers, and has them back.
+    Restored(Vec<&'static str>),
+    /// Something is wrong still: what, and the fix.
+    Problem(String, &'static str),
+}
+
+/// [`cell_limits_problem`], as what became of it: only looked at, and
+/// nothing put right.
+pub(crate) fn cell_limits_seen(parent: Option<&str>) -> CellLimits {
+    cell_limits_problem(parent).map_or(CellLimits::Fine, |(what, fix)| {
+        CellLimits::Problem(what, fix)
+    })
+}
+
+/// How often the cgroup is looked at again once systemd was asked to
+/// apply the unit's settings, and how long between: systemd may do it a
+/// moment after it says it will.
+const REAPPLIED_LOOKS: u32 = 20;
+const REAPPLIED_PAUSE: Duration = Duration::from_millis(100);
+
+/// [`cell_limits_problem`], having first put right what can be.
+///
+/// A service's cgroup that is there, and short of a controller its tree
+/// offers, was left so by something outside Hatchling: under WSL, another
+/// distro starting does it, since every distro shares one cgroup tree.
+/// The unit asks for those controllers itself, so having systemd apply
+/// its settings again gives them back, and nothing is restarted.
+///
+/// Only `unlock` calls this, as root, at its owner's word. `doctor` only
+/// looks.
+pub(crate) fn cell_limits_restored(parent: Option<&str>) -> CellLimits {
+    let Some(parent) = parent else {
+        return CellLimits::Fine;
+    };
+    let look = || hatchling_sys::cgroup::delegation_problem(Path::new(parent));
+    let (left, back) = restored(
+        look(),
+        || ran("systemctl", "daemon-reload"),
+        || {
+            settled(
+                look,
+                || std::thread::sleep(REAPPLIED_PAUSE),
+                REAPPLIED_LOOKS,
+            )
+        },
+    );
+    became(parent, left, back)
+}
+
+/// What became of the cgroup at `parent`: `left` is what is wrong with
+/// it still, and `back` the controllers it was given back.
+fn became(
+    parent: &str,
+    left: Option<hatchling_sys::cgroup::DelegationProblem>,
+    back: Vec<&'static str>,
+) -> CellLimits {
+    match left {
+        Some(problem) => {
+            let (what, fix) = cell_limits_said(parent, &problem);
+            CellLimits::Problem(what, fix)
+        }
+        None if back.is_empty() => CellLimits::Fine,
+        None => CellLimits::Restored(back),
+    }
+}
+
+/// What is left wrong of `first` once what can be put right has been, and
+/// the controllers that were given back.
+///
+/// Only a cgroup that is there and lacks a controller is tried: `reapply`
+/// has systemd apply the unit's settings again, and `again` looks after
+/// it. Any other problem is left as it was found, and nothing is run.
+fn restored(
+    first: Option<hatchling_sys::cgroup::DelegationProblem>,
+    reapply: impl FnOnce() -> bool,
+    again: impl FnOnce() -> Option<hatchling_sys::cgroup::DelegationProblem>,
+) -> (
+    Option<hatchling_sys::cgroup::DelegationProblem>,
+    Vec<&'static str>,
+) {
+    use hatchling_sys::cgroup::DelegationProblem;
+    match first {
+        Some(DelegationProblem::ParentLacks(missing)) => {
+            if !reapply() {
+                return (Some(DelegationProblem::ParentLacks(missing)), Vec::new());
+            }
+            match again() {
+                None => (None, missing),
+                still => (still, Vec::new()),
+            }
+        }
+        other => (other, Vec::new()),
+    }
+}
+
+/// Looks up to `looks` times, pausing between two looks, until nothing
+/// is wrong: what the last look found.
+fn settled<P>(
+    mut look: impl FnMut() -> Option<P>,
+    mut pause: impl FnMut(),
+    looks: u32,
+) -> Option<P> {
+    let mut found = look();
+    for _ in 1..looks {
+        if found.is_none() {
+            break;
+        }
+        pause();
+        found = look();
+    }
+    found
+}
+
+/// Runs `program` with the one argument, and says whether it ended well.
+fn ran(program: &str, argument: &str) -> bool {
+    std::process::Command::new(program)
+        .arg(argument)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// What's said of `problem` with the cell cgroup at `parent`, and the fix.
 fn cell_limits_said(
     parent: &str,
@@ -1398,6 +1528,150 @@ mod tests {
             .all(|needed| offered.split_whitespace().any(|name| name == *needed))
         {
             assert_eq!(cell_limits_problem(Some("/sys/fs/cgroup")), None);
+        }
+    }
+
+    /// A cgroup that is there and short of a controller is put right by
+    /// having systemd apply the unit's settings again, and said to have
+    /// been; one that isn't put right, and any other problem, is left as
+    /// it was found, with nothing run for the others.
+    #[test]
+    fn a_cgroup_short_of_a_controller_is_given_it_back() {
+        use hatchling_sys::cgroup::DelegationProblem::{NotCgroup2, ParentLacks, TreeLacks};
+        use std::cell::Cell;
+        let lacks = || Some(ParentLacks(vec!["cpu"]));
+        // Put right: nothing is left, and what came back is named.
+        let (reapplied, looked) = (Cell::new(0), Cell::new(0));
+        let reapply = |ok: bool| {
+            let reapplied = &reapplied;
+            move || {
+                reapplied.set(reapplied.get() + 1);
+                ok
+            }
+        };
+        let again = |found: Option<hatchling_sys::cgroup::DelegationProblem>| {
+            let looked = &looked;
+            move || {
+                looked.set(looked.get() + 1);
+                found
+            }
+        };
+        assert_eq!(
+            restored(lacks(), reapply(true), again(None)),
+            (None, vec!["cpu"])
+        );
+        assert_eq!((reapplied.get(), looked.get()), (1, 1));
+        // systemd couldn't be asked: it is as it was, and isn't looked at.
+        assert_eq!(
+            restored(lacks(), reapply(false), again(None)),
+            (lacks(), Vec::new())
+        );
+        assert_eq!((reapplied.get(), looked.get()), (2, 1));
+        // Asked, and still short: what the second look found is left.
+        let still = Some(ParentLacks(vec!["cpu", "memory"]));
+        assert_eq!(
+            restored(lacks(), reapply(true), again(still.clone())),
+            (still, Vec::new())
+        );
+        assert_eq!((reapplied.get(), looked.get()), (3, 2));
+        // Nothing wrong, or something a reload can't give: nothing is run.
+        for other in [None, Some(NotCgroup2), Some(TreeLacks(vec!["cpu"]))] {
+            assert_eq!(
+                restored(other.clone(), reapply(true), again(None)),
+                (other, Vec::new())
+            );
+        }
+        assert_eq!((reapplied.get(), looked.get()), (3, 2));
+    }
+
+    /// After systemd is asked, the cgroup is looked at until nothing is
+    /// wrong or the looks run out, with a pause between two looks and none
+    /// after the last.
+    #[test]
+    fn the_cgroup_is_looked_at_until_it_is_right_or_the_looks_run_out() {
+        use std::cell::Cell;
+        let run = |clear_at: u32, looks: u32| {
+            let (looked, paused) = (Cell::new(0_u32), Cell::new(0_u32));
+            let found = settled(
+                || {
+                    looked.set(looked.get() + 1);
+                    (looked.get() < clear_at).then_some("short")
+                },
+                || paused.set(paused.get() + 1),
+                looks,
+            );
+            (found, looked.get(), paused.get())
+        };
+        assert_eq!(run(1, 5), (None, 1, 0), "right at the first look");
+        assert_eq!(run(3, 5), (None, 3, 2), "right at the third");
+        assert_eq!(run(9, 3), (Some("short"), 3, 2), "never right");
+        assert_eq!(run(4, 3), (Some("short"), 3, 2), "right a look too late");
+        assert_eq!(run(9, 1), (Some("short"), 1, 0), "one look");
+        assert_eq!((REAPPLIED_LOOKS, REAPPLIED_PAUSE.as_millis()), (20, 100));
+    }
+
+    /// A program is said to have ended well only when it did.
+    #[test]
+    fn a_program_is_said_to_have_ended_well_only_when_it_did() {
+        assert!(ran("true", "daemon-reload"));
+        assert!(!ran("false", "daemon-reload"));
+        assert!(!ran("/no/such/hatchling-program", "daemon-reload"));
+    }
+
+    /// What became of a cgroup is one of three things: nothing was wrong,
+    /// it was given controllers back, or something is wrong still.
+    #[test]
+    fn what_became_of_a_cgroup_is_said_as_one_of_three_things() {
+        use hatchling_sys::cgroup::DelegationProblem::ParentLacks;
+        assert_eq!(became("/c", None, Vec::new()), CellLimits::Fine);
+        assert_eq!(
+            became("/c", None, vec!["cpu"]),
+            CellLimits::Restored(vec!["cpu"])
+        );
+        let lacks = ParentLacks(vec!["cpu"]);
+        let (what, fix) = cell_limits_said("/c", &lacks);
+        assert_eq!(
+            became("/c", Some(lacks), Vec::new()),
+            CellLimits::Problem(what, fix)
+        );
+        assert_eq!(fix, CELL_LIMITS_FIX);
+    }
+
+    /// Looked at and not put right, a problem is said as it is found.
+    #[test]
+    fn a_cgroup_only_looked_at_is_said_as_it_is_found() {
+        assert_eq!(cell_limits_seen(None), CellLimits::Fine);
+        let (what, fix) = cell_limits_problem(Some("/proc/not-a-cgroup")).unwrap();
+        assert_eq!(
+            cell_limits_seen(Some("/proc/not-a-cgroup")),
+            CellLimits::Problem(what, fix)
+        );
+    }
+
+    /// With no cgroup set, or one that has nothing wrong, nothing is done;
+    /// one that isn't a cgroup is a problem still, with nothing run.
+    #[test]
+    fn what_needs_no_putting_right_is_left_alone() {
+        assert_eq!(cell_limits_restored(None), CellLimits::Fine);
+        let CellLimits::Problem(what, fix) = cell_limits_restored(Some("/proc/not-a-cgroup"))
+        else {
+            return assert_eq!(
+                cell_limits_restored(Some("/proc/not-a-cgroup")),
+                CellLimits::Problem(String::new(), "")
+            );
+        };
+        assert!(what.contains("isn't in a cgroup v2 tree"), "{what}");
+        assert_eq!(fix, NOT_A_CGROUP_FIX);
+        let offered =
+            std::fs::read_to_string("/sys/fs/cgroup/cgroup.controllers").unwrap_or_default();
+        if ["pids", "memory", "cpu"]
+            .iter()
+            .all(|needed| offered.split_whitespace().any(|name| name == *needed))
+        {
+            assert_eq!(
+                cell_limits_restored(Some("/sys/fs/cgroup")),
+                CellLimits::Fine
+            );
         }
     }
 

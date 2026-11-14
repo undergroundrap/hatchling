@@ -35,6 +35,36 @@ fn unlock_fails_where_nothing_waits_to_be_unlocked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Before it asks for anything, `unlock` says nothing of a cgroup with
+/// nothing wrong, says one line and goes on when a controller was given
+/// back, and stops with what is wrong, and the fix, when it wasn't.
+#[test]
+fn unlock_says_what_became_of_the_cells_cgroup() {
+    use crate::doctor::CellLimits;
+    assert_eq!(limits_told("hatchling-broker", CellLimits::Fine), Ok(None));
+    assert_eq!(
+        limits_told("hatchling-broker", CellLimits::Restored(vec!["cpu"])),
+        Ok(Some(String::from(
+            "hatchling-broker unlock: the service's cgroup had lost its cpu controller, and has it back."
+        )))
+    );
+    assert_eq!(
+        limits_told("hb", CellLimits::Restored(vec!["memory", "cpu"])),
+        Ok(Some(String::from(
+            "hb unlock: the service's cgroup had lost its memory, cpu controller, and has it back."
+        )))
+    );
+    assert_eq!(
+        limits_told(
+            "hatchling-broker",
+            CellLimits::Problem(String::from("it is short"), "Do this.")
+        ),
+        Err(String::from(
+            "hatchling-broker unlock: not asking for your key yet: it is short. Do this."
+        ))
+    );
+}
+
 /// "Unlocked" is said only of a service still running.
 #[test]
 fn unlocked_is_said_only_of_a_running_service() {
