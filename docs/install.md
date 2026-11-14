@@ -54,9 +54,9 @@ Remove-Item "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\Hatchlin
 
 Nothing runs while you're logged out or the computer is off. If a security key protects your vault, a restart of Windows leaves it locked until you run `sudo hatchling-broker unlock`.
 
-**Run Hatchling in one WSL distro at a time.** Distros share their control groups and their network, so a second one fails to start with `Failed to spawn executor: Device or resource busy`, and they'd want the same port. If `unlock` says the service has no cpu controller, its own fix (`sudo systemctl daemon-reload`, then `sudo systemctl restart hatchling`) clears it.
+**Run Hatchling in one WSL distro at a time.** Distros share their control groups and their network, so a second one fails to start with `Failed to spawn executor: Device or resource busy`, and they'd want the same port. They share the machine too: every distro draws on the one allowance of memory WSL has, and on the one GPU, so a second copy with a model of its own takes from the first even where it could run.
 
-Any other WSL distro that runs systemd can cause that message, not only a second Hatchling. If one starts while Hatchling is locked (after a restart or an update, before you unlock), its systemd takes the cpu controller away from Hatchling's service, and `unlock` stops before it asks for your key. `sudo systemctl daemon-reload` in Hatchling's distro puts the controller back; then unlock. Once Hatchling is unlocked and working it uses that controller, and another distro starting doesn't take it.
+Any other WSL distro that runs systemd can get in the way of one thing, not only a second Hatchling. If one starts while Hatchling is locked (after a restart or an update, before you unlock), its systemd takes the cpu controller away from Hatchling's service, and cells won't run without it. `sudo hatchling-broker unlock` puts it back itself before it asks for your key, and says that it did. If it can't, it stops and says what to run (`sudo systemctl daemon-reload`, then `sudo systemctl restart hatchling`). Once Hatchling is unlocked and working it uses that controller, and another distro starting doesn't take it. A heavy distro beside it still shares its memory: `sudo hatchling-broker doctor` says how much is free.
 
 ## Install
 
