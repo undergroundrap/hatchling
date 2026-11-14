@@ -128,7 +128,10 @@ Twenty-six, and three proofs.
 No one run has all three together: a real search program, started by
 the supervisor, in a real Room. The first two prove the supervisor and
 the wire without the program; the third proves the program with the
-supervisor's words and without the supervisor.
+supervisor's words and without the supervisor. (All three first met on
+an install on 2026-11-14, once a chat could ask:
+[the record of the agent's tool](agent-search-tool.md) says how it
+went.)
 
 ## A flaky test, found and fixed here
 
