@@ -10,11 +10,15 @@
 //! with it.
 //!
 //! It also hands back a page of a file ([`page`]): it reads the file
-//! itself, as the Room's user, and no job is started for it.
+//! itself, as the Room's user, and no job is started for it. And it
+//! hands back the lines that match a pattern ([`search`]): the Room's
+//! search program looks, and is over before the answer is given.
 //!
 //! One thread does all of it, waiting on the spawner's socket, every
 //! running job's pipes and every job's first process at once, so no job
-//! holds up another, a stop, or an answer.
+//! holds up another, a stop, or an answer. A search is the one thing it
+//! waits out, for the few seconds a search may take: a job goes on
+//! running meanwhile, and what it writes is read after.
 //!
 //! The Room's launcher starts it with no argument, and it keeps its files
 //! in the Room's session directory. Given one, it keeps them there
@@ -35,13 +39,21 @@ use std::time::{Duration, Instant};
 
 use hatchling_core::framing::{read_frame_or_eof, write_frame};
 use hatchling_core::room::{
-    Ask, Captured, End, Ended, JOB_PATH, JobId, NoPage, NotStarted, PAGE_BYTES, PAGE_SCAN_BYTES,
-    PIECE_BYTES, Page, RUNNING_MAX, SESSION_DIR, SPILL_BYTES, Say, Stream, spill_path,
+    Ask, Captured, End, Ended, Found, JOB_PATH, JobId, NoPage, NoSearch, NotStarted, PAGE_BYTES,
+    PAGE_SCAN_BYTES, PIECE_BYTES, Page, RUNNING_MAX, SEARCH_MILLIS, SESSION_DIR, SPILL_BYTES, Say,
+    Stream, spill_path,
 };
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 use rustix::process::{Pid, PidfdFlags, Signal, kill_process_group, pidfd_open};
+
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the supervisor is one program: what its parts share is the crate's"
+)]
+#[path = "hatchling-room/search.rs"]
+mod search;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -80,6 +92,8 @@ struct Place {
     home: PathBuf,
     /// A job's place for temporary files.
     scratch: PathBuf,
+    /// The program a search is run with.
+    search: PathBuf,
 }
 
 impl Place {
@@ -94,7 +108,21 @@ impl Place {
             jobs: session.join("jobs"),
             home: session.join("home"),
             scratch: session.to_path_buf(),
+            search: PathBuf::from(search::SEARCH_PROGRAM),
         }
+    }
+
+    /// The lines `wanted` matches, as this place's search program finds
+    /// them. A path with nothing at it is said before anything is run.
+    fn found(&self, wanted: &search::Wanted<'_>) -> std::result::Result<Found, NoSearch> {
+        if !Path::new(wanted.path).exists() {
+            return Err(NoSearch::NoSuchPath);
+        }
+        search::found(
+            &self.search,
+            &search::arguments(wanted),
+            Duration::from_millis(SEARCH_MILLIS),
+        )
     }
 
     /// The file that holds what `job` wrote to `stream`: the name
@@ -598,6 +626,26 @@ impl Room<'_> {
                 Ok(page) => Say::Page { nonce, page },
                 Err(why) => Say::NoPage { nonce, why },
             },
+            Ask::Search {
+                nonce,
+                pattern,
+                path,
+                glob,
+                ignore_case,
+                literal,
+            } => {
+                let wanted = search::Wanted {
+                    pattern: &pattern,
+                    path: &path,
+                    glob: glob.as_deref(),
+                    ignore_case,
+                    literal,
+                };
+                match self.place.found(&wanted) {
+                    Ok(found) => Say::Found { nonce, found },
+                    Err(why) => Say::NoSearch { nonce, why },
+                }
+            }
         }
     }
 

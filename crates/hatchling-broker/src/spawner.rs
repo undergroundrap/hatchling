@@ -583,6 +583,8 @@ enum Request {
     /// Hand back a page of a file in the installed Room: its lines from
     /// line `from`, at most `lines` of them.
     RoomPage { path: String, from: u64, lines: u32 },
+    /// Search the files of the installed Room.
+    RoomSearch { search: RoomSearch },
 }
 
 /// What the spawner answers.
@@ -610,9 +612,12 @@ enum Reply {
     },
     /// A page of a file in the Room.
     RoomPage { page: Page },
+    /// What a search of the Room's files found.
+    RoomFound { found: Found },
 }
 
-pub use hatchling_core::room::Page;
+pub use crate::room_session::Search as RoomSearch;
+pub use hatchling_core::room::{Found, Page};
 
 pub use crate::room_job::{
     Captured, End, Ended, JOB_CEILING_SECS, JOB_DEFAULT_SECS, JobId, RoomJob, RoomJobAnswer,
@@ -808,7 +813,8 @@ impl Spawner {
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
-            | Reply::RoomPage { .. } => {
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -882,7 +888,8 @@ impl Spawner {
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
-            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -910,7 +917,8 @@ impl Spawner {
             | Reply::Exited { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
-            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -933,7 +941,8 @@ impl Spawner {
             | Reply::Exited { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
-            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1025,7 +1034,8 @@ impl Spawner {
             | Reply::Done
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
-            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1064,7 +1074,47 @@ impl Spawner {
             | Reply::Done
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
-            | Reply::RoomOutput { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomOutput { .. }
+            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Searches the files of the installed Room for `search`: the lines
+    /// that match its pattern, in the file at its path or the files under
+    /// it.
+    ///
+    /// The supervisor confined in the Room has the Room's own search
+    /// program look, as the Room's user, for a few seconds at most. It is
+    /// no job: nothing of it is kept, and none of those the Room
+    /// remembers is forgotten for it. Like a job, a search starts the
+    /// Room when it isn't running. What comes back is the Room's own, and
+    /// untrusted.
+    ///
+    /// # Errors
+    ///
+    /// When there is nothing at the path, or the search program won't
+    /// take the pattern or the glob; and as a job's are, when the Room
+    /// can't be started or asked.
+    pub fn room_search(&self, search: &RoomSearch) -> Result<Found, String> {
+        hatchling_core::room::check_search(&search.pattern, &search.path, search.glob.as_deref())?;
+        let connection = self.connect().map_err(|error| error.to_string())?;
+        connection
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        let request = Request::RoomSearch {
+            search: search.clone(),
+        };
+        send(&connection, &request).map_err(|error| error.to_string())?;
+        match receive(&connection).map_err(|error| error.to_string())? {
+            Reply::RoomFound { found } => Ok(found),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1085,7 +1135,8 @@ impl Spawner {
             | Reply::Done
             | Reply::RoomDisk { .. }
             | Reply::RoomOutput { .. }
-            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1121,7 +1172,8 @@ impl Spawner {
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
-            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 }
@@ -1164,7 +1216,8 @@ impl SpawnedProcess {
                     | Reply::RoomDisk { .. }
                     | Reply::RoomJob { .. }
                     | Reply::RoomOutput { .. }
-                    | Reply::RoomPage { .. },
+                    | Reply::RoomPage { .. }
+                    | Reply::RoomFound { .. },
                 ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
@@ -1612,6 +1665,13 @@ fn serve_connection(
         Request::RoomPage { path, from, lines } => {
             let reply = match sessions.page(&path, from, lines, stream) {
                 Ok(page) => Reply::RoomPage { page },
+                Err(reason) => Reply::Refused { reason },
+            };
+            send(stream, &reply)
+        }
+        Request::RoomSearch { search } => {
+            let reply = match sessions.search(&search, stream) {
+                Ok(found) => Reply::RoomFound { found },
                 Err(reason) => Reply::Refused { reason },
             };
             send(stream, &reply)
@@ -2528,6 +2588,123 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert!(refused.contains("counted from 1"), "{refused}");
         let unasked = nobody.room_page("/workspace/a", 1, 1).unwrap_err();
         assert!(!unasked.contains("absolute"), "{unasked}");
+    }
+
+    /// A search reaches the spawner's one session, as it was asked for,
+    /// and starts it when there is none. One that may not be asked for is
+    /// refused by the spawner, and starts nothing.
+    #[test]
+    fn a_search_reaches_the_session_and_starts_it() {
+        use crate::room_job::tests::run;
+        use crate::room_session::tests::{stand_ins, stood_found, stood_in};
+        let (sessions, started, _ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let asked = spawner.connect().unwrap();
+        let wanted = RoomSearch {
+            pattern: String::from("to do"),
+            path: String::from("/workspace"),
+            glob: Some(String::from("*.md")),
+            ignore_case: true,
+            literal: true,
+        };
+        let invalid = Request::RoomSearch {
+            search: RoomSearch {
+                path: String::from("workspace"),
+                ..wanted.clone()
+            },
+        };
+        send(&asked, &invalid).unwrap();
+        assert!(matches!(
+            receive(&asked).unwrap(),
+            Reply::Refused { reason } if reason.contains("absolute")
+        ));
+        assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
+        assert_eq!(spawner.room_search(&wanted), Ok(stood_found(1, &wanted)));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        // A job is run in the session a search started, and another
+        // search made in it after.
+        let ran = spawner.room_run(&run("j", &["true"]));
+        assert_eq!(ran, Ok(stood_in(1, "j")));
+        let plain = RoomSearch {
+            pattern: String::from("x"),
+            path: String::from("/etc"),
+            glob: None,
+            ignore_case: false,
+            literal: false,
+        };
+        assert_eq!(spawner.room_search(&plain), Ok(stood_found(1, &plain)));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        drop((asked, spawner));
+        served.join().unwrap();
+    }
+
+    /// A search that may not be asked for is refused by whoever asks,
+    /// before the spawner is asked anything; and a search is written to
+    /// the spawner as it is here, with no field it doesn't name.
+    #[test]
+    fn a_search_that_may_not_be_asked_for_never_reaches_the_spawner() {
+        // Shut, and not only dropped: another test's forked child may hold
+        // a copy of the far end for a moment, and it must be seen gone now.
+        let (alone, closed) = UnixStream::pair().unwrap();
+        closed.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(closed);
+        let nobody = Spawner::over(alone);
+        let search = |pattern: &str, path: &str, glob: Option<&str>| RoomSearch {
+            pattern: pattern.to_owned(),
+            path: path.to_owned(),
+            glob: glob.map(str::to_owned),
+            ignore_case: false,
+            literal: false,
+        };
+        let refused = nobody
+            .room_search(&search("x", "workspace", None))
+            .unwrap_err();
+        assert!(refused.contains("absolute"), "{refused}");
+        let refused = nobody
+            .room_search(&search("", "/workspace", None))
+            .unwrap_err();
+        assert!(refused.contains("pattern"), "{refused}");
+        let refused = nobody
+            .room_search(&search("x", "/workspace", Some("")))
+            .unwrap_err();
+        assert!(refused.contains("glob"), "{refused}");
+        let unasked = nobody
+            .room_search(&search("x", "/workspace", None))
+            .unwrap_err();
+        assert!(!unasked.contains("absolute"), "{unasked}");
+
+        let request = Request::RoomSearch {
+            search: search("x", "/workspace", Some("*.rs")),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            json,
+            r#"{"request":"room-search","search":{"pattern":"x","path":"/workspace","glob":"*.rs","ignore_case":false,"literal":false}}"#
+        );
+        assert!(
+            serde_json::from_str::<Request>(
+                &json.replace("\"literal\"", "\"shell\":true,\"literal\"")
+            )
+            .is_err(),
+            "a field the search doesn't name was read"
+        );
+        let reply = Reply::RoomFound {
+            found: Found {
+                bytes: b"/workspace/a:1:x\n".to_vec(),
+                more: true,
+            },
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            r#"{"reply":"room-found","found":{"bytes":"L3dvcmtzcGFjZS9hOjE6eAo=","more":true}}"#
+        );
     }
 
     /// A session asks for the disk it holds from inside its own claim on
