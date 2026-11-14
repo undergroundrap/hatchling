@@ -118,18 +118,25 @@ None of these is this change's. Each is to be its own.
    check the model is running. The real cause, a model that took too
    long, isn't said anywhere. One run of the earlier acceptance, with a
    local model, also never got its answer.
-3. **A goals store made by an older version stops the feed's read of
-   it.** As the app opened after the update, the broker logged "feed
+3. **A goals store with a directory at mode 755 stops the feed's read
+   of it.** As the app opened after the update, the broker logged "feed
    read failed … memory store root has insecure permissions:
    /var/lib/hatchling/goals/goals/985". That directory, the store of the
-   cells' user, was mode 755, as an earlier version made it; the same
-   user's memory store beside it was 700. `doctor` had found nothing
-   wrong. Neither the installer nor the broker tightens it, and `doctor`
-   doesn't look.
+   cells' user, was mode 755; the same user's memory store beside it was
+   700. A store's reader refuses any mode but 700 and repairs nothing; a
+   writer repairs. `doctor` had found nothing wrong, and doesn't look.
 
-   *Corrected on 2026-11-14.* This finding first named the directory
-   above it, `goals/goals`, which was also 755, and said that setting
-   that one to 700 stopped the error. It didn't: the log line had been
+   How it came to be 755 isn't proven. It wasn't an older version's
+   doing, as this record first said: the store has made its directories
+   700 since the first release. What is known is that `restore` puts a
+   store's directories back with the mode a new directory gets by
+   default, and that this install has a backup made five minutes before
+   the time on these directories. The memory store has been written to
+   since, which repairs it; the goals haven't.
+
+   *Corrected on 2026-11-14.* This finding first blamed an older
+   version, named the directory above this one, `goals/goals`, which was
+   also 755, and said that setting that one to 700 stopped the error. It didn't: the log line had been
    read cut short, and the check that followed looked at the feed in an
    app already open, where the goals are read as the app opens. After
    the next restart the error came at
