@@ -2640,6 +2640,11 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             literal: false,
         };
         assert_eq!(spawner.room_search(&plain), Ok(stood_found(1, &plain)));
+        // What a session's Room asks through is this same ask.
+        assert_eq!(
+            crate::room_ops::Rooms::search(&spawner, &wanted),
+            Ok(stood_found(1, &wanted))
+        );
         assert_eq!(started.load(Ordering::SeqCst), 1);
         drop((asked, spawner));
         served.join().unwrap();

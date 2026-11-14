@@ -19,7 +19,8 @@
 use std::collections::BTreeSet;
 
 use hatchling_core::room::{
-    Captured, End, Ended, JobId, Page, Stream, WORKSPACE, check_page, spill_path,
+    Captured, End, Ended, Found, JobId, Page, Stream, WORKSPACE, check_page, check_search,
+    spill_path,
 };
 use hatchling_core::ui::{RoomDiskCondition, RoomDiskView};
 use hatchling_core::{
@@ -29,6 +30,7 @@ use hatchling_core::{
 
 use crate::config::Config;
 use crate::room_job::{RoomJob, RoomJobAnswer, RoomJobState, RoomJobStopped, RoomRun};
+use crate::spawner::RoomSearch;
 
 /// What a session without its person there is told.
 const UNATTENDED: &str =
@@ -49,6 +51,8 @@ pub(crate) trait Rooms {
     fn output(&self, job: &JobId, stream: Stream, end: End) -> Result<Vec<u8>, String>;
     /// As [`crate::spawner::Spawner::room_page`].
     fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String>;
+    /// As [`crate::spawner::Spawner::room_search`].
+    fn search(&self, search: &RoomSearch) -> Result<Found, String>;
 }
 
 impl Rooms for crate::spawner::Spawner {
@@ -70,6 +74,10 @@ impl Rooms for crate::spawner::Spawner {
 
     fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String> {
         self.room_page(path, from, lines)
+    }
+
+    fn search(&self, search: &RoomSearch) -> Result<Found, String> {
+        self.room_search(search)
     }
 }
 
@@ -174,6 +182,8 @@ impl<'r> RoomSession<'r> {
             let reason = String::from(NO_ROOM);
             return if matches!(op, RoomOp::Read { .. }) {
                 RoomResult::NoPage { reason }
+            } else if matches!(op, RoomOp::Search { .. }) {
+                RoomResult::NoSearch { reason }
             } else {
                 RoomResult::Failed { reason, job: None }
             };
@@ -237,28 +247,23 @@ impl<'r> RoomSession<'r> {
                     },
                 }
             }
-            RoomOp::Read { path, from, lines } => {
-                let path = placed(path);
-                let from = from.unwrap_or(1);
-                let lines = lines.unwrap_or(ROOM_READ_LINES);
-                // What can't be asked is known here, before anything is.
-                if let Err(reason) = check_page(&path, from, lines) {
-                    return refused(reason);
-                }
-                // The log says a file was read, and not which.
-                tracing::info!(from, lines, "a session reads a file in the Room");
-                match rooms.page(&path, from, lines) {
-                    Ok(page) => RoomResult::Page {
-                        path,
-                        from,
-                        text: words(&page.bytes),
-                        more: page.more,
-                        cut: page.cut,
-                        size: page.size,
-                    },
-                    Err(reason) => RoomResult::NoPage { reason },
-                }
-            }
+            RoomOp::Read { path, from, lines } => paged(rooms, path, *from, *lines),
+            RoomOp::Search {
+                pattern,
+                path,
+                glob,
+                ignore_case,
+                literal,
+            } => searched(
+                rooms,
+                RoomSearch {
+                    pattern: pattern.clone(),
+                    path: placed(path.as_deref().unwrap_or(WORKSPACE)),
+                    glob: glob.clone(),
+                    ignore_case: *ignore_case,
+                    literal: *literal,
+                },
+            ),
         }
     }
 
@@ -328,6 +333,52 @@ impl<'r> RoomSession<'r> {
                 }
             }
         }
+    }
+}
+
+/// What reading a page of the file a session names comes to, asked of
+/// `rooms`: from the first line and the ordinary count unless it says.
+fn paged(rooms: &dyn Rooms, path: &str, from: Option<u64>, lines: Option<u32>) -> RoomResult {
+    let path = placed(path);
+    let from = from.unwrap_or(1);
+    let lines = lines.unwrap_or(ROOM_READ_LINES);
+    // What can't be asked is known here, before anything is.
+    if let Err(reason) = check_page(&path, from, lines) {
+        return refused(reason);
+    }
+    // The log says a file was read, and not which.
+    tracing::info!(from, lines, "a session reads a file in the Room");
+    match rooms.page(&path, from, lines) {
+        Ok(page) => RoomResult::Page {
+            path,
+            from,
+            text: words(&page.bytes),
+            more: page.more,
+            cut: page.cut,
+            size: page.size,
+        },
+        Err(reason) => RoomResult::NoPage { reason },
+    }
+}
+
+/// What a search of the Room's files comes to, asked of `rooms`.
+fn searched(rooms: &dyn Rooms, search: RoomSearch) -> RoomResult {
+    // What can't be asked is known here, before anything is.
+    if let Err(reason) = check_search(&search.pattern, &search.path, search.glob.as_deref()) {
+        return refused(reason);
+    }
+    // The log says files were searched, and not for what or where.
+    tracing::info!(
+        glob = search.glob.is_some(),
+        "a session searches files in the Room"
+    );
+    match rooms.search(&search) {
+        Ok(found) => RoomResult::Found {
+            path: search.path,
+            text: words(&found.bytes),
+            more: found.more,
+        },
+        Err(reason) => RoomResult::NoSearch { reason },
     }
 }
 

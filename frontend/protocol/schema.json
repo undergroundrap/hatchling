@@ -6203,6 +6203,52 @@
           "type": "object"
         },
         {
+          "description": "What a search found (v25). The Room's words: data, never\ninstructions.",
+          "properties": {
+            "more": {
+              "description": "Whether the search was stopped before it had looked\neverywhere: it had found more than fits, or its time ran out.",
+              "type": "boolean"
+            },
+            "path": {
+              "description": "Where the Room was asked to look.",
+              "type": "string"
+            },
+            "result": {
+              "const": "found",
+              "type": "string"
+            },
+            "text": {
+              "description": "The matching lines, each as `path:line:text` with its line\nend, in the order of their paths; nothing when nothing\nmatched. Bytes that aren't text are shown as the replacement\ncharacter.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "path",
+            "text",
+            "more"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Nothing was searched (v25): there is nothing at the path, the\nsearch program wouldn't take what it was asked, or the Room\ncouldn't be asked.",
+          "properties": {
+            "reason": {
+              "description": "Why, in words for the agent.",
+              "type": "string"
+            },
+            "result": {
+              "const": "no-search",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The Room said no, or couldn't be asked.",
           "properties": {
             "job": {
@@ -9423,6 +9469,46 @@
                 "path"
               ],
               "type": "object"
+            },
+            {
+              "description": "Search the Room's files (v25): the lines that match a pattern, in\na file or in the files under a directory. The Room's supervisor\nhas the Room's own search program look, and no command is run.",
+              "properties": {
+                "glob": {
+                  "description": "Only files whose names match this glob are looked in.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ignore_case": {
+                  "description": "Whether letters match whatever their case.",
+                  "type": "boolean"
+                },
+                "literal": {
+                  "description": "Whether `pattern` is the very words to find, and no\nexpression.",
+                  "type": "boolean"
+                },
+                "op": {
+                  "const": "search",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "Where to look: a file or a directory, by its absolute path in\nthe Room or a path under the workspace. The workspace when\nnone is named.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pattern": {
+                  "description": "What to look for: a regular expression, or the very words when\n`literal` is set.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "pattern"
+              ],
+              "type": "object"
             }
           ],
           "properties": {
@@ -11384,7 +11470,7 @@
         },
         {
           "const": "room",
-          "description": "Ran a command in its own computer, asked after or stopped one, or\nread a file there.",
+          "description": "Ran a command in its own computer, asked after or stopped one, or\nread or searched its files.",
           "type": "string"
         }
       ]
@@ -13878,7 +13964,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 24,
+    "session_protocol": 25,
     "ui_schema_version": 4
   },
   "x-roots": {

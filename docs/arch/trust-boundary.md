@@ -201,9 +201,7 @@ there is waits with the search, and a job goes on running meanwhile.
 What is handed back is whole lines, each `path:line:text` with at most
 400 bytes of a long line, and whether the search was stopped before it
 had looked everywhere. A path with nothing at it is said before any
-program is started. A search is not kept: asking again looks again. No
-session can ask for one yet: only the spawner's own protocol carries
-it.
+program is started. A search is not kept: asking again looks again.
 
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
@@ -256,11 +254,27 @@ each line for the model. Each read is counted in the owner's Activity
 with the commands, by how it ended, and the broker's log says that a
 file was read, and not which.
 
-The Activity doesn't keep a command's text or the path of a file that
-was read: in a chat the conversation shows both. Before any run without
-its person there is given these tools, the Activity must keep each
-command's text and each path read. That is the day it becomes the record
-of what ran with nobody watching.
+The same session may search the Room's files (`RoomOp::Search`), and
+only that session: a chat. It looks in `/workspace` unless a path is
+named, and a path that isn't absolute is taken under `/workspace`. Any
+file the Room's user can read may be searched: a command the session
+ran could search it too, and with the same program. No search is put
+to the owner first, for the reason no command is. The session's
+pattern, glob and path are checked for their shape in the broker and
+passed on as they are; what makes them values and never options is in
+the Room's supervisor, with everything else the search program is
+told. The broker carries what was found as it came, with bytes that
+aren't text shown as the replacement character, and the agent's cell
+tells the model how many lines there are. Each search is counted in
+the owner's Activity with the commands, by how it ended, and the
+broker's log says that files were searched, and not for what or where.
+
+The Activity doesn't keep a command's text, the path of a file that
+was read, or what was searched for: in a chat the conversation shows
+them. Before any run without its person there is given these tools,
+the Activity must keep each command's text, each path read and each
+search made. That is the day it becomes the record of what ran with
+nobody watching.
 
 A session ends:
 
