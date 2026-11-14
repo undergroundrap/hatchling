@@ -505,6 +505,12 @@ pub enum Error {
     #[error("agent loop failed: {0}")]
     ModelSilent(String),
 
+    /// The model thought and then said nothing mid-run, every time it was
+    /// asked, with its thinking turned off too where that could be asked
+    /// for. The enclosed string is the loop's own report.
+    #[error("agent loop failed: {0}")]
+    ModelThoughtOnly(String),
+
     /// The model failed mid-run: unreachable, or an answer that isn't
     /// one. The enclosed string is the loop's own report.
     #[error("agent loop failed: {0}")]
@@ -534,6 +540,8 @@ impl Error {
             Some(RunFailure::ModelIncapable)
         } else if let Self::ModelSilent(_) = self {
             Some(RunFailure::ModelSilent)
+        } else if let Self::ModelThoughtOnly(_) = self {
+            Some(RunFailure::ModelThoughtOnly)
         } else if let Self::ModelCutOff(_) = self {
             Some(RunFailure::OutOfRoom)
         } else if let Self::ToolsMisused(_) = self {
@@ -604,6 +612,10 @@ mod tests {
             (
                 Error::ModelSilent(String::new()),
                 Some(RunFailure::ModelSilent),
+            ),
+            (
+                Error::ModelThoughtOnly(String::new()),
+                Some(RunFailure::ModelThoughtOnly),
             ),
             (
                 Error::ModelCutOff(String::new()),

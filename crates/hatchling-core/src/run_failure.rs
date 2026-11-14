@@ -17,6 +17,10 @@ pub enum RunFailure {
     /// The model answered, but with nothing, no text and no tool call,
     /// every time it was asked.
     ModelSilent,
+    /// The model thought and then answered with nothing, every time it
+    /// was asked, with its thinking turned off too where its server
+    /// would take that.
+    ModelThoughtOnly,
     /// The model kept calling tools it wasn't offered, or with arguments
     /// that don't fit them.
     ToolsMisused,
@@ -29,10 +33,11 @@ pub enum RunFailure {
 
 impl RunFailure {
     /// Every failure, in order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::ModelUnavailable,
         Self::ModelIncapable,
         Self::ModelSilent,
+        Self::ModelThoughtOnly,
         Self::ToolsMisused,
         Self::OutOfSteps,
         Self::OutOfRoom,
@@ -49,6 +54,8 @@ impl RunFailure {
             Self::ModelIncapable => 66,
             // EX_DATAERR: its reply held nothing to use.
             Self::ModelSilent => 65,
+            // EX_IOERR: its answer never came out of its thinking.
+            Self::ModelThoughtOnly => 74,
             // EX_PROTOCOL
             Self::ToolsMisused => 76,
             // EX_TEMPFAIL

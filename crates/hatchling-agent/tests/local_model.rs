@@ -483,6 +483,60 @@ fn an_unreachable_local_endpoint_fails_loudly_before_the_task() {
     assert_eq!(error.run_failure(), Some(RunFailure::ModelUnavailable));
 }
 
+/// A model whose answer went into its thinking answers when asked again
+/// with thinking off; one that only ever thinks is named as that, and not
+/// as a model that said nothing.
+#[test]
+fn a_model_whose_answer_went_into_its_thinking_is_asked_again() {
+    // A model whose answer went into its thinking is asked again with
+    // thinking off, and its answer then is the run's.
+    let thought = json!({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "", "reasoning": "It is tidy."}}]}).to_string();
+    let said = json!({"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "It is tidy."}}]}).to_string();
+    let server = LocalServer::start(vec![probe_reply(), thought.clone(), said]);
+    let broker = local_broker("local-thought", server.port);
+    let outcome = ready_cell(&broker)
+        .run_task(
+            hatchling_agent::PromptKind::Chat,
+            String::from("tidy up"),
+            local_provider(server.port),
+            10,
+        )
+        .unwrap();
+    assert_eq!(outcome.answer, "It is tidy.");
+    // The probe and the first ask went as they were set: only the ask
+    // made again went with thinking off.
+    let thinking: Vec<_> = server
+        .seen()
+        .iter()
+        .map(|request| request.body.get("reasoning").cloned())
+        .collect();
+    assert_eq!(
+        thinking,
+        [
+            None,
+            None,
+            Some(json!({"enabled": false, "effort": "none"}))
+        ]
+    );
+
+    // One that only thinks with its thinking off too: the person is told
+    // that, and not that it said nothing.
+    let mut script = vec![probe_reply()];
+    script.extend((0..hatchling_model::ATTEMPTS).map(|_| thought.clone()));
+    let server = LocalServer::start(script);
+    let broker = local_broker("local-thought-only", server.port);
+    let error = ready_cell(&broker)
+        .run_task(
+            hatchling_agent::PromptKind::Chat,
+            String::from("tidy up"),
+            local_provider(server.port),
+            10,
+        )
+        .unwrap_err();
+    assert!(matches!(error, Error::ModelThoughtOnly(_)), "got {error:?}");
+    assert_eq!(error.run_failure(), Some(RunFailure::ModelThoughtOnly));
+}
+
 /// A model that keeps calling a tool it wasn't offered is stopped, and
 /// the run says so by its exit status; one that stops answering midway
 /// is a model failure. Neither is a plain loop failure.
@@ -580,7 +634,7 @@ fn run_task_applies_disabled_thinking_to_the_probe_and_task_through_egress() {
     for request in &seen {
         assert_eq!(
             request.body.get("reasoning"),
-            Some(&json!({"enabled": false}))
+            Some(&json!({"enabled": false, "effort": "none"}))
         );
         assert!(
             request

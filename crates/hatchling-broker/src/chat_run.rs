@@ -109,6 +109,9 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
             Some(RunFailure::ModelSilent) => format!(
                 "The model{named} answered with nothing, no text and no tool call, each time it was asked. Small models do this now and then: try again. If it keeps happening, a model that's better at tool calls will help; docs/install.md (\"Choosing a model\") lists some."
             ),
+            Some(RunFailure::ModelThoughtOnly) => format!(
+                "The model{named} thought about its answer and then gave none, each time it was asked. Hatchling asked again with its thinking turned off, and its server didn't turn it off. Try again, or switch to a model that answers after it thinks; docs/model-thinking.md says more."
+            ),
             Some(RunFailure::ToolsMisused) => format!(
                 "The model{named} kept calling its tools wrongly, so Hatchling stopped it before anything ran. Try again, or switch to a model that is better at tool calls."
             ),
@@ -1345,6 +1348,27 @@ mod tests {
 
     /// The person is told why a run failed in plain words, and what to do,
     /// from how it ended alone: nothing the run wrote reaches them.
+    /// A model whose answers all went into its thinking is told as that,
+    /// and not as one that said nothing.
+    #[test]
+    fn a_model_that_only_thought_is_told_as_that() {
+        use hatchling_core::run_failure::RunFailure;
+        let exited =
+            |failure: RunFailure| Some(hatchling_scheduler::Ending::Exited(failure.code().into()));
+        let thought = chat_failed(exited(RunFailure::ModelThoughtOnly), Some("qwen3.5:9b"));
+        assert!(
+            thought
+                .starts_with("The model (qwen3.5:9b) thought about its answer and then gave none")
+                && thought.contains("with its thinking turned off")
+                && thought.contains("docs/model-thinking.md")
+                && !thought.contains("answered with nothing"),
+            "{thought}"
+        );
+        assert!(!chat_failed(exited(RunFailure::ModelThoughtOnly), None).contains('('));
+        let silent = chat_failed(exited(RunFailure::ModelSilent), Some("qwen3.5:9b"));
+        assert!(!silent.contains("thought about"), "{silent}");
+    }
+
     #[test]
     fn a_failed_run_is_explained_in_plain_words() {
         use hatchling_core::run_failure::RunFailure;

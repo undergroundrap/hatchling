@@ -15,6 +15,8 @@
 //! does not call tools. There is no local branch here: a local
 //! endpoint differs only in where the broker sends the bytes.
 
+use std::sync::atomic::{AtomicU8, Ordering};
+
 use hatchling_core::ModelReasoning;
 use hatchling_loop::tool::{ToolCall, ToolDescription};
 use hatchling_loop::{Error as LoopError, Message, Model, ModelAction, ToolResultView};
@@ -24,14 +26,46 @@ use serde_json::{Value, json};
 use crate::endpoint::Endpoint;
 use crate::error::Error;
 use crate::redact::Redactor;
-use crate::transport::Transport;
+use crate::transport::{Transport, TransportError};
+
+/// Thinking is as the operator set it.
+const AS_SET: u8 = 0;
+/// A reply was all thinking, and thinking is off for every request after
+/// it.
+const TURNED_OFF: u8 = 1;
+/// The endpoint refused the request that turned thinking off: thinking
+/// is left as the operator set it, and isn't turned off again.
+const LEFT_ON: u8 = 2;
+
+/// Where an endpoint may put a model's thinking, beside its answer.
+const THINKING_FIELDS: [&str; 2] = ["reasoning", "reasoning_content"];
+
+/// What a request carries to turn a model's thinking off: both names an
+/// endpoint may know it by, in the one field. `OpenRouter` documents
+/// `effort` and takes `enabled`; Ollama's OpenAI-style endpoint heeds
+/// only `effort`.
+fn thinking_off() -> Value {
+    json!({"enabled": false, "effort": "none"})
+}
+
+/// Whether `message` carries thinking: text in a field an endpoint puts
+/// it in.
+fn thought(message: &Value) -> bool {
+    THINKING_FIELDS.iter().any(|field| {
+        message
+            .get(field)
+            .and_then(Value::as_str)
+            .is_some_and(|thinking| !thinking.trim().is_empty())
+    })
+}
 
 /// How many times one request is tried when the model's reply is a stray.
 ///
-/// A stray is an empty reply, or the capability probe answered without
-/// its tool. A small local model's odd reply now and then isn't its last
-/// word; one that can't do the job fails every time. Nothing runs before a
-/// reply is used, so asking again is safe.
+/// A stray is an empty reply, a reply that is all thinking, or the
+/// capability probe answered without its tool. A small local model's odd
+/// reply now and then isn't its last word; one that can't do the job fails
+/// every time. Nothing runs before a reply is used, so asking again is
+/// safe.
 pub const ATTEMPTS: usize = 3;
 
 /// The smallest context window, in tokens, a model may declare.
@@ -105,6 +139,9 @@ pub struct ChatCompletionsProvider<T: Transport> {
     auth_header: Option<String>,
     redactor: Redactor,
     reasoning: ModelReasoning,
+    /// Whether a reply that was all thinking has turned thinking off
+    /// ([`AS_SET`], [`TURNED_OFF`], [`LEFT_ON`]).
+    fallback: AtomicU8,
     transport: T,
 }
 
@@ -130,6 +167,7 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             auth_header,
             redactor: Redactor::default(),
             reasoning: ModelReasoning::ProviderDefault,
+            fallback: AtomicU8::new(AS_SET),
             transport,
         })
     }
@@ -146,7 +184,9 @@ impl<T: Transport> ChatCompletionsProvider<T> {
     ///
     /// This configures this client; the broker does not enforce the setting
     /// on arbitrary requests from an untrusted cell. Unsupported endpoints
-    /// may refuse the extension. No retry or fallback changes the mode.
+    /// may refuse the extension. One thing changes the mode after this: a
+    /// task reply that is all thinking turns thinking off for the requests
+    /// that follow it ([`Error::ThoughtOnly`]).
     #[must_use]
     pub const fn with_reasoning(mut self, reasoning: ModelReasoning) -> Self {
         self.reasoning = reasoning;
@@ -223,23 +263,55 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         // whatever the endpoint.
         self.redactor.redact_value(&mut body);
         let mut tries = 1;
+        // Whether this request is the one that turned thinking off.
+        let mut turned_off = false;
         loop {
-            let reply = self.post(&body)?;
+            let reply = match self.post(&body) {
+                // The endpoint won't take a request with thinking off:
+                // thinking stays as it was set, and what the model said
+                // with it on, nothing, is its reply.
+                Err(Error::Transport(TransportError::HttpStatus(_))) if turned_off => {
+                    self.fallback.store(LEFT_ON, Ordering::Relaxed);
+                    return Err(Error::ThoughtOnly);
+                }
+                reply => reply?,
+            };
             match Self::parse_response(&reply) {
-                Err(Error::EmptyReply) if tries < ATTEMPTS => tries += 1,
+                // The model's answer went into its thinking: asked again
+                // with thinking off, and every request after is too.
+                Err(Error::ThoughtOnly) if tries < ATTEMPTS && self.may_turn_thinking_off() => {
+                    self.fallback.store(TURNED_OFF, Ordering::Relaxed);
+                    turned_off = true;
+                    tries += 1;
+                }
+                Err(Error::EmptyReply | Error::ThoughtOnly) if tries < ATTEMPTS => tries += 1,
                 parsed => return parsed,
             }
         }
     }
 
+    /// Whether thinking is on by the endpoint's own choice and nothing
+    /// has turned it off, or tried to.
+    fn may_turn_thinking_off(&self) -> bool {
+        self.reasoning == ModelReasoning::ProviderDefault
+            && self.fallback.load(Ordering::Relaxed) == AS_SET
+    }
+
+    /// Whether requests go with thinking off: the operator's setting, or
+    /// a reply that was all thinking.
+    fn thinking_is_off(&self) -> bool {
+        self.reasoning == ModelReasoning::Disabled
+            || self.fallback.load(Ordering::Relaxed) == TURNED_OFF
+    }
+
     /// Sends `body` to the endpoint and returns the raw reply.
     fn post(&self, body: &Value) -> Result<Vec<u8>, Error> {
         let mut body = body.clone();
-        if self.reasoning == ModelReasoning::Disabled {
+        if self.thinking_is_off() {
             let fields = body.as_object_mut().ok_or_else(|| Error::BadResponse {
                 reason: String::from("model request must be a JSON object"),
             })?;
-            fields.insert(String::from("reasoning"), json!({"enabled": false}));
+            fields.insert(String::from("reasoning"), thinking_off());
         }
         let body_bytes = serde_json::to_vec(&body).map_err(|error| Error::BadResponse {
             reason: format!("failed to serialize request: {error}"),
@@ -401,6 +473,7 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         }
         match message.get("content") {
             Some(Value::String(text)) if !text.is_empty() => Ok(ModelAction::Text(text.clone())),
+            _ if thought(message) => Err(Error::ThoughtOnly),
             _ => Err(Error::EmptyReply),
         }
     }
@@ -458,6 +531,7 @@ impl<T: Transport> Model for ChatCompletionsProvider<T> {
             .map_err(|error| match error {
                 Error::CutOff => LoopError::ModelCutOff(error.reason()),
                 Error::EmptyReply => LoopError::ModelSilent(error.reason()),
+                Error::ThoughtOnly => LoopError::ModelThoughtOnly(error.reason()),
                 Error::InvalidEndpoint { .. }
                 | Error::EmptyModelName
                 | Error::Transport(_)
@@ -479,7 +553,14 @@ mod tests {
     struct Canned {
         reply: Result<Vec<u8>, TransportError>,
         seen: Mutex<Option<CannedRequest>>,
+        /// How many requests it has answered.
+        asked: std::sync::atomic::AtomicUsize,
     }
+
+    /// The most requests one canned transport answers: far more than one
+    /// request's tries. Past it the transport fails, so a loop that never
+    /// stops asking ends as a failed test and not as one that hangs.
+    const CANNED_ASKS: usize = 4 * ATTEMPTS;
 
     struct CannedRequest {
         destination: String,
@@ -493,6 +574,7 @@ mod tests {
             Self {
                 reply: Ok(reply.as_bytes().to_vec()),
                 seen: Mutex::new(None),
+                asked: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
@@ -500,6 +582,7 @@ mod tests {
             Self {
                 reply: Err(error),
                 seen: Mutex::new(None),
+                asked: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
@@ -522,6 +605,9 @@ mod tests {
             headers: &[(&str, &str)],
             body: &[u8],
         ) -> Result<Vec<u8>, TransportError> {
+            if self.asked.fetch_add(1, Ordering::SeqCst) >= CANNED_ASKS {
+                return Err(TransportError::Failed(String::from("asked without end")));
+            }
             if let Ok(mut guard) = self.seen.lock() {
                 *guard = Some(CannedRequest {
                     destination: destination.to_owned(),
@@ -1146,7 +1232,7 @@ mod tests {
                     let mut actual: Value = serde_json::from_slice(&seen.body).unwrap();
                     assert_eq!(
                         actual.as_object_mut().unwrap().remove("reasoning"),
-                        Some(json!({"enabled": false}))
+                        Some(json!({"enabled": false, "effort": "none"}))
                     );
                     assert_eq!(actual, body);
                 }
@@ -1171,7 +1257,8 @@ mod tests {
             assert_eq!(body.get("tool_choice"), Some(&json!("required")));
             assert_eq!(
                 body.get("reasoning"),
-                (mode == ModelReasoning::Disabled).then_some(&json!({"enabled": false}))
+                (mode == ModelReasoning::Disabled)
+                    .then_some(&json!({"enabled": false, "effort": "none"}))
             );
             for reply in [
                 text_reply("not a tool"),
@@ -1203,7 +1290,8 @@ mod tests {
             let body: Value = serde_json::from_slice(&seen.body).unwrap();
             assert_eq!(
                 body.get("reasoning"),
-                (mode == ModelReasoning::Disabled).then_some(&json!({"enabled": false}))
+                (mode == ModelReasoning::Disabled)
+                    .then_some(&json!({"enabled": false, "effort": "none"}))
             );
         }
         let refused = provider(Canned::failing(TransportError::HttpStatus(400)))
@@ -1230,7 +1318,7 @@ mod tests {
         }
 
         fn sent(&self) -> usize {
-            self.sent.load(std::sync::atomic::Ordering::SeqCst)
+            self.sent.load(Ordering::SeqCst)
         }
     }
 
@@ -1242,7 +1330,7 @@ mod tests {
             _headers: &[(&str, &str)],
             _body: &[u8],
         ) -> Result<Vec<u8>, TransportError> {
-            self.sent.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.sent.fetch_add(1, Ordering::SeqCst);
             self.replies
                 .lock()
                 .unwrap()
@@ -1302,6 +1390,266 @@ mod tests {
                 .is_err()
         );
         assert_eq!(gone.sent(), 1);
+    }
+
+    /// A transport that answers each request with the next of its replies,
+    /// a body or an HTTP status, and keeps what it was sent.
+    struct Script {
+        replies: Mutex<std::collections::VecDeque<Result<String, u16>>>,
+        bodies: Mutex<Vec<Value>>,
+    }
+
+    impl Script {
+        fn of(replies: &[Result<&str, u16>]) -> Self {
+            Self {
+                replies: Mutex::new(
+                    replies
+                        .iter()
+                        .map(|reply| reply.map(str::to_owned))
+                        .collect(),
+                ),
+                bodies: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// Whether each request sent, in order, went with thinking off:
+        /// carried the one field that asks for it, as it is written.
+        fn thinking_off(&self) -> Vec<bool> {
+            self.bodies
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|body| {
+                    body.get("reasoning").is_some_and(|field| {
+                        assert_eq!(*field, thinking_off(), "another way of asking");
+                        true
+                    })
+                })
+                .collect()
+        }
+    }
+
+    impl Transport for &Script {
+        fn post(
+            &self,
+            _destination: &str,
+            _path: &str,
+            _headers: &[(&str, &str)],
+            body: &[u8],
+        ) -> Result<Vec<u8>, TransportError> {
+            self.bodies
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(body).unwrap());
+            let next = self.replies.lock().unwrap().pop_front();
+            match next {
+                Some(Ok(reply)) => Ok(reply.into_bytes()),
+                Some(Err(status)) => Err(TransportError::HttpStatus(status)),
+                None => Err(TransportError::Failed(String::from("no more replies"))),
+            }
+        }
+    }
+
+    fn scripted(transport: &Script) -> ChatCompletionsProvider<&Script> {
+        ChatCompletionsProvider::new(
+            ProviderConfig {
+                endpoint: String::from("http://localhost:11434/v1"),
+                model: String::from("test-model"),
+                bearer: None,
+                context_window: None,
+            },
+            transport,
+        )
+        .unwrap()
+    }
+
+    fn ask(provider: &ChatCompletionsProvider<&Script>) -> Result<ModelAction, LoopError> {
+        provider.next_action(&[Message::User(String::from("hi"))], &no_tools())
+    }
+
+    /// A reply whose answer is in the model's thinking, as Ollama writes
+    /// it.
+    const THOUGHT: &str = r#"{"choices": [{"finish_reason": "stop", "message": {"role": "assistant", "content": "", "reasoning": "Found 2 matches."}}]}"#;
+
+    /// A reply that is all thinking is asked again with thinking off, and
+    /// every request after it goes with thinking off too: nothing else of
+    /// the request changes.
+    #[test]
+    fn a_reply_that_is_all_thinking_is_asked_again_with_thinking_off() {
+        let transport = Script::of(&[Ok(THOUGHT), Ok(SAID), Ok(SAID)]);
+        let provider = scripted(&transport);
+        let action = ask(&provider).unwrap();
+        assert!(matches!(action, ModelAction::Text(text) if text == "done"));
+        assert_eq!(transport.thinking_off(), [false, true]);
+        let bodies = transport.bodies.lock().unwrap().clone();
+        let mut again = bodies.get(1).unwrap().clone();
+        again.as_object_mut().unwrap().remove("reasoning");
+        assert_eq!(Some(&again), bodies.first(), "something else changed");
+        assert_eq!(thinking_off(), json!({"enabled": false, "effort": "none"}));
+        // The run's next turn doesn't spend a request finding out again.
+        assert!(ask(&provider).is_ok());
+        assert_eq!(transport.thinking_off(), [false, true, true]);
+        // A stray before it doesn't use the turn up: thinking is turned
+        // off while a try is left.
+        let later = Script::of(&[Ok(EMPTY), Ok(THOUGHT), Ok(SAID)]);
+        assert!(ask(&scripted(&later)).is_ok());
+        assert_eq!(later.thinking_off(), [false, false, true]);
+    }
+
+    /// Thinking is whatever text an endpoint put beside the answer, under
+    /// either name; blank thinking, and thinking that isn't text, is none.
+    /// An answer or a tool call beside it is the reply, as before.
+    #[test]
+    fn thinking_is_read_from_either_field_and_only_when_it_is_text() {
+        let reply = |message: Value| {
+            let body = json!({"choices": [{"finish_reason": "stop", "message": message}]});
+            ChatCompletionsProvider::<Canned>::parse_response(body.to_string().as_bytes())
+        };
+        for message in [
+            json!({"content": "", "reasoning": "I found it."}),
+            json!({"content": null, "reasoning_content": "I found it."}),
+            json!({"reasoning": "I found it."}),
+            json!({"content": "", "reasoning": "", "reasoning_content": "x"}),
+            json!({"content": "", "tool_calls": [], "reasoning": "x"}),
+            json!({"content": "", "tool_calls": null, "reasoning": "x"}),
+        ] {
+            assert!(
+                matches!(reply(message.clone()), Err(Error::ThoughtOnly)),
+                "{message}"
+            );
+        }
+        for message in [
+            json!({"content": ""}),
+            json!({"content": "", "reasoning": ""}),
+            json!({"content": "", "reasoning": " \n\t"}),
+            json!({"content": "", "reasoning": null}),
+            json!({"content": "", "reasoning": {"text": "x"}}),
+            json!({"content": "", "thinking": "x"}),
+        ] {
+            assert!(
+                matches!(reply(message.clone()), Err(Error::EmptyReply)),
+                "{message}"
+            );
+        }
+        assert!(matches!(
+            reply(json!({"content": "done", "reasoning": "x"})),
+            Ok(ModelAction::Text(text)) if text == "done"
+        ));
+        let called = json!({"content": "", "reasoning": "x", "tool_calls": [{
+            "id": "c1", "type": "function", "function": {"name": "run", "arguments": "{}"}
+        }]});
+        assert!(matches!(reply(called), Ok(ModelAction::ToolCalls(calls)) if calls.len() == 1));
+    }
+
+    /// A model that only thinks with its thinking off too fails as that,
+    /// in the tries a request has and no more.
+    #[test]
+    fn a_model_that_only_ever_thinks_fails_as_that() {
+        let transport = Script::of(&[Ok(THOUGHT), Ok(THOUGHT), Ok(THOUGHT), Ok(SAID)]);
+        let error = ask(&scripted(&transport)).unwrap_err();
+        assert!(
+            matches!(&error, LoopError::ModelThoughtOnly(reason) if *reason == Error::ThoughtOnly.reason()),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("the reply was all thinking"));
+        assert_eq!(transport.thinking_off(), [false, true, true]);
+        // The last try isn't spent turning thinking off: there is none
+        // after it to ask with. The next turn turns it off.
+        let transport = Script::of(&[Ok(EMPTY), Ok(EMPTY), Ok(THOUGHT), Ok(THOUGHT), Ok(SAID)]);
+        let provider = scripted(&transport);
+        assert!(matches!(
+            ask(&provider),
+            Err(LoopError::ModelThoughtOnly(_))
+        ));
+        assert_eq!(transport.thinking_off(), [false, false, false]);
+        assert!(ask(&provider).is_ok());
+        assert_eq!(transport.thinking_off(), [false, false, false, false, true]);
+    }
+
+    /// An endpoint that refuses the request with thinking off leaves the
+    /// model's own reply, nothing, as the answer; thinking stays as it
+    /// was set, and isn't turned off again.
+    #[test]
+    fn an_endpoint_that_refuses_thinking_off_leaves_thinking_on() {
+        let transport = Script::of(&[Ok(THOUGHT), Err(400), Ok(THOUGHT), Ok(THOUGHT), Ok(SAID)]);
+        let provider = scripted(&transport);
+        assert!(matches!(
+            ask(&provider),
+            Err(LoopError::ModelThoughtOnly(_))
+        ));
+        assert_eq!(transport.thinking_off(), [false, true]);
+        // Asked as it was set from here on; a reply that is all thinking
+        // is a stray, asked again as it was.
+        assert!(ask(&provider).is_ok());
+        assert_eq!(transport.thinking_off(), [false, true, false, false, false]);
+        // A status that comes when nothing was turned off is the
+        // transport's failure, as before.
+        let refused = Script::of(&[Err(400)]);
+        assert!(matches!(
+            ask(&scripted(&refused)),
+            Err(LoopError::ModelFailed(reason)) if reason.contains("400")
+        ));
+        // So is one that comes a turn after thinking was turned off.
+        let later = Script::of(&[Ok(THOUGHT), Ok(SAID), Err(500)]);
+        let provider = scripted(&later);
+        assert!(ask(&provider).is_ok());
+        assert!(matches!(
+            ask(&provider),
+            Err(LoopError::ModelFailed(reason)) if reason.contains("500")
+        ));
+        assert_eq!(later.thinking_off(), [false, true, true]);
+    }
+
+    /// A request that can't be sent at all, after thinking was turned
+    /// off, is that failure: the endpoint refused nothing, and thinking
+    /// stays off.
+    #[test]
+    fn a_lost_request_after_thinking_is_turned_off_is_the_transports_failure() {
+        let transport = Script::of(&[Ok(THOUGHT)]);
+        let provider = scripted(&transport);
+        assert!(matches!(
+            ask(&provider),
+            Err(LoopError::ModelFailed(reason)) if reason.contains("no more replies")
+        ));
+        assert_eq!(transport.thinking_off(), [false, true]);
+        transport
+            .replies
+            .lock()
+            .unwrap()
+            .push_back(Ok(SAID.to_owned()));
+        assert!(ask(&provider).is_ok());
+        assert_eq!(transport.thinking_off(), [false, true, true]);
+    }
+
+    /// Thinking the operator set off is off from the first request, and a
+    /// reply that is all thinking is then a stray like an empty one:
+    /// nothing is left to turn off.
+    #[test]
+    fn thinking_set_off_is_off_from_the_start_and_never_turned_off_again() {
+        let transport = Script::of(&[Ok(THOUGHT), Ok(THOUGHT), Ok(SAID)]);
+        let provider = scripted(&transport).with_reasoning(ModelReasoning::Disabled);
+        assert!(ask(&provider).is_ok());
+        assert_eq!(transport.thinking_off(), [true, true, true]);
+        let refused = Script::of(&[Ok(THOUGHT), Err(400)]);
+        let provider = scripted(&refused).with_reasoning(ModelReasoning::Disabled);
+        assert!(matches!(
+            ask(&provider),
+            Err(LoopError::ModelFailed(reason)) if reason.contains("400")
+        ));
+        assert_eq!(refused.thinking_off(), [true, true]);
+    }
+
+    /// The capability probe turns nothing off: a model that only thinks
+    /// at the probe is refused there, for that reason.
+    #[test]
+    fn the_probe_never_turns_thinking_off() {
+        let transport = Script::of(&[Ok(THOUGHT), Ok(THOUGHT), Ok(THOUGHT)]);
+        let refused = scripted(&transport).verify_capabilities().unwrap_err();
+        assert!(
+            matches!(&refused, Error::Incapable { reason } if reason.contains("the reply was all thinking")),
+            "{refused}"
+        );
+        assert_eq!(transport.thinking_off(), [false, false, false]);
     }
 
     #[test]
