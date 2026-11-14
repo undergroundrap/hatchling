@@ -46,7 +46,7 @@ use crate::PROTOCOL_VERSION;
 use crate::messages::{
     BuildFailure, DeliveryRefusal, ScheduleOp, ScheduleResult, SkillOp, SkillResult,
 };
-use crate::subagent::{ActivityEvent, ChildVerdict, HarnessOutcome, SubagentEvent};
+use crate::subagent::{ActivityEvent, ChildVerdict, HarnessOutcome, SubagentEvent, ToolUse};
 
 pub mod api;
 pub mod control;
@@ -225,6 +225,15 @@ pub enum UiEventBody {
         state: AgentState,
         /// What it is about, in the user's words. Untrusted text.
         detail: String,
+    },
+    /// The step a working agent just started, as the broker serves it
+    /// (v23). The next [`Self::AgentStatus`] ends it. It says what kind of
+    /// thing is being done, and never what with: no command, path, page or
+    /// words.
+    AgentStep {
+        /// The tool it is using, named by what the tool does; none while
+        /// it waits for its model.
+        tool: Option<ToolUse>,
     },
     /// An artifact was listed or changed: its whole record (v2).
     ArtifactListed(UiArtifact),

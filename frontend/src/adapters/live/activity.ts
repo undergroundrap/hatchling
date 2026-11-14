@@ -132,6 +132,35 @@ const TOOLS: Readonly<Record<ToolUse, string>> = {
     network: 'Made a network request',
     room: 'Used its computer',
 };
+/** What a run is doing as the broker serves it: each tool, said while it is in use, in the three words a status has. */
+const DOING: Readonly<Record<ToolUse, string>> = {
+    goals_read: 'Reading your goals',
+    goals_write: 'Changing your goals',
+    memory_recall: 'Recalling your memory',
+    memory_propose: 'Asking to remember',
+    memory_write: 'Writing to memory',
+    schedule_read: 'Listing scheduled work',
+    schedule_write: 'Changing scheduled work',
+    schedule_propose: 'Asking to schedule',
+    hook: 'Setting a hook',
+    idea_suggest: 'Suggesting an idea',
+    web_search: 'Searching the web',
+    web_page: 'Reading a page',
+    browser: 'Using the browser',
+    message_read: 'Reading messages',
+    message_send: 'Sending a message',
+    subagent: 'Working with subagents',
+    skill: 'Running a skill',
+    vault: 'Using the vault',
+    artifact: 'Making a build',
+    space: 'Using a space',
+    network: 'Making a request',
+    room: 'Using its computer',
+};
+/** What a run is doing while it waits for its model's reply. */
+const ASKING_MODEL = 'Asking the model';
+/** What a run is doing before the broker has said: its first step hasn't started. */
+const WORKING = 'Working on it';
 const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 /** How a tool's uses ended, in a few words: `2 done · 1 refused`. */
 export function endings(tally: ToolTally): string {
@@ -196,6 +225,8 @@ interface Task {
     lastAt: string;
     readonly ask: string;
     answer: string | null;
+    /** The step its run last started, as the broker said: a tool, or its model. */
+    step: ToolUse | 'model' | null;
 }
 /** The most words a task's name and its summary hold: the activity views' own bounds. */
 const TASK_NAME_WORDS = 8;
@@ -221,7 +252,7 @@ function projectTask(task: Task): ActivityThread {
         chatId: 'main',
         name: firstWords(task.ask, TASK_NAME_WORDS),
         subtitle: summary,
-        statusTitle: done ? 'Answered' : 'Working on it',
+        statusTitle: done ? 'Answered' : task.step === null ? WORKING : task.step === 'model' ? ASKING_MODEL : DOING[task.step],
         state: done ? 'completed' : 'running',
         verdict: null,
         summary,
@@ -514,7 +545,7 @@ export class ActivityBook {
         if (message.chat_id !== 'local' || this.#tasks.has(message.message_id))
             return;
         if (message.author === 'user') {
-            this.#asked = this.#begin<Task>(this.#tasks, { kind: 'task', id: message.message_id, startedAt: ts, lastAt: ts, ask: message.text, answer: null });
+            this.#asked = this.#begin<Task>(this.#tasks, { kind: 'task', id: message.message_id, startedAt: ts, lastAt: ts, ask: message.text, answer: null, step: null });
             return;
         }
         if (this.#asked === null)
@@ -522,6 +553,17 @@ export class ActivityBook {
         this.#asked.answer = message.text;
         this.#asked.lastAt = ts;
         this.#asked = null;
+    }
+    /**
+     * The step the run answering the waiting task just started: a tool, or
+     * none while it waits for its model. With no task waiting it is
+     * nobody's, and changes nothing.
+     */
+    step(tool: ToolUse | null, ts: string): void {
+        if (this.#asked === null)
+            return;
+        this.#asked.step = tool ?? 'model';
+        this.#asked.lastAt = ts;
     }
     /** Records a new thread under its id, in arrival order. */
     #begin<Thread extends Run | Calls | Harnessed | Task | Trail>(threads: Map<string, Thread>, thread: Thread): Thread {

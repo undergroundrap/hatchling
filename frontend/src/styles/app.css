@@ -182,6 +182,7 @@ hr { border: 0; border-top: 1px solid var(--border); }
 .composer-caption { text-align: center; font-size: calc(10px * var(--ui-scale, 1)); color: var(--muted); margin-top: 10px; }
 .turn-state { display: flex; align-items: center; gap: 8px; font-size: calc(12px * var(--ui-scale, 1)); margin: -7px 10px 10px; color: var(--muted); }
 .turn-state .button { margin-left: auto; }
+.turn-elapsed { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .choice-options { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 4px 8px; }
 .choice-button { border: 1px solid var(--border-strong); color: var(--accent); min-height: 34px; padding: 7px 14px; }
 .choice-button.selected { background: var(--surface-control); color: var(--text); }

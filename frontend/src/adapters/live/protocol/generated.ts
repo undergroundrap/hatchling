@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 22;
+export const SESSION_PROTOCOL_VERSION = 23;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -5077,6 +5077,13 @@ export type UiEventBody = {
      * The state.
      */
     readonly state: AgentState;
+} | {
+    readonly kind: 'agent_step';
+    /**
+     * The tool it is using, named by what the tool does; none while
+     * it waits for its model.
+     */
+    readonly tool?: ToolUse | null;
 } | UiArtifact & {
     readonly kind: 'artifact_listed';
 } | {

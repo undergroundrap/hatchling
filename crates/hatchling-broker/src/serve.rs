@@ -914,7 +914,8 @@ fn serve_session(
     .asking(
         config.scheduler.model_endpoint.as_deref(),
         config.scheduler.model_name.as_deref(),
-    );
+    )
+    .telling(crate::app_stream::stream(config));
 
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the
@@ -939,6 +940,9 @@ fn serve_session(
             }
             let request = request_of(&Zeroizing::new(frame))?;
             let used = crate::run_trail::tool_of(&request);
+            if used.is_some() {
+                trail.starting(used);
+            }
             let response = match request {
                 SessionRequest::Vault(op) => SessionResponse::Vault(handle_vault_op(
                     &config.vault,
@@ -1440,6 +1444,9 @@ pub(crate) fn handle_egress_op(
                 );
                 crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::OverLimit);
                 return Ok(EgressResult::Denied);
+            }
+            if crate::usage::is_model_call(method, path) {
+                trail.starting(None);
             }
             let forwarded = proxy.forward(peer_uid, &request);
             crate::machine::decided(cell_id.as_str(), destination, egress_verdict(&forwarded));
@@ -2479,6 +2486,112 @@ mod gate_scope_tests {
         );
     }
 
+    /// A chat run's steps reach the owner's app as its session is served:
+    /// each tool as its request comes in, named by what it does. A session
+    /// that isn't a chat run tells the app nothing.
+    #[test]
+    fn a_chat_sessions_steps_are_told_to_the_app_as_it_is_served() {
+        let steps_of = |chat: bool, name: &str| {
+            let classifier: Arc<dyn Classifier> = Arc::new(Flagging::default());
+            let hub = LocalHub::new(OutputGate::new(
+                classifier,
+                Arc::new(NoAudit),
+                Arc::new(NoOverrides),
+                hatchling_channel::gate::DEFAULT_CLASSIFIER_TIMEOUT,
+            ));
+            let _ = hub.attach(Box::new(|_: &Cleared| Ok(())));
+            let root = std::env::temp_dir().join(format!(
+                "hatchling-serve-steps-{name}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            let mut config = crate::api_auth::tests::owner_config(None);
+            // A vault root of its own: the app's stream is found by it.
+            config.vault.root = root.join("vault");
+            config.web.attended = chat;
+            config.scheduler.followup = chat.then(|| crate::FollowupScope {
+                root: root.join("schedules"),
+                run: String::from("run-steps"),
+                grants: Vec::new(),
+                channel: String::from("local"),
+                depth: 0,
+            });
+            let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+            crate::app_stream::stream(&config).attach(Arc::clone(&bus));
+            let key = MasterKey::generate().unwrap();
+            let (agent, broker) = UnixStream::pair().unwrap();
+            agent
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let creds = peer_credentials(&broker).unwrap();
+            let cell_id: CellId = "cell-steps".parse().unwrap();
+            let skills = Skills::default();
+            std::thread::scope(|scope| {
+                let served = scope.spawn(|| {
+                    serve_session(
+                        &broker,
+                        &config,
+                        &key,
+                        &skills,
+                        &cell_id,
+                        false,
+                        creds,
+                        Some(&hub),
+                        None,
+                        &HeldHit::default(),
+                    )
+                });
+                let _ = hub.inject(Message {
+                    sender: SenderId(String::from("someone")),
+                    channel: ChannelId::local(),
+                    text: String::from("hello"),
+                });
+                let receive = || ChannelOp::Receive {
+                    channel: String::from("local"),
+                    account: None,
+                };
+                assert!(matches!(
+                    ask(&agent, receive()),
+                    ChannelResult::Message { .. }
+                ));
+                // Asked again straight after: the same step going on.
+                let _ = ask(&agent, receive());
+                let _ = ask(
+                    &agent,
+                    ChannelOp::Send {
+                        channel: String::from("local"),
+                        text: String::from("hi"),
+                        state_changing: false,
+                        approval: None,
+                        account: None,
+                    },
+                );
+                drop(agent);
+                served.join().unwrap().unwrap();
+            });
+            let _ = std::fs::remove_dir_all(&root);
+            bus.after(None)
+                .into_iter()
+                .filter_map(|event| {
+                    if let hatchling_core::ui::UiEventBody::AgentStep { tool } = event.body {
+                        Some(tool)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            steps_of(true, "chat"),
+            [
+                Some(hatchling_core::ToolUse::MessageRead),
+                Some(hatchling_core::ToolUse::MessageSend)
+            ]
+        );
+        assert_eq!(steps_of(false, "background"), []);
+    }
+
     /// A peer that isn't the agent is turned away unanswered: the
     /// connection ends without a byte sent.
     #[test]
@@ -2661,6 +2774,81 @@ mod gate_scope_tests {
         );
         assert!(crate::machine::took_quiet_model("cell-quiet"));
         assert!(!crate::machine::took_quiet_model("cell-quiet"), "once");
+    }
+
+    /// A chat run's model call is told to the owner's app as it goes, before
+    /// its answer comes or doesn't. A request that isn't a model call isn't
+    /// told here: the serving loop tells a tool's use.
+    #[test]
+    fn a_chat_runs_model_call_is_told_to_the_app_as_it_goes() {
+        struct Silent;
+        impl EgressPath for Silent {
+            fn mint(&self, _: u32, _: &str, _: u64) -> Result<String, Refusal> {
+                Ok(String::from("s"))
+            }
+
+            fn forward(
+                &self,
+                _: u32,
+                _: &EgressRequest,
+            ) -> Result<hatchling_egress::EgressResponse, Refusal> {
+                Err(Refusal::failed("nothing listens"))
+            }
+        }
+        let app = Arc::new(crate::app_stream::AppStream::default());
+        let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+        app.attach(Arc::clone(&bus));
+        let told = || {
+            bus.after(None)
+                .into_iter()
+                .filter_map(|event| {
+                    if let hatchling_core::ui::UiEventBody::AgentStep { tool } = event.body {
+                        Some(tool)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let destination = String::from("localhost:443");
+        let allowlist = format!("local-keyless:{destination}");
+        let egress = EgressConfig {
+            allowlist: crate::EgressAllowlist::new(&allowlist),
+            grants: vec![destination.clone()],
+        };
+        let cell_id: CellId = "cell-step".parse().unwrap();
+        let mut pages = crate::egress_pages::Pages::default();
+        let mut trail = crate::run_trail::Trail::new(None, "session", "cell-step")
+            .of_chat(true)
+            .telling(app);
+        let op = |method: &str, path: &str| EgressOp::Egress {
+            method: method.to_owned(),
+            destination: destination.clone(),
+            path: path.to_owned(),
+            headers: Vec::new(),
+            body_b64: encode_secret(br#"{"model":"m","messages":[]}"#),
+            surrogate_b64: String::from("s"),
+            staged: 0,
+        };
+        let mut ask = |method: &str, path: &str| {
+            handle_egress_op(
+                &Silent,
+                &egress,
+                &op(method, path),
+                &cell_id,
+                1000,
+                &mut pages,
+                &mut trail,
+            )
+            .unwrap()
+        };
+        assert_eq!(ask("GET", "/v1/models"), EgressResult::EgressError);
+        assert_eq!(told(), [], "a listing isn't a model call");
+        assert_eq!(
+            ask("POST", "/v1/chat/completions"),
+            EgressResult::EgressError
+        );
+        assert_eq!(told(), [None], "the model, told though its call failed");
     }
 
     /// At a usage limit the owner set, a model call is refused before it
