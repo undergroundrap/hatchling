@@ -23,6 +23,18 @@ pub const CONTRACT_SLIPS: u32 = 2;
 const NOT_RUN: &str = "Nothing in this batch ran. Call again with a tool you were offered and \
                        arguments that fit its schema, or answer without tools.";
 
+/// How often a run's answer may be held back while something the run
+/// started is still going.
+///
+/// The model is told what, and asked again. An answer given all the same
+/// after that many is taken: holding it for ever would turn a slow
+/// program into a run with no answer.
+pub const ANSWER_HOLDS: u32 = 2;
+
+/// What a run has started and not settled, in words for its model, or
+/// `None` when nothing is left.
+type Unfinished<'m> = Box<dyn Fn() -> Option<String> + 'm>;
+
 /// How long the loop may run. The bound is enforced by the loop,
 //  not requested by the model.
 #[derive(Debug, Clone, Copy)]
@@ -60,6 +72,7 @@ pub struct Loop<'t, 'r, 'm> {
     ledger: Option<Arc<StepLedger>>,
     prior_turns: Vec<(String, String)>,
     earlier: Option<String>,
+    unfinished: Option<Unfinished<'m>>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -70,6 +83,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("memory_provider", &self.memory_provider.is_some())
             .field("prior_turns", &self.prior_turns.len())
             .field("earlier", &self.earlier.is_some())
+            .field("unfinished", &self.unfinished.is_some())
             .finish()
     }
 }
@@ -91,7 +105,23 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             ledger: None,
             prior_turns: Vec::new(),
             earlier: None,
+            unfinished: None,
         }
+    }
+
+    /// Ask `unfinished` each time the model answers: what the run started
+    /// and hasn't settled, in words for the model, or `None` when nothing
+    /// is left.
+    ///
+    /// An answer given with something left isn't the run's answer yet: the
+    /// model is told what is left, as a [`Message::Note`], and asked
+    /// again, up to [`ANSWER_HOLDS`] times. An answer after that is taken
+    /// as it is, and so is a held one when the steps run out: this never
+    /// leaves a run that answered without an answer.
+    #[must_use]
+    pub fn with_unfinished(mut self, unfinished: Unfinished<'m>) -> Self {
+        self.unfinished = Some(unfinished);
+        self
     }
 
     /// The conversation before the request, as `(user, assistant)`
@@ -168,7 +198,9 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     /// `ToolResult::Err` — the model decides what to do next; the
     /// loop decides when to stop. A batch with a call that breaks the
     /// tool contract runs none of its calls: the model is told what was
-    /// wrong, and that nothing ran, up to [`CONTRACT_SLIPS`] times.
+    /// wrong, and that nothing ran, up to [`CONTRACT_SLIPS`] times. An
+    /// answer given while the run has something unsettled is held back
+    /// ([`with_unfinished`](Self::with_unfinished)).
     ///
     /// # Errors
     ///
@@ -179,6 +211,19 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     /// [`Error::ModelFailed`] when the model itself errors.
     pub fn run(&self, model: &dyn Model, request: String) -> Result<LoopResult, Error> {
         self.run_with_evidence(model, request, Vec::new())
+    }
+
+    /// What the model is shown before anything is recalled or done: the
+    /// system prompt, the conversation so far, and the request.
+    fn opening(&self, request: String) -> Vec<Message> {
+        let mut history = vec![Message::System(self.system_prompt.clone())];
+        history.extend(self.earlier.clone().map(Message::User));
+        for (user, assistant) in &self.prior_turns {
+            history.push(Message::User(user.clone()));
+            history.push(Message::Assistant(assistant.clone()));
+        }
+        history.push(Message::User(request));
+        history
     }
 
     /// Run the loop to a final answer, with gathered sources in the
@@ -198,13 +243,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         request: String,
         evidence: Vec<String>,
     ) -> Result<LoopResult, Error> {
-        let mut history = vec![Message::System(self.system_prompt.clone())];
-        history.extend(self.earlier.clone().map(Message::User));
-        for (user, assistant) in &self.prior_turns {
-            history.push(Message::User(user.clone()));
-            history.push(Message::Assistant(assistant.clone()));
-        }
-        history.push(Message::User(request));
+        let mut history = self.opening(request);
 
         // Recall memory at iteration start, before the first model
         // turn. Precedence is structural: the recalled block sits
@@ -239,12 +278,25 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
 
         let mut step = 0;
         let mut slips = 0;
+        let mut holds = 0;
+        let mut held = None;
         while ledger.take_step() {
             let action = model.next_action(&history, &tool_descriptions)?;
             step += 1;
             match action {
                 ModelAction::Text(answer) => {
                     history.push(Message::Assistant(answer.clone()));
+                    let left = self
+                        .unfinished
+                        .as_ref()
+                        .filter(|_| holds < ANSWER_HOLDS)
+                        .and_then(|unfinished| unfinished());
+                    if let Some(left) = left {
+                        holds += 1;
+                        history.push(Message::Note(left));
+                        held = Some(answer);
+                        continue;
+                    }
                     return Ok(LoopResult {
                         answer,
                         history,
@@ -300,7 +352,15 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             }
         }
 
-        Err(Error::BudgetExhausted { steps: step })
+        // The steps ran out after an answer was held back: that answer is
+        // the run's, as it would have been had nothing held it.
+        held.map_or(Err(Error::BudgetExhausted { steps: step }), |answer| {
+            Ok(LoopResult {
+                answer,
+                history,
+                steps: step,
+            })
+        })
     }
 }
 
@@ -841,5 +901,181 @@ mod tests {
             matches!(error, Error::BudgetExhausted { steps: 2 }),
             "{error:?}"
         );
+    }
+
+    /// What a run has left, said `left` times and then no more, with a
+    /// count of how often it was asked.
+    fn left_for(left: u32, asked: &std::cell::Cell<u32>) -> Unfinished<'_> {
+        Box::new(move || {
+            asked.set(asked.get() + 1);
+            (asked.get() <= left).then(|| format!("j-{} is still running", asked.get()))
+        })
+    }
+
+    /// An answer given with something the run started still going isn't
+    /// the run's answer: the model is told what is left, after its own
+    /// words, and asked again.
+    #[test]
+    fn an_answer_given_with_something_left_is_held_and_the_model_told() {
+        let registry = empty_registry();
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::Text(String::from("I'll look in a moment.")),
+            ModelAction::Text(String::from("It printed 4.")),
+        ]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_unfinished(left_for(1, &asked))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(result.answer, "It printed 4.");
+        assert_eq!(result.steps, 2);
+        assert_eq!(asked.get(), 2, "asked at each answer");
+        let seen = model.seen_histories();
+        let second = seen.get(1).unwrap();
+        assert!(
+            matches!(
+                second.as_slice(),
+                [.., Message::Assistant(said), Message::Note(told)]
+                    if said == "I'll look in a moment." && told == "j-1 is still running"
+            ),
+            "{second:?}"
+        );
+        let notes = |history: &[Message]| {
+            history
+                .iter()
+                .filter(|message| matches!(message, Message::Note(_)))
+                .count()
+        };
+        assert_eq!(notes(&result.history), 1);
+        assert!(
+            matches!(result.history.last(), Some(Message::Assistant(text)) if text == "It printed 4.")
+        );
+    }
+
+    /// With nothing left, or nothing to ask, an answer is the run's at
+    /// once, and no note is added.
+    #[test]
+    fn an_answer_with_nothing_left_is_taken_at_once() {
+        let registry = empty_registry();
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::Text(String::from("Done.")),
+            ModelAction::Text(String::from("never asked for")),
+        ]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_unfinished(left_for(0, &asked))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("Done.", 1));
+        assert_eq!(asked.get(), 1);
+        assert!(
+            !result
+                .history
+                .iter()
+                .any(|message| matches!(message, Message::Note(_))),
+            "{:?}",
+            result.history
+        );
+    }
+
+    /// An answer is held [`ANSWER_HOLDS`] times and no more: the next is
+    /// taken as it is, and what is left isn't asked after again.
+    #[test]
+    fn an_answer_is_held_no_more_often_than_the_limit() {
+        let registry = empty_registry();
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::Text(String::from("one")),
+            ModelAction::Text(String::from("two")),
+            ModelAction::Text(String::from("three")),
+            ModelAction::Text(String::from("four")),
+        ]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_unfinished(left_for(u32::MAX, &asked))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(ANSWER_HOLDS, 2);
+        assert_eq!((result.answer.as_str(), result.steps), ("three", 3));
+        assert_eq!(asked.get(), ANSWER_HOLDS, "not asked once the limit is met");
+        let told: Vec<&str> = result
+            .history
+            .iter()
+            .filter_map(|message| match message {
+                Message::Note(text) => Some(text.as_str()),
+                Message::System(_)
+                | Message::User(_)
+                | Message::Assistant(_)
+                | Message::ToolUse { .. }
+                | Message::RecalledMemory(_)
+                | Message::Evidence(_) => None,
+            })
+            .collect();
+        assert_eq!(told, ["j-1 is still running", "j-2 is still running"]);
+    }
+
+    /// Steps that run out after an answer was held leave that answer as
+    /// the run's, the last one held: holding an answer never turns a run
+    /// that answered into one that failed.
+    #[test]
+    fn a_held_answer_is_the_runs_when_the_steps_run_out() {
+        let registry = empty_registry();
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::Text(String::from("first")),
+            ModelAction::ToolCalls(Vec::new()),
+            ModelAction::Text(String::from("too late")),
+        ]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .with_unfinished(left_for(u32::MAX, &asked))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("first", 2));
+
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::Text(String::from("first")),
+            ModelAction::Text(String::from("second")),
+            ModelAction::Text(String::from("too late")),
+        ]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .with_unfinished(left_for(u32::MAX, &asked))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("second", 2));
+
+        // No answer held, and the run fails as it always did.
+        let asked = std::cell::Cell::new(0);
+        let model = FakeModel::new(vec![
+            ModelAction::ToolCalls(Vec::new()),
+            ModelAction::ToolCalls(Vec::new()),
+        ]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .with_unfinished(left_for(u32::MAX, &asked))
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::BudgetExhausted { steps: 2 }),
+            "{error:?}"
+        );
+        assert_eq!(asked.get(), 0, "asked only when the model answers");
+    }
+
+    #[test]
+    fn debug_shows_whether_the_loop_asks_what_is_left() {
+        let registry = empty_registry();
+        let bare = format!(
+            "{:?}",
+            Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+        );
+        assert!(bare.contains("unfinished: false"), "{bare}");
+        let with = format!(
+            "{:?}",
+            Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .with_unfinished(Box::new(|| None))
+        );
+        assert!(with.contains("unfinished: true"), "{with}");
     }
 }

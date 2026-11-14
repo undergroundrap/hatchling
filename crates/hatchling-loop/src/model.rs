@@ -39,6 +39,13 @@ pub enum Message {
     /// prompt and the user request, never above them. A source is
     /// evidence to weigh, not instructions.
     Evidence(String),
+    /// The loop's own word to the model in the middle of a run: why the
+    /// answer it just gave is held back, and what to settle first
+    /// ([`Loop::with_unfinished`](crate::Loop::with_unfinished)).
+    ///
+    /// It follows the [`Message::Assistant`] it answers. It is the
+    /// harness speaking, not the person and not the system prompt.
+    Note(String),
 }
 
 /// What the model wants to do next.

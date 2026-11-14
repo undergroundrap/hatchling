@@ -19,6 +19,7 @@ use hatchling_core::{
 use hatchling_loop::{Error as LoopError, StepLedger, Tool, ToolOutput};
 use serde_json::{Value, json};
 
+use crate::room::Running;
 use crate::subagent::Children;
 
 /// Performs an outbound request through the allowlist-checked egress
@@ -1079,13 +1080,14 @@ impl Tool for BrowserCloseTool<'_> {
 /// Runs a command in the agent's own computer, the Room.
 pub struct RunTool<'s> {
     stream: &'s UnixStream,
+    running: &'s Running,
 }
 
 impl<'s> RunTool<'s> {
-    /// Build over the broker session.
+    /// Build over the broker session, noting in `running` what it starts.
     #[must_use]
-    pub const fn new(stream: &'s UnixStream) -> Self {
-        Self { stream }
+    pub const fn new(stream: &'s UnixStream, running: &'s Running) -> Self {
+        Self { stream, running }
     }
 }
 
@@ -1153,20 +1155,21 @@ impl Tool for RunTool<'_> {
             wait_secs: optional_seconds(self.name(), &arguments, "wait_seconds")?,
             limit_secs: optional_seconds(self.name(), &arguments, "limit_seconds")?,
         };
-        Ok(room_answer(crate::room::ask(self.stream, op)))
+        Ok(job_answer(self.running, crate::room::ask(self.stream, op)))
     }
 }
 
 /// Asks after a command the agent ran in its computer.
 pub struct RunCheckTool<'s> {
     stream: &'s UnixStream,
+    running: &'s Running,
 }
 
 impl<'s> RunCheckTool<'s> {
-    /// Build over the broker session.
+    /// Build over the broker session, noting in `running` what has ended.
     #[must_use]
-    pub const fn new(stream: &'s UnixStream) -> Self {
-        Self { stream }
+    pub const fn new(stream: &'s UnixStream, running: &'s Running) -> Self {
+        Self { stream, running }
     }
 }
 
@@ -1202,20 +1205,21 @@ impl Tool for RunCheckTool<'_> {
             job: string_argument(self.name(), &arguments, "job")?.to_owned(),
             wait_secs: optional_seconds(self.name(), &arguments, "wait_seconds")?,
         };
-        Ok(room_answer(crate::room::ask(self.stream, op)))
+        Ok(job_answer(self.running, crate::room::ask(self.stream, op)))
     }
 }
 
 /// Stops a command the agent ran in its computer.
 pub struct RunStopTool<'s> {
     stream: &'s UnixStream,
+    running: &'s Running,
 }
 
 impl<'s> RunStopTool<'s> {
-    /// Build over the broker session.
+    /// Build over the broker session, noting in `running` what has ended.
     #[must_use]
-    pub const fn new(stream: &'s UnixStream) -> Self {
-        Self { stream }
+    pub const fn new(stream: &'s UnixStream, running: &'s Running) -> Self {
+        Self { stream, running }
     }
 }
 
@@ -1246,7 +1250,7 @@ impl Tool for RunStopTool<'_> {
         let op = RoomOp::Stop {
             job: string_argument(self.name(), &arguments, "job")?.to_owned(),
         };
-        Ok(room_answer(crate::room::ask(self.stream, op)))
+        Ok(job_answer(self.running, crate::room::ask(self.stream, op)))
     }
 }
 
@@ -1384,6 +1388,15 @@ fn optional_seconds(tool: &str, arguments: &Value, key: &str) -> Result<Option<u
     }
 }
 
+/// What the model is told of an op on a program, with what the reply
+/// says of the program noted in `running` first.
+fn job_answer(running: &Running, result: Result<RoomResult, crate::Error>) -> ToolOutput {
+    if let Ok(result) = &result {
+        running.saw(result);
+    }
+    room_answer(result)
+}
+
 /// What the model is told of a Room op: its result, or why the session
 /// failed.
 fn room_answer(result: Result<RoomResult, crate::Error>) -> ToolOutput {
@@ -1392,6 +1405,9 @@ fn room_answer(result: Result<RoomResult, crate::Error>) -> ToolOutput {
         Err(error) => ToolOutput::Err(error.to_string()),
     }
 }
+
+/// What the model is told with a program that is still running.
+const STILL_RUNNING: &str = "still running. Wait for it with run_check, or stop it with run_stop, before you answer: it is stopped when you answer, and nothing looks at it afterwards";
 
 /// What the model is told of a Room op's result. A program that ended is
 /// told as it ended, whatever its exit code: that is the model's to read.
@@ -1433,7 +1449,7 @@ fn room_output(result: RoomResult) -> ToolOutput {
             "job": job,
             "running": true,
             "ran_ms": ran_ms,
-            "note": "still running: ask after it with run_check, or stop it with run_stop",
+            "note": STILL_RUNNING,
         })),
         RoomResult::Lost { job, why } => ToolOutput::Err(format!(
             "your computer closed while {job} was running ({why}): what it had written to /workspace is there, and may be half done"
@@ -2209,6 +2225,9 @@ mod tests {
     use super::*;
     use hatchling_core::SessionRequest;
     use std::os::unix::net::UnixStream;
+
+    /// For the tests that don't look at what is running.
+    static UNTRACKED: Running = Running::new();
 
     fn socket_pair() -> (UnixStream, UnixStream) {
         UnixStream::pair().expect("test socket pair")
@@ -4234,7 +4253,7 @@ mod tests {
             );
         }
         // The run tool sends the model here for files, and not to sed.
-        let run = RunTool::new(&a);
+        let run = RunTool::new(&a, &UNTRACKED);
         assert!(run.description().contains("a page at a time with read"));
         assert!(!run.description().contains("sed."));
     }
@@ -4405,7 +4424,7 @@ mod tests {
     #[test]
     fn the_room_tools_metadata_is_stable() {
         let (a, _b) = socket_pair();
-        let run = RunTool::new(&a);
+        let run = RunTool::new(&a, &UNTRACKED);
         assert_eq!(run.name(), "run");
         assert!(run.description().starts_with(
             "Run a program in your own computer: a private Linux machine with no network"
@@ -4444,7 +4463,7 @@ mod tests {
                 "{key}"
             );
         }
-        let check = RunCheckTool::new(&a);
+        let check = RunCheckTool::new(&a, &UNTRACKED);
         assert_eq!(check.name(), "run_check");
         assert!(
             check
@@ -4455,7 +4474,7 @@ mod tests {
             check.parameters_schema().get("required"),
             Some(&json!(["job"]))
         );
-        let stop = RunStopTool::new(&a);
+        let stop = RunStopTool::new(&a, &UNTRACKED);
         assert_eq!(stop.name(), "run_stop");
         assert!(
             stop.description()
@@ -4483,7 +4502,7 @@ mod tests {
             },
             room_ended(0, "", ""),
         ]);
-        let run = RunTool::new(&agent);
+        let run = RunTool::new(&agent, &UNTRACKED);
         assert_eq!(
             run.execute(json!({
                 "command": ["cat", "a b"],
@@ -4513,18 +4532,18 @@ mod tests {
             "a program that fails is told as it ended: its exit is the model's to read"
         );
         assert_eq!(
-            RunCheckTool::new(&agent)
+            RunCheckTool::new(&agent, &UNTRACKED)
                 .execute(json!({ "job": "j-1", "wait_seconds": 60 }))
                 .unwrap(),
             ToolOutput::Ok(json!({
                 "job": "j-1",
                 "running": true,
                 "ran_ms": 10_000,
-                "note": "still running: ask after it with run_check, or stop it with run_stop",
+                "note": STILL_RUNNING,
             }))
         );
         assert!(matches!(
-            RunStopTool::new(&agent).execute(json!({ "job": "j-1" })),
+            RunStopTool::new(&agent, &UNTRACKED).execute(json!({ "job": "j-1" })),
             Ok(ToolOutput::Ok(_))
         ));
         assert_eq!(
@@ -4558,7 +4577,7 @@ mod tests {
         bounded(&agent);
         drop(broker);
         assert!(matches!(
-            RunTool::new(&agent).execute(json!({ "command": ["true"] })),
+            RunTool::new(&agent, &UNTRACKED).execute(json!({ "command": ["true"] })),
             Ok(ToolOutput::Err(_))
         ));
     }
@@ -4570,7 +4589,7 @@ mod tests {
         let (agent, broker) = socket_pair();
         bounded(&agent);
         broker.set_nonblocking(true).unwrap();
-        let run = RunTool::new(&agent);
+        let run = RunTool::new(&agent, &UNTRACKED);
         for arguments in [
             json!({}),
             json!({ "command": "ls -la" }),
@@ -4593,16 +4612,17 @@ mod tests {
         }
         for arguments in [json!({}), json!({ "job": 1 })] {
             assert!(matches!(
-                RunCheckTool::new(&agent).execute(arguments.clone()),
+                RunCheckTool::new(&agent, &UNTRACKED).execute(arguments.clone()),
                 Err(LoopError::ToolFailed { .. })
             ));
             assert!(matches!(
-                RunStopTool::new(&agent).execute(arguments),
+                RunStopTool::new(&agent, &UNTRACKED).execute(arguments),
                 Err(LoopError::ToolFailed { .. })
             ));
         }
         assert!(matches!(
-            RunCheckTool::new(&agent).execute(json!({ "job": "j-1", "wait_seconds": "1" })),
+            RunCheckTool::new(&agent, &UNTRACKED)
+                .execute(json!({ "job": "j-1", "wait_seconds": "1" })),
             Err(LoopError::ToolFailed { .. })
         ));
         let mut none = [0_u8; 1];
@@ -4726,6 +4746,76 @@ mod tests {
         assert_eq!(
             stream_text(&lost),
             "\n[... 5 bytes left out here. All 5 bytes are in /session/jobs/j-1.stderr ...]\n"
+        );
+    }
+
+    /// What each of the three tools hears of a program is noted: `run` and
+    /// `run_check` that it is going, `run_check` and `run_stop` that it ended.
+    /// A session that fails says nothing of the program.
+    #[test]
+    fn the_run_tools_note_what_is_running() {
+        let (agent, serve) = room_broker(vec![
+            RoomResult::Running {
+                job: String::from("j-1"),
+                ran_ms: 10_000,
+            },
+            RoomResult::Running {
+                job: String::from("j-1"),
+                ran_ms: 20_000,
+            },
+            room_ended(0, "", ""),
+            RoomResult::Running {
+                job: String::from("j-1"),
+                ran_ms: 10_000,
+            },
+            room_ended(0, "", ""),
+            RoomResult::Running {
+                job: String::from("j-1"),
+                ran_ms: 10_000,
+            },
+        ]);
+        let running = Running::new();
+        let run = RunTool::new(&agent, &running);
+        let check = RunCheckTool::new(&agent, &running);
+        let stop = RunStopTool::new(&agent, &running);
+        let job = json!({ "job": "j-1" });
+        let sleep = json!({ "command": ["sleep", "30"] });
+
+        run.execute(sleep.clone()).unwrap();
+        assert!(running.unfinished().is_some(), "run started it");
+        check.execute(job.clone()).unwrap();
+        assert!(
+            running.unfinished().is_some(),
+            "still going when asked after"
+        );
+        check.execute(job.clone()).unwrap();
+        assert_eq!(running.unfinished(), None, "run_check saw it end");
+        run.execute(sleep.clone()).unwrap();
+        assert!(running.unfinished().is_some());
+        stop.execute(job.clone()).unwrap();
+        assert_eq!(running.unfinished(), None, "run_stop saw it end");
+        run.execute(sleep).unwrap();
+        assert_eq!(serve.join().unwrap().len(), 6);
+        // The broker has gone: the op fails, and the program is as it was.
+        assert!(matches!(stop.execute(job), Ok(ToolOutput::Err(_))));
+        assert!(running.unfinished().is_some());
+    }
+
+    /// The model is told, with a program still running, to settle it
+    /// before it answers.
+    #[test]
+    fn a_running_program_is_told_with_what_to_do_before_answering() {
+        assert_eq!(
+            room_output(RoomResult::Running {
+                job: String::from("j-1"),
+                ran_ms: 5,
+            }),
+            ToolOutput::Ok(json!({
+                "job": "j-1",
+                "running": true,
+                "ran_ms": 5,
+                "note": "still running. Wait for it with run_check, or stop it with run_stop, before you answer: it is stopped when you answer, and nothing looks at it afterwards",
+            }))
         );
     }
 }

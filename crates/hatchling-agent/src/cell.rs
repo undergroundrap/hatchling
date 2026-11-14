@@ -422,7 +422,11 @@ impl Cell<Ready> {
 
     /// Registers in `registry` the tool groups the broker says are on
     /// (all of them, from an older broker that says nothing).
-    fn offer_groups<'s>(&'s self, registry: &mut hatchling_loop::ToolRegistry<'s>) {
+    fn offer_groups<'s>(
+        &'s self,
+        registry: &mut hatchling_loop::ToolRegistry<'s>,
+        running: &'s crate::room::Running,
+    ) {
         // Skills, the web, search and a browser only when the operator
         // turned them on: a tool the broker can only refuse costs a small
         // model a turn, and room in its prompt.
@@ -466,9 +470,18 @@ impl Cell<Ready> {
             )));
         }
         if on(hatchling_core::run_tools::ToolGroup::Room) {
-            registry.register(Box::new(crate::tools::RunTool::new(self.connection())));
-            registry.register(Box::new(crate::tools::RunCheckTool::new(self.connection())));
-            registry.register(Box::new(crate::tools::RunStopTool::new(self.connection())));
+            registry.register(Box::new(crate::tools::RunTool::new(
+                self.connection(),
+                running,
+            )));
+            registry.register(Box::new(crate::tools::RunCheckTool::new(
+                self.connection(),
+                running,
+            )));
+            registry.register(Box::new(crate::tools::RunStopTool::new(
+                self.connection(),
+                running,
+            )));
             registry.register(Box::new(crate::tools::ReadTool::new(self.connection())));
         }
         if on(hatchling_core::run_tools::ToolGroup::Browser) {
@@ -511,11 +524,14 @@ impl Cell<Ready> {
     ) -> Result<hatchling_loop::LoopResult, hatchling_loop::Error> {
         let ledger = std::sync::Arc::new(hatchling_loop::StepLedger::new(budget.max_steps));
         let children = crate::subagent::Children::default();
+        // The programs the run has going in its computer: an answer given
+        // with one still running is held back, and the model told.
+        let running = crate::room::Running::new();
         let mut registry = hatchling_loop::ToolRegistry::new();
         registry.register(Box::new(crate::tools::EgressRequestTool::new(
             self.connection(),
         )));
-        self.offer_groups(&mut registry);
+        self.offer_groups(&mut registry, &running);
         // A chat turn told the operator's builders proposes builds from
         // ideas, for the owner to approve (WO-032).
         for tool in crate::tools::IdeaTool::all(self.connection(), &self.config().run_builders) {
@@ -542,6 +558,7 @@ impl Cell<Ready> {
             .with_system_note(&note)
             .with_budget(budget)
             .with_ledger(ledger)
+            .with_unfinished(Box::new(|| running.unfinished()))
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(
                 self.connection(),
             )))
@@ -791,6 +808,125 @@ mod tests {
         );
         assert!(matches!(history.get(4), Some(Message::User(text)) if text == "The second one."));
         assert_eq!(history.len(), 5, "{history:?}");
+    }
+
+    /// A broker for a cell's loop: it welcomes the cell, then answers each
+    /// Room op until the cell goes. A program is running when it is
+    /// started, and has ended when it is asked after. Anything else it is
+    /// asked (the loop's recall) gets a reply of the wrong kind, which the
+    /// asker takes as a failure. Returns the Room ops it was asked.
+    fn room_serving(
+        broker: UnixStream,
+    ) -> std::thread::JoinHandle<Vec<hatchling_core::SessionRequest>> {
+        use hatchling_core::framing::{read_frame, write_frame};
+        use hatchling_core::{RoomOp, RoomResult, RoomText, SessionRequest, SessionResponse};
+        std::thread::spawn(move || {
+            read_frame(&broker).unwrap();
+            let welcome = serde_json::to_vec(&hatchling_core::BrokerMessage::Welcome {
+                v: hatchling_core::PROTOCOL_VERSION,
+            })
+            .unwrap();
+            write_frame(&broker, &welcome).unwrap();
+            let text = || RoomText {
+                head: String::new(),
+                tail: String::new(),
+                left_out: 0,
+                total: 0,
+                file: String::from("/session/jobs/j-1.stdout"),
+                file_cut: false,
+            };
+            let mut ops = Vec::new();
+            while let Ok(frame) = read_frame(&broker) {
+                let request: SessionRequest = serde_json::from_slice(&frame).unwrap();
+                let reply = if matches!(request, SessionRequest::Room(RoomOp::Run { .. })) {
+                    RoomResult::Running {
+                        job: String::from("j-1"),
+                        ran_ms: 10_000,
+                    }
+                } else if matches!(request, SessionRequest::Room(RoomOp::Job { .. })) {
+                    RoomResult::Ended {
+                        job: String::from("j-1"),
+                        exit: Some(0),
+                        signal: None,
+                        stopped: None,
+                        ran_ms: 12_000,
+                        stdout: text(),
+                        stderr: text(),
+                    }
+                } else {
+                    RoomResult::Refused {
+                        reason: String::from("not a Room op this broker answers"),
+                    }
+                };
+                if matches!(request, SessionRequest::Room(_)) {
+                    ops.push(request);
+                }
+                let reply = serde_json::to_vec(&SessionResponse::Room(reply)).unwrap();
+                write_frame(&broker, &reply).unwrap();
+            }
+            ops
+        })
+    }
+
+    /// A run's loop holds an answer given while a program the run
+    /// started is still going: the model is told, asks after it, and the
+    /// answer it gives then is the run's.
+    #[test]
+    fn a_runs_answer_waits_for_the_programs_it_started() {
+        use hatchling_loop::{FakeModel, Message, ModelAction, ToolCall};
+        use std::os::fd::IntoRawFd as _;
+        let (broker, agent) = UnixStream::pair().unwrap();
+        let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
+        config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+        config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
+        config.run_chat = true;
+        let serve = room_serving(broker);
+        let cell = Cell::new(config)
+            .check_preconditions()
+            .and_then(Cell::connect_broker)
+            .and_then(Cell::authorize)
+            .and_then(Cell::handshake)
+            .unwrap();
+        let asks = |name: &str, arguments| {
+            ModelAction::ToolCalls(vec![ToolCall {
+                name: name.to_owned(),
+                arguments,
+            }])
+        };
+        let model = FakeModel::new(vec![
+            asks("run", serde_json::json!({ "command": ["sleep", "12"] })),
+            ModelAction::Text(String::from("It is still running. I'll look in a moment.")),
+            asks("run_check", serde_json::json!({ "job": "j-1" })),
+            ModelAction::Text(String::from("It finished.")),
+        ]);
+        let result = cell
+            .run_loop_delegating(
+                hatchling_loop::PromptKind::Chat,
+                &model,
+                String::from("Run it and tell me how it went."),
+                hatchling_loop::LoopBudget { max_steps: 6 },
+                None,
+            )
+            .unwrap();
+        assert_eq!(result.answer, "It finished.");
+        assert_eq!(result.steps, 4);
+        let seen = model.seen_histories();
+        let third = seen.get(2).unwrap();
+        assert!(
+            matches!(third.last(), Some(Message::Note(text)) if text.contains("still running: j-1. ")),
+            "{third:?}"
+        );
+        assert_eq!(
+            result
+                .history
+                .iter()
+                .filter(|message| matches!(message, Message::Note(_)))
+                .count(),
+            1,
+            "nothing is left once the program has ended"
+        );
+        drop(cell);
+        assert_eq!(serve.join().unwrap().len(), 2);
     }
 
     #[test]
