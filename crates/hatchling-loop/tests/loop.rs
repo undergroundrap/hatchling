@@ -232,7 +232,8 @@ fn the_system_prompt_is_the_kinds_authored_prompt() {
             | Message::Assistant(_)
             | Message::ToolUse { .. }
             | Message::RecalledMemory(_)
-            | Message::Evidence(_) => None,
+            | Message::Evidence(_)
+            | Message::Note(_) => None,
         })
         .collect();
     assert_eq!(systems.len(), 1);

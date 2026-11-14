@@ -305,8 +305,13 @@ impl<T: Transport> ChatCompletionsProvider<T> {
                 }
                 // Recalled memory and gathered sources are data, not
                 // instructions: they travel as user-role messages,
-                // never as system. Their blocks label them.
-                Message::User(text) | Message::RecalledMemory(text) | Message::Evidence(text) => {
+                // never as system. Their blocks label them. The loop's
+                // own note on a held answer goes the same way: it is the
+                // turn the model answers next.
+                Message::User(text)
+                | Message::RecalledMemory(text)
+                | Message::Evidence(text)
+                | Message::Note(text) => {
                     out.push(json!({"role": "user", "content": text}));
                 }
                 Message::Assistant(text) => {
@@ -675,6 +680,8 @@ mod tests {
                     Message::User(String::from("q")),
                     Message::RecalledMemory(String::from("mem")),
                     Message::Evidence(String::from("<source>")),
+                    Message::Assistant(String::from("later")),
+                    Message::Note(String::from("held")),
                 ],
                 &no_tools(),
             )
@@ -688,6 +695,8 @@ mod tests {
                 {"role": "user", "content": "q"},
                 {"role": "user", "content": "mem"},
                 {"role": "user", "content": "<source>"},
+                {"role": "assistant", "content": "later"},
+                {"role": "user", "content": "held"},
             ])
         );
     }

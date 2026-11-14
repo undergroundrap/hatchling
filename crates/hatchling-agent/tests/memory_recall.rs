@@ -66,7 +66,8 @@ fn recalled_block(history: &[Message]) -> Option<&str> {
         | Message::User(_)
         | Message::Assistant(_)
         | Message::ToolUse { .. }
-        | Message::Evidence(_) => None,
+        | Message::Evidence(_)
+        | Message::Note(_) => None,
     })
 }
 

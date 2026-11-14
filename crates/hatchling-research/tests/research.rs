@@ -206,7 +206,8 @@ fn texts(history: &[Message]) -> Vec<String> {
             | Message::User(text)
             | Message::Assistant(text)
             | Message::RecalledMemory(text)
-            | Message::Evidence(text) => text.clone(),
+            | Message::Evidence(text)
+            | Message::Note(text) => text.clone(),
             Message::ToolUse { calls, results } => format!("{calls:?} {results:?}"),
         })
         .collect()
