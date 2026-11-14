@@ -305,8 +305,8 @@ mod tests {
     #[test]
     fn every_object_a_session_request_holds_refuses_an_unknown_field() {
         use hatchling_core::messages::{
-            ArtifactOp, BrowserOp, ChannelOp, EgressOp, GoalsOp, HookOp, MemoryOp, QueryOp, RoomOp,
-            ScheduleOp, SkillOp, SpaceOp, SuggestOp, VaultOp, WebOp,
+            ArtifactOp, BrowserOp, ChannelOp, ChatOp, EgressOp, GoalsOp, HookOp, MemoryOp, QueryOp,
+            RoomOp, ScheduleOp, SkillOp, SpaceOp, SuggestOp, VaultOp, WebOp,
         };
         let families = [
             ("vault", schemars::schema_for!(VaultOp)),
@@ -328,6 +328,7 @@ mod tests {
             ("browser", schemars::schema_for!(BrowserOp)),
             ("suggest", schemars::schema_for!(SuggestOp)),
             ("room", schemars::schema_for!(RoomOp)),
+            ("chat", schemars::schema_for!(ChatOp)),
         ];
         let doc = document();
         let kinds = doc

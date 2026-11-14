@@ -15,6 +15,9 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v24 adds the owner's further messages for the chat run in flight
+/// (`SessionRequest::Chat`, `ChatOp::More`, `ChatResult::More`), and the
+/// app is told how many the run took (`UiEventBody::MessagesJoined`).
 /// v23 adds the step a working agent just started, told to the owner's
 /// app (`UiEventBody::AgentStep`): the tool in use, or none while it
 /// waits for its model. No session op changes.
@@ -61,7 +64,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 23;
+pub const PROTOCOL_VERSION: u16 = 24;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

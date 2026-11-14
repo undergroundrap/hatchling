@@ -102,6 +102,24 @@ impl AppStream {
         );
         true
     }
+
+    /// Tells the app that the run answering the owner took `count` more
+    /// of their messages into it. Whether an app was attached.
+    pub fn joined(&self, count: u32) -> bool {
+        let Some(bus) = self
+            .bus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        else {
+            return false;
+        };
+        bus.push(
+            Timestamp::now().to_string(),
+            UiEventBody::MessagesJoined { count },
+        );
+        true
+    }
 }
 
 #[cfg(test)]
@@ -144,6 +162,30 @@ mod tests {
         assert!(stream.step(None));
         assert!(stream.step(Some(ToolUse::Room)));
         assert_eq!(steps(&bus), [None, Some(ToolUse::Room)]);
+    }
+
+    /// How many of the owner's messages a run took is told to the app
+    /// once one is attached, as it was given.
+    #[test]
+    fn messages_a_run_took_are_told_to_the_app_once_one_is_attached() {
+        let stream = AppStream::default();
+        assert!(!stream.joined(2), "no app yet: nothing sent");
+        let bus = Arc::new(Bus::starting_at(1));
+        stream.attach(Arc::clone(&bus));
+        assert!(stream.joined(2));
+        assert!(stream.joined(1));
+        let told: Vec<u32> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::MessagesJoined { count } = event.body {
+                    Some(count)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(told, [2, 1]);
     }
 
     #[test]

@@ -359,6 +359,21 @@ pub enum Error {
         reason: String,
     },
 
+    /// I/O failed asking after the owner's further messages.
+    #[error("chat operation I/O failed: {source}")]
+    ChatIo {
+        /// The underlying I/O failure.
+        source: std::io::Error,
+    },
+
+    /// The broker's reply to a chat op was not a well-formed
+    /// [`ChatResult`](hatchling_core::ChatResult). Fail-closed.
+    #[error("chat protocol violation: {reason}")]
+    ChatProtocol {
+        /// What was wrong with the broker's bytes.
+        reason: String,
+    },
+
     /// I/O failed during an idea operation (WO-032).
     #[error("idea operation I/O failed: {source}")]
     IdeaIo {

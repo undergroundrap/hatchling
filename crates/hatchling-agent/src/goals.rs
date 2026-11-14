@@ -141,7 +141,8 @@ pub fn query(stream: &UnixStream, op: &QueryOp) -> Result<QueryPage, Error> {
         | SessionResponse::Web(_)
         | SessionResponse::Browser(_)
         | SessionResponse::Suggest(_)
-        | SessionResponse::Room(_)) => Err(wrong_kind(query_name(op), &other)),
+        | SessionResponse::Room(_)
+        | SessionResponse::Chat(_)) => Err(wrong_kind(query_name(op), &other)),
     }
 }
 
@@ -240,7 +241,8 @@ fn write(stream: &UnixStream, op: &GoalsOp) -> Result<GoalsResult, Error> {
         | SessionResponse::Web(_)
         | SessionResponse::Browser(_)
         | SessionResponse::Suggest(_)
-        | SessionResponse::Room(_)) => Err(wrong_kind(action_name(op), &other)),
+        | SessionResponse::Room(_)
+        | SessionResponse::Chat(_)) => Err(wrong_kind(action_name(op), &other)),
     }
 }
 

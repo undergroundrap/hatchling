@@ -69,7 +69,8 @@ fn request(stream: &UnixStream, op: WebOp) -> Result<WebResult, Error> {
         | SessionResponse::Subagent(_)
         | SessionResponse::Browser(_)
         | SessionResponse::Suggest(_)
-        | SessionResponse::Room(_) => Err(Error::WebProtocol {
+        | SessionResponse::Room(_)
+        | SessionResponse::Chat(_) => Err(Error::WebProtocol {
             reason: String::from("broker gave another kind of reply to a web op"),
         }),
     }

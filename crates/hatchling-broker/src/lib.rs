@@ -68,6 +68,7 @@ pub mod error;
 pub mod feed_page;
 pub mod feed_run;
 pub use feed_run::{FEED_TASK, FeedLauncher, FeedRun};
+pub mod follow_ups;
 pub mod goals_ops;
 pub mod harness;
 pub mod harness_manifest;

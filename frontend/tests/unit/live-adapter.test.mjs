@@ -286,6 +286,39 @@ test('a waiting task says the step its run last started, as the broker said it; 
     assert.equal(title(), 'Answered');
     assert.equal(adapter.getSnapshot().threads.length, 1);
 });
+test('an answer is the oldest waiting task\'s, and the messages its run took into it are no tasks of their own', () => {
+    const { transport, adapter } = connected();
+    const chat = (seq, author, id, text) => sampleEvent(seq, seq, { kind: 'chat_message', chat_id: 'local', message_id: id, author, text });
+    const joined = (seq, count, second = seq) => sampleEvent(seq, second, { kind: 'messages_joined', count });
+    const step = (seq, tool) => sampleEvent(seq, seq, { kind: 'agent_step', tool });
+    const threads = () => adapter.getSnapshot().threads.map(thread => [thread.id, thread.state, thread.statusTitle]);
+    // With no task waiting there is nothing to take, and nothing breaks.
+    replay(transport, [joined(1, 2)]);
+    assert.equal(adapter.getSnapshot().threads.length, 0);
+    replay(transport, [chat(2, 'user', 'm1', 'Sort my notes')]);
+    // One waiting and none behind it: nothing joins it.
+    const before = adapter.getSnapshot().threads[0].time;
+    replay(transport, [joined(3, 1, 600)]);
+    assert.deepEqual(threads(), [['m1', 'running', 'Working on it']]);
+    assert.equal(adapter.getSnapshot().threads[0].time, before, 'nothing was taken, so nothing happened to it');
+    replay(transport, [chat(4, 'user', 'm2', 'by date'), chat(5, 'user', 'm3', 'newest first'), chat(6, 'user', 'm4', 'And what is the weather?')]);
+    assert.equal(adapter.getSnapshot().threads.length, 4);
+    // The run took the next two: they are no threads of their own, and the fourth waits its turn.
+    replay(transport, [joined(7, 2, 1200)]);
+    assert.deepEqual(threads(), [['m4', 'running', 'Working on it'], ['m1', 'running', 'Working on it']]);
+    assert.notEqual(adapter.getSnapshot().threads[1].time, before, 'taking them is the task\'s latest news');
+    // A step is the oldest waiting task's, not the newest's.
+    replay(transport, [step(8, 'room')]);
+    assert.deepEqual(threads(), [['m4', 'running', 'Working on it'], ['m1', 'running', 'Using its computer']]);
+    // So is the answer; the next answer is the next task's.
+    replay(transport, [chat(9, 'agent', 'm5', 'Sorted by date, newest first.')]);
+    assert.deepEqual(threads(), [['m4', 'running', 'Working on it'], ['m1', 'completed', 'Answered']]);
+    replay(transport, [chat(10, 'agent', 'm6', 'Sunny and warm all day.')]);
+    assert.deepEqual(threads(), [['m4', 'completed', 'Answered'], ['m1', 'completed', 'Answered']]);
+    // More said to be taken than wait: those that wait are taken.
+    replay(transport, [chat(11, 'user', 'm7', 'One'), chat(12, 'user', 'm8', 'Two'), joined(13, 9), chat(14, 'agent', 'm9', 'Both are done now.')]);
+    assert.deepEqual(threads().map(([id, state]) => [id, state]), [['m7', 'completed'], ['m4', 'completed'], ['m1', 'completed']]);
+});
 test('local API calls are a thread of their own: one lane per caller, one row per call, never its content', () => {
     const { transport, adapter } = connected();
     const call = (seq, caller, request, outcome, capabilities) => sampleEvent(seq, seq, { kind: 'activity', state: outcome === 'served' ? 'success' : 'failed', event: { event: 'api_call', event_id: `api-${seq}`, run_id: 'api', ts: sampleTime(seq), caller, capabilities, request, outcome } });

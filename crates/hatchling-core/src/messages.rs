@@ -1293,6 +1293,9 @@ pub enum SessionRequest {
     /// A command in the agent's own computer, the Room (v21).
     #[serde(rename = "room")]
     Room(RoomOp),
+    /// What a chat run asks of the conversation it is answering in (v24).
+    #[serde(rename = "chat")]
+    Chat(ChatOp),
 }
 
 /// The broker's reply to one [`SessionRequest`].
@@ -1351,6 +1354,9 @@ pub enum SessionResponse {
     /// Reply to a Room op (v21).
     #[serde(rename = "room")]
     Room(RoomResult),
+    /// Reply to a chat op (v24).
+    #[serde(rename = "chat")]
+    Chat(ChatResult),
 }
 
 /// A Room operation (v21): a command run in the agent's own computer, or
@@ -1614,6 +1620,49 @@ pub enum SuggestOp {
         why: String,
         /// Where it would help.
         area: SuggestionArea,
+    },
+}
+
+/// The most one [`ChatResult::More`] carries of the owner's further
+/// messages, in bytes as JSON writes each (v24): well inside a frame.
+/// What is over waits for the next asking.
+pub const CHAT_MORE_BYTES: usize = 48 * 1024;
+
+// A reply of that much, and its own few words, fits a frame.
+const _: () = assert!(CHAT_MORE_BYTES + 1024 <= crate::framing::MAX_FRAME_BYTES);
+
+/// What a chat run asks of the conversation it is answering in (v24).
+///
+/// Only the chat's run in flight is given anything. Any other session is
+/// told there is nothing, and learns no more than that.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", deny_unknown_fields)]
+pub enum ChatOp {
+    /// What the owner has sent since the message the run was started for,
+    /// in the same conversation. What is given is the run's to answer: it
+    /// isn't given again, and no run is started for it.
+    ///
+    /// It has no fields, and is written as a variant that could have:
+    /// one written without is read with any field it is sent, and a
+    /// session request refuses a field it doesn't name.
+    #[serde(rename = "more")]
+    More {},
+}
+
+/// The broker's reply to one [`ChatOp`] (v24).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result")]
+pub enum ChatResult {
+    /// The owner's further messages, oldest first, each as they wrote it.
+    /// None when they sent none, or when this session isn't the chat's
+    /// run in flight. The owner's words: the run's task, like the message
+    /// it was started for.
+    #[serde(rename = "more")]
+    More {
+        /// The messages.
+        messages: Vec<String>,
     },
 }
 
@@ -5216,5 +5265,36 @@ mod room_tests {
             );
         }
         assert_eq!(ROOM_READ_LINES, 200);
+    }
+
+    /// The chat op and its reply go as the protocol document says (v24),
+    /// an op with a field it doesn't name is refused, and what a reply
+    /// may carry of the owner's messages leaves a frame room to spare.
+    #[test]
+    fn the_chat_op_and_its_reply_have_their_wire_form() {
+        let asking = SessionRequest::Chat(ChatOp::More {});
+        let json = serde_json::to_string(&asking).unwrap();
+        assert_eq!(json, r#"{"kind":"chat","op":"more"}"#);
+        assert_eq!(
+            serde_json::from_str::<SessionRequest>(&json).unwrap(),
+            asking
+        );
+        assert!(
+            serde_json::from_str::<SessionRequest>(r#"{"kind":"chat","op":"more","cell":"x"}"#)
+                .is_err()
+        );
+        let given = SessionResponse::Chat(ChatResult::More {
+            messages: vec![String::from("and make it blue")],
+        });
+        let json = serde_json::to_string(&given).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"chat","result":"more","messages":["and make it blue"]}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionResponse>(&json).unwrap(),
+            given
+        );
+        assert_eq!(CHAT_MORE_BYTES, 49_152);
     }
 }

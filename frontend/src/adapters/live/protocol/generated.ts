@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 23;
+export const SESSION_PROTOCOL_VERSION = 24;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -970,6 +970,16 @@ export type ChatMessage = {
      * Plain text. The UI renders it as text, never as markup.
      */
     readonly text: string;
+};
+/**
+ * The broker's reply to one [`ChatOp`] (v24).
+ */
+export type ChatResult = {
+    /**
+     * The messages.
+     */
+    readonly messages: readonly (string)[];
+    readonly result: 'more';
 };
 /**
  * Why a child failed on its own.
@@ -3870,6 +3880,10 @@ export type SessionRequest = {
      * workspace.
      */
     readonly path: string;
+}) | {
+    readonly kind: 'chat';
+} & ({
+    readonly op: 'more';
 });
 /**
  * The broker's reply to one [`SessionRequest`].
@@ -3909,6 +3923,8 @@ export type SessionResponse = VaultResult & {
     readonly kind: 'suggest';
 } | RoomResult & {
     readonly kind: 'room';
+} | ChatResult & {
+    readonly kind: 'chat';
 };
 /**
  * The socket a session came in on.
@@ -5084,6 +5100,12 @@ export type UiEventBody = {
      * it waits for its model.
      */
     readonly tool?: ToolUse | null;
+} | {
+    /**
+     * How many.
+     */
+    readonly count: number;
+    readonly kind: 'messages_joined';
 } | UiArtifact & {
     readonly kind: 'artifact_listed';
 } | {

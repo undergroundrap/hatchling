@@ -5366,6 +5366,23 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "properties": {
+                    "count": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "kind": {
+                        "const": "messages_joined",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind",
+                    "count"
+                ],
+                "type": "object"
+            },
+            {
                 "$ref": "#/$defs/UiArtifact",
                 "properties": {
                     "kind": {

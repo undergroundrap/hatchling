@@ -147,7 +147,8 @@ fn read_egress_result(stream: &UnixStream) -> io::Result<EgressResult> {
         | SessionResponse::Web(_)
         | SessionResponse::Browser(_)
         | SessionResponse::Suggest(_)
-        | SessionResponse::Room(_) => Err(io::Error::new(
+        | SessionResponse::Room(_)
+        | SessionResponse::Chat(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "broker gave a goals or query reply to an egress op",
         )),

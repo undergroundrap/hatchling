@@ -483,8 +483,10 @@ export class ActivityBook {
     readonly #harnessed = new Map<string, Harnessed>();
     readonly #tasks = new Map<string, Task>();
     readonly #trails = new Map<string, Trail>();
-    /** The task the next answer belongs to, while one waits. */
-    #asked: Task | null = null;
+    /** The tasks no answer has come for, oldest first: the next answer is the first one's. */
+    readonly #waiting: Task[] = [];
+    /** The tasks another's run took into it: its answer is theirs, and they are no threads of their own. */
+    readonly #joined = new Set<Task>();
     /** Every thread, in the order each first appeared. */
     readonly #order: (Run | Calls | Harnessed | Task | Trail)[] = [];
     /**
@@ -537,22 +539,37 @@ export class ActivityBook {
     }
     /**
      * Apply one chat message on the main chat: the owner's starts a task, and
-     * the agent's next reply answers it. A reply with no task waiting (a
-     * scheduled run's, a notice) isn't a task's answer. A message seen again
-     * in a replay changes nothing.
+     * the agent's next reply answers the oldest one waiting, as the broker
+     * answers them in turn. A reply with no task waiting (a scheduled run's,
+     * a notice) isn't a task's answer. A message seen again in a replay
+     * changes nothing.
      */
     chat(message: ChatMessage, ts: string): void {
         if (message.chat_id !== 'local' || this.#tasks.has(message.message_id))
             return;
         if (message.author === 'user') {
-            this.#asked = this.#begin<Task>(this.#tasks, { kind: 'task', id: message.message_id, startedAt: ts, lastAt: ts, ask: message.text, answer: null, step: null });
+            this.#waiting.push(this.#begin<Task>(this.#tasks, { kind: 'task', id: message.message_id, startedAt: ts, lastAt: ts, ask: message.text, answer: null, step: null }));
             return;
         }
-        if (this.#asked === null)
+        const asked = this.#waiting.shift();
+        if (asked === undefined)
             return;
-        this.#asked.answer = message.text;
-        this.#asked.lastAt = ts;
-        this.#asked = null;
+        asked.answer = message.text;
+        asked.lastAt = ts;
+    }
+    /**
+     * The run answering the oldest waiting task took the owner's next `count`
+     * messages into it: its answer is for them too, so they are no tasks of
+     * their own. With none waiting behind it, nothing changes.
+     */
+    joined(count: number, ts: string): void {
+        const [asked] = this.#waiting;
+        const taken = this.#waiting.splice(1, count);
+        if (asked === undefined || taken.length === 0)
+            return;
+        for (const task of taken)
+            this.#joined.add(task);
+        asked.lastAt = ts;
     }
     /**
      * The step the run answering the waiting task just started: a tool, or
@@ -560,10 +577,11 @@ export class ActivityBook {
      * nobody's, and changes nothing.
      */
     step(tool: ToolUse | null, ts: string): void {
-        if (this.#asked === null)
+        const [asked] = this.#waiting;
+        if (asked === undefined)
             return;
-        this.#asked.step = tool ?? 'model';
-        this.#asked.lastAt = ts;
+        asked.step = tool ?? 'model';
+        asked.lastAt = ts;
     }
     /** Records a new thread under its id, in arrival order. */
     #begin<Thread extends Run | Calls | Harnessed | Task | Trail>(threads: Map<string, Thread>, thread: Thread): Thread {
@@ -573,6 +591,6 @@ export class ActivityBook {
     }
     /** Fresh thread objects, newest first. */
     threads(): ActivityThread[] {
-        return [...this.#order].reverse().map(projectAny);
+        return this.#order.filter((thread) => thread.kind !== 'task' || !this.#joined.has(thread)).reverse().map(projectAny);
     }
 }
