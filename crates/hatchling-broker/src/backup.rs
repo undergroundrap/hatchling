@@ -30,7 +30,9 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{
+    DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
+};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -383,7 +385,7 @@ fn stage(
         }
         let path = staging.join(&entry.path);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(ring::io_error)?;
+            store_dirs(parent)?;
         }
         let mut file = fs::OpenOptions::new()
             .write(true)
@@ -395,6 +397,22 @@ fn stage(
         count += 1;
     }
     Ok(count)
+}
+
+/// The mode of a directory in a store: its owner's alone.
+const STORE_DIR_MODE: u32 = 0o700;
+
+/// Makes `dir`, and whatever above it is missing, as a store's directories
+/// are. A restore's directories go into the stores as they are made, and a
+/// store's reader refuses one of any other mode: left to the mode a new
+/// directory gets, what was restored couldn't be read until something was
+/// written to it.
+fn store_dirs(dir: &Path) -> Result<(), Error> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(STORE_DIR_MODE)
+        .create(dir)
+        .map_err(ring::io_error)
 }
 
 /// Puts `staging`'s files in `places`, clearing each first of what
@@ -413,7 +431,7 @@ fn swap_in(places: &[Place], staging: &Path, owners: &[u32]) -> Result<(), Error
             .map_err(ring::io_error)?
             .is_dir()
         {
-            fs::create_dir_all(&place.path).map_err(ring::io_error)?;
+            store_dirs(&place.path)?;
             for entry in fs::read_dir(&staged).map_err(ring::io_error)? {
                 let entry = entry.map_err(ring::io_error)?;
                 fs::rename(entry.path(), place.path.join(entry.file_name()))
@@ -1190,6 +1208,86 @@ mod tests {
         assert_eq!(scratch.read("conversation/.key").unwrap(), b"wrapped");
         assert_eq!(scratch.read("memory/deep/note").unwrap(), b"remember");
         assert_eq!(scratch.read("memory/newer"), None);
+    }
+
+    /// The mode of the directory at `relative` in `scratch`.
+    fn dir_mode(scratch: &Scratch, relative: &str) -> u32 {
+        fs::metadata(scratch.0.join(relative))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    }
+
+    /// Takes a backup of `places`, clears them, and brings it back.
+    fn back_and_forth(scratch: &Scratch, places: &[Place]) {
+        let key = MasterKey::generate().unwrap();
+        let file = scratch.0.join("hatchling.backup");
+        write_backup(places, &key, b"ring", &file).unwrap();
+        clear_level(places, Level::Everything, &[hatchling_sys::euid()]).unwrap();
+        let mut opened = fs::File::open(&file).unwrap();
+        assert_eq!(archive_keyring(&mut opened).unwrap(), b"ring");
+        let mut reader = ArchiveReader::new(opened, &key, b"ring").unwrap();
+        let by_name: BTreeMap<&str, &Place> = places
+            .iter()
+            .map(|place| (place.name.as_str(), place))
+            .collect();
+        let staging = scratch.0.join("staging");
+        fresh_staging(&staging).unwrap();
+        stage(&mut reader, &by_name, &staging).unwrap();
+        swap_in(places, &staging, &[hatchling_sys::euid()]).unwrap();
+    }
+
+    /// A store brought back is one its reader takes: each directory in it
+    /// is its owner's alone, as the store made it. A reader refuses any
+    /// other mode and repairs nothing, so a restore that left the mode a
+    /// new directory gets left what it restored unread.
+    #[test]
+    fn a_restored_store_is_one_its_reader_takes() {
+        let scratch = Scratch::new("restored-modes");
+        let me = hatchling_sys::euid();
+        let root = scratch.0.join("memory");
+        let made =
+            hatchling_memory::owner_dir::ensure_chain(&scratch.0, &["memory", "user", "985"], me)
+                .unwrap();
+        fs::write(made.join("note"), b"remember").unwrap();
+        let places = [scratch.place("memory", Part::Mind)];
+        let read = || hatchling_memory::owner_dir::existing_chain(&root, &["user", "985"], me);
+        assert_eq!(read().unwrap(), Some(made.clone()), "before the backup");
+
+        back_and_forth(&scratch, &places);
+        assert_eq!(scratch.read("memory/user/985/note").unwrap(), b"remember");
+        assert_eq!(dir_mode(&scratch, "memory/user"), 0o700);
+        assert_eq!(dir_mode(&scratch, "memory/user/985"), 0o700);
+        assert_eq!(read().unwrap(), Some(made), "after the restore");
+    }
+
+    /// A store that isn't there when its backup comes back is made as a
+    /// store is, too.
+    #[test]
+    fn a_restore_makes_a_missing_store_private() {
+        let scratch = Scratch::new("restored-missing");
+        scratch.write("memory/deep/note", b"remember");
+        let places = [scratch.place("memory", Part::Mind)];
+        let key = MasterKey::generate().unwrap();
+        let file = scratch.0.join("hatchling.backup");
+        write_backup(&places, &key, b"ring", &file).unwrap();
+        fs::remove_dir_all(scratch.0.join("memory")).unwrap();
+
+        let mut opened = fs::File::open(&file).unwrap();
+        assert_eq!(archive_keyring(&mut opened).unwrap(), b"ring");
+        let mut reader = ArchiveReader::new(opened, &key, b"ring").unwrap();
+        let by_name: BTreeMap<&str, &Place> = places
+            .iter()
+            .map(|place| (place.name.as_str(), place))
+            .collect();
+        let staging = scratch.0.join("staging");
+        fresh_staging(&staging).unwrap();
+        stage(&mut reader, &by_name, &staging).unwrap();
+        swap_in(&places, &staging, &[hatchling_sys::euid()]).unwrap();
+        assert_eq!(scratch.read("memory/deep/note").unwrap(), b"remember");
+        assert_eq!(dir_mode(&scratch, "memory"), 0o700);
+        assert_eq!(dir_mode(&scratch, "memory/deep"), 0o700);
     }
 
     /// A backup of something this install doesn't keep changes nothing.
