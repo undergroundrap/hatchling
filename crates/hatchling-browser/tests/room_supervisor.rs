@@ -20,7 +20,7 @@ mod proof {
     use std::time::Duration;
 
     use hatchling_core::framing::{read_frame, write_frame};
-    use hatchling_core::room::{Ask, Captured, End, Ended, JobId, NoPage, Say, Stream};
+    use hatchling_core::room::{Ask, Captured, End, Ended, JobId, NoPage, NoSearch, Say, Stream};
     use hatchling_sys::{Child, ForkResult, SeccompProfile};
     use rustix::event::{PollFd, PollFlags, poll};
     use rustix::process::{
@@ -179,6 +179,7 @@ mod proof {
         assert_eq!(std::fs::read(kept.join("writer.stderr")).unwrap(), b"err\n");
         assert!(!kept.join("writer.stdin").exists());
         the_supervisor_hands_back_pages(&peer, &dir);
+        the_supervisor_answers_a_search(&peer, &dir);
         drop(peer);
         assert_eq!(supervisor.wait_deadline(Duration::from_secs(4)).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
@@ -250,6 +251,66 @@ mod proof {
                 "{said:?}"
             );
         }
+    }
+
+    /// The supervisor, under the filter, answers a search: it starts the
+    /// search program, reads what it prints, ends it and waits for it,
+    /// and goes on. On a machine that has the Room's search program where
+    /// the Room's image keeps it, what it found is handed back; on one
+    /// that hasn't, it is said that the search couldn't be run. Nothing
+    /// at the path is said before any program is started.
+    fn the_supervisor_answers_a_search(peer: &UnixStream, dir: &Path) {
+        let kept = dir.join("jobs");
+        let search = |nonce: &str, pattern: &str, path: &Path| {
+            let asked = Ask::Search {
+                nonce: nonce.to_owned(),
+                pattern: pattern.to_owned(),
+                path: path.to_str().unwrap().to_owned(),
+                glob: Some(String::from("*.stdout")),
+                ignore_case: true,
+                literal: true,
+            };
+            ask(peer, &asked)
+        };
+        let said = search("search-1", "FED", &kept);
+        if Path::new("/usr/bin/rg").exists() {
+            let Say::Found { found, .. } = said else {
+                unreachable!("{said:?} isn't what a search found");
+            };
+            let text = String::from_utf8(found.bytes).unwrap();
+            assert_eq!(
+                text,
+                format!("{}:1:fed\n", kept.join("writer.stdout").display())
+            );
+            assert!(!found.more);
+            let none = search("search-2", "no such words", &kept);
+            assert!(
+                matches!(&none, Say::Found { found, .. } if found.bytes.is_empty() && !found.more),
+                "{none:?}"
+            );
+        } else {
+            assert!(
+                matches!(
+                    said,
+                    Say::NoSearch {
+                        why: NoSearch::Failed,
+                        ..
+                    }
+                ),
+                "{said:?}"
+            );
+        }
+        let absent = search("search-3", "fed", &kept.join("absent"));
+        assert!(
+            matches!(
+                absent,
+                Say::NoSearch {
+                    why: NoSearch::NoSuchPath,
+                    ..
+                }
+            ),
+            "{absent:?}"
+        );
     }
 
     fn the_supervisor_ends_on_what_it_cannot_read() {

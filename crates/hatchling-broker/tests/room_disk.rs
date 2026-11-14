@@ -1370,6 +1370,7 @@ fn check_room_foreground(
 
     check_room_job_surroundings(spawner)?;
     check_room_pages(spawner)?;
+    check_room_search(spawner)?;
 
     // Closing the disk ends the Room first: nothing of it is left, and
     // the next job starts another, with scratch of its own. A page starts
@@ -1452,6 +1453,38 @@ fn check_room_pages(spawner: &Spawner) -> Result<(), Failed> {
     // The Room it was read in is the one the jobs ran in, and still is.
     let same = foreground(spawner, &["kept"])?;
     assert_eq!(exit_code(&same)?, 0, "a page ended the Room");
+    Ok(())
+}
+
+/// A search is asked of the Room's supervisor, under the Room's filter
+/// and as its user, and answered. This Room's image is the fixture's: it
+/// has no search program, so a search of what is there can't be run, and
+/// that is what is said; nothing at a path is said before any program is
+/// started. Neither starts a job, and neither ends the Room.
+fn check_room_search(spawner: &Spawner) -> Result<(), Failed> {
+    let search = |path: &str| hatchling_broker::spawner::RoomSearch {
+        pattern: String::from("room data"),
+        path: path.to_owned(),
+        glob: None,
+        ignore_case: false,
+        literal: true,
+    };
+    let refused = |path: &str| -> Result<String, Failed> {
+        Ok(spawner
+            .room_search(&search(path))
+            .err()
+            .ok_or_else(|| format!("a search of {path} found something"))?)
+    };
+    assert_eq!(
+        refused("/workspace/absent")?,
+        "the Room has nothing at that path"
+    );
+    assert_eq!(refused("/workspace")?, "the Room couldn't run the search");
+    let relative = refused("workspace")?;
+    assert!(relative.contains("absolute"), "{relative}");
+    // The Room it was asked in is the one the jobs ran in, and still is.
+    let same = foreground(spawner, &["kept"])?;
+    assert_eq!(exit_code(&same)?, 0, "a search ended the Room");
     Ok(())
 }
 

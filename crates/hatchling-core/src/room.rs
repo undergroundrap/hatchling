@@ -22,9 +22,17 @@
 //! user, so a page starts no job and takes no job's place among those it
 //! remembers.
 //!
+//! And it may ask for the lines under a path that match a pattern
+//! ([`Ask::Search`]): the supervisor has the Room's own search program
+//! look, for no longer than [`SEARCH_MILLIS`], and hands back the first
+//! [`FOUND_BYTES`] of what it found, in whole lines. A search is no job
+//! either: it has no name, nothing of it is kept, and it is over before
+//! the supervisor answers.
+//!
 //! The supervisor runs in the Room, as the Room's user: everything it says
-//! is untrusted. [`Captured::check`] and [`Ended::check`] are what the
-//! spawner holds its words to; unknown fields never decode.
+//! is untrusted. [`Captured::check`], [`Ended::check`], [`Page::check`]
+//! and [`Found::check`] are what the spawner holds its words to; unknown
+//! fields never decode.
 
 use std::fmt;
 use std::str::FromStr;
@@ -68,6 +76,23 @@ pub const PAGE_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The longest a file's path may be, in bytes.
 pub const PATH_BYTES: usize = 1024;
+
+/// The most of what a search found one answer hands back, in bytes.
+pub const FOUND_BYTES: usize = 8 * 1024;
+
+/// The most of one matching line that is handed back, in bytes: a longer
+/// line is cut there, and says so.
+pub const FOUND_LINE_BYTES: usize = 400;
+
+/// How long the supervisor lets a search look, in milliseconds. Short of
+/// the time the spawner waits for any answer.
+pub const SEARCH_MILLIS: u64 = 5000;
+
+/// The longest a search's pattern may be, in bytes.
+pub const PATTERN_BYTES: usize = 1024;
+
+/// The longest a search's file-name glob may be, in bytes.
+pub const GLOB_BYTES: usize = 256;
 
 /// Where a job starts when its caller names no directory.
 pub const WORKSPACE: &str = "/workspace";
@@ -271,6 +296,33 @@ pub fn check_page(path: &str, from: u64, lines: u32) -> Result<(), &'static str>
     Ok(())
 }
 
+/// Whether a search may be asked for.
+///
+/// It may with a `pattern` of 1 to [`PATTERN_BYTES`] on one line, an
+/// absolute `path` of at most [`PATH_BYTES`], and a `glob`, when there
+/// is one, of 1 to [`GLOB_BYTES`] on one line. The Room decides whether
+/// the path is there, and its search program whether the pattern is one.
+///
+/// # Errors
+///
+/// Why it may not.
+pub fn check_search(pattern: &str, path: &str, glob: Option<&str>) -> Result<(), &'static str> {
+    let one_line = |text: &str| !text.contains(['\0', '\n', '\r']);
+    if pattern.is_empty() || pattern.len() > PATTERN_BYTES || !one_line(pattern) {
+        return Err("a search's pattern is one line of 1 to 1024 bytes");
+    }
+    if !path.starts_with('/') {
+        return Err("a search is of an absolute path in the Room");
+    }
+    if path.len() > PATH_BYTES || path.contains('\0') {
+        return Err("a search's path is invalid or too long");
+    }
+    if glob.is_some_and(|glob| glob.is_empty() || glob.len() > GLOB_BYTES || !one_line(glob)) {
+        return Err("a search's glob is one line of 1 to 256 bytes");
+    }
+    Ok(())
+}
+
 /// What the spawner asks the supervisor. Each carries a nonce the answer
 /// must echo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +373,25 @@ pub enum Ask {
         /// The most lines wanted.
         lines: u32,
     },
+    /// Hand back the lines that match `pattern` in the file at `path`, or
+    /// in the files under it: at most [`FOUND_BYTES`] of them, found in
+    /// at most [`SEARCH_MILLIS`].
+    Search {
+        /// Echoed by the answer.
+        nonce: String,
+        /// What to look for: a regular expression, or the very words
+        /// when `literal` is set.
+        pattern: String,
+        /// The absolute path, in the Room, of the file or directory to
+        /// look in.
+        path: String,
+        /// Only files whose names match this glob are looked in.
+        glob: Option<String>,
+        /// Whether letters match whatever their case.
+        ignore_case: bool,
+        /// Whether `pattern` is the very words to find, and no expression.
+        literal: bool,
+    },
 }
 
 impl Ask {
@@ -331,7 +402,8 @@ impl Ask {
             Self::Start { nonce, .. }
             | Self::Stop { nonce, .. }
             | Self::Piece { nonce, .. }
-            | Self::Page { nonce, .. } => nonce,
+            | Self::Page { nonce, .. }
+            | Self::Search { nonce, .. } => nonce,
         }
     }
 }
@@ -410,6 +482,52 @@ impl Page {
     }
 }
 
+/// Why the supervisor handed back nothing of a search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoSearch {
+    /// There is nothing at that path.
+    NoSuchPath,
+    /// The search program wouldn't take the pattern or the glob, or
+    /// couldn't look where it was sent.
+    Refused,
+    /// The search couldn't be run.
+    Failed,
+}
+
+/// What a search found, as the supervisor read it from the search
+/// program.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Found {
+    /// The matching lines, each as `path:line:text` with its line end, in
+    /// the order the search program found them. Nothing when nothing
+    /// matched.
+    #[serde(with = "b64")]
+    pub bytes: Vec<u8>,
+    /// Whether the search was stopped before it had looked everywhere:
+    /// it had found more than fits, or its time ran out.
+    pub more: bool,
+}
+
+impl Found {
+    /// Whether this can be what a search found: no longer than
+    /// [`FOUND_BYTES`], and whole lines.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.bytes.len() > FOUND_BYTES {
+            return Err("what a search found is too long");
+        }
+        if self.bytes.last().is_some_and(|last| *last != b'\n') {
+            return Err("what a search found ends in the middle of a line");
+        }
+        Ok(())
+    }
+}
+
 /// What the supervisor says. All but [`Say::Ended`] answer an [`Ask`],
 /// and echo its nonce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,6 +578,20 @@ pub enum Say {
         /// Why not.
         why: NoPage,
     },
+    /// What a search found.
+    Found {
+        /// The ask's nonce.
+        nonce: String,
+        /// What it found.
+        found: Found,
+    },
+    /// Nothing of the search was handed back.
+    NoSearch {
+        /// The ask's nonce.
+        nonce: String,
+        /// Why not.
+        why: NoSearch,
+    },
     /// A job has ended. Said once for each job that was started, unasked.
     Ended {
         /// The job's name.
@@ -484,7 +616,9 @@ impl Say {
             | Self::NoJob { nonce }
             | Self::Piece { nonce, .. }
             | Self::Page { nonce, .. }
-            | Self::NoPage { nonce, .. } => Some(nonce),
+            | Self::NoPage { nonce, .. }
+            | Self::Found { nonce, .. }
+            | Self::NoSearch { nonce, .. } => Some(nonce),
             Self::Ended { .. } => None,
         }
     }
@@ -1101,5 +1235,158 @@ mod tests {
             bytes: vec![0xff; PIECE_BYTES],
         };
         assert!(crate::fits_one_frame(&piece));
+    }
+
+    /// A search is of one line of pattern, an absolute path, and at most
+    /// one line of glob; what may be asked for at most fits one frame.
+    #[test]
+    fn a_search_is_of_a_pattern_an_absolute_path_and_perhaps_a_glob() {
+        assert_eq!(
+            (
+                FOUND_BYTES,
+                FOUND_LINE_BYTES,
+                SEARCH_MILLIS,
+                PATTERN_BYTES,
+                GLOB_BYTES
+            ),
+            (8_192, 400, 5_000, 1_024, 256)
+        );
+        assert!(check_search("TODO", "/workspace", None).is_ok());
+        assert!(check_search("a|b", "/", Some("*.rs")).is_ok());
+        let longest = "p".repeat(PATTERN_BYTES);
+        let deepest = format!("/{}", "d".repeat(PATH_BYTES - 1));
+        let widest = "g".repeat(GLOB_BYTES);
+        assert!(check_search(&longest, &deepest, Some(&widest)).is_ok());
+        for pattern in ["", "a\nb", "a\rb", "a\0b", &format!("{longest}p")] {
+            assert!(
+                check_search(pattern, "/workspace", None)
+                    .unwrap_err()
+                    .contains("pattern"),
+                "{pattern:?}"
+            );
+        }
+        assert!(
+            check_search("x", "workspace", None)
+                .unwrap_err()
+                .contains("absolute")
+        );
+        assert!(
+            check_search("x", "", None)
+                .unwrap_err()
+                .contains("absolute")
+        );
+        for path in ["/a\0", &format!("{deepest}d")] {
+            assert!(
+                check_search("x", path, None).unwrap_err().contains("path"),
+                "{path:?}"
+            );
+        }
+        for glob in ["", "a\nb", "a\0", &format!("{widest}g")] {
+            assert!(
+                check_search("x", "/workspace", Some(glob))
+                    .unwrap_err()
+                    .contains("glob"),
+                "{glob:?}"
+            );
+        }
+        let most = Ask::Search {
+            nonce: "f".repeat(64),
+            pattern: "\"".repeat(PATTERN_BYTES),
+            path: deepest,
+            glob: Some(widest),
+            ignore_case: true,
+            literal: true,
+        };
+        assert!(crate::fits_one_frame(&most));
+    }
+
+    /// A search and its answers go on the wire as they are written here,
+    /// each echoes its nonce, and a field that isn't named never decodes.
+    #[test]
+    fn a_search_and_its_answers_have_their_wire_form() {
+        let ask = Ask::Search {
+            nonce: String::from("n1"),
+            pattern: String::from("TODO"),
+            path: String::from("/workspace"),
+            glob: None,
+            ignore_case: false,
+            literal: true,
+        };
+        let json = serde_json::to_string(&ask).unwrap();
+        assert_eq!(
+            json,
+            r#"{"ask":"search","nonce":"n1","pattern":"TODO","path":"/workspace","glob":null,"ignore_case":false,"literal":true}"#
+        );
+        assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), ask);
+        assert_eq!(ask.nonce(), "n1");
+        assert!(
+            serde_json::from_str::<Ask>(&json.replace("\"literal\"", "\"shell\":true,\"literal\""))
+                .is_err()
+        );
+        let found = Say::Found {
+            nonce: String::from("n1"),
+            found: Found {
+                bytes: b"/workspace/a:1:TODO\n".to_vec(),
+                more: true,
+            },
+        };
+        let json = serde_json::to_string(&found).unwrap();
+        assert_eq!(
+            json,
+            r#"{"say":"found","nonce":"n1","found":{"bytes":"L3dvcmtzcGFjZS9hOjE6VE9ETwo=","more":true}}"#
+        );
+        assert_eq!(serde_json::from_str::<Say>(&json).unwrap(), found);
+        assert_eq!(found.nonce(), Some("n1"));
+        assert!(
+            serde_json::from_str::<Say>(&json.replace("\"more\"", "\"job\":1,\"more\"")).is_err()
+        );
+        for (why, word) in [
+            (NoSearch::NoSuchPath, "no-such-path"),
+            (NoSearch::Refused, "refused"),
+            (NoSearch::Failed, "failed"),
+        ] {
+            let none = Say::NoSearch {
+                nonce: String::from("n2"),
+                why,
+            };
+            let json = serde_json::to_string(&none).unwrap();
+            assert_eq!(
+                json,
+                format!(r#"{{"say":"no-search","nonce":"n2","why":"{word}"}}"#)
+            );
+            assert_eq!(serde_json::from_str::<Say>(&json).unwrap(), none);
+            assert_eq!(none.nonce(), Some("n2"));
+        }
+    }
+
+    /// What a search found is no longer than it may be, and whole lines;
+    /// the most it may be fits one frame.
+    #[test]
+    fn what_a_search_found_is_bounded_and_in_whole_lines() {
+        let found = |bytes: &[u8]| Found {
+            bytes: bytes.to_vec(),
+            more: false,
+        };
+        assert!(Found::default().check().is_ok(), "nothing matched");
+        assert!(found(b"/a:1:x\n").check().is_ok());
+        assert!(
+            found(b"/a:1:x\n/b:2:y")
+                .check()
+                .unwrap_err()
+                .contains("middle of a line")
+        );
+        let mut most = vec![b'x'; FOUND_BYTES - 1];
+        most.push(b'\n');
+        assert!(found(&most).check().is_ok());
+        most.insert(0, b'x');
+        assert!(found(&most).check().unwrap_err().contains("too long"));
+        let largest = Say::Found {
+            nonce: "f".repeat(64),
+            found: Found {
+                bytes: vec![0xff; FOUND_BYTES],
+                more: true,
+            },
+        };
+        assert!(crate::fits_one_frame(&largest));
     }
 }

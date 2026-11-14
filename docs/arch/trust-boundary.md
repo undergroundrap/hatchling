@@ -142,7 +142,8 @@ socket crosses exec.
 After the fixed readiness frame, the private spawner channel asks the
 supervisor one thing at a time, in typed frames whose unknown fields never
 decode: to start a job, to stop one, to hand over a kept piece of what
-an ended job wrote, or to hand back a page of a file. Each answer must
+an ended job wrote, to hand back a page of a file, or to search its
+files. Each answer must
 echo its ask's nonce. The one thing the supervisor says unasked is that a
 job it was given has ended.
 
@@ -175,16 +176,47 @@ absolute and at most 1024 bytes. Nothing in the spawner or the broker
 reads the file's bytes: they are carried as they came. A page is not
 kept: asking again reads the file again.
 
+A search is for the lines that match a pattern, in a file or in the
+files under a directory. The supervisor starts the Room's own search
+program (`/usr/bin/rg`, in the read-only image) for it, as the Room's
+user, under the Room's filter like every process there. It is no job:
+it has no name, nothing it writes is kept, and none of the ended jobs
+the supervisor remembers is forgotten for it. Three words are the
+asker's: the pattern (one line, at most 1024 bytes; an expression, or
+the very words to find), the path (absolute, at most 1024 bytes), and
+perhaps a glob that the names of the files looked in must match (one
+line, at most 256 bytes). Each goes to the program as the value of an
+option written with `=`, or after `--`, so none can be read as an
+option, whatever it begins with; every other argument is fixed by the
+supervisor, and no shell is in between. The program reads no settings
+file, follows no link, passes over a repository's own records (`.git`),
+files over 8 MiB and files that aren't text, and looks in every other
+file, hidden or not. It starts with the fixed environment a job has,
+less a home, and standard input and error that go nowhere.
+
+A search is short on purpose. The supervisor reads what the program
+prints for five seconds and for 8 KiB, whichever comes first, then
+kills the program's process group and waits for it: the one thread
+there is waits with the search, and a job goes on running meanwhile.
+What is handed back is whole lines, each `path:line:text` with at most
+400 bytes of a long line, and whether the search was stopped before it
+had looked everywhere. A path with nothing at it is said before any
+program is started. A search is not kept: asking again looks again. No
+session can ask for one yet: only the spawner's own protocol carries
+it.
+
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
 together, takes each kept piece only at the length the supervisor said it
 had, takes a page only if it is no longer than a page and cut only where
-it could be, and names each stream's file itself, from the job's name.
+it could be, takes what a search found only if it is no longer than it
+may be and ends at the end of a line, and names each stream's file
+itself, from the job's name.
 
 The Room is kept between jobs, as one session for the install. One
 spawner thread holds it from its launch until it is down, and holds the
-disk's exclusive claim for as long. The first job or page starts the
-session, and later ones use it.
+disk's exclusive claim for as long. The first job, page or search
+starts the session, and later ones use it.
 
 A job has a limit: 120 seconds unless its caller names one, and never
 more than 600. A job still running at its limit is stopped, which kills
@@ -233,13 +265,13 @@ of what ran with nobody watching.
 A session ends:
 
 - after one hour, whatever it is doing;
-- after fifteen minutes with no job or page in hand;
+- after fifteen minutes with no job, page or search in hand;
 - when a job that was stopped hasn't ended five seconds later;
 - when the supervisor isn't ready within 30 seconds, doesn't answer an
   ask within ten, closes, says something that can't be read, answers
   something it wasn't asked, says a job ended that it wasn't given or
-  hasn't said started, or says an end, a piece of output or a page that
-  can't be true;
+  hasn't said started, or says an end, a piece of output, a page or
+  what a search found that can't be true;
 - when the Room's first process exits;
 - when the room disk is closed or wiped, before either is done;
 - when the broker goes, before the spawner closes the disk and leaves.

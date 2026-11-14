@@ -24,13 +24,24 @@ struct Bench {
 
 impl Bench {
     fn new(name: &str) -> Self {
+        Self::searching_with(name, None)
+    }
+
+    /// A supervisor whose search program is the shell script `search`,
+    /// when there is one, kept in its own directory.
+    fn searching_with(name: &str, search: Option<&str>) -> Self {
         let dir = std::env::temp_dir().join(format!(
             "hatchling-room-supervisor-{name}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
-        let place = Place::under(&dir);
+        let mut place = Place::under(&dir);
+        if let Some(script) = search {
+            let program = dir.join("search-program");
+            search::tests::program_at(&program, script);
+            place.search = program;
+        }
         let (peer, endpoint) = UnixStream::pair().unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let task = std::thread::spawn(move || serve(&endpoint, &place).is_ok());
@@ -146,6 +157,27 @@ impl Bench {
         Err(why)
     }
 
+    /// What a search of `path` for `pattern` found, or why nothing.
+    fn search(&mut self, pattern: &str, path: &Path) -> std::result::Result<Found, NoSearch> {
+        let ask = Ask::Search {
+            nonce: self.nonce(),
+            pattern: pattern.to_owned(),
+            path: path.to_string_lossy().into_owned(),
+            glob: Some(String::from("*.txt")),
+            ignore_case: true,
+            literal: false,
+        };
+        let said = self.ask(&ask);
+        if let Say::Found { found, .. } = said {
+            return Ok(found);
+        }
+        assert!(matches!(said, Say::NoSearch { .. }), "{said:?}");
+        let Say::NoSearch { why, .. } = said else {
+            return Err(NoSearch::Failed);
+        };
+        Err(why)
+    }
+
     /// The end of `job`, once it's said: how, and what each stream kept.
     fn ended(&mut self, job: &str) -> (Ended, Captured, Captured) {
         self.next(|said| {
@@ -237,6 +269,7 @@ fn its_files_are_under_the_session_directory() {
     assert_eq!(room.jobs, Path::new("/session/jobs"));
     assert_eq!(room.home, Path::new("/session/home"));
     assert_eq!(room.scratch, Path::new("/session"));
+    assert_eq!(room.search, Path::new("/usr/bin/rg"));
     let job: JobId = "j".parse().unwrap();
     assert_eq!(
         room.spill(&job, Stream::Stderr),
@@ -247,6 +280,72 @@ fn its_files_are_under_the_session_directory() {
     assert_eq!(other.jobs, Path::new("/elsewhere/jobs"));
     assert_eq!(other.home, Path::new("/elsewhere/home"));
     assert_eq!(other.scratch, Path::new("/elsewhere"));
+}
+
+/// A search is answered with what the search program printed for the
+/// arguments this supervisor makes of the ask, and a path with nothing at
+/// it is said before any program is run.
+#[test]
+fn a_search_is_answered_with_what_the_search_program_found() {
+    // The stand-in prints each argument it was given, as a line found.
+    let mut bench =
+        Bench::searching_with("search", Some("for a; do printf '/w:1:%s\\n' \"$a\"; done"));
+    let here = bench.dir.clone();
+    let found = bench.search("to do", &here).unwrap();
+    let text = String::from_utf8(found.bytes).unwrap();
+    let told: Vec<&str> = text.lines().collect();
+    let tail: Vec<&str> = told.iter().rev().take(5).rev().copied().collect();
+    assert_eq!(
+        tail,
+        [
+            "/w:1:--ignore-case",
+            "/w:1:--glob=*.txt",
+            "/w:1:--regexp=to do",
+            "/w:1:--",
+            format!("/w:1:{}", here.display()).as_str(),
+        ]
+    );
+    assert_eq!(told.first().copied(), Some("/w:1:--no-config"));
+    assert!(!found.more);
+    assert_eq!(
+        bench.search("to do", &here.join("no-such-place")),
+        Err(NoSearch::NoSuchPath)
+    );
+    assert!(bench.close());
+}
+
+/// A search the program refuses, and one whose program isn't there, are
+/// each said as they are; and the supervisor goes on answering.
+#[test]
+fn a_search_that_fails_is_said_and_the_supervisor_goes_on() {
+    let mut refusing = Bench::searching_with("search-refused", Some("exit 2"));
+    let here = refusing.dir.clone();
+    assert_eq!(refusing.search("(", &here), Err(NoSearch::Refused));
+    assert_eq!(refusing.search("(", &here), Err(NoSearch::Refused));
+    assert!(refusing.close());
+    // The Room's own program isn't on a machine that isn't a Room's
+    // image: where it isn't, the search can't be run, and that is said.
+    let mut bare = Bench::new("search-bare");
+    let here = bare.dir.clone();
+    if !Path::new(search::SEARCH_PROGRAM).exists() {
+        assert_eq!(bare.search("x", &here), Err(NoSearch::Failed));
+    }
+    assert!(bare.close());
+}
+
+/// A job started before a search goes on running through it, and its end
+/// and what it wrote are said after the search is answered.
+#[test]
+fn a_job_runs_on_through_a_search() {
+    let mut bench = Bench::searching_with("search-job", Some("sleep 1; printf '/w:1:x\\n'"));
+    let here = bench.dir.clone();
+    bench.shell("j1", "echo started; sleep 0.2; echo done");
+    let found = bench.search("x", &here).unwrap();
+    assert_eq!(found.bytes, b"/w:1:x\n");
+    let (how, _, _) = bench.ended("j1");
+    assert_eq!(how, Ended::Exited(0));
+    assert_eq!(bench.output("j1", Stream::Stdout), "started\ndone\n");
+    assert!(bench.close());
 }
 
 /// With nothing running and nothing asked, it waits for as long as it

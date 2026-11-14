@@ -243,6 +243,18 @@ mod proof {
         // The image's other programs.
         ("rg", "rg -c 1999 .", Ends::Well),
         ("rg --files", "rg --files | head -3", Ends::Well),
+        // What the Room's supervisor tells it for a search, word for word
+        // (hatchling-room's search.rs), from the place a search runs in.
+        (
+            "rg, as a search runs it",
+            "cd / && /usr/bin/rg --no-config --color=never --no-heading --with-filename --line-number --sort=path --hidden --no-ignore '--glob=!.git' --max-columns-preview --max-columns=400 --max-filesize=8M --ignore-case --fixed-strings '--glob=*.py' '--regexp=IMPORT' -- \"$OLDPWD\" | grep -c ':[0-9]*:'",
+            Ends::Well,
+        ),
+        (
+            "rg, a search that finds nothing",
+            "/usr/bin/rg --no-config --color=never --no-heading --with-filename --line-number --sort=path --hidden --no-ignore '--glob=!.git' --max-columns-preview --max-columns=400 --max-filesize=8M '--regexp=no such words are in these files' -- .; test $? = 1",
+            Ends::Well,
+        ),
         (
             "jq",
             "echo '{\"a\": [1, 2]}' | jq '.a | length'",

@@ -21,7 +21,8 @@
 //! A page of a file in the Room is asked of the supervisor the same way,
 //! in its turn. It is no job: nothing is kept of it, and asking again
 //! reads the file again. Like a job, it starts a session when there is
-//! none.
+//! none. So is a search of the Room's files: asked in its turn, kept
+//! nowhere, and looked for again when asked again.
 //!
 //! A session ends at its time limit, when it has been idle, when a job in
 //! it doesn't end after it was stopped, when its supervisor says what it
@@ -43,7 +44,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hatchling_core::room::{
-    Ask, Captured, End, Ended, JobId, NoPage, Page, RUNNING_MAX, Say, Stream, check_page,
+    Ask, Captured, End, Ended, Found, JobId, NoPage, NoSearch, Page, RUNNING_MAX, Say, Stream,
+    check_page, check_search,
 };
 
 use crate::room_disk::{RoomDiskOp, RoomDiskStatus};
@@ -71,6 +73,7 @@ const BAD_SAY: &str = "the Room supervisor said something that can't be read";
 const BAD_END: &str = "the Room supervisor said a job ended in a way it can't have";
 const BAD_PIECE: &str = "the Room supervisor sent a piece of output of the wrong length";
 const BAD_PAGE: &str = "the Room supervisor sent a page of a file that can't be one";
+const BAD_FOUND: &str = "the Room supervisor sent what a search found that can't be it";
 const UNANSWERED: &str = "the Room supervisor didn't answer in time";
 const UNSTOPPED: &str = "a Room job didn't end when it was stopped";
 const UNSENT: &str = "could not send to the Room supervisor";
@@ -94,6 +97,37 @@ pub(crate) type JobReply = Result<RoomJobAnswer, String>;
 pub(crate) type DiskReply = Result<Option<RoomDiskStatus>, String>;
 /// What asking for a page of a file comes to.
 pub(crate) type PageReply = Result<Page, String>;
+
+/// What a search of the Room's files comes to.
+pub(crate) type SearchReply = Result<Found, String>;
+
+/// What one search of the Room's files asks for, as its caller gave it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Search {
+    /// What to look for.
+    pub pattern: String,
+    /// The absolute path of the file or directory to look in.
+    pub path: String,
+    /// Only files whose names match this are looked in.
+    pub glob: Option<String>,
+    /// Whether letters match whatever their case.
+    pub ignore_case: bool,
+    /// Whether the pattern is the very words to find.
+    pub literal: bool,
+}
+
+/// Why the supervisor handed back nothing of a search, in words for
+/// whoever asked.
+fn no_search(why: NoSearch) -> String {
+    String::from(match why {
+        NoSearch::NoSuchPath => "the Room has nothing at that path",
+        NoSearch::Refused => {
+            "the search wasn't run: the pattern or the glob isn't one, or that path can't be read"
+        }
+        NoSearch::Failed => "the Room couldn't run the search",
+    })
+}
 
 /// Why the supervisor handed back no page, in words for whoever asked.
 fn no_page(why: NoPage) -> String {
@@ -257,6 +291,12 @@ pub(crate) enum Message {
         requester: UnixStream,
         reply: Sender<PageReply>,
     },
+    /// Search the Room's files, for the connection at `requester`.
+    Search {
+        search: Search,
+        requester: UnixStream,
+        reply: Sender<SearchReply>,
+    },
     /// Say whether the installed Room works.
     Probe { reply: Sender<Result<(), String>> },
     /// Do this to the room disk.
@@ -375,6 +415,8 @@ enum Asking {
     Piece(JobId, Stream, End),
     /// The page the first connection waiting for one wants.
     Page,
+    /// The search the first connection waiting for one wants.
+    Search,
 }
 
 /// A job's end as the supervisor said it, while its kept output is
@@ -424,12 +466,21 @@ struct Reader {
     reply: Sender<PageReply>,
 }
 
+/// A connection waiting for a search of the Room's files.
+struct Seeker {
+    search: Search,
+    requester: UnixStream,
+    reply: Sender<SearchReply>,
+}
+
 /// An answer kept until the Room is down.
 enum Owed {
     /// How a job came out, or why it isn't known.
     Job(Sender<JobReply>, JobReply),
     /// Why there is no page.
     Page(Sender<PageReply>, String),
+    /// Why nothing was searched.
+    Search(Sender<SearchReply>, String),
 }
 
 impl Owed {
@@ -442,6 +493,9 @@ impl Owed {
             Self::Page(reply, reason) => {
                 let _ = reply.send(Err(reason));
             }
+            Self::Search(reply, reason) => {
+                let _ = reply.send(Err(reason));
+            }
         }
     }
 
@@ -452,6 +506,9 @@ impl Owed {
                 let _ = reply.send(Err(reason.to_owned()));
             }
             Self::Page(reply, _) => {
+                let _ = reply.send(Err(reason.to_owned()));
+            }
+            Self::Search(reply, _) => {
                 let _ = reply.send(Err(reason.to_owned()));
             }
         }
@@ -527,6 +584,10 @@ pub(crate) struct Kept<D> {
     readers: VecDeque<Reader>,
     /// Who is told of the page the supervisor has been asked for.
     reading: Option<Sender<PageReply>>,
+    /// The connections waiting for a search that hasn't been asked for.
+    seekers: VecDeque<Seeker>,
+    /// Who is told of the search the supervisor has been asked for.
+    seeking: Option<Sender<SearchReply>>,
     /// What is still to be asked of the supervisor.
     asks: VecDeque<Asking>,
     /// What it has been asked and hasn't answered: its nonce, and when.
@@ -558,6 +619,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
             waiters: Vec::new(),
             readers: VecDeque::new(),
             reading: None,
+            seekers: VecDeque::new(),
+            seeking: None,
             asks: VecDeque::new(),
             asked: None,
             probes: Vec::new(),
@@ -572,11 +635,14 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
         opened(&self.ledger).get(job).map(|over| over.state.clone())
     }
 
-    /// Whether the session has anything in hand: a job, a page still to
-    /// ask for, or an ask the supervisor hasn't answered. Whoever waits,
-    /// waits for one of them.
+    /// Whether the session has anything in hand: a job, a page or a
+    /// search still to ask for, or an ask the supervisor hasn't answered.
+    /// Whoever waits, waits for one of them.
     fn busy(&self) -> bool {
-        !self.flights.is_empty() || !self.readers.is_empty() || self.asked.is_some()
+        !self.flights.is_empty()
+            || !self.readers.is_empty()
+            || !self.seekers.is_empty()
+            || self.asked.is_some()
     }
 
     /// Takes what has been asked of the session so far. `Err` is why it
@@ -624,6 +690,18 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                         reply,
                     });
                     self.asks.push_back(Asking::Page);
+                }
+                Message::Search {
+                    search,
+                    requester,
+                    reply,
+                } => {
+                    self.seekers.push_back(Seeker {
+                        search,
+                        requester,
+                        reply,
+                    });
+                    self.asks.push_back(Asking::Search);
                 }
                 Message::Probe { reply } => self.probes.push(reply),
                 Message::Disk {
@@ -795,6 +873,18 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
         }
     }
 
+    /// Lets go of every caller waiting for a search that has gone.
+    fn unsought(&mut self) {
+        let (staying, gone): (VecDeque<Seeker>, VecDeque<Seeker>) =
+            std::mem::take(&mut self.seekers)
+                .into_iter()
+                .partition(|seeker| quiet(&seeker.requester));
+        self.seekers = staying;
+        for seeker in gone {
+            let _ = seeker.reply.send(Err(String::from(REQUESTER_GONE)));
+        }
+    }
+
     /// Sends the supervisor the next thing to ask, when it isn't still
     /// answering the last. One ask is with the supervisor at a time, so
     /// its socket has room for a whole one: a supervisor that can't take
@@ -840,6 +930,21 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                             path: reader.path,
                             from: reader.from,
                             lines: reader.lines,
+                        }
+                    })
+                }
+                // Nor is anything searched for one.
+                Asking::Search => {
+                    self.unsought();
+                    self.seekers.pop_front().map(|seeker| {
+                        self.seeking = Some(seeker.reply);
+                        Ask::Search {
+                            nonce: nonce.clone(),
+                            pattern: seeker.search.pattern,
+                            path: seeker.search.path,
+                            glob: seeker.search.glob,
+                            ignore_case: seeker.search.ignore_case,
+                            literal: seeker.search.literal,
                         }
                     })
                 }
@@ -1073,7 +1178,25 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                 self.read(Err(no_page(why)));
                 Ok(())
             }
+            (Asking::Search, Say::Found { found, .. }) => {
+                if found.check().is_err() {
+                    return Err(String::from(BAD_FOUND));
+                }
+                self.sought(Ok(found));
+                Ok(())
+            }
+            (Asking::Search, Say::NoSearch { why, .. }) => {
+                self.sought(Err(no_search(why)));
+                Ok(())
+            }
             _ => Err(String::from(OUT_OF_TURN)),
+        }
+    }
+
+    /// Tells whoever waits for the search the supervisor was asked for.
+    fn sought(&mut self, found: SearchReply) {
+        if let Some(reply) = self.seeking.take() {
+            let _ = reply.send(found);
         }
     }
 
@@ -1234,6 +1357,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                 Message::Page { reply, .. } => {
                     let _ = reply.send(Err(held(reason)));
                 }
+                Message::Search { reply, .. } => {
+                    let _ = reply.send(Err(held(reason)));
+                }
                 Message::Probe { reply } => {
                     let _ = reply.send(Err(held(reason)));
                 }
@@ -1276,12 +1402,18 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
             for reader in self.readers.drain(..) {
                 let _ = reader.reply.send(Err(reason.clone()));
             }
+            for seeker in self.seekers.drain(..) {
+                let _ = seeker.reply.send(Err(reason.clone()));
+            }
             while let Ok(message) = self.seat.inbox.try_recv() {
                 match message {
                     Message::Run { reply, .. } => {
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Page { reply, .. } => {
+                        let _ = reply.send(Err(reason.clone()));
+                    }
+                    Message::Search { reply, .. } => {
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Job { .. }
@@ -1305,10 +1437,12 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Session for Kept<D> {
     fn begin(&mut self) -> Result<(), String> {
         self.intake()?;
         // Nothing is launched for callers that have all gone.
-        let asked = !self.flights.is_empty() || !self.readers.is_empty();
+        let asked =
+            !self.flights.is_empty() || !self.readers.is_empty() || !self.seekers.is_empty();
         self.part(|waiter| !quiet(&waiter.requester));
         self.unread();
-        if asked && self.flights.is_empty() && self.readers.is_empty() {
+        self.unsought();
+        if asked && self.flights.is_empty() && self.readers.is_empty() && self.seekers.is_empty() {
             return Err(String::from(REQUESTER_GONE));
         }
         Ok(())
@@ -1340,6 +1474,11 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Session for Kept<D> {
         let unread = self.readers.drain(..).map(|reader| reader.reply);
         for reply in self.reading.take().into_iter().chain(unread) {
             self.owed.push(Owed::Page(reply, reason.clone()));
+        }
+        // Nor is a search that wasn't answered.
+        let unsought = self.seekers.drain(..).map(|seeker| seeker.reply);
+        for reply in self.seeking.take().into_iter().chain(unsought) {
+            self.owed.push(Owed::Search(reply, reason.clone()));
         }
     }
 
@@ -1509,6 +1648,20 @@ impl Sessions {
                 path: path.to_owned(),
                 from,
                 lines,
+                requester: requester.try_clone().map_err(|error| error.to_string())?,
+                reply,
+            })
+        };
+        self.ask_or_start(&message, || None)
+    }
+
+    /// Searches the kept Room's files for `search`, for the connection
+    /// at `requester`. A session is started when there is none.
+    pub(crate) fn search(&self, search: &Search, requester: &UnixStream) -> SearchReply {
+        check_search(&search.pattern, &search.path, search.glob.as_deref())?;
+        let message = |reply: Sender<SearchReply>| -> Result<Message, String> {
+            Ok(Message::Search {
+                search: search.clone(),
                 requester: requester.try_clone().map_err(|error| error.to_string())?,
                 reply,
             })

@@ -166,6 +166,64 @@ fn page_of(text: &[u8]) -> Page {
     }
 }
 
+/// A search for `pattern` under `path`, with nothing else asked of it.
+fn search_for(pattern: &str, path: &str) -> Search {
+    Search {
+        pattern: pattern.to_owned(),
+        path: path.to_owned(),
+        glob: None,
+        ignore_case: false,
+        literal: false,
+    }
+}
+
+/// Asks the session to search: the broker's end of the connection it is
+/// asked on, and where its answer comes.
+fn ask_search(door: &Door, search: Search) -> (UnixStream, Receiver<SearchReply>) {
+    let (broker, requester) = UnixStream::pair().unwrap();
+    let (reply, answer) = mpsc::channel();
+    let sent = door.send(Message::Search {
+        search,
+        requester,
+        reply,
+    });
+    assert!(sent.is_ok(), "the session had ended");
+    (broker, answer)
+}
+
+/// Takes the ask for a search as the supervisor hears it: its nonce, and
+/// what it asks for.
+fn search_asked(room: &UnixStream) -> (String, Search) {
+    let ask = hears(room);
+    let Ask::Search {
+        nonce,
+        pattern,
+        path,
+        glob,
+        ignore_case,
+        literal,
+    } = ask
+    else {
+        unreachable!("asked {ask:?}, not to search");
+    };
+    let search = Search {
+        pattern,
+        path,
+        glob,
+        ignore_case,
+        literal,
+    };
+    (nonce, search)
+}
+
+/// What a search found: `text`, with more left.
+fn found_of(text: &[u8]) -> Found {
+    Found {
+        bytes: text.to_vec(),
+        more: true,
+    }
+}
+
 fn ask_disk(door: &Door, op: RoomDiskOp) -> Receiver<DiskReply> {
     let (reply, answer) = mpsc::channel();
     assert!(door.send(Message::Disk { op, reply }).is_ok());
@@ -1878,6 +1936,15 @@ pub(crate) fn stood_page(generation: usize, path: &str, from: u64, lines: u32) -
     }
 }
 
+/// What a stand-in session says a search found: what it was asked for,
+/// and the stand-in's number.
+pub(crate) fn stood_found(generation: usize, search: &Search) -> Found {
+    Found {
+        bytes: format!("session {generation}: {search:?}\n").into_bytes(),
+        more: false,
+    }
+}
+
 /// A stand-in for the thread that holds a session: it answers with its
 /// own number, and ends when told to or on the jobs that say so.
 fn stand_in(generation: usize, seat: &Seat) {
@@ -1913,6 +1980,12 @@ fn stand_in(generation: usize, seat: &Seat) {
                     return;
                 }
                 let _ = reply.send(Ok(stood_page(generation, &path, from, lines)));
+            }
+            Message::Search { search, reply, .. } => {
+                if search.path == "/vanish" {
+                    return;
+                }
+                let _ = reply.send(Ok(stood_found(generation, &search)));
             }
             Message::Probe { reply } => {
                 let _ = reply.send(Ok(()));
@@ -2059,6 +2132,7 @@ fn output_is_read_once_a_job_is_over() {
                         (job, reply)
                     }
                     Message::Page { .. }
+                    | Message::Search { .. }
                     | Message::Probe { .. }
                     | Message::Disk { .. }
                     | Message::End { .. } => continue,
@@ -2564,6 +2638,367 @@ fn a_started_session_finds_its_first_page_waiting() {
     assert_eq!(
         sessions.page("/workspace/a", 5, 9, &requester),
         Ok(stood_page(7, "/workspace/a", 5, 9))
+    );
+    let mut byte = [0_u8; 1];
+    broker.read_exact(&mut byte).unwrap();
+    assert_eq!(&byte, b"!");
+}
+
+/// A search is asked of the supervisor in its turn, as it was asked for,
+/// one thing at a time, and its answer goes to whoever asked. That
+/// nothing is at a path is no fault of the session's. Nothing of a search
+/// is kept.
+#[test]
+fn a_search_is_asked_of_the_supervisor_in_its_turn_and_handed_back() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let every = Search {
+            pattern: String::from("to do"),
+            path: String::from("/workspace/notes"),
+            glob: Some(String::from("*.md")),
+            ignore_case: true,
+            literal: true,
+        };
+        // Asked for before the supervisor is ready, it waits, as a job
+        // does.
+        let (_first_broker, first) = ask_search(&rig.door, every.clone());
+        let (_job_broker, ran) = ask_run(&rig.door, "between");
+        let (_second_broker, second) = ask_search(&rig.door, search_for("x", "/nowhere"));
+        assert!(unasked(&rig.room, SHORT), "asked before it was ready");
+        say_ready(&rig.room);
+        let (nonce, asked) = search_asked(&rig.room);
+        assert_eq!(asked, every);
+        assert!(unasked(&rig.room, SHORT), "asked two things at once");
+        assert!(unanswered(&first));
+        let said = Say::Found {
+            nonce,
+            found: found_of(b"/workspace/notes/a.md:3:to do\n"),
+        };
+        says(&rig.room, &said);
+        assert_eq!(
+            wait(&first),
+            Ok(found_of(b"/workspace/notes/a.md:3:to do\n"))
+        );
+        starts(&rig.room, "between");
+        let (nonce, asked) = search_asked(&rig.room);
+        assert_eq!(asked, search_for("x", "/nowhere"));
+        let said = Say::NoSearch {
+            nonce,
+            why: NoSearch::NoSuchPath,
+        };
+        says(&rig.room, &said);
+        assert_eq!(
+            wait(&second),
+            Err(String::from("the Room has nothing at that path"))
+        );
+        ends(&rig.room, "between", Ended::Exited(0), b"");
+        assert_eq!(outcome(&answered(&ran).1).0, Ended::Exited(0));
+        // The most a search may hand back is handed back, and so is
+        // nothing found.
+        for bytes in [vec![b'\n'; hatchling_core::room::FOUND_BYTES], Vec::new()] {
+            let (_broker, answer) = ask_search(&rig.door, search_for("x", "/workspace"));
+            let (nonce, _) = search_asked(&rig.room);
+            let found = Found { bytes, more: false };
+            let said = Say::Found {
+                nonce,
+                found: found.clone(),
+            };
+            says(&rig.room, &said);
+            assert_eq!(wait(&answer), Ok(found));
+        }
+        assert!(!held.is_finished(), "the session ended over a search");
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+    assert_eq!(
+        opened(&rig.ledger).over.len(),
+        1,
+        "a search was kept as a job"
+    );
+}
+
+/// How a search comes out when the session that was asked for it ends on
+/// what `script` has its supervisor do with the ask's nonce: nothing is
+/// heard until the Room is down, and then why it ended.
+fn sought_by(script: impl FnOnce(&UnixStream, String)) -> SearchReply {
+    let (rig, mut kept) = new_rig(limits());
+    let (_broker, answer) = ask_search(&rig.door, search_for("x", "/workspace"));
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (nonce, _) = search_asked(&rig.room);
+        script(&rig.room, nonce);
+        seen_out(held, &rig.room);
+    });
+    assert!(
+        answer.try_recv().is_err(),
+        "answered before the Room was down"
+    );
+    kept.finish(Ok(()), |_| unreachable!());
+    wait(&answer)
+}
+
+/// What a search found that can't be it, an answer to something else,
+/// and anything but an answer to a search end the session, and whoever
+/// asked hears why.
+#[test]
+fn what_a_search_found_that_cannot_be_it_ends_the_session() {
+    let too_long = Found {
+        bytes: vec![b'\n'; hatchling_core::room::FOUND_BYTES + 1],
+        more: true,
+    };
+    let half_a_line = Found {
+        bytes: b"/workspace/a:1:x\n/workspace/b:2:".to_vec(),
+        more: true,
+    };
+    for bad in [too_long, half_a_line] {
+        let sought = sought_by(|room, nonce| says(room, &Say::Found { nonce, found: bad }));
+        assert_eq!(sought, Err(String::from(BAD_FOUND)));
+    }
+    let sought = sought_by(|room, _| {
+        let said = Say::Found {
+            nonce: "0".repeat(64),
+            found: Found::default(),
+        };
+        says(room, &said);
+    });
+    assert_eq!(sought, Err(String::from(OUT_OF_TURN)));
+    let sought = sought_by(|room, nonce| says(room, &Say::Started { nonce }));
+    assert_eq!(sought, Err(String::from(OUT_OF_TURN)));
+    // A page isn't what a search finds, nor is what one finds a page.
+    let sought = sought_by(|room, nonce| {
+        let said = Say::Page {
+            nonce,
+            page: Page::default(),
+        };
+        says(room, &said);
+    });
+    assert_eq!(sought, Err(String::from(OUT_OF_TURN)));
+    let read = read_by(|room, nonce| {
+        let said = Say::Found {
+            nonce,
+            found: Found::default(),
+        };
+        says(room, &said);
+    });
+    assert_eq!(read, Err(String::from(OUT_OF_TURN)));
+    let sought = sought_by(|room, _| gone(room));
+    assert_eq!(sought, Err(String::from(CLOSED)));
+    // What a search found, in answer to anything else, is out of turn.
+    let wrong: [fn(String) -> Say; 2] = [
+        |nonce| Say::Found {
+            nonce,
+            found: Found::default(),
+        },
+        |nonce| Say::NoSearch {
+            nonce,
+            why: NoSearch::Failed,
+        },
+    ];
+    for said in wrong {
+        let ended = ended_by(true, |far| {
+            say_ready(far.room());
+            let asked = hears(far.room());
+            says(far.room(), &said(asked.nonce().to_owned()));
+        });
+        assert_eq!(ended, OUT_OF_TURN);
+    }
+}
+
+/// When a session ends, a search it was asked for and one still waiting
+/// are answered once the Room is down, with why it ended.
+#[test]
+fn a_search_not_answered_is_answered_once_the_room_is_down() {
+    let (rig, mut kept) = new_rig(limits());
+    let (_asked_broker, asked) = ask_search(&rig.door, search_for("a", "/workspace"));
+    let (_waiting_broker, waiting) = ask_search(&rig.door, search_for("b", "/workspace"));
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (_nonce, of) = search_asked(&rig.room);
+        assert_eq!(of.pattern, "a");
+        assert!(rig.door.send(Message::End { reason: "gone" }).is_ok());
+        held.join().unwrap();
+    });
+    assert!(asked.try_recv().is_err() && waiting.try_recv().is_err());
+    assert_eq!(kept.owed.len(), 2);
+    assert!(kept.seekers.is_empty() && kept.seeking.is_none());
+    kept.finish(Ok(()), |_| unreachable!());
+    assert_eq!(wait(&asked), Err(String::from("gone")));
+    assert_eq!(wait(&waiting), Err(String::from("gone")));
+}
+
+/// Before anything is launched: a search whose caller has gone launches
+/// nothing, a search to ask for is something in hand, and one still
+/// there is a reason to launch whoever else has gone.
+#[test]
+fn nothing_is_launched_for_a_seeker_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    assert!(!kept.busy());
+    let (_broker, answer) = ask_search(&rig.door, search_for("x", "/workspace"));
+    assert_eq!(kept.begin(), Ok(()));
+    assert!(kept.busy(), "a search to ask for is something in hand");
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&answer), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_search(&rig.door, search_for("unwanted", "/workspace"));
+    let (_staying, stayed) = ask_search(&rig.door, search_for("wanted", "/workspace"));
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()), "one caller is still there");
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+    let left: Vec<&str> = kept
+        .seekers
+        .iter()
+        .map(|seeker| seeker.search.pattern.as_str())
+        .collect();
+    assert_eq!(left, ["wanted"]);
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&stayed), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_search(&rig.door, search_for("unwanted", "/workspace"));
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Err(String::from(REQUESTER_GONE)));
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+
+    // A page's caller that is still there is a reason to launch when a
+    // search's has gone, and a search's when a page's has.
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, _answer) = ask_search(&rig.door, search_for("unwanted", "/workspace"));
+    let (_staying, _read) = ask_page(&rig.door, "/workspace/wanted", 1, 1);
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()));
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, _read) = ask_page(&rig.door, "/workspace/unwanted", 1, 1);
+    let (_staying, _answer) = ask_search(&rig.door, search_for("wanted", "/workspace"));
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()));
+}
+
+/// A caller that goes while its search waits its turn isn't searched for:
+/// the supervisor is asked only for the search of the one still there.
+#[test]
+fn nothing_is_searched_for_a_caller_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let (broker, answer) = ask_search(&rig.door, search_for("unwanted", "/workspace"));
+        let (_staying, stayed) = ask_search(&rig.door, search_for("wanted", "/workspace"));
+        gone(&broker);
+        drop(broker);
+        say_ready(&rig.room);
+        let (nonce, asked) = search_asked(&rig.room);
+        assert_eq!(asked, search_for("wanted", "/workspace"));
+        assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+        let said = Say::Found {
+            nonce,
+            found: found_of(b"/workspace/a:2:wanted\n"),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&stayed), Ok(found_of(b"/workspace/a:2:wanted\n")));
+        assert!(unasked(&rig.room, SHORT), "searched for nobody");
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+}
+
+#[test]
+fn every_reason_nothing_was_searched_has_its_words() {
+    let words = [NoSearch::NoSuchPath, NoSearch::Refused, NoSearch::Failed].map(no_search);
+    let mut distinct = words.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), words.len());
+    assert_eq!(
+        no_search(NoSearch::NoSuchPath),
+        "the Room has nothing at that path"
+    );
+    assert!(no_search(NoSearch::Refused).contains("pattern or the glob"));
+    assert!(no_search(NoSearch::Failed).contains("couldn't run"));
+}
+
+/// A search starts a session when there is none, as a job does, and is
+/// asked of the one there is. One that may not be asked for starts none.
+#[test]
+fn a_search_starts_a_session_and_the_next_uses_it() {
+    let seek = |sessions: &Sessions, search: &Search| {
+        let (_broker, requester) = UnixStream::pair().unwrap();
+        sessions.search(search, &requester)
+    };
+    let (sessions, started, ended) = stand_ins();
+    let first = search_for("a", "/workspace");
+    let second = Search {
+        glob: Some(String::from("*.rs")),
+        ignore_case: true,
+        literal: true,
+        ..search_for("b", "/etc")
+    };
+    assert_eq!(seek(&sessions, &first), Ok(stood_found(1, &first)));
+    assert_eq!(seek(&sessions, &second), Ok(stood_found(1, &second)));
+    assert_eq!(run(&sessions, "j"), Ok(stood_in(1, "j")));
+    assert_eq!(started.load(Atomic::SeqCst), 1);
+    assert_eq!(ended.load(Atomic::SeqCst), 0);
+
+    let (sessions, started, _ended) = stand_ins();
+    let said = seek(&sessions, &search_for("x", "workspace")).unwrap_err();
+    assert!(said.contains("absolute"), "{said}");
+    let said = seek(&sessions, &search_for("", "/workspace")).unwrap_err();
+    assert!(said.contains("pattern"), "{said}");
+    let bad_glob = Search {
+        glob: Some(String::new()),
+        ..search_for("x", "/workspace")
+    };
+    let said = seek(&sessions, &bad_glob).unwrap_err();
+    assert!(said.contains("glob"), "{said}");
+    assert_eq!(started.load(Atomic::SeqCst), 0, "a session was started");
+    // A session that keeps ending before it answers is given up on.
+    assert_eq!(
+        seek(&sessions, &search_for("x", "/vanish")),
+        Err(String::from(UNSETTLED))
+    );
+    let tried = started.load(Atomic::SeqCst);
+    assert!((2..=ATTEMPTS).contains(&tried), "started {tried} sessions");
+}
+
+/// The search a session is started for is waiting for its thread when it
+/// starts, as it was asked for, with the connection it was asked on.
+#[test]
+fn a_started_session_finds_its_first_search_waiting() {
+    let sessions = Sessions::new(Arc::default(), |seat: Seat| {
+        std::thread::Builder::new().spawn(move || {
+            if let Ok(Message::Search {
+                search,
+                mut requester,
+                reply,
+            }) = seat.inbox.try_recv()
+            {
+                requester.write_all(b"!").unwrap();
+                let _ = reply.send(Ok(stood_found(7, &search)));
+            }
+        })
+    });
+    let (mut broker, requester) = UnixStream::pair().unwrap();
+    broker.set_read_timeout(Some(LONG)).unwrap();
+    let wanted = search_for("x", "/workspace");
+    assert_eq!(
+        sessions.search(&wanted, &requester),
+        Ok(stood_found(7, &wanted))
     );
     let mut byte = [0_u8; 1];
     broker.read_exact(&mut byte).unwrap();
