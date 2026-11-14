@@ -187,12 +187,40 @@ them: 226 passed (`root/as-root.log`).
 `quick.log` is of the tree before the changelog's line was added
 (`29ffed12…`); everything else in the bundle is of the tested tree.
 
+## On a real install
+
+Added on 2026-11-14, after the change was merged (`c097c6e6`). The file
+is in a second bundle,
+`hatchling-held-answer-real-install-results.tar.gz`, 1422 bytes, sha256
+`6f9cadb46540b5e7aec718c6dbfddb8783c6dae4cb839bc1e33ef980b013ef85`.
+
+The install the fault was found on, under WSL2, was updated by hand to
+the merged tree and unlocked by its owner. Only the agent's program
+differed from what it had. The model was the same one, gemma4:12b on
+that machine, and the task was typed in the same words: run
+`sleep 12; ls -la /workspace` and say what it printed.
+
+| | Before | After |
+|---|---|---|
+| The answer | "The command is still running. I will check the status in a few seconds." | "The command printed the following:" and the listing, three lines of it |
+| Calls to the model | not read | 4 |
+| Uses of its computer | 1 | 2 |
+
+Four calls and two uses are what the loop does when it holds an answer
+once: a call that started the program, a call that answered with it
+still running, a call that asked after it, and a call that answered. A
+model that waited unprompted would have made three. So the answer was
+held, the model was told, and it did what it was told. The counts are
+from the run's summary in the broker's activity log; the chat's working
+line went from "Using its computer" at 28 seconds to "Asking the model"
+and to the answer at 33.
+
+It is one run, of one model.
+
 ## What wasn't tried
 
-- **A real model.** Every test stands in for the model with a script.
-  Whether a model does the right thing once told, waits and then
-  answers, is the model's to do; the fault this came from hasn't been
-  tried again on the install it was found on.
+- **Another model**, or the same one more than once. Whether a model
+  waits once told is the model's to do.
 - **A model that answers a third time with the program still running.**
   Its answer is shown as it is, with whatever it promises. Nothing tells
   the owner the program was stopped.
