@@ -12842,6 +12842,30 @@
           "type": "object"
         },
         {
+          "description": "The step a working agent just started, as the broker serves it\n(v23). The next [`Self::AgentStatus`] ends it. It says what kind of\nthing is being done, and never what with: no command, path, page or\nwords.",
+          "properties": {
+            "kind": {
+              "const": "agent_step",
+              "type": "string"
+            },
+            "tool": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ToolUse"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The tool it is using, named by what the tool does; none while\nit waits for its model."
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
           "$ref": "#/$defs/UiArtifact",
           "description": "An artifact was listed or changed: its whole record (v2).",
           "properties": {
@@ -13766,7 +13790,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 22,
+    "session_protocol": 23,
     "ui_schema_version": 4
   },
   "x-roots": {

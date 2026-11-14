@@ -137,6 +137,12 @@ Image watchdogs start when an eager image is requested or a lazy image reaches t
 
 Fast operations are never forced to wait for a skeleton. Non-demo content-operation notices use a 120ms reveal threshold; successful operations settle immediately. Image pulse reveal also has a short delay. No minimum skeleton hold time is imposed.
 
+### The chat's working line
+
+While a chat run is working, the line above the composer says the step the run is on and the time since the owner asked: **Asking the model · 45 s**. Live, the step is the broker's word for what kind of thing is being done, in the three words a status title has; until the broker has said, it is **Working on it**. Never show a command, a path, a page or the model's own thinking there, and never a percentage or a bar: nothing knows how long a model will take.
+
+The time is real, counted from the event that began the task (`elapsedSince` in `src/components/elapsed.ts`), and is written as `45 s`, `2 min 5 s`, `1 h 4 min`. It updates its own text each second without re-rendering the chat, stops when it leaves the page, and is hidden from assistive technology: the status beside it is announced when the step changes, not once a second. It is text, not motion, so reduced motion changes nothing about it.
+
 ### What is connected in this build
 
 Chat skeletons are driven by the existing history phase. Feed generation tracks its actual pending command and preserves a loaded edition. Chat attachments, library images/video posters, feed images and opened image viewers use real browser image events.

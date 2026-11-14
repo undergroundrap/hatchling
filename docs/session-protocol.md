@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v22 (current). This doc is the human-readable reference
+**Status:** v23 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -367,6 +367,24 @@ session holds.
 - A read that may not be asked for (a first line of 0, no lines or more
   than 2000, a path that is too long) is `Refused`, and nothing is asked
   of the Room.
+
+## v23 — What a working agent is doing
+
+No session op changes. The owner's app is told one more thing.
+
+- **`UiEventBody::AgentStep { tool? }`**: the step a chat run just
+  started, as the broker serves it. `tool` is the tool in use, by the
+  name a run's summary gives it afterwards (`ToolUse`); it is absent
+  while the run waits for its model. It says what kind of thing is
+  being done, and never what with: no command, path, page or words.
+- Only a change of step is told: a tool used again straight after
+  itself is the same step going on. The next `AgentStatus` ends it.
+- Only a chat run tells its steps: one answering its owner, who is
+  there. Background work and subagents tell none.
+- It goes to the app alone. It isn't written to the activity log:
+  what a run did is written there once, when it ends
+  (`run_summary`). An app that connects in the middle of a step
+  learns of the next one.
 
 ## Device handshake
 

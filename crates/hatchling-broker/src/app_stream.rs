@@ -10,6 +10,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use hatchling_core::ToolUse;
 use hatchling_core::ui::{ScheduleNotice, UiEventBody};
 use hatchling_scheduler::{TickReport, Timestamp};
 
@@ -81,6 +82,26 @@ impl AppStream {
         }
         true
     }
+
+    /// Tells the app the step a chat run just started: the tool it is
+    /// using, or none while it waits for its model. Whether an app was
+    /// attached. It goes to the app alone, and isn't kept in the activity
+    /// log: what a run did is written there when it ends.
+    pub fn step(&self, tool: Option<ToolUse>) -> bool {
+        let Some(bus) = self
+            .bus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        else {
+            return false;
+        };
+        bus.push(
+            Timestamp::now().to_string(),
+            UiEventBody::AgentStep { tool },
+        );
+        true
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +119,31 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn steps(bus: &Bus) -> Vec<Option<ToolUse>> {
+        bus.after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::AgentStep { tool } = event.body {
+                    Some(tool)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// A step is told to the app once one is attached, as it was given.
+    #[test]
+    fn a_step_is_told_to_the_app_once_one_is_attached() {
+        let stream = AppStream::default();
+        assert!(!stream.step(None), "no app yet: nothing sent");
+        let bus = Arc::new(Bus::starting_at(1));
+        stream.attach(Arc::clone(&bus));
+        assert!(stream.step(None));
+        assert!(stream.step(Some(ToolUse::Room)));
+        assert_eq!(steps(&bus), [None, Some(ToolUse::Room)]);
     }
 
     #[test]

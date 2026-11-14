@@ -18,6 +18,7 @@
 //!   reading a held answer are part of the request they serve.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use hatchling_core::{
     ActivityEvent, ArtifactResult, BrowserResult, ChannelOp, ChannelResult, EgressOp, EgressResult,
@@ -66,6 +67,19 @@ pub struct Trail {
     model_calls_refused: u32,
     peak_input_tokens: u64,
     output_tokens: u64,
+    /// The owner's app, told each step a chat run starts.
+    app: Option<Arc<crate::app_stream::AppStream>>,
+    /// The step last told.
+    step: Option<Step>,
+}
+
+/// A step a chat run is on, as its owner's app is told it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    /// It waits for its model.
+    Model,
+    /// It is using a tool.
+    Tool(ToolUse),
 }
 
 impl Trail {
@@ -90,7 +104,35 @@ impl Trail {
             model_calls_refused: 0,
             peak_input_tokens: 0,
             output_tokens: 0,
+            app: None,
+            step: None,
         }
+    }
+
+    /// The trail, telling the owner's `app` each step a chat run starts
+    /// ([`Self::starting`]).
+    #[must_use]
+    pub fn telling(mut self, app: Arc<crate::app_stream::AppStream>) -> Self {
+        self.app = Some(app);
+        self
+    }
+
+    /// Tells the owner's app that a chat run started a step: `tool`, or
+    /// none for a call to its model. Only a change of step is told: a tool
+    /// used again straight after itself is the same step going on. A run
+    /// that isn't answering the owner tells nothing.
+    ///
+    /// The app is told what kind of thing is being done, as the summary
+    /// says it afterwards, and nothing of what with.
+    pub fn starting(&mut self, tool: Option<ToolUse>) {
+        let step = tool.map_or(Step::Model, Step::Tool);
+        if !self.chat || self.step == Some(step) {
+            return;
+        }
+        if let Some(app) = &self.app {
+            app.step(tool);
+        }
+        self.step = Some(step);
     }
 
     /// The trail, of a chat run when `chat` is set: answering the owner.
@@ -670,6 +712,72 @@ mod tests {
         for (request, tool) in cases {
             assert_eq!(tool_of(&request), tool, "{request:?}");
         }
+    }
+
+    /// The steps told on `bus`, in order: the tool, or none for the model.
+    fn steps_told(bus: &crate::api_stream::Bus) -> Vec<Option<ToolUse>> {
+        bus.after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let hatchling_core::ui::UiEventBody::AgentStep { tool } = event.body {
+                    Some(tool)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// A stream with an app attached, and what that app is told.
+    fn attached() -> (
+        Arc<crate::app_stream::AppStream>,
+        Arc<crate::api_stream::Bus>,
+    ) {
+        let app = Arc::new(crate::app_stream::AppStream::default());
+        let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+        app.attach(Arc::clone(&bus));
+        (app, bus)
+    }
+
+    /// A chat run's steps are told to the owner's app as they change, and
+    /// only then: a tool used again straight after itself is one step. A
+    /// run that isn't answering the owner tells nothing, and a trail with
+    /// no app to tell goes on as it did.
+    #[test]
+    fn a_chat_runs_steps_are_told_as_they_change() {
+        let (app, bus) = attached();
+        let mut trail = Trail::new(None, "run", "cell").of_chat(true).telling(app);
+        for step in [
+            None,
+            None,
+            Some(ToolUse::Room),
+            Some(ToolUse::Room),
+            None,
+            Some(ToolUse::MemoryRecall),
+            Some(ToolUse::Room),
+        ] {
+            trail.starting(step);
+        }
+        assert_eq!(
+            steps_told(&bus),
+            [
+                None,
+                Some(ToolUse::Room),
+                None,
+                Some(ToolUse::MemoryRecall),
+                Some(ToolUse::Room)
+            ]
+        );
+
+        let (app, bus) = attached();
+        let mut background = Trail::new(None, "run", "cell").telling(app);
+        background.starting(None);
+        background.starting(Some(ToolUse::Room));
+        assert_eq!(steps_told(&bus), [], "not a chat run");
+
+        let mut alone = Trail::new(None, "run", "cell").of_chat(true);
+        alone.starting(None);
+        alone.starting(Some(ToolUse::Room));
     }
 
     /// Each use is counted by how it ended, under its tool, in the order

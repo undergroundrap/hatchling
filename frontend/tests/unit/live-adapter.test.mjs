@@ -3,6 +3,7 @@
 // the real markdown renderer on a minimal DOM.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { LiveAdapter } from '../../dist/app/adapters/live/adapter.js';
 import { expiryWords } from '../../dist/app/adapters/live/approvals.js';
 import { LiveClient } from '../../dist/app/adapters/live/client.js';
@@ -243,6 +244,47 @@ test('activity: each thing asked in the chat is a task, answered by the agent\'s
     assert.equal(thanks.subtitle, 'You are very welcome.', 'four words are enough');
     for (const thread of [plan, thanks])
         assert.ok(validThreadCopy(thread.name, thread.subtitle, thread.statusTitle), thread.subtitle);
+});
+test('a waiting task says the step its run last started, as the broker said it; a step with no task waiting is nobody\'s', () => {
+    const { transport, adapter } = connected();
+    const chat = (seq, author, id, text) => sampleEvent(seq, seq, { kind: 'chat_message', chat_id: 'local', message_id: id, author, text });
+    const step = (seq, ...tool) => sampleEvent(seq, seq, { kind: 'agent_step', ...(tool.length ? { tool: tool[0] } : {}) });
+    const title = () => adapter.getSnapshot().threads[0].statusTitle;
+    // With no task waiting, a step is nobody's: no thread, and nothing breaks.
+    replay(transport, [step(1, 'room')]);
+    assert.equal(adapter.getSnapshot().threads.length, 0);
+    replay(transport, [chat(2, 'user', 'm1', 'What is in notes.txt?')]);
+    assert.equal(title(), 'Working on it', 'until the broker says what');
+    // No tool named, or none: the run waits for its model.
+    replay(transport, [step(3)]);
+    assert.equal(title(), 'Asking the model');
+    replay(transport, [step(4, 'room')]);
+    assert.equal(title(), 'Using its computer');
+    replay(transport, [step(5, null)]);
+    assert.equal(title(), 'Asking the model');
+    const waiting = adapter.getSnapshot().threads[0];
+    assert.deepEqual([waiting.state, waiting.subtitle, waiting.startedAt, waiting.chatId], ['running', 'The agent is working on it.', sampleTime(2), 'main'], 'the task began when it was asked, whatever its step');
+    assert.ok(validThreadCopy(waiting.name, waiting.subtitle, waiting.statusTitle));
+    // Each tool the broker names is said in words of its own, as it is used.
+    const schema = JSON.parse(readFileSync(new URL('../../protocol/schema.json', import.meta.url), 'utf8'));
+    const tools = schema.$defs.ToolUse.oneOf.map(option => option.const);
+    assert.equal(tools.length, 22);
+    const said = tools.map((tool, index) => {
+        replay(transport, [step(6 + index, tool)]);
+        return title();
+    });
+    assert.equal(new Set(said).size, tools.length, 'no two tools read alike');
+    for (const words of said) {
+        assert.ok(!['Working on it', 'Asking the model', 'Answered'].includes(words), words);
+        assert.ok(validThreadCopy('A task', 'The agent is working on it.', words), words);
+    }
+    assert.equal(said[tools.indexOf('memory_recall')], 'Recalling your memory');
+    // The answer ends it, and a step after the answer is nobody's.
+    replay(transport, [chat(40, 'agent', 'm2', 'It says hello.')]);
+    assert.equal(title(), 'Answered');
+    replay(transport, [step(41, 'room')]);
+    assert.equal(title(), 'Answered');
+    assert.equal(adapter.getSnapshot().threads.length, 1);
 });
 test('local API calls are a thread of their own: one lane per caller, one row per call, never its content', () => {
     const { transport, adapter } = connected();

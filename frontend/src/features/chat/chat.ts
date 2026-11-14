@@ -15,6 +15,7 @@ import { bindIconMotion } from '../../components/motion.js';
 import type { AppContext } from '../../app/context.js';
 import type { ArtifactFormat, DeepReadonly, Message } from '../../protocol/models.js';
 import { h } from '../../components/dom.js';
+import { elapsedSince } from '../../components/elapsed.js';
 import { icon } from '../../components/icons.js';
 import { button, emptyState, iconButton, markdown, menu, pill } from '../../components/ui.js';
 import { purchaseCard } from './purchase-card.js';
@@ -229,8 +230,10 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         area.append(h('div', { class: `file-import-status ${failed ? 'failed' : ''}`, role: 'status' }, h('span', { class: failed ? 'status-glyph' : 'status-glyph is-spinning' }, icon(failed ? 'warning' : 'refresh', 14)), h('span', {}, failed ? `${item.file.name}: ${item.error}` : `Preparing ${item.file.name}…`), failed ? button('Retry file', () => { void importLocalFile(ctx, item.id); }, { variant: 'link', id: `retry-import-${item.id}` }) : null, iconButton('close', `Remove ${item.file.name}`, () => { ctx.ui.fileImports.delete(item.id); ctx.render(); })));
     }
     if (ctx.state.turn !== 'idle') {
-        const stateLabel = ctx.state.turn === 'working' ? 'Working on it' : ctx.state.turn === 'awaiting' ? 'Waiting for your confirmation' : ctx.state.turn === 'interrupted' ? 'Interrupted — context saved' : 'Stalled — waiting on a source';
-        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, ctx.state.mode === 'live' ? null : ctx.state.turn === 'working' ? button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' }) : ctx.state.turn === 'interrupted' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null));
+        // Live, the broker says what the run is doing: the chat says that, and how long it has been.
+        const running = ctx.state.mode === 'live' && ctx.state.turn === 'working' ? ctx.state.threads.find((thread) => thread.state === 'running' && thread.chatId === ctx.ui.chatId) : undefined;
+        const stateLabel = ctx.state.turn === 'working' ? running?.statusTitle ?? 'Working on it' : ctx.state.turn === 'awaiting' ? 'Waiting for your confirmation' : ctx.state.turn === 'interrupted' ? 'Interrupted — context saved' : 'Stalled — waiting on a source';
+        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, running?.startedAt ? elapsedSince(running.startedAt) : null, ctx.state.mode === 'live' ? null : ctx.state.turn === 'working' ? button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' }) : ctx.state.turn === 'interrupted' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null));
     }
     if (ctx.ui.attachmentNames.length)
         area.append(h('div', { class: 'attached-files' }, ...ctx.ui.attachmentNames.map((id) => h('span', { class: 'attachment-chip' }, icon('file', 14), ctx.state.artifacts.find((item) => item.id === id)?.title ?? 'Local file', iconButton('close', 'Remove attachment', () => { ctx.ui.attachmentNames = ctx.ui.attachmentNames.filter((item) => item !== id); ctx.render(); })))));

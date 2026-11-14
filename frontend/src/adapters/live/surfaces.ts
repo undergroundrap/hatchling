@@ -100,6 +100,7 @@ export class Surfaces {
                 this.desk.code(body.session_id, body.request_id, body.origin, body.state);
                 return undefined;
             case 'activity':
+            case 'agent_step':
             case 'chat_message':
             case 'artifact':
             case 'schedule':

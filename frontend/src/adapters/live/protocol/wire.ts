@@ -5344,6 +5344,28 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             },
             {
+                "properties": {
+                    "kind": {
+                        "const": "agent_step",
+                        "type": "string"
+                    },
+                    "tool": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/$defs/ToolUse"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    }
+                },
+                "required": [
+                    "kind"
+                ],
+                "type": "object"
+            },
+            {
                 "$ref": "#/$defs/UiArtifact",
                 "properties": {
                     "kind": {
