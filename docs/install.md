@@ -56,6 +56,8 @@ Nothing runs while you're logged out or the computer is off. If a security key p
 
 **Run Hatchling in one WSL distro at a time.** Distros share their control groups and their network, so a second one fails to start with `Failed to spawn executor: Device or resource busy`, and they'd want the same port. If `unlock` says the service has no cpu controller, its own fix (`sudo systemctl daemon-reload`, then `sudo systemctl restart hatchling`) clears it.
 
+Any other WSL distro that runs systemd can cause that message, not only a second Hatchling. If one starts while Hatchling is locked (after a restart or an update, before you unlock), its systemd takes the cpu controller away from Hatchling's service, and `unlock` stops before it asks for your key. `sudo systemctl daemon-reload` in Hatchling's distro puts the controller back; then unlock. Once Hatchling is unlocked and working it uses that controller, and another distro starting doesn't take it.
+
 ## Install
 
 From a clone of the version you install, download its release into `release/` and install from it. `scripts/install.sh` checks every file against the release's `SHA256SUMS` before installing anything.
