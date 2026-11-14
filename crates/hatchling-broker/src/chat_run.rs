@@ -116,7 +116,7 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
                 "The model{named} kept calling its tools wrongly, so Hatchling stopped it before anything ran. Try again, or switch to a model that is better at tool calls."
             ),
             Some(RunFailure::OutOfSteps) => String::from(
-                "The agent used all its steps before it finished. Try asking for something smaller.",
+                "The agent used all its steps before it finished, and didn't say where it got to. Ask it to go on, or for something smaller.",
             ),
             Some(RunFailure::OutOfRoom) => format!(
                 "The model{named} ran out of room before it finished its answer: its context window is too small for Hatchling. With Ollama, set OLLAMA_CONTEXT_LENGTH to 32768; docs/install.md says how."
@@ -1367,6 +1367,23 @@ mod tests {
         assert!(!chat_failed(exited(RunFailure::ModelThoughtOnly), None).contains('('));
         let silent = chat_failed(exited(RunFailure::ModelSilent), Some("qwen3.5:9b"));
         assert!(!silent.contains("thought about"), "{silent}");
+    }
+
+    /// A run out of steps that couldn't say where it got to is told as
+    /// that, with what to do next.
+    #[test]
+    fn a_run_out_of_steps_is_told_to_go_on() {
+        use hatchling_core::run_failure::RunFailure;
+        let ending = Some(hatchling_scheduler::Ending::Exited(
+            RunFailure::OutOfSteps.code().into(),
+        ));
+        let told = chat_failed(ending, Some("m"));
+        assert!(
+            told.starts_with("The agent used all its steps before it finished")
+                && told.contains("didn't say where it got to")
+                && told.contains("Ask it to go on"),
+            "{told}"
+        );
     }
 
     #[test]

@@ -77,6 +77,7 @@ pub struct Loop<'t, 'r, 'm> {
     earlier: Option<String>,
     unfinished: Option<Unfinished<'m>>,
     more: Option<More<'m>>,
+    last_step: Option<String>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -89,6 +90,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("earlier", &self.earlier.is_some())
             .field("unfinished", &self.unfinished.is_some())
             .field("more", &self.more.is_some())
+            .field("last_step", &self.last_step.is_some())
             .finish()
     }
 }
@@ -112,7 +114,25 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             earlier: None,
             unfinished: None,
             more: None,
+            last_step: None,
         }
+    }
+
+    /// Make the run's last step an answer. On the step that leaves none
+    /// after it, `note` is put to the model as a [`Message::Note`], and
+    /// the model is offered no tools: all it can do is say where it got
+    /// to. A run that would have ended with nothing to show ends with
+    /// that.
+    ///
+    /// A last step that isn't an answer, because the model called a tool
+    /// all the same or its turn failed, leaves the run out of steps
+    /// ([`Error::BudgetExhausted`]), and nothing it called is run. A
+    /// run's first step is never its last in this sense: a run of one
+    /// step is as it would be without this.
+    #[must_use]
+    pub fn with_last_step(mut self, note: String) -> Self {
+        self.last_step = Some(note);
+        self
     }
 
     /// Ask `more` before each of the model's turns: what the person has
@@ -232,6 +252,35 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         self.run_with_evidence(model, request, Vec::new())
     }
 
+    /// One turn of the model, offered `tools`: what it did, or `None`
+    /// when this was the run's last step and no answer came of it.
+    ///
+    /// `last` says no step is left after this one and the run has had
+    /// others. With a last-step note set ([`with_last_step`](Self::with_last_step)),
+    /// such a turn is told the note and offered no tools. If it calls a
+    /// tool all the same, nothing is run; if it fails, what the run came
+    /// to is that its steps ran out, whatever went wrong with the turn.
+    fn turn(
+        &self,
+        model: &dyn Model,
+        history: &mut Vec<Message>,
+        tools: &[crate::tool::ToolDescription],
+        last: bool,
+    ) -> Result<Option<ModelAction>, Error> {
+        let Some(note) = self.last_step.as_ref().filter(|_| last) else {
+            return model.next_action(history, tools).map(Some);
+        };
+        history.push(Message::Note(note.clone()));
+        match model.next_action(history, &[]) {
+            Ok(ModelAction::Text(answer)) => Ok(Some(ModelAction::Text(answer))),
+            Ok(ModelAction::ToolCalls(_)) => Ok(None),
+            Err(error) => {
+                tracing::warn!("the run's last step failed, with no step left: {error}");
+                Ok(None)
+            }
+        }
+    }
+
     /// What the model is shown before anything is recalled or done: the
     /// system prompt, the conversation so far, and the request.
     fn opening(&self, request: String) -> Vec<Message> {
@@ -303,8 +352,10 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             if let Some(more) = &self.more {
                 history.extend(more().into_iter().map(Message::User));
             }
-            let action = model.next_action(&history, &tool_descriptions)?;
+            let last = step > 0 && ledger.remaining() == 0;
+            let action = self.turn(model, &mut history, &tool_descriptions, last);
             step += 1;
+            let Some(action) = action? else { break };
             match action {
                 ModelAction::Text(answer) => {
                     history.push(Message::Assistant(answer.clone()));
@@ -922,6 +973,249 @@ mod tests {
         assert!(
             matches!(error, Error::BudgetExhausted { steps: 2 }),
             "{error:?}"
+        );
+    }
+
+    /// A model that does what it is scripted to, an action or a failure
+    /// each turn, and keeps what it was shown: how long the history was,
+    /// its last message, and how many tools it was offered.
+    struct Watched {
+        script: Mutex<std::collections::VecDeque<Result<ModelAction, Error>>>,
+        shown: Mutex<Vec<(usize, Option<Message>, usize)>>,
+    }
+
+    impl Watched {
+        fn doing(script: Vec<Result<ModelAction, Error>>) -> Self {
+            Self {
+                script: Mutex::new(script.into()),
+                shown: Mutex::new(Vec::new()),
+            }
+        }
+
+        /// How many tools each turn was offered.
+        fn offered(&self) -> Vec<usize> {
+            self.shown
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, _, tools)| *tools)
+                .collect()
+        }
+
+        /// The note each turn's history ended with, if it ended with one.
+        fn told(&self) -> Vec<Option<String>> {
+            self.shown
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, last, _)| match last {
+                    Some(Message::Note(note)) => Some(note.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+    }
+
+    impl Model for Watched {
+        fn next_action(
+            &self,
+            messages: &[Message],
+            tools: &[crate::tool::ToolDescription],
+        ) -> Result<ModelAction, Error> {
+            self.shown.lock().unwrap().push((
+                messages.len(),
+                messages.last().cloned(),
+                tools.len(),
+            ));
+            let next = self.script.lock().unwrap().pop_front();
+            next.unwrap_or_else(|| Err(Error::ModelFailed(String::from("nothing scripted"))))
+        }
+    }
+
+    fn counts() -> ModelAction {
+        ModelAction::ToolCalls(vec![crate::tool::ToolCall {
+            name: String::from("count"),
+            arguments: serde_json::json!({"n": 1}),
+        }])
+    }
+
+    fn says(words: &str) -> ModelAction {
+        ModelAction::Text(words.to_owned())
+    }
+
+    const LAST: &str = "say where you got to";
+
+    /// A registry with the one counting tool, and how often it ran.
+    fn counting() -> (ToolRegistry<'static>, Arc<std::sync::atomic::AtomicUsize>) {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(Counting(Arc::clone(&runs))));
+        (registry, runs)
+    }
+
+    /// On its last step a run that has had others is told so, after
+    /// everything else it is shown, and offered no tools: its answer is
+    /// the run's. Every step before it is as it always was.
+    #[test]
+    fn the_last_step_is_an_answer_with_no_tools_offered() {
+        let (registry, runs) = counting();
+        let model = Watched::doing(vec![Ok(counts()), Ok(counts()), Ok(says("I got this far"))]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 3 })
+            .with_last_step(String::from(LAST))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(
+            (result.answer.as_str(), result.steps),
+            ("I got this far", 3)
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(model.offered(), [1, 1, 0]);
+        assert_eq!(model.told(), [None, None, Some(String::from(LAST))]);
+        // The note is in the history the run hands back, before the
+        // answer it brought.
+        let tail: Vec<_> = result.history.iter().rev().take(2).collect();
+        assert!(
+            matches!(tail.as_slice(), [Message::Assistant(answer), Message::Note(note)] if answer == "I got this far" && note == LAST),
+            "{tail:?}"
+        );
+        // An answer before the last step ends the run there, untold.
+        let model = Watched::doing(vec![Ok(counts()), Ok(says("done early"))]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 3 })
+            .with_last_step(String::from(LAST))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("done early", 2));
+        assert_eq!(model.offered(), [1, 1]);
+        assert_eq!(model.told(), [None, None]);
+    }
+
+    /// A last step that calls a tool all the same runs nothing, and one
+    /// whose turn fails is no model failure: either way the run is out of
+    /// steps, having taken them all. A failure on any other step is that
+    /// failure.
+    #[test]
+    fn a_last_step_that_is_no_answer_leaves_the_run_out_of_steps() {
+        let (registry, runs) = counting();
+        let model = Watched::doing(vec![Ok(counts()), Ok(counts()), Ok(says("never asked"))]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .with_last_step(String::from(LAST))
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::BudgetExhausted { steps: 2 }),
+            "{error:?}"
+        );
+        assert_eq!(
+            runs.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the last step's call was run"
+        );
+        assert_eq!(model.offered(), [1, 0]);
+
+        let failing = || Err(Error::ModelFailed(String::from("the server went away")));
+        let model = Watched::doing(vec![Ok(counts()), failing()]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .with_last_step(String::from(LAST))
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::BudgetExhausted { steps: 2 }),
+            "{error:?}"
+        );
+        // Without a last step to answer on, the failure is the run's.
+        let model = Watched::doing(vec![Ok(counts()), failing()]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(matches!(error, Error::ModelFailed(_)), "{error:?}");
+        // And so it is on a step that isn't the last.
+        let model = Watched::doing(vec![Ok(counts()), failing(), Ok(says("never asked"))]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 3 })
+            .with_last_step(String::from(LAST))
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(matches!(error, Error::ModelFailed(_)), "{error:?}");
+        assert_eq!(model.told(), [None, None]);
+    }
+
+    /// A run's first step is never its last in this sense: a run of one
+    /// step is offered its tools and told nothing, and what it calls is
+    /// run. And a run with no last step set is as it always was.
+    #[test]
+    fn a_first_step_and_a_run_with_no_last_step_are_as_they_were() {
+        let (registry, runs) = counting();
+        let model = Watched::doing(vec![Ok(counts()), Ok(says("never asked"))]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 1 })
+            .with_last_step(String::from(LAST))
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::BudgetExhausted { steps: 1 }),
+            "{error:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(model.offered(), [1]);
+        assert_eq!(model.told(), [None]);
+
+        let model = Watched::doing(vec![Ok(counts()), Ok(counts()), Ok(says("never asked"))]);
+        let error = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 2 })
+            .run(&model, String::from("go"))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::BudgetExhausted { steps: 2 }),
+            "{error:?}"
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 3);
+        assert_eq!(model.offered(), [1, 1]);
+        assert_eq!(model.told(), [None, None]);
+    }
+
+    /// The last step is the one that leaves the ledger empty, whoever
+    /// took the rest: steps given to a child count. What the person sent
+    /// meanwhile comes before the note, so the note is the last thing
+    /// the model reads. An answer held on the last step is still the
+    /// run's.
+    #[test]
+    fn the_last_step_is_the_ledgers_and_the_note_comes_last() {
+        let (registry, _runs) = counting();
+        let ledger = Arc::new(StepLedger::new(6));
+        // A child took four: two are left, and the second is the last.
+        ledger.allocate(4).unwrap();
+        let sent = std::cell::Cell::new(0);
+        let model = Watched::doing(vec![Ok(counts()), Ok(says("this far"))]);
+        let asked = std::cell::Cell::new(0);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 6 })
+            .with_ledger(Arc::clone(&ledger))
+            .with_last_step(String::from(LAST))
+            .with_more(Box::new(|| {
+                sent.set(sent.get() + 1);
+                vec![format!("and another thing, {}", sent.get())]
+            }))
+            .with_unfinished(left_for(u32::MAX, &asked))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("this far", 2));
+        assert_eq!(ledger.remaining(), 0);
+        assert_eq!(model.offered(), [1, 0]);
+        assert_eq!(model.told(), [None, Some(String::from(LAST))]);
+        let before_the_note = result
+            .history
+            .iter()
+            .rev()
+            .skip_while(|message| !matches!(message, Message::Note(note) if note == LAST))
+            .nth(1);
+        assert!(
+            matches!(before_the_note, Some(Message::User(text)) if text == "and another thing, 2"),
+            "{before_the_note:?}"
         );
     }
 

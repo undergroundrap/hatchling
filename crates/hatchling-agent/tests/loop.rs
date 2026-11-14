@@ -428,3 +428,54 @@ fn loop_asks_the_broker_to_search_its_files() {
         "{told}"
     );
 }
+
+/// A run's last step is an answer: the model is told it is out of steps
+/// and to say where it got to, after everything else it is shown, and
+/// what it says then is the run's answer, where the run used to fail
+/// with nothing to show.
+#[test]
+fn loop_gives_its_last_step_to_an_answer() {
+    let broker = FixtureBroker::spawn("loop-last-step", BrokerBehavior::Vault(Vec::new())).unwrap();
+    let cell = ready_cell_offering(
+        &broker,
+        Some(std::collections::BTreeSet::from([ToolGroup::Room])),
+    )
+    .unwrap();
+    let searching = || {
+        ModelAction::ToolCalls(vec![ToolCall {
+            name: String::from("search"),
+            arguments: json!({ "pattern": "to do" }),
+        }])
+    };
+    let model = FakeModel::new(vec![
+        searching(),
+        searching(),
+        ModelAction::Text(String::from("I ran out of steps after two searches.")),
+    ]);
+    let result = cell
+        .run_loop(
+            hatchling_agent::PromptKind::Chat,
+            &model,
+            String::from("find my to-dos"),
+            LoopBudget { max_steps: 3 },
+        )
+        .unwrap();
+    assert_eq!(result.answer, "I ran out of steps after two searches.");
+    assert_eq!(result.steps, 3);
+    let seen = model.seen_histories();
+    let told = |turn: usize| {
+        seen.get(turn).and_then(|history| match history.last() {
+            Some(Message::Note(note)) => Some(note.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(told(0), None);
+    assert_eq!(told(1), None);
+    let last = told(2).expect("the last step is told it is the last");
+    assert!(
+        last.starts_with("This is your last step")
+            && last.contains("don't call a tool")
+            && last.contains("what is left to do"),
+        "{last}"
+    );
+}

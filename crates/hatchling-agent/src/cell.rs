@@ -288,6 +288,11 @@ impl Cell<PeerAuthorized> {
     }
 }
 
+/// What the model is told on a run's last step, where it is offered no
+/// tools: to say where it got to, so a run out of steps leaves the person
+/// with what was done and what wasn't.
+pub(crate) const LAST_STEP: &str = "This is your last step: you have no tool calls left in this reply, so don't call a tool. Tell the person plainly that you ran out of steps before you finished, what you did, what you found, and what is left to do. They can ask you to go on.";
+
 impl Cell<Ready> {
     /// Returns the open broker connection. Post-handshake traffic goes
     /// through the vault methods below; the raw handle remains for
@@ -573,6 +578,7 @@ impl Cell<Ready> {
         let result = asking
             .with_budget(budget)
             .with_ledger(ledger)
+            .with_last_step(String::from(LAST_STEP))
             .with_unfinished(Box::new(|| running.unfinished()))
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(
                 self.connection(),
