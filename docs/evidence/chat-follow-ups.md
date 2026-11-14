@@ -262,15 +262,46 @@ runs them: 483 passed (`root/as-root.log`).
 The app: `npm run check` exit 0; 493 unit tests, 0 failed; the live
 adapter at 100% (`app/fu-frontend-check.log`).
 
+## On a real install
+
+Added on 2026-11-14, after the change was merged (`8174448e`), on an
+install updated by hand to main `2993ce29`. The file is in a second
+bundle,
+`hatchling-unlock-and-follow-ups-real-install-results.tar.gz`, 1843 bytes, sha256
+`f61850b88da1adcb419097ec5b622d9b64a35beaec5eba0d0137728a7400bd4e`.
+
+The model was gemma4:12b, on that machine. Typed into the app's chat:
+"In your computer, run this one command and tell me what it printed:
+sleep 15; echo first-done". Thirty seconds later, while the working
+line said "Using its computer": "Also, after that, run: echo
+second-done  and tell me what that printed too."
+
+- **One run answered both.** The broker's activity log has one run
+  summary for those minutes, with two uses of the agent's computer and
+  four calls to the model, and its log has one chat run started. No run
+  was started for the second message.
+- **One answer came**, under both messages in the chat: "The second
+  command printed: second-done".
+- **The working line** went from "Using its computer" at 30 seconds to
+  "Asking the model" at 31, counted from the first message, and to the
+  answer at 34.
+
+So the second message reached the run that was working on the first,
+and that run did what it asked. Its answer said what the second command
+printed and not what the first did. Both results were in front of the
+model, and its instructions say to answer everything that was sent:
+that it didn't is the model's wording, and is what a real model was
+tried for.
+
+It is one run, of one model.
+
 ## What wasn't tried
 
-- **A real install with a real model.** Every test scripts the model.
-  Whether a model takes a further message into its task well is the
-  model's to do.
-- **The app in a browser** against a real broker, with a message sent
-  in the middle of a run: the adapter's tests replay events. The browser
-  suites and the real app's end-to-end check run in this pull request's
-  CI, and send one message at a time.
+- **Another model**, or this one more than once. How well a model
+  folds a further message into its answer is the model's to do; with
+  this one, once, the work was done and the answer left half of it out.
+- **The app's activity view** during that run: the chat was watched,
+  and the view beside it wasn't.
 - **A run that fails after taking messages.** What it took is gone with
   it, as its own message is; the owner is told the run failed, and not
   that those messages went with it.
