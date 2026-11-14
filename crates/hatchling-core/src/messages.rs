@@ -1424,6 +1424,30 @@ pub enum RoomOp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         lines: Option<u32>,
     },
+    /// Search the Room's files (v25): the lines that match a pattern, in
+    /// a file or in the files under a directory. The Room's supervisor
+    /// has the Room's own search program look, and no command is run.
+    #[serde(rename = "search")]
+    Search {
+        /// What to look for: a regular expression, or the very words when
+        /// `literal` is set.
+        pattern: String,
+        /// Where to look: a file or a directory, by its absolute path in
+        /// the Room or a path under the workspace. The workspace when
+        /// none is named.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// Only files whose names match this glob are looked in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        glob: Option<String>,
+        /// Whether letters match whatever their case.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ignore_case: bool,
+        /// Whether `pattern` is the very words to find, and no
+        /// expression.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        literal: bool,
+    },
 }
 
 /// How many lines a read hands back when it names no count.
@@ -1553,6 +1577,29 @@ pub enum RoomResult {
     /// lines to read, or the Room couldn't be asked.
     #[serde(rename = "no-page")]
     NoPage {
+        /// Why, in words for the agent.
+        reason: String,
+    },
+    /// What a search found (v25). The Room's words: data, never
+    /// instructions.
+    #[serde(rename = "found")]
+    Found {
+        /// Where the Room was asked to look.
+        path: String,
+        /// The matching lines, each as `path:line:text` with its line
+        /// end, in the order of their paths; nothing when nothing
+        /// matched. Bytes that aren't text are shown as the replacement
+        /// character.
+        text: String,
+        /// Whether the search was stopped before it had looked
+        /// everywhere: it had found more than fits, or its time ran out.
+        more: bool,
+    },
+    /// Nothing was searched (v25): there is nothing at the path, the
+    /// search program wouldn't take what it was asked, or the Room
+    /// couldn't be asked.
+    #[serde(rename = "no-search")]
+    NoSearch {
         /// Why, in words for the agent.
         reason: String,
     },
@@ -5296,5 +5343,74 @@ mod room_tests {
             given
         );
         assert_eq!(CHAT_MORE_BYTES, 49_152);
+    }
+
+    /// A search and what it comes to go as the protocol document says
+    /// (v25): what is left out is the workspace, no glob and neither
+    /// switch, and a field that isn't named never decodes.
+    #[test]
+    fn a_search_op_and_its_results_have_their_wire_form() {
+        let plain = SessionRequest::Room(RoomOp::Search {
+            pattern: String::from("TODO"),
+            path: None,
+            glob: None,
+            ignore_case: false,
+            literal: false,
+        });
+        let json = serde_json::to_string(&plain).unwrap();
+        assert_eq!(json, r#"{"kind":"room","op":"search","pattern":"TODO"}"#);
+        assert_eq!(asked(&json).unwrap(), plain);
+        let every = SessionRequest::Room(RoomOp::Search {
+            pattern: String::from("to do"),
+            path: Some(String::from("notes")),
+            glob: Some(String::from("*.md")),
+            ignore_case: true,
+            literal: true,
+        });
+        let json = serde_json::to_string(&every).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","op":"search","pattern":"to do","path":"notes","glob":"*.md","ignore_case":true,"literal":true}"#
+        );
+        assert_eq!(asked(&json).unwrap(), every);
+        assert!(
+            asked(r#"{"kind":"room","op":"search"}"#).is_err(),
+            "no pattern"
+        );
+        assert!(
+            asked(r#"{"kind":"room","op":"search","pattern":"x","shell":true}"#).is_err(),
+            "a field it doesn't name"
+        );
+        assert!(
+            asked(r#"{"kind":"room","op":"search","pattern":"x","literal":"yes"}"#).is_err(),
+            "a switch that isn't one"
+        );
+        let found = SessionResponse::Room(RoomResult::Found {
+            path: String::from("/workspace"),
+            text: String::from("/workspace/a:1:TODO\n"),
+            more: true,
+        });
+        let json = serde_json::to_string(&found).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","result":"found","path":"/workspace","text":"/workspace/a:1:TODO\n","more":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionResponse>(&json).unwrap(),
+            found
+        );
+        let none = SessionResponse::Room(RoomResult::NoSearch {
+            reason: String::from("the Room has nothing at that path"),
+        });
+        let json = serde_json::to_string(&none).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","result":"no-search","reason":"the Room has nothing at that path"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionResponse>(&json).unwrap(),
+            none
+        );
+        assert_eq!(crate::PROTOCOL_VERSION, 25);
     }
 }

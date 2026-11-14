@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 24;
+export const SESSION_PROTOCOL_VERSION = 25;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2529,6 +2529,30 @@ export type RoomResult = {
     readonly result: 'no-page';
 } | {
     /**
+     * Whether the search was stopped before it had looked
+     * everywhere: it had found more than fits, or its time ran out.
+     */
+    readonly more: boolean;
+    /**
+     * Where the Room was asked to look.
+     */
+    readonly path: string;
+    readonly result: 'found';
+    /**
+     * The matching lines, each as `path:line:text` with its line
+     * end, in the order of their paths; nothing when nothing
+     * matched. Bytes that aren't text are shown as the replacement
+     * character.
+     */
+    readonly text: string;
+} | {
+    /**
+     * Why, in words for the agent.
+     */
+    readonly reason: string;
+    readonly result: 'no-search';
+} | {
+    /**
      * Whether a command may have been started all the same: its
      * name, to ask after before anything is run again.
      */
@@ -3880,6 +3904,32 @@ export type SessionRequest = {
      * workspace.
      */
     readonly path: string;
+} | {
+    /**
+     * Only files whose names match this glob are looked in.
+     */
+    readonly glob?: string | null;
+    /**
+     * Whether letters match whatever their case.
+     */
+    readonly ignore_case?: boolean;
+    /**
+     * Whether `pattern` is the very words to find, and no
+     * expression.
+     */
+    readonly literal?: boolean;
+    readonly op: 'search';
+    /**
+     * Where to look: a file or a directory, by its absolute path in
+     * the Room or a path under the workspace. The workspace when
+     * none is named.
+     */
+    readonly path?: string | null;
+    /**
+     * What to look for: a regular expression, or the very words when
+     * `literal` is set.
+     */
+    readonly pattern: string;
 }) | {
     readonly kind: 'chat';
 } & ({

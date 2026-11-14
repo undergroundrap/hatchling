@@ -15,6 +15,10 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v25 adds searching the files in the agent's computer
+/// (`RoomOp::Search`, `RoomResult::Found`, `RoomResult::NoSearch`): the
+/// lines that match a pattern, found by the Room's own search program,
+/// with no command run for it.
 /// v24 adds the owner's further messages for the chat run in flight
 /// (`SessionRequest::Chat`, `ChatOp::More`, `ChatResult::More`), and the
 /// app is told how many the run took (`UiEventBody::MessagesJoined`).
@@ -64,7 +68,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 24;
+pub const PROTOCOL_VERSION: u16 = 25;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

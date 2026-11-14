@@ -50,6 +50,8 @@ impl Running {
             RoomResult::Refused { .. }
             | RoomResult::Page { .. }
             | RoomResult::NoPage { .. }
+            | RoomResult::Found { .. }
+            | RoomResult::NoSearch { .. }
             | RoomResult::Failed { job: None, .. } => {}
         }
     }

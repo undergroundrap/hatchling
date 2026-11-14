@@ -11,6 +11,7 @@ enum Asked {
     Stop(String),
     Output(String, Stream, End),
     Page(String, u64, u32),
+    Search(RoomSearch),
 }
 
 /// A stand-in for the spawner: it answers each ask from what it was told
@@ -26,6 +27,8 @@ struct Fake {
     pieces: RefCell<BTreeMap<(String, Stream, End), Vec<u8>>>,
     /// What each ask for a page is answered, in order.
     pages: RefCell<Vec<Result<Page, String>>>,
+    /// What each search is answered, in order.
+    finds: RefCell<Vec<Result<Found, String>>>,
 }
 
 impl Fake {
@@ -43,6 +46,10 @@ impl Fake {
 
     fn hands_back(&self, page: Result<Page, String>) {
         self.pages.borrow_mut().push(page);
+    }
+
+    fn finds(&self, found: Result<Found, String>) {
+        self.finds.borrow_mut().push(found);
     }
 
     fn keeps(&self, job: &str, stream: Stream, end: End, bytes: &[u8]) {
@@ -110,6 +117,21 @@ impl Rooms for Fake {
             .borrow_mut()
             .push(Asked::Page(path.to_owned(), from, lines));
         self.pages.borrow_mut().remove(0)
+    }
+
+    fn search(&self, search: &RoomSearch) -> Result<Found, String> {
+        self.asked.borrow_mut().push(Asked::Search(search.clone()));
+        self.finds.borrow_mut().remove(0)
+    }
+}
+
+fn search(pattern: &str, path: Option<&str>) -> RoomOp {
+    RoomOp::Search {
+        pattern: pattern.to_owned(),
+        path: path.map(str::to_owned),
+        glob: None,
+        ignore_case: false,
+        literal: false,
     }
 }
 
@@ -920,6 +942,173 @@ fn the_longest_page_fits_one_frame() {
         assert!(
             written <= hatchling_core::framing::MAX_FRAME_BYTES,
             "{written} bytes for a page of {byte:#x}"
+        );
+    }
+}
+
+/// Files are searched as the session names them: in the workspace unless
+/// it names a path, which is under the workspace unless it is absolute,
+/// with the glob and the switches it gave. What was found is told as it
+/// came, with where the Room was asked to look; bytes that aren't text
+/// are shown as the replacement character. A search is no command: it is
+/// given no name.
+#[test]
+fn files_are_searched_as_the_session_names_them() {
+    let fake = Fake::default();
+    let mut room = session(&fake);
+    fake.finds(Ok(Found {
+        bytes: b"/workspace/a.txt:3:to do\n".to_vec(),
+        more: true,
+    }));
+    assert_eq!(
+        room.handle(&search("to do", None)),
+        RoomResult::Found {
+            path: String::from("/workspace"),
+            text: String::from("/workspace/a.txt:3:to do\n"),
+            more: true,
+        }
+    );
+    fake.finds(Ok(Found {
+        bytes: b"/workspace/notes/b:1:caf\xe9\n".to_vec(),
+        more: false,
+    }));
+    let every = RoomOp::Search {
+        pattern: String::from("CAF"),
+        path: Some(String::from("notes")),
+        glob: Some(String::from("*.md")),
+        ignore_case: true,
+        literal: false,
+    };
+    assert_eq!(
+        room.handle(&every),
+        RoomResult::Found {
+            path: String::from("/workspace/notes"),
+            text: String::from("/workspace/notes/b:1:caf\u{fffd}\n"),
+            more: false,
+        }
+    );
+    // Nothing matched, somewhere that isn't the workspace, for the very
+    // words: each switch is its own.
+    fake.finds(Ok(Found::default()));
+    let words = RoomOp::Search {
+        pattern: String::from("x"),
+        path: Some(String::from("/etc")),
+        glob: None,
+        ignore_case: false,
+        literal: true,
+    };
+    assert_eq!(
+        room.handle(&words),
+        RoomResult::Found {
+            path: String::from("/etc"),
+            text: String::new(),
+            more: false,
+        }
+    );
+    let asked_for = |pattern: &str, path: &str| RoomSearch {
+        pattern: pattern.to_owned(),
+        path: path.to_owned(),
+        glob: None,
+        ignore_case: false,
+        literal: false,
+    };
+    assert_eq!(
+        fake.asked(),
+        [
+            Asked::Search(asked_for("to do", "/workspace")),
+            Asked::Search(RoomSearch {
+                glob: Some(String::from("*.md")),
+                ignore_case: true,
+                ..asked_for("CAF", "/workspace/notes")
+            }),
+            Asked::Search(RoomSearch {
+                literal: true,
+                ..asked_for("x", "/etc")
+            }),
+        ]
+    );
+    // The next command has the first name: a search took none.
+    fake.answers_run(Ok(ended(0, Captured::default(), Captured::default())));
+    assert!(matches!(
+        room.handle(&run(&["true"])),
+        RoomResult::Ended { job, .. } if job == "jabc-1"
+    ));
+    drop(room);
+    assert_eq!(
+        fake.asked().len(),
+        4,
+        "a search was stopped as a command is"
+    );
+}
+
+/// Why nothing was searched is told in the Room's words; a search that
+/// may not be asked for never is; one with no Room to ask, or made for a
+/// run with nobody there, is said as that.
+#[test]
+fn a_search_that_cannot_be_made_says_why() {
+    let fake = Fake::default();
+    let mut room = session(&fake);
+    fake.finds(Err(String::from("the Room has nothing at that path")));
+    assert_eq!(
+        room.handle(&search("x", Some("absent"))),
+        RoomResult::NoSearch {
+            reason: String::from("the Room has nothing at that path")
+        }
+    );
+    assert_eq!(fake.asked().len(), 1);
+    let long = "g".repeat(hatchling_core::room::GLOB_BYTES + 1);
+    let with_glob = |glob: &str| RoomOp::Search {
+        pattern: String::from("x"),
+        path: None,
+        glob: Some(glob.to_owned()),
+        ignore_case: false,
+        literal: false,
+    };
+    for (op, why) in [
+        (search("", None), "pattern"),
+        (search("a\nb", None), "pattern"),
+        (search("x", Some("a\0b")), "path"),
+        (with_glob(""), "glob"),
+        (with_glob(&long), "glob"),
+    ] {
+        let RoomResult::Refused { reason } = room.handle(&op) else {
+            unreachable!("{op:?} was asked for");
+        };
+        assert!(reason.contains(why), "{reason}");
+    }
+    assert_eq!(fake.asked().len(), 1, "what may not be asked for was");
+    let mut nowhere = RoomSession::over_rooms(true, None, Some(String::from("j")));
+    assert_eq!(
+        nowhere.handle(&search("x", None)),
+        RoomResult::NoSearch {
+            reason: String::from(NO_ROOM)
+        }
+    );
+    let mut alone = RoomSession::over_rooms(false, Some(&fake), Some(String::from("j")));
+    assert_eq!(alone.handle(&search("x", None)), refused(UNATTENDED));
+    assert_eq!(fake.asked().len(), 1, "a run with nobody there searched");
+}
+
+/// The most a search can find, of the bytes that are longest written,
+/// under the longest path, is a reply that fits one frame: what was found
+/// is never replaced for its size.
+#[test]
+fn the_most_a_search_finds_fits_one_frame() {
+    for byte in [1_u8, 0xff, b'"'] {
+        let fake = Fake::default();
+        let mut room = session(&fake);
+        fake.finds(Ok(Found {
+            bytes: vec![byte; hatchling_core::room::FOUND_BYTES],
+            more: true,
+        }));
+        let path = format!("/{}", "\u{1}".repeat(hatchling_core::room::PATH_BYTES - 1));
+        let result = room.handle(&search("x", Some(&path)));
+        assert!(matches!(result, RoomResult::Found { .. }), "{result:?}");
+        let reply = hatchling_core::SessionResponse::Room(result);
+        let written = serde_json::to_vec(&reply).unwrap().len();
+        assert!(
+            written <= hatchling_core::framing::MAX_FRAME_BYTES,
+            "{written} bytes for what a search found of {byte:#x}"
         );
     }
 }

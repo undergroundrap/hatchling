@@ -483,6 +483,7 @@ impl Cell<Ready> {
                 running,
             )));
             registry.register(Box::new(crate::tools::ReadTool::new(self.connection())));
+            registry.register(Box::new(crate::tools::SearchTool::new(self.connection())));
         }
         if on(hatchling_core::run_tools::ToolGroup::Browser) {
             registry.register(Box::new(crate::tools::BrowserOpenTool::new(

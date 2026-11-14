@@ -382,3 +382,49 @@ fn loop_asks_the_broker_to_read_a_file() {
         "{told}"
     );
 }
+
+/// The model's `search` reaches the broker as a Room op, and the broker's
+/// answer comes back to the model: with no Room to search, the broker
+/// says so, in words about a search, and the loop goes on to the model's
+/// answer. The model is told it has the tool.
+#[test]
+fn loop_asks_the_broker_to_search_its_files() {
+    let broker = FixtureBroker::spawn("loop-search", BrokerBehavior::Vault(Vec::new())).unwrap();
+    let cell = ready_cell_offering(
+        &broker,
+        Some(std::collections::BTreeSet::from([ToolGroup::Room])),
+    )
+    .unwrap();
+    let model = FakeModel::new(vec![
+        ModelAction::ToolCalls(vec![ToolCall {
+            name: String::from("search"),
+            arguments: json!({ "pattern": "to do", "glob": "*.md" }),
+        }]),
+        ModelAction::Text(String::from("nothing was searched")),
+    ]);
+    let result = cell
+        .run_loop(
+            hatchling_agent::PromptKind::Chat,
+            &model,
+            String::from("find my to-dos"),
+            LoopBudget { max_steps: 5 },
+        )
+        .unwrap();
+    assert_eq!(result.answer, "nothing was searched");
+    let seen = model.seen_histories();
+    let system = format!("{:?}", seen.first().and_then(|history| history.first()));
+    assert!(
+        system.contains("`search` finds the lines that match a pattern in its files"),
+        "{system}"
+    );
+    let turn2 = seen.get(1).expect("model should have a second turn");
+    let results = tool_results(turn2, 2).expect("expected ToolUse at index 2");
+    let Some(ToolOutput::Err(told)) = results.first() else {
+        unreachable!("nothing is searched here, got {results:?}")
+    };
+    assert!(
+        told == "commands run only in a chat, with the owner there: this run has no computer"
+            || told == "nothing was searched: there is no computer on this install",
+        "{told}"
+    );
+}

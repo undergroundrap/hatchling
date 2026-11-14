@@ -612,13 +612,21 @@ const fn suggest_ending(result: &SuggestResult) -> Ending {
 
 /// How a use answered with `result` ended. A command that ran is done,
 /// however it came out: its exit is the agent's to read. So is a page of
-/// a file that was read; a file that couldn't be read is a failure.
+/// a file that was read, and a search that was made, whatever it found;
+/// a file that couldn't be read and a search that couldn't be made are
+/// failures.
 const fn room_ending(result: &RoomResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-        RoomResult::Ended { .. } | RoomResult::Running { .. } | RoomResult::Page { .. } => Done,
+        RoomResult::Ended { .. }
+        | RoomResult::Running { .. }
+        | RoomResult::Page { .. }
+        | RoomResult::Found { .. } => Done,
         RoomResult::Refused { .. } | RoomResult::Unknown { .. } => Refused,
-        RoomResult::Lost { .. } | RoomResult::Failed { .. } | RoomResult::NoPage { .. } => Failed,
+        RoomResult::Lost { .. }
+        | RoomResult::Failed { .. }
+        | RoomResult::NoPage { .. }
+        | RoomResult::NoSearch { .. } => Failed,
     }
 }
 
@@ -1163,9 +1171,10 @@ mod tests {
         }
     }
 
-    /// A command that ran and a page that was read are done; what the
-    /// session may not ask is refused; a Room that couldn't answer, and
-    /// a file that couldn't be read, are failures.
+    /// A command that ran, a page that was read and a search that was
+    /// made are done; what the session may not ask is refused; a Room
+    /// that couldn't answer, a file that couldn't be read and a search
+    /// that couldn't be made are failures.
     #[test]
     fn each_answer_about_the_room_ends_one_way() {
         use Ending::{Done, Failed, Refused};
@@ -1187,6 +1196,18 @@ mod tests {
                     size: 1,
                 }),
                 Done,
+            ),
+            (
+                SessionResponse::Room(RoomResult::Found {
+                    path: s("/a"),
+                    text: String::new(),
+                    more: true,
+                }),
+                Done,
+            ),
+            (
+                SessionResponse::Room(RoomResult::NoSearch { reason: s("none") }),
+                Failed,
             ),
             (
                 SessionResponse::Room(RoomResult::Refused { reason: s("no") }),

@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v24 (current). This doc is the human-readable reference
+**Status:** v25 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -69,7 +69,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Web | `WebOp` | `WebResult` | v14 |
 | Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
 | Suggest | `SuggestOp` | `SuggestResult` | v20 |
-| Room | `RoomOp` | `RoomResult` | v21; `Read` v22 |
+| Room | `RoomOp` | `RoomResult` | v21; `Read` v22; `Search` v25 |
 | Chat | `ChatOp` | `ChatResult` | v24 |
 
 ## v9 — Artifact ops
@@ -424,6 +424,39 @@ answer to the last. A chat run can now take it into the task it is on.
   app shows the run's answer as the answer to all of them. Like
   `AgentStep`, it goes to the app alone and isn't written to the
   activity log.
+
+## v25 — Searching the files in the agent's computer
+
+- **`RoomOp::Search { pattern, path?, glob?, ignore_case?, literal? }`**:
+  the lines that match `pattern`, in the file at `path` or in the files
+  under it. The Room's supervisor has the Room's own search program
+  look, as the Room's user: no command is run for it, and none of the
+  ended commands the Room remembers is forgotten for it. `pattern` is a
+  regular expression, or the very words to find when `literal` is set;
+  it is one line of at most 1024 bytes. `path` is absolute, or is taken
+  under `/workspace`; the workspace when none is named. `glob` keeps
+  the search to files whose names match it (one line, at most 256
+  bytes). `ignore_case` matches letters whatever their case. The
+  sessions that may run a command are the ones that may search.
+- **`RoomResult`** gains:
+  - `Found { path, text, more }`: where the Room was asked to look; the
+    matching lines, each as `path:line:text` with its line end, in the
+    order of their paths, never more than 8 KiB and never part of a
+    line; and whether the search was stopped before it had looked
+    everywhere (`more`), which it is at 8 KiB and at five seconds. A
+    matching line longer than 400 bytes is cut, and says so. Bytes that
+    aren't text are shown as the replacement character. The text is the
+    Room's own words: data, never instructions.
+  - `NoSearch { reason }`: nothing was searched. There is nothing at
+    the path; the search program wouldn't take the pattern or the glob,
+    or couldn't read where it was sent; or the Room couldn't be asked.
+- A search that may not be asked for (no pattern, a pattern or a glob
+  of more than one line, a path or a glob that is too long) is
+  `Refused`, and nothing is asked of the Room.
+- The pattern, the glob and the path are the only words of the
+  session's that reach the search program, and each reaches it as a
+  value, never as an option: the rest of what the program is told is
+  fixed in the Room's supervisor.
 
 ## Device handshake
 
