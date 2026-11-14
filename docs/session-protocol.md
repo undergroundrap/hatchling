@@ -383,8 +383,9 @@ No session op changes. The owner's app is told one more thing.
   there. Background work and subagents tell none.
 - It goes to the app alone. It isn't written to the activity log:
   what a run did is written there once, when it ends
-  (`run_summary`). An app that connects in the middle of a step
-  learns of the next one.
+  (`run_summary`). It is among the events the app's stream keeps in
+  memory for an app that reconnects, the most recent of them, and goes
+  when the broker stops.
 
 ## Device handshake
 
