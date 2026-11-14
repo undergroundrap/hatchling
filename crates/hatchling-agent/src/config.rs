@@ -9,6 +9,31 @@ use hatchling_core::{CellId, LogLevel, ModelReasoning, PeerUid, SocketPath};
 use crate::Error;
 use crate::environment as env;
 
+/// The steps a run has when `HATCHLING_MODEL_MAX_STEPS` doesn't say and
+/// it isn't a chat.
+///
+/// A step is a model turn, and the last of them is an answer. A run with
+/// nobody there (a schedule's, a hook's, a follow-up's, a child's) keeps
+/// this few: each step is a try at whatever the run is trying, a saved
+/// secret's way out among them, and nobody is watching.
+pub const DEFAULT_MAX_STEPS: u32 = 10;
+
+/// The steps a chat has when `HATCHLING_MODEL_MAX_STEPS` doesn't say.
+///
+/// Room for a task of a few files, run and checked, with a small
+/// model's slips, for a run whose person is there. The broker's
+/// wall-clock limit bounds the run however many it has.
+pub const CHAT_MAX_STEPS: u32 = 25;
+
+/// The steps a run has when the setting doesn't say.
+const fn default_steps(run_chat: bool) -> u32 {
+    if run_chat {
+        CHAT_MAX_STEPS
+    } else {
+        DEFAULT_MAX_STEPS
+    }
+}
+
 /// Where the agent reaches its broker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BrokerAddress {
@@ -139,13 +164,14 @@ impl Config {
                 reason: String::from("expected provider-default or disabled"),
             })?,
         };
-        let model_max_steps = match get(env::HATCHLING_MODEL_MAX_STEPS.name) {
-            Some(raw) => raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
-                key: "HATCHLING_MODEL_MAX_STEPS",
-                reason: String::from("expected a base-10 u32 step budget"),
-            })?,
-            None => 10,
-        };
+        let set_max_steps = get(env::HATCHLING_MODEL_MAX_STEPS.name)
+            .map(|raw| {
+                raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
+                    key: "HATCHLING_MODEL_MAX_STEPS",
+                    reason: String::from("expected a base-10 u32 step budget"),
+                })
+            })
+            .transpose()?;
         let model_context_window = get(env::HATCHLING_MODEL_CONTEXT_WINDOW.name)
             .map(|raw| parse_context_window(&raw))
             .transpose()?;
@@ -157,6 +183,7 @@ impl Config {
             get(env::HATCHLING_RUN_CHAT.name).as_deref(),
             "HATCHLING_RUN_CHAT",
         )?;
+        let model_max_steps = set_max_steps.unwrap_or_else(|| default_steps(run_chat));
         let run_history =
             parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat)?;
         let run_earlier =
@@ -340,7 +367,7 @@ mod tests {
         const CHILD: &str = "HATCHLING_TEST_OTHER_NONUNICODE_CHILD";
         if std::env::var_os(CHILD).is_some() {
             let config = Config::from_env().unwrap();
-            assert_eq!(config.model_max_steps, 10);
+            assert_eq!(config.model_max_steps, DEFAULT_MAX_STEPS);
             return;
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
@@ -750,6 +777,23 @@ mod tests {
                 "{raw:?}: {error:?}"
             );
         }
+    }
+
+    /// A chat, whose person is there, has more steps than a run with
+    /// nobody there; a step count that is set is the run's, chat or not.
+    #[test]
+    fn a_chat_has_more_steps_than_a_run_with_nobody_there() {
+        let mut vars = valid_vars();
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 10);
+        vars.insert("HATCHLING_RUN_CHAT", "0");
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 10);
+        vars.insert("HATCHLING_RUN_CHAT", "1");
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 25);
+        vars.insert("HATCHLING_MODEL_MAX_STEPS", "7");
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 7);
+        vars.insert("HATCHLING_RUN_CHAT", "0");
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 7);
+        assert_eq!((DEFAULT_MAX_STEPS, CHAT_MAX_STEPS), (10, 25));
     }
 
     #[test]
