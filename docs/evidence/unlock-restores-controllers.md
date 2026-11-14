@@ -161,16 +161,41 @@ build cache (`gate.log`, `gate-1.*.log`):
 The broker's tests of `doctor` and `unlock` were run as root too, as CI
 runs them: 57 passed (`root/as-root.log`).
 
+## On a real install
+
+Added on 2026-11-14, after the change was merged (`2993ce29`). The file
+is in a second bundle,
+`hatchling-unlock-and-follow-ups-real-install-results.tar.gz`, 1843 bytes, sha256
+`f61850b88da1adcb419097ec5b622d9b64a35beaec5eba0d0137728a7400bd4e`.
+
+The install the fault was found on was updated by hand to the merged
+tree, which left it locked. A second WSL distro, not a Hatchling, was
+then stopped and started again, and the install's service lost `cpu`,
+as before: `system.slice` offered `memory pids`. Nothing was reloaded.
+Its owner then ran `sudo hatchling-broker unlock` once.
+
+| When (the install's clock) | What |
+|---|---|
+| 03:24:17 | the update started the service, locked |
+| 03:24:44 | after the second distro started: the service has `memory pids` |
+| 03:27:47 | systemd's journal: a reload asked for by `systemctl`, finished in 87 ms |
+| 03:27:57 | the broker's log: "the vault was unlocked" |
+| after | the service has `cpuset cpu io memory pids`; the journal has no start of it after 03:24:17 |
+
+So the command reloaded, the controller came back, and it went on to
+the key, with nothing restarted. A chat run was then made on the
+install and answered, using the agent's computer twice: its cell was
+given a cgroup, which a cell isn't without the cpu controller.
+
+The owner says the terminal showed "the service's cgroup had lost its
+cpu controller, and has it back." before it asked for the key. The
+terminal itself wasn't read for this record: the reload ten seconds
+before the unlock is what shows here that the command did it.
+
 ## What wasn't tried
 
-- **`unlock` itself, on a machine whose service has lost a
-  controller.** Everything above is the parts. That the command as
-  built reloads, sees the controller come back and goes on, was not run
-  before this change was written up.
-- **Whether a reload alone is enough for cells to run afterwards.** By
-  hand, a reload gave the controller back, and the install was then
-  restarted as well before it was unlocked. An unlock and a run after a
-  reload with no restart haven't been seen.
+- **More than once.** The command against a real systemd was run one
+  time, on one install.
 - **systemd older than the one the cgroup drop-in needs**, a machine
   that isn't under WSL, and a service whose cgroup lost a controller
   other than `cpu`.
