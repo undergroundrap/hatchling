@@ -288,6 +288,8 @@ const SYSCALL_TABLE: &[(&str, u32)] = &[
     ("capget", 125),
     ("rt_sigsuspend", 130),
     ("sync", 162),
+    ("getxattr", 191),
+    ("lgetxattr", 192),
     ("fgetxattr", 193),
     ("flistxattr", 196),
     ("timer_create", 222),
@@ -584,7 +586,7 @@ const ROOM_TOOL_CALLS: [&str; 20] = [
 /// having. A call belongs here only when a program was seen making it and
 /// seen handling the answer.
 #[cfg(target_arch = "x86_64")]
-const ROOM_UNGRANTED: [(&str, u32); 7] = [
+const ROOM_UNGRANTED: [(&str, u32); 9] = [
     // Sets an extended attribute on a file already open, and no call
     // that sets one is allowed. `install` asks it of each file it copies.
     // Told the file system doesn't support it, as one with no extended
@@ -595,6 +597,14 @@ const ROOM_UNGRANTED: [(&str, u32); 7] = [
     // nothing of what they hold. `sed -i` asks for a file's access list,
     // to give the same to the file it writes, and goes on without.
     ("fgetxattr", ENOTSUP),
+    // The same, of a file by its name: of what a link points to, and of
+    // the link itself. Where a file system can't list a file's
+    // attributes, as the image's own directories can't, `ls -l` asks for
+    // the file's security label by name, and shows none when told there
+    // is no such thing. With `-a` that is `..` of the workspace, which is
+    // the image's root. `ls -lL` asks the first way, `ls -l` the second.
+    ("getxattr", ENOTSUP),
+    ("lgetxattr", ENOTSUP),
     // A second name for a file: there are no hard links in the Room, by
     // either call. Git asks for one as it stores an object and renames
     // the file when it can't. `ln` says it isn't permitted.
@@ -2097,6 +2107,8 @@ mod tests {
             [
                 ("fsetxattr", 95),
                 ("fgetxattr", 95),
+                ("getxattr", 95),
+                ("lgetxattr", 95),
                 ("link", 1),
                 ("linkat", 1),
                 ("sync", 38),
@@ -2128,6 +2140,8 @@ mod tests {
             ("capget", libc::SYS_capget),
             ("fsetxattr", libc::SYS_fsetxattr),
             ("fgetxattr", libc::SYS_fgetxattr),
+            ("getxattr", libc::SYS_getxattr),
+            ("lgetxattr", libc::SYS_lgetxattr),
             ("link", libc::SYS_link),
             ("linkat", libc::SYS_linkat),
             ("sync", libc::SYS_sync),
@@ -2163,17 +2177,14 @@ mod tests {
             );
         }
         // What is beside the answered calls is neither allowed nor
-        // answered: setting, removing or reading an attribute another
-        // way, the rest of `io_uring`, the older call that makes a
-        // device file.
+        // answered: setting an attribute another way, removing one, the
+        // rest of `io_uring`, the older call that makes a device file.
         for number in [
             libc::SYS_setxattr,
             libc::SYS_lsetxattr,
             libc::SYS_removexattr,
             libc::SYS_lremovexattr,
             libc::SYS_fremovexattr,
-            libc::SYS_getxattr,
-            libc::SYS_lgetxattr,
             libc::SYS_io_uring_enter,
             libc::SYS_io_uring_register,
             libc::SYS_mknod,

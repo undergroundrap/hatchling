@@ -133,6 +133,27 @@ mod proof {
         ),
         ("mv, back", "mv /session/p.txt back.txt", Ends::Well),
         ("ls -lR", "ls -lR .", Ends::Well),
+        // Where a file system can't list a file's attributes, as the
+        // image's own directories can't, `ls -l` asks for the file's
+        // security label by name. With `-a`, `..` of the workspace is
+        // the image's root.
+        ("ls -la, the workspace", "ls -la /workspace", Ends::Well),
+        ("ls -la, the root", "ls -la /", Ends::Well),
+        ("ls -la, /tmp", "ls -la /tmp", Ends::Well),
+        ("ls -la, the session", "ls -la /session", Ends::Well),
+        ("ls -ld", "ls -ld / /tmp /session /workspace", Ends::Well),
+        (
+            "ls -l, the image's files",
+            "ls -l /etc/os-release /usr/bin/ls",
+            Ends::Well,
+        ),
+        ("ls -lL, the root", "ls -lL /", Ends::Well),
+        (
+            "cp -a, from the image",
+            "cp -a /etc/os-release from-image.txt",
+            Ends::Well,
+        ),
+        ("stat, the root", "stat / /tmp", Ends::Well),
         ("readlink", "readlink dir/link", Ends::Well),
         ("touch -d", "touch -d 2026-01-01 back.txt", Ends::Well),
         ("chmod -R", "chmod -R u+rwX dir-a", Ends::Well),

@@ -45,12 +45,13 @@ every process of the Room's user, the supervisor among them, and can only
 lower: a job can make the supervisor wait its turn, as it could by keeping
 the processor busy.
 
-Seven are not granted, and are answered with an error instead of ending
+Nine are not granted, and are answered with an error instead of ending
 the process:
 
-- `fsetxattr` and `fgetxattr`, `ENOTSUP`: no call that sets an extended
-  attribute or reads one's value is allowed. `install` and `sed -i` ask,
-  and go on as on a file system that has none.
+- `fsetxattr`, `fgetxattr`, `getxattr` and `lgetxattr`, `ENOTSUP`: no
+  call that sets an extended attribute or reads one's value is allowed.
+  `install`, `sed -i` and `ls -l` ask, and go on as on a file system that
+  has none.
 - `link` and `linkat`, `EPERM`: there are no hard links in the Room. Git
   asks for one as it stores an object and renames the file when it can't;
   `ln` says it isn't permitted.
