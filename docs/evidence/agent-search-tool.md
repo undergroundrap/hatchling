@@ -224,14 +224,34 @@ coverage of the live adapter at 100%) passed on the same tree, on
 Windows (`frontend-check.log`). The app's code didn't change: only its
 generated protocol types and the version its test expects.
 
+## On a real install
+
+Added on 2026-11-14, after this change was merged. On an install of
+main `c301605d`, with `qwen3.5:9b`, a chat asked to search its
+workspace for TODO searched it: the broker's log has "a session
+searches files in the Room", and the run's summary counts the use of
+the Room as done. That is a search asked in a chat, carried by the
+broker and the spawner, and answered by ripgrep in a real Room, all at
+once. No answer reached the chat: the model's reply after the search
+was all thinking, which Hatchling took for no reply. With that fixed,
+the same chat's answer was the two matching lines, as `path:line:text`.
+[The record of that fix](thinking-swallows-answer.md) has both, and the
+bundle they are in.
+
+The same chats showed two things this change doesn't answer. Asked to
+make three files and then search them, the model ran `echo` three
+times with three arguments each, then searched twice and read twice,
+then ran `python3`; four of its ten uses of the Room failed. That
+reads as
+`echo text > file` given to `run` with no shell in between, which
+prints the words and writes nothing: the log has the programs and not
+their arguments. And it used all ten of its steps on that, so the chat
+said only that the agent had used all its steps.
+
 ## What wasn't tried
 
-- **A real model asking for a real search of an installed Room.** Every
-  test here is against a stand-in: for the model, for the broker, or for
-  the spawner. With the change before this one, no run yet has a search
-  asked in a chat, carried by the broker and the spawner, and answered
-  by ripgrep in a real Room. The first is the first chat that searches
-  on an install.
+- **A search of a large workspace on an install.** The one searched
+  held three small files.
 - **Whether a small model reaches for `search`** where it used to write
   a `grep` command, and whether it narrows a search that was stopped
   early as the note tells it to.

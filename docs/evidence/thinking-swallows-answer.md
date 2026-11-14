@@ -218,16 +218,45 @@ The tests of what the change touches were run as root too, as CI runs
 them: 192 in core, 44 in the model crate, 175 in the agent and 9 in its
 local-model test, 21 in the broker (`root/as-root.log`).
 
+## On a real install
+
+Added on 2026-11-14, after the change's own commit and before it was
+merged. The commit's message says the built change hadn't run on an
+install and the new field hadn't gone to a hosted endpoint: both were
+so when it was written, and neither is now.
+
+The build of the pull request's head (merge commit `94dd4755`, whose
+tree is the tested tree and this record) was put on an install, in
+place of main `c301605d`, and the chats that had failed were sent again
+(`hatchling-search-and-thinking-real-install-results.tar.gz`, 3860 bytes, sha256
+`48574721602a9dcbe3adcdbb4f30f6e62b42c0e3930caae9a6b2fcfd0a3b2825`;
+`chat-answers.txt`, `qwen-before.journal.txt`,
+`qwen-after.journal.txt`, `hosted-after.journal.txt`, `install.txt`):
+
+| Chat, `qwen3.5:9b` | Before | After |
+|---|---|---|
+| Search the workspace for TODO | once: "answered with nothing"; exit 65; 5 model requests | twice: both matching lines, as `path:line:text`; 4 model requests each |
+| Run one command that makes three files, then search | twice: "answered with nothing"; exit 65; 6 model requests each | once: the two files and lines with TODO, and that the third has none; 5 model requests |
+
+The requests counted include the capability probe. Each run after the
+fix has one more than its probe, its tool calls and its answer need:
+the reply that was all thinking, asked again. Each run before it has
+three such replies and no answer. The matching lines in the answers are
+what ripgrep found in a real Room.
+
+**The hosted endpoint.** One chat was sent through the install's hosted
+model (`nvidia/nemotron-3-ultra-550b-a55b:free` at openrouter.ai, set
+to `disabled`), so its probe and its task request each carried
+`"reasoning": {"enabled": false, "effort": "none"}`. Both were answered
+with status 200, and the chat showed the answer asked for.
+
 ## What wasn't tried
 
-- **This change, built, on an install with the real model.** The field
-  was put to the real model by hand and answered 6 of 6; the code that
-  sends it was tested against stand-ins. The first chat that searches
-  on an install carrying this change is the first time the two meet.
-- **A hosted endpoint with the new field.** OpenRouter's documentation
-  gives `effort: "none"` as what disables reasoning, and `disabled` was
-  tried there before with `enabled: false` alone. The two together in
-  one field haven't been sent to it.
+- **A hosted model that must reason.** OpenRouter's documentation says
+  a model that mandates reasoning rejects a request that turns it off.
+  With `disabled` set that is the operator's choice and was so before;
+  with `provider-default`, the fallback's request would be refused and
+  thinking left as it was. No such model was tried.
 - **Other model servers.** llama.cpp's own server, vLLM and LM Studio
   have their own ways of turning thinking off and may put thinking in
   other fields. A server that ignores the field leaves the model
