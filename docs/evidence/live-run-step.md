@@ -157,19 +157,52 @@ Three more were written and didn't build: the type checker refuses a
 step taken with no task waiting, and code left unused. They are the
 compiler's to catch, and it did.
 
+## In the real app
+
+Added on 2026-11-14, after the change was merged (`32828684`). The
+files are in a second bundle,
+`hatchling-live-run-step-real-app-results.tar.gz`, 166818 bytes, sha256
+`5276958fa22bb1959470b6a21a28ca423435be93c9e7f725f0cd8b493253fee2`.
+
+**In CI.** The real app's end-to-end check, with the stand-in model made
+slow, waited for the line to read "Asking the model", a dot and a number
+of seconds, and passed, in the pull request's own run. The picture it
+kept (`app-working-ci-pr444.png`) shows "Asking the model · 0 s" above
+the message box, and the same step under the avatar in the panel beside
+the chat. The browser suites, the smoke check and the agent's tests
+passed in that run too.
+
+**On a real install, with a real model.** An install under WSL2 was
+updated to the merged tree and unlocked by its owner; the model was
+gemma4:12b, on that machine. The line's text was read four times a
+second while two things were asked in the chat
+(`working-line-sampled.txt`):
+
+| Asked | The line, in order | The answer |
+|---|---|---|
+| To run `sleep 12; ls -la /workspace` | Working on it · 0 s; Asking the model · 0 s to 17 s; Using its computer · 17 s to 26 s; Asking the model · 27 s to 28 s | "The command is still running. I will check the status in a few seconds." |
+| To run `sleep 25; echo done`, and wait for it | Working on it · 0 s; Asking the model · 0 s to 7 s; Using its computer · 8 s to 32 s; Asking the model · 33 s to 34 s | "The command finished and printed: done" |
+
+The time went up by one each second and carried on across each change
+of step, as the time since the owner asked. The line went when the
+answer came. Two pictures of the page are in the bundle, one of each
+step.
+
+One finding that isn't this change's: in the first run the model ended
+its turn saying it would look again in a few seconds. Nothing looks
+again: a turn that has ended is over, and the command's output was never
+told. The working line showed the truth of it, a last call to the model
+of a second or two and then an answer.
+
 ## What wasn't tried
 
-- **The chat's working line itself, in a browser.** The line and its
-  counting element are drawn by code the unit tests don't reach. The
-  real app's end-to-end check (`scripts/app_end_to_end.py`) now waits
-  for the line to read "Asking the model", a dot and a number of
-  seconds while the stand-in model is slow, and keeps a picture of it.
-  That check, the browser suites, the smoke check and the agent's tests
-  run in CI on this change's pull request, and were not run here.
-- **A real install, with a real model.** The install the slow waits were
-  seen on hasn't been updated to this change.
+- **A hosted model**, on this change: the slow waits it was made for
+  were seen with one.
 - **A scheduled run or a subagent.** Only a chat run tells its steps.
 - **An app that reconnects in the middle of a run.** The step is among
   the events the app's stream keeps in memory and sends again (its most
   recent 4096), so it should be shown; that wasn't tried. Steps take up
   some of that room: a run tells one for each change of step.
+- **A screen reader.** The time is hidden from assistive technology and
+  the step is in a status region: that is what the markup says, and it
+  wasn't listened to.
