@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 27;
+export const SESSION_PROTOCOL_VERSION = 28;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -4523,7 +4523,8 @@ export type Suggestion = {
      */
     readonly state: SuggestionState;
     /**
-     * When it was suggested, RFC 3339.
+     * When it was suggested, or last brought back by the owner, RFC 3339:
+     * what it has waited since.
      */
     readonly suggested_at: string;
     /**
@@ -4612,7 +4613,7 @@ export type SuggestionSource = {
 /**
  * Where a suggestion on the Ideas page stands.
  */
-export type SuggestionState = 'suggested' | 'started' | 'dismissed';
+export type SuggestionState = 'suggested' | 'started' | 'dismissed' | 'stale' | 'source_gone';
 /**
  * One change a sync push carries.
  */

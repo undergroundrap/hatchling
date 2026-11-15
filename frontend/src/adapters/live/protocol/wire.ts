@@ -3933,6 +3933,14 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "dismissed",
                 "type": "string"
+            },
+            {
+                "const": "stale",
+                "type": "string"
+            },
+            {
+                "const": "source_gone",
+                "type": "string"
             }
         ]
     },

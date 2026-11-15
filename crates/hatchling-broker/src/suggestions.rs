@@ -19,6 +19,15 @@
 //! suggestion says, not what doing it would turn out to take. A run
 //! puts at most [`MAX_PER_RUN`] on the page, however it asks.
 //!
+//! A suggestion that waits doesn't wait for ever. One still waiting
+//! [`STALE_SECS`] after it was suggested, or last brought back, is
+//! stale; one whose goal has been closed or removed has lost its
+//! source. Both are the broker's findings, made when the owner's app
+//! lists the page (staleness also when a run suggests), kept on the
+//! page with why, and no longer counted as waiting. The agent has no
+//! way to retire, set aside or remove a suggestion. The owner brings a
+//! stale one back; one whose goal is closed stays as it is.
+//!
 //! The page is listed as it is kept, the newest first. Every idea kept
 //! now has a source and goes on top, so those with a source come before
 //! any kept before sources were, with nothing to sort.
@@ -36,7 +45,8 @@ use std::sync::{Mutex, PoisonError};
 
 use hatchling_core::run_tools::ToolGroup;
 use hatchling_core::ui::{
-    Suggestion, SuggestionOp, SuggestionResult, SuggestionSource, SuggestionState,
+    GoalOp, GoalResult, GoalState, Suggestion, SuggestionOp, SuggestionResult, SuggestionSource,
+    SuggestionState,
 };
 use hatchling_core::{SuggestOp, SuggestResult, SuggestedFrom};
 use hatchling_goals::{FeedBody, FeedQuery, GoalId, StatusFilter};
@@ -51,7 +61,10 @@ use crate::config::GoalsAction;
 pub const MAX_KEPT: usize = 100;
 
 /// How many may wait for the owner at once.
-pub const MAX_WAITING: usize = 20;
+pub const MAX_WAITING: usize = 60;
+
+/// How long a suggestion waits before it is stale: fourteen days.
+pub const STALE_SECS: i64 = 14 * 24 * 60 * 60;
 
 /// How many one run may put on the page.
 pub const MAX_PER_RUN: usize = 3;
@@ -182,6 +195,66 @@ pub(crate) struct Ground<'a> {
     pub here: &'a BTreeSet<ToolGroup>,
     /// Looks up one of the owner's goals by its id ([`goal_found`]).
     pub goal: &'a dyn Fn(&str) -> GoalFound,
+    /// The time now.
+    pub now: hatchling_scheduler::Timestamp,
+}
+
+/// Retires what waits on `page` and shouldn't: a suggestion whose goal
+/// isn't among the owner's `open` goals has lost its source, and one
+/// that has waited more than [`STALE_SECS`] at `now` is stale. With no
+/// `open` goals known (a run can't ask, or they couldn't be read) no
+/// source is judged. Says whether anything changed.
+fn retire(
+    page: &mut [Suggestion],
+    now: hatchling_scheduler::Timestamp,
+    open: Option<&BTreeSet<String>>,
+) -> bool {
+    let mut changed = false;
+    for kept in page
+        .iter_mut()
+        .filter(|kept| kept.state == SuggestionState::Suggested)
+    {
+        let gone = open.is_some_and(|open| {
+            kept.source.as_ref().is_some_and(|source| {
+                let SuggestionSource::Goal { id, .. } = source;
+                !open.contains(id)
+            })
+        });
+        let stale = kept
+            .suggested_at
+            .parse::<hatchling_scheduler::Timestamp>()
+            .is_ok_and(|since| now.as_second().saturating_sub(since.as_second()) > STALE_SECS);
+        if gone {
+            kept.state = SuggestionState::SourceGone;
+        } else if stale {
+            kept.state = SuggestionState::Stale;
+        } else {
+            continue;
+        }
+        changed = true;
+    }
+    changed
+}
+
+/// The ids of the owner's open goals, as their own goals page reads
+/// them; none when the broker keeps no goals or couldn't read them.
+fn open_goals(config: &Config) -> Option<BTreeSet<String>> {
+    match crate::goal_ops::handle_goal_op(config, &GoalOp::List) {
+        GoalResult::Listed { goals } => Some(
+            goals
+                .into_iter()
+                .filter(|goal| goal.state == GoalState::Open)
+                .map(|goal| goal.id)
+                .collect(),
+        ),
+        GoalResult::Saved { .. }
+        | GoalResult::NotFound
+        | GoalResult::AlreadyClosed
+        | GoalResult::Rejected
+        | GoalResult::LimitReached
+        | GoalResult::Off
+        | GoalResult::Failed => None,
+    }
 }
 
 /// Puts `op` on the owner's Ideas page, if the session `config` serves
@@ -207,6 +280,7 @@ pub fn suggest(
         run,
         here: &here,
         goal: &|id| goal_found(config, principal, id),
+        now: hatchling_scheduler::Timestamp::now(),
     };
     let result = suggest_from(config, &ground, op);
     match &result {
@@ -316,6 +390,9 @@ fn suggest_from(config: &Config, ground: &Ground<'_>, op: &SuggestOp) -> Suggest
             return unasked("Hatchling couldn't keep it; its log says why.");
         }
     };
+    // What has waited too long no longer waits: a run can't ask after the
+    // owner's goals, so no source is judged here.
+    let _ = retire(&mut page, ground.now, None);
     let waiting = || {
         page.iter()
             .filter(|kept| kept.state == SuggestionState::Suggested)
@@ -338,7 +415,7 @@ fn suggest_from(config: &Config, ground: &Ground<'_>, op: &SuggestOp) -> Suggest
             summary: summary.to_owned(),
             why: why.to_owned(),
             area: *area,
-            suggested_at: hatchling_scheduler::Timestamp::now().to_string(),
+            suggested_at: ground.now.to_string(),
             state: SuggestionState::Suggested,
             needs: needs.clone(),
             source: Some(source),
@@ -367,9 +444,24 @@ fn trim(page: &mut Vec<Suggestion>) {
     }
 }
 
-/// Does `op`, the owner's, on their Ideas page.
+/// Does `op`, the owner's, on their Ideas page, retiring first what
+/// waits there and shouldn't.
 #[must_use]
 pub fn handle(config: &Config, op: &SuggestionOp) -> SuggestionResult {
+    handle_at(config, op, hatchling_scheduler::Timestamp::now(), &|| {
+        open_goals(config)
+    })
+}
+
+/// [`handle`] at `now`, with the owner's open goals as `open` reads
+/// them: asked only when the page is listed, or a suggestion whose
+/// source was gone is brought back.
+pub(crate) fn handle_at(
+    config: &Config,
+    op: &SuggestionOp,
+    now: hatchling_scheduler::Timestamp,
+    open: &dyn Fn() -> Option<BTreeSet<String>>,
+) -> SuggestionResult {
     if !config.scheduler.enabled() {
         return SuggestionResult::Off;
     }
@@ -383,7 +475,16 @@ pub fn handle(config: &Config, op: &SuggestionOp) -> SuggestionResult {
         }
     };
     let (id, state) = match op {
-        SuggestionOp::List => return SuggestionResult::Listed { suggestions: page },
+        SuggestionOp::List => {
+            // A page that can't be written back is still shown as it
+            // stands: the next reading finds the same.
+            if retire(&mut page, now, open().as_ref()) {
+                if let Err(error) = write(&path, &page) {
+                    tracing::warn!(%error, "the Ideas page couldn't be written");
+                }
+            }
+            return SuggestionResult::Listed { suggestions: page };
+        }
         SuggestionOp::Start { id } => (id, SuggestionState::Started),
         SuggestionOp::Dismiss { id } => (id, SuggestionState::Dismissed),
         SuggestionOp::Restore { id } => (id, SuggestionState::Suggested),
@@ -391,6 +492,16 @@ pub fn handle(config: &Config, op: &SuggestionOp) -> SuggestionResult {
     let Some(kept) = page.iter_mut().find(|kept| &kept.suggestion_id == id) else {
         return SuggestionResult::NotFound;
     };
+    if state == SuggestionState::Suggested {
+        // Brought back, it waits anew; but not while what it came from
+        // is still gone: it is answered as it stands.
+        if kept.state == SuggestionState::SourceGone && still_gone(kept, open().as_ref()) {
+            return SuggestionResult::Changed {
+                suggestion: kept.clone(),
+            };
+        }
+        kept.suggested_at = now.to_string();
+    }
     kept.state = state;
     let suggestion = kept.clone();
     match write(&path, &page) {
@@ -400,6 +511,16 @@ pub fn handle(config: &Config, op: &SuggestionOp) -> SuggestionResult {
             SuggestionResult::Failed
         }
     }
+}
+
+/// Whether `kept`'s source is still gone, with the owner's open goals
+/// as `open`: it is unless its goal is among them. A suggestion with no
+/// source has none to be gone.
+fn still_gone(kept: &Suggestion, open: Option<&BTreeSet<String>>) -> bool {
+    kept.source.as_ref().is_some_and(|source| {
+        let SuggestionSource::Goal { id, .. } = source;
+        !open.is_some_and(|open| open.contains(id))
+    })
 }
 
 /// The page at `path`: none when there's no file yet, or it's empty.
@@ -508,10 +629,22 @@ mod tests {
         here: &BTreeSet<ToolGroup>,
         op: &SuggestOp,
     ) -> SuggestResult {
+        suggest_at(config, run, here, hatchling_scheduler::Timestamp::now(), op)
+    }
+
+    /// A suggestion by the run `run`, at `now`.
+    fn suggest_at(
+        config: &Config,
+        run: &str,
+        here: &BTreeSet<ToolGroup>,
+        now: hatchling_scheduler::Timestamp,
+        op: &SuggestOp,
+    ) -> SuggestResult {
         let ground = Ground {
             run,
             here,
             goal: &goals,
+            now,
         };
         suggest_from(config, &ground, op)
     }
@@ -1213,6 +1346,379 @@ mod tests {
                 title: String::from("Run 5k by June"),
             })
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A time `secs` after a fixed one.
+    fn at(secs: i64) -> hatchling_scheduler::Timestamp {
+        hatchling_scheduler::Timestamp::from_second(1_800_000_000 + secs).unwrap()
+    }
+
+    /// These ids, as a set of the owner's open goals.
+    fn ids(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|id| (*id).to_owned()).collect()
+    }
+
+    /// The page as the owner's app lists it at `now`, with their open
+    /// goals as `open` reads them: each idea's title and state.
+    fn listed_at(
+        config: &Config,
+        now: hatchling_scheduler::Timestamp,
+        open: &dyn Fn() -> Option<BTreeSet<String>>,
+    ) -> Vec<(String, SuggestionState)> {
+        if let SuggestionResult::Listed { suggestions } =
+            handle_at(config, &SuggestionOp::List, now, open)
+        {
+            suggestions
+                .into_iter()
+                .map(|kept| (kept.title, kept.state))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// An idea that has waited more than fourteen days is stale when the
+    /// owner's app lists the page, and no sooner; one the owner started
+    /// or set aside isn't judged. What is found is written back.
+    #[test]
+    fn an_idea_that_waited_fourteen_days_goes_stale_when_the_page_is_listed() {
+        use SuggestionState::{Dismissed, Stale, Started, Suggested};
+        let dir = scratch("stale");
+        let chat = config(&dir, Some("local"));
+        let all = everything();
+        for (run, title) in [("r1", "Waits"), ("r2", "Was started"), ("r3", "Set aside")] {
+            assert_eq!(
+                suggest_at(&chat, run, &all, at(0), &idea(title)),
+                SuggestResult::Suggested
+            );
+        }
+        let id = |title: &str| {
+            listed(&chat)
+                .into_iter()
+                .find(|kept| kept.title == title)
+                .unwrap()
+                .suggestion_id
+        };
+        let _ = handle_at(
+            &chat,
+            &SuggestionOp::Start {
+                id: id("Was started"),
+            },
+            at(1),
+            &|| None,
+        );
+        let _ = handle_at(
+            &chat,
+            &SuggestionOp::Dismiss {
+                id: id("Set aside"),
+            },
+            at(1),
+            &|| None,
+        );
+        let none = || Some(ids(&["g-open"]));
+        let states = |now| {
+            listed_at(&chat, now, &none)
+                .into_iter()
+                .map(|(_, state)| state)
+                .collect::<Vec<_>>()
+        };
+        // Newest first: set aside, started, waiting.
+        assert_eq!(
+            states(at(STALE_SECS)),
+            [Dismissed, Started, Suggested],
+            "at fourteen days it still waits"
+        );
+        assert_eq!(states(at(STALE_SECS + 1)), [Dismissed, Started, Stale]);
+        // Written back: read with no clock and no goals, it is still stale.
+        assert_eq!(
+            listed(&chat)
+                .iter()
+                .map(|kept| kept.state)
+                .collect::<Vec<_>>(),
+            [Dismissed, Started, Stale]
+        );
+        assert_eq!(STALE_SECS, 1_209_600);
+        // A date that can't be read is no reason to retire an idea.
+        let path = chat.scheduler.ideas_log();
+        let mut page = read(&path).unwrap();
+        for kept in &mut page {
+            kept.state = Suggested;
+            kept.suggested_at = String::from("not a date");
+        }
+        write(&path, &page).unwrap();
+        assert_eq!(
+            states(at(10 * STALE_SECS)),
+            [Suggested, Suggested, Suggested]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An idea whose goal is closed or gone has lost its source, whatever
+    /// its age; with the owner's goals unreadable no source is judged, and
+    /// an idea kept before sources were has none to lose.
+    #[test]
+    fn an_idea_whose_goal_is_closed_has_lost_its_source() {
+        use SuggestionState::{SourceGone, Stale, Suggested};
+        let dir = scratch("gone");
+        let chat = config(&dir, Some("local"));
+        let path = chat.scheduler.ideas_log();
+        crate::kept_log::ensure_parent(&path).unwrap();
+        // One kept before sources were, as old as the page.
+        std::fs::write(
+            &path,
+            format!(
+                r#"[{{"suggestion_id":"idea-old","title":"No source","summary":"s","why":"w","area":"career","suggested_at":"{}","state":"suggested"}}]"#,
+                at(0)
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            suggest_at(&chat, "r1", &everything(), at(0), &idea("From a goal")),
+            SuggestResult::Suggested
+        );
+        let titles =
+            |now, goals: &dyn Fn() -> Option<BTreeSet<String>>| listed_at(&chat, now, goals);
+        let both = |first, second| {
+            vec![
+                (String::from("From a goal"), first),
+                (String::from("No source"), second),
+            ]
+        };
+        // The goals couldn't be read: nothing is judged by its source.
+        assert_eq!(titles(at(1), &|| None), both(Suggested, Suggested));
+        // Its goal is open: it waits.
+        assert_eq!(
+            titles(at(1), &|| Some(ids(&["g-open", "g-other"]))),
+            both(Suggested, Suggested)
+        );
+        // Its goal is no longer open: gone, at once; the one with no source waits.
+        assert_eq!(
+            titles(at(1), &|| Some(ids(&["g-other"]))),
+            both(SourceGone, Suggested)
+        );
+        // Later the other goes stale; the first stays gone, and isn't judged again.
+        assert_eq!(
+            titles(at(STALE_SECS + 1), &|| Some(ids(&["g-open"]))),
+            both(SourceGone, Stale)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Stale and gone at once, an idea is said to have lost its source:
+    /// that is what bringing it back depends on.
+    #[test]
+    fn an_idea_both_stale_and_without_its_goal_has_lost_its_source() {
+        let dir = scratch("both");
+        let chat = config(&dir, Some("local"));
+        assert_eq!(
+            suggest_at(&chat, "r1", &everything(), at(0), &idea("From a goal")),
+            SuggestResult::Suggested
+        );
+        assert_eq!(
+            listed_at(&chat, at(STALE_SECS + 1), &|| Some(ids(&[]))),
+            [(String::from("From a goal"), SuggestionState::SourceGone)]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Brought back, a stale idea waits anew from then; one whose goal is
+    /// still closed stays as it is, and comes back once the goal is open
+    /// again. The owner's goals are asked after only when they bear on it.
+    #[test]
+    fn the_owner_brings_back_a_stale_idea_and_not_one_whose_goal_is_closed() {
+        use SuggestionState::{SourceGone, Stale, Suggested};
+        let dir = scratch("back");
+        let chat = config(&dir, Some("local"));
+        let all = everything();
+        assert_eq!(
+            suggest_at(&chat, "r1", &all, at(0), &idea("Stale")),
+            SuggestResult::Suggested
+        );
+        let later = STALE_SECS + 1;
+        assert_eq!(
+            listed_at(&chat, at(later), &|| Some(ids(&["g-open"]))),
+            [(String::from("Stale"), Stale)]
+        );
+        let id = listed(&chat).first().unwrap().suggestion_id.clone();
+        let restore = SuggestionOp::Restore { id: id.clone() };
+        let asked = std::cell::Cell::new(0_u32);
+        let unasked = || {
+            asked.set(asked.get() + 1);
+            None
+        };
+        let SuggestionResult::Changed { suggestion } =
+            handle_at(&chat, &restore, at(later), &unasked)
+        else {
+            unreachable!("a stale idea wasn't brought back");
+        };
+        assert_eq!(suggestion.state, Suggested);
+        assert_eq!(
+            suggestion.suggested_at,
+            at(later).to_string(),
+            "it waits from now"
+        );
+        assert_eq!(asked.get(), 0, "a stale idea's goal was asked after");
+        // It has a new fourteen days.
+        assert_eq!(
+            listed_at(&chat, at(later + STALE_SECS), &|| Some(ids(&["g-open"]))),
+            [(String::from("Stale"), Suggested)]
+        );
+        // Its goal closes: gone; and it can't be brought back while it is.
+        assert_eq!(
+            listed_at(&chat, at(later + 5), &|| Some(ids(&[]))),
+            [(String::from("Stale"), SourceGone)]
+        );
+        for closed in [Some(ids(&[])), Some(ids(&["g-other"])), None] {
+            let SuggestionResult::Changed { suggestion } =
+                handle_at(&chat, &restore, at(later + 6), &|| closed.clone())
+            else {
+                unreachable!("the idea wasn't answered as it stands");
+            };
+            assert_eq!(suggestion.state, SourceGone, "{closed:?}");
+        }
+        assert_eq!(
+            listed(&chat).first().unwrap().state,
+            SourceGone,
+            "nothing was written"
+        );
+        // The goal is open again: it comes back, and waits from then.
+        let SuggestionResult::Changed { suggestion } =
+            handle_at(&chat, &restore, at(later + 7), &|| Some(ids(&["g-open"])))
+        else {
+            unreachable!("the idea wasn't brought back");
+        };
+        assert_eq!(suggestion.state, Suggested);
+        assert_eq!(suggestion.suggested_at, at(later + 7).to_string());
+        // The owner may still start one that is gone, or set it aside.
+        let _ = listed_at(&chat, at(later + 8), &|| Some(ids(&[])));
+        assert!(matches!(
+            handle_at(&chat, &SuggestionOp::Start { id }, at(later + 9), &|| None),
+            SuggestionResult::Changed { suggestion } if suggestion.state == SuggestionState::Started
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A stale idea no longer counts as waiting: a run suggesting after
+    /// it finds room, and the page keeps it, as stale. Sixty may wait.
+    #[test]
+    fn a_stale_idea_makes_room_for_a_run_that_suggests() {
+        let dir = scratch("room");
+        let chat = config(&dir, Some("local"));
+        let all = everything();
+        for n in 0..MAX_WAITING {
+            assert_eq!(
+                suggest_at(
+                    &chat,
+                    &format!("r{n}"),
+                    &all,
+                    at(0),
+                    &idea(&format!("Idea {n}"))
+                ),
+                SuggestResult::Suggested
+            );
+        }
+        assert!(
+            reason(&suggest_at(
+                &chat,
+                "late",
+                &all,
+                at(STALE_SECS),
+                &idea("No room")
+            ))
+            .contains("full")
+        );
+        assert_eq!(
+            suggest_at(&chat, "late", &all, at(STALE_SECS + 1), &idea("Room now")),
+            SuggestResult::Suggested
+        );
+        let page = listed(&chat);
+        assert_eq!(page.len(), MAX_WAITING + 1);
+        assert_eq!(
+            page.iter()
+                .filter(|kept| kept.state == SuggestionState::Stale)
+                .count(),
+            MAX_WAITING
+        );
+        assert_eq!(
+            page.first().map(|kept| kept.state),
+            Some(SuggestionState::Suggested)
+        );
+        assert_eq!(MAX_WAITING, 60);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The owner's open goals are read from their own goals store, as
+    /// their goals page reads them; with no store, or one that can't be
+    /// read, there are none to judge by. Listed through the broker's own
+    /// door, an idea whose goal was closed has lost its source.
+    #[test]
+    fn the_owners_open_goals_are_read_from_their_store() {
+        use std::str::FromStr as _;
+
+        use hatchling_goals::{GoalOutcome, GoalsStore};
+        use hatchling_memory::SessionId;
+        let dir = scratch("open-goals");
+        let mut chat = config(&dir, Some("local"));
+        assert_eq!(open_goals(&chat), None, "no store: none to judge by");
+        chat.goals.root = dir.join("goals");
+        let principal = MemoryPrincipal {
+            peer_uid: chat.agent_uid.as_u32(),
+            session_id: SessionId::from_str("sess-ideas").unwrap(),
+        };
+        let store = GoalsStore::open(&chat.goals.root).unwrap();
+        let kept_open = store
+            .create_goal(&principal, "Run 5k by June", "", 10)
+            .unwrap();
+        let closed = store.create_goal(&principal, "Read more", "", 11).unwrap();
+        let _ = store
+            .close_goal(&principal, &closed.id, GoalOutcome::Abandoned, 12)
+            .unwrap();
+        assert_eq!(open_goals(&chat), Some(ids(&[kept_open.id.as_str()])));
+        // An idea from each, kept while both were open.
+        let ground = |goal: &str| {
+            let goal = goal.to_owned();
+            move |id: &str| {
+                if id == goal {
+                    GoalFound::Open(String::from("a goal"))
+                } else {
+                    GoalFound::Absent
+                }
+            }
+        };
+        for (run, title, goal) in [
+            ("r1", "From the open one", kept_open.id.as_str()),
+            ("r2", "From the closed one", closed.id.as_str()),
+        ] {
+            let found = ground(goal);
+            let kept = suggest_from(
+                &chat,
+                &Ground {
+                    run,
+                    here: &everything(),
+                    goal: &found,
+                    now: hatchling_scheduler::Timestamp::now(),
+                },
+                &idea_of(title, &[], goal),
+            );
+            assert_eq!(kept, SuggestResult::Suggested);
+        }
+        let SuggestionResult::Listed { suggestions } = handle(&chat, &SuggestionOp::List) else {
+            unreachable!("the page wasn't listed");
+        };
+        assert_eq!(
+            suggestions
+                .iter()
+                .map(|kept| (kept.title.as_str(), kept.state))
+                .collect::<Vec<_>>(),
+            [
+                ("From the closed one", SuggestionState::SourceGone),
+                ("From the open one", SuggestionState::Suggested)
+            ]
+        );
+        chat.goals.root = dir.join("a-file");
+        std::fs::write(&chat.goals.root, "").unwrap();
+        assert_eq!(open_goals(&chat), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

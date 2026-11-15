@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v27 (current). This doc is the human-readable reference
+**Status:** v28 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -530,6 +530,31 @@ answer to the last. A chat run can now take it into the task it is on.
   first: an idea with a source is before any kept before v27.
 - The broker checks what an idea says it needs, not what doing it will
   turn out to take.
+
+## v28 — An idea that waits doesn't wait for ever
+
+No session op changes. The version is raised for the owner's app, which
+reads a kept idea's state.
+
+- **`SuggestionState`** (the app's protocol) gains two states, both the
+  broker's findings and never the agent's:
+  - `stale`: the idea waited more than fourteen days, from when it was
+    suggested or last brought back.
+  - `source_gone`: the goal it came from is closed or no longer there.
+- Both are found among ideas still `suggested`, when the owner's app
+  lists the page; an idea the owner started or set aside isn't judged.
+  A stale idea is also found when a run suggests. A lost source is
+  found only for the owner, whose goals the broker reads as their own
+  goals page does: a run may not ask after all of them. With the goals
+  unreadable, no idea is retired for its source.
+- What is found is written back, so a retired idea no longer counts
+  among those waiting. Sixty may wait (twenty before v28). A run still
+  adds at most three.
+- `Restore` brings a stale idea back as `suggested`, waiting from then:
+  `suggested_at` is the time it was suggested or last brought back. An
+  idea whose source is gone is answered as it stands while its goal is
+  closed, and comes back once the goal is open again.
+- The agent has no op that retires, sets aside or removes an idea.
 
 ## Device handshake
 

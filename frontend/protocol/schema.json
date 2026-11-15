@@ -11197,7 +11197,7 @@
           "description": "Where it stands."
         },
         "suggested_at": {
-          "description": "When it was suggested, RFC 3339.",
+          "description": "When it was suggested, or last brought back by the owner, RFC 3339:\nwhat it has waited since.",
           "type": "string"
         },
         "suggestion_id": {
@@ -11482,6 +11482,16 @@
         {
           "const": "dismissed",
           "description": "The owner set it aside.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "It waited too long: the owner neither started it nor set it\naside. The broker's finding, never the agent's.",
+          "type": "string"
+        },
+        {
+          "const": "source_gone",
+          "description": "What it came from is gone: its goal was closed or removed. The\nbroker's finding, never the agent's.",
           "type": "string"
         }
       ]
@@ -14241,7 +14251,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 27,
+    "session_protocol": 28,
     "ui_schema_version": 4
   },
   "x-roots": {
