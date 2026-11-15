@@ -520,6 +520,10 @@ fn loop_asks_the_broker_to_write_and_edit_its_files() {
         system.contains("`write` makes a file there, and `edit` changes part of one"),
         "{system}"
     );
+    assert!(
+        system.contains("isn't done until you have run it and seen what it does"),
+        "{system}"
+    );
     let turn2 = seen.get(1).expect("model should have a second turn");
     let results = tool_results(turn2, 2).expect("expected ToolUse at index 2");
     assert_eq!(results.len(), 2);

@@ -1538,7 +1538,7 @@ impl Tool for WriteTool<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Make a file in your own computer with the text you give. Give the file's path: one that doesn't start with / is under /workspace, and the folders it is in are made if they aren't there. Give the whole text of the file, exactly as it should be, with a newline at the end of its last line. It makes a new file: if a file is already there it is left alone and you are told, unless you set replace, which puts yours in its place. At most about 32,000 bytes at once. Use write for a new file, in place of echo, cat or a here-document through run. To change part of a file that is there, use edit: it doesn't need the whole file. No command is run for a write. The reply says how many bytes the file has."
+        "Make a file in your own computer with the text you give. Give the file's path: one that doesn't start with / is under /workspace, and the folders it is in are made if they aren't there. Give the whole text of the file, exactly as it should be, with a newline at the end of its last line. It makes a new file: if a file is already there it is left alone and you are told, unless you set replace, which puts yours in its place. At most about 32,000 bytes at once. Use write for a new file, in place of echo, cat or a here-document through run. To change part of a file that is there, use edit: it doesn't need the whole file. A program you write isn't done until you have run it with run and read what it printed: write it in a language this computer runs (python3, node or sh; it has no compilers), run it, and only then say it works. No command is run for a write. The reply says how many bytes the file has."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -1602,7 +1602,7 @@ impl Tool for EditTool<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Change part of a file in your own computer: replace one exact piece of its text with another. Give the file's path, old (the text to replace, copied exactly as it is in the file, with its spaces and line ends) and new (what to put there; empty to take the text out). The old text must be in the file at exactly one place: give enough of the lines around it to make it so. If it is at more than one place nothing is changed, and you are told how many places and which lines; set all to replace every one. If it isn't there nothing is changed: read the file, and copy the text from what read shows, without the line numbers, which aren't in the file. Use edit in place of sed, or of writing the whole file again. No command is run for an edit. The reply says the line the change starts on and how many bytes the file has now."
+        "Change part of a file in your own computer: replace one exact piece of its text with another. Give the file's path, old (the text to replace, copied exactly as it is in the file, with its spaces and line ends) and new (what to put there; empty to take the text out). The old text must be in the file at exactly one place: give enough of the lines around it to make it so. If it is at more than one place nothing is changed, and you are told how many places and which lines; set all to replace every one. If it isn't there nothing is changed: read the file, and copy the text from what read shows, without the line numbers, which aren't in the file. Use edit in place of sed, or of writing the whole file again. After you change a program, run it again before you say it works. No command is run for an edit. The reply says the line the change starts on and how many bytes the file has now."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -5315,6 +5315,9 @@ mod tests {
             "At most about 32,000 bytes",
             "use edit",
             "No command is run for a write",
+            "isn't done until you have run it with run and read what it printed",
+            "python3, node or sh; it has no compilers",
+            "only then say it works",
         ] {
             assert!(write.description().contains(said), "{said}");
         }
@@ -5334,6 +5337,7 @@ mod tests {
             "set all to replace every one",
             "without the line numbers",
             "No command is run for an edit",
+            "After you change a program, run it again before you say it works",
         ] {
             assert!(edit.description().contains(said), "{said}");
         }
