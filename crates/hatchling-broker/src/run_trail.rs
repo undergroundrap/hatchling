@@ -726,6 +726,8 @@ mod tests {
                     summary: s("s"),
                     why: s("w"),
                     area: SuggestionArea::Learning,
+                    needs: Vec::new(),
+                    from: hatchling_core::SuggestedFrom::Goal(s("g")),
                 }),
                 Some(ToolUse::IdeaSuggest),
             ),

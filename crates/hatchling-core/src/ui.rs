@@ -521,7 +521,23 @@ pub enum SuggestionState {
     Dismissed,
 }
 
-/// A suggestion on the owner's Ideas page: the agent's words, all of it.
+/// Where a suggestion came from, as the broker found it when the idea was
+/// suggested: the broker's record, never the agent's words.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SuggestionSource {
+    /// One of the owner's goals, open when the idea was suggested.
+    Goal {
+        /// The goal's id.
+        id: String,
+        /// The goal's title then.
+        title: String,
+    },
+}
+
+/// A suggestion on the owner's Ideas page: the agent's words, all but
+/// where it came from and which run suggested it, which are the broker's.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Suggestion {
@@ -539,6 +555,17 @@ pub struct Suggestion {
     pub suggested_at: String,
     /// Where it stands.
     pub state: SuggestionState,
+    /// The tool groups doing it would use, as the agent said: none for
+    /// one that needs none, or one kept before needs were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<crate::run_tools::ToolGroup>,
+    /// Where it came from: none for one kept before sources were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SuggestionSource>,
+    /// The run that suggested it, as the owner's Activity names it:
+    /// empty for one kept before runs were.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub run: String,
 }
 
 /// An operation on the owner's Ideas page, from their app.
@@ -546,7 +573,8 @@ pub struct Suggestion {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum SuggestionOp {
-    /// List the suggestions, the newest first.
+    /// List the suggestions, the newest first: those with a source come
+    /// before any kept before sources were.
     List,
     /// Mark one started: the owner took it to their chat.
     Start {
@@ -2793,6 +2821,9 @@ mod tests {
                         area: crate::messages::SuggestionArea::Health,
                         suggested_at: s("2026-11-04T08:30:00Z"),
                         state: SuggestionState::Suggested,
+                        needs: Vec::new(),
+                        source: None,
+                        run: String::new(),
                     }],
                 },
             },
@@ -3103,5 +3134,38 @@ mod tests {
                 "decided_at": "2026-11-03T12:00:00Z",
             }]}),
         );
+    }
+
+    /// A kept suggestion carries what it needs, where the broker found it
+    /// came from, and the run that suggested it; one kept before those
+    /// were is read with none of them, and written as it was.
+    #[test]
+    fn a_suggestion_carries_its_needs_its_source_and_its_run() {
+        use crate::run_tools::ToolGroup;
+        let old = r#"{"suggestion_id":"idea-1","title":"A run plan","summary":"A week of short runs.","why":"You set a goal to run 5k.","area":"health","suggested_at":"2026-11-04T08:30:00Z","state":"suggested"}"#;
+        let kept: Suggestion = serde_json::from_str(old).unwrap();
+        assert_eq!(
+            (kept.needs.as_slice(), &kept.source, kept.run.as_str()),
+            ([].as_slice(), &None, "")
+        );
+        assert_eq!(serde_json::to_string(&kept).unwrap(), old);
+        let new = Suggestion {
+            needs: vec![ToolGroup::Room, ToolGroup::Goals],
+            source: Some(SuggestionSource::Goal {
+                id: String::from("0a1b"),
+                title: String::from("Run 5k by June"),
+            }),
+            run: String::from("3f9c"),
+            ..kept
+        };
+        let json = serde_json::to_string(&new).unwrap();
+        assert_eq!(
+            json,
+            format!(
+                r#"{},"needs":["room","goals"],"source":{{"kind":"goal","id":"0a1b","title":"Run 5k by June"}},"run":"3f9c"}}"#,
+                old.trim_end_matches('}')
+            )
+        );
+        assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), new);
     }
 }

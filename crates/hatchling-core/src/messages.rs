@@ -1704,6 +1704,19 @@ pub enum SuggestionArea {
     Shopping,
 }
 
+/// Where a suggested idea comes from (v27): something of the owner's that
+/// the broker can look up, so the idea can show where it came from.
+///
+/// What the agent remembers of the owner is no source yet: the broker has
+/// nothing to look a remembered thing up by.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum SuggestedFrom {
+    /// One of the owner's open goals, by its id.
+    #[serde(rename = "goal")]
+    Goal(String),
+}
+
 /// A suggestion operation (v20): the agent suggests something it could
 /// do for the owner, for their Ideas page.
 ///
@@ -1728,6 +1741,13 @@ pub enum SuggestOp {
         why: String,
         /// Where it would help.
         area: SuggestionArea,
+        /// The tool groups doing it would use (v27): none when it needs
+        /// none. The broker keeps no idea that needs one this install
+        /// doesn't have.
+        needs: Vec<crate::run_tools::ToolGroup>,
+        /// Where it comes from (v27). The broker keeps no idea whose
+        /// source it can't find.
+        from: SuggestedFrom,
     },
 }
 
@@ -5472,7 +5492,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 26);
+        assert_eq!(crate::PROTOCOL_VERSION, 27);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5577,6 +5597,65 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 26);
+        assert_eq!(crate::PROTOCOL_VERSION, 27);
+    }
+
+    /// A suggested idea says what it needs and the goal it comes from
+    /// (v27): one that says neither, or names a source or a need that
+    /// isn't one, never decodes.
+    #[test]
+    fn a_suggestion_names_what_it_needs_and_the_goal_it_comes_from() {
+        use crate::run_tools::ToolGroup;
+        let idea = |needs: Vec<ToolGroup>| {
+            SessionRequest::Suggest(SuggestOp::Suggest {
+                title: String::from("A run plan"),
+                summary: String::from("A week of short runs."),
+                why: String::from("You set a goal to run 5k."),
+                area: SuggestionArea::Health,
+                needs,
+                from: SuggestedFrom::Goal(String::from("0a1b")),
+            })
+        };
+        let start = r#"{"kind":"suggest","op":"suggest","title":"A run plan","summary":"A week of short runs.","why":"You set a goal to run 5k.","area":"health","#;
+        let json = serde_json::to_string(&idea(vec![ToolGroup::Room, ToolGroup::Search])).unwrap();
+        assert_eq!(
+            json,
+            format!(r#"{start}"needs":["room","search"],"from":{{"goal":"0a1b"}}}}"#)
+        );
+        assert_eq!(
+            asked(&json).unwrap(),
+            idea(vec![ToolGroup::Room, ToolGroup::Search])
+        );
+        let json = serde_json::to_string(&idea(Vec::new())).unwrap();
+        assert_eq!(
+            json,
+            format!(r#"{start}"needs":[],"from":{{"goal":"0a1b"}}}}"#)
+        );
+        assert_eq!(asked(&json).unwrap(), idea(Vec::new()));
+        for (rest, why) in [
+            (r#""from":{"goal":"0a1b"}}"#, "no needs"),
+            (r#""needs":[]}"#, "no source"),
+            (
+                r#""needs":["shell"],"from":{"goal":"0a1b"}}"#,
+                "a need that isn't one",
+            ),
+            (
+                r#""needs":"room","from":{"goal":"0a1b"}}"#,
+                "needs that are no list",
+            ),
+            (
+                r#""needs":[],"from":{"memory":"runs at 8pm"}}"#,
+                "a source that isn't one",
+            ),
+            (r#""needs":[],"from":"0a1b"}"#, "a source with no kind"),
+            (r#""needs":[],"from":{"goal":7}}"#, "an id that is no text"),
+            (
+                r#""needs":[],"from":{"goal":"0a1b"},"rank":1}"#,
+                "a field it doesn't name",
+            ),
+        ] {
+            assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
+        }
+        assert_eq!(crate::PROTOCOL_VERSION, 27);
     }
 }

@@ -78,7 +78,7 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
     }
     if on(ToolGroup::Suggest) {
         lines.push(String::from(
-            "- When the owner asks for ideas, or you see something Hatchling could do for them that they haven't asked for, you can suggest it with idea_suggest. It waits on their Ideas page until they start it; nothing runs from it. Don't suggest what they just asked you to do: do it, or say you can't.",
+            "- When the owner asks for ideas, or you see something Hatchling could do for them that they haven't asked for, you can suggest it with idea_suggest. It waits on their Ideas page until they start it; nothing runs from it. Each idea names the open goal of theirs it comes from, and what it needs: with no goal behind it, suggest nothing. Don't suggest what they just asked you to do: do it, or say you can't.",
         ));
     }
     lines.push(String::from(if on(ToolGroup::Schedule) {
@@ -163,7 +163,8 @@ mod tests {
         );
         let suggest = note(Some(&BTreeSet::from([ToolGroup::Suggest])));
         assert!(
-            suggest.contains("suggest it with idea_suggest"),
+            suggest.contains("suggest it with idea_suggest")
+                && suggest.contains("Each idea names the open goal of theirs it comes from, and what it needs: with no goal behind it, suggest nothing."),
             "{suggest}"
         );
         assert!(!off.contains("idea_suggest"), "{off}");

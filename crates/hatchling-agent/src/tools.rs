@@ -496,13 +496,18 @@ const SUGGESTION_AREAS: [&str; 10] = [
     "shopping",
 ];
 
+/// The tool groups an idea may say it needs, as the tool names them.
+const IDEA_NEEDS: [&str; 8] = [
+    "web", "search", "browser", "skills", "goals", "memory", "schedule", "room",
+];
+
 impl Tool for IdeaSuggestTool<'_> {
     fn name(&self) -> &'static str {
         "idea_suggest"
     }
 
     fn description(&self) -> &'static str {
-        "Suggest one idea for the owner's Ideas page: something Hatchling could do for them, with the tools and settings it has, that they haven't asked for. It waits there, as your words, until they start it or set it aside; nothing runs from it. Ground it in what you know of them (their goals, what they asked you to remember), and say why in their terms. One idea per call; never one they just asked for."
+        "Suggest one idea for the owner's Ideas page: something Hatchling could do for them, with the tools and settings it has, that they haven't asked for. It waits there, as your words, until they start it or set it aside; nothing runs from it. Every idea comes from one of their open goals: read their goals first, and give that goal's id as from, exactly as it is shown. An idea with no open goal behind it isn't kept, so don't suggest it. Say in needs which of your tools doing it would use (web to read a page, search, browser, skills, goals, memory, schedule, room for your own computer; an empty list if none): an idea that needs what this install doesn't have isn't kept either. Say why in their terms. One idea per call, at most three in one reply; never one they just asked for. No idea is a good answer when nothing of theirs suggests one."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -525,9 +530,26 @@ impl Tool for IdeaSuggestTool<'_> {
                     "type": "string",
                     "enum": SUGGESTION_AREAS,
                     "description": "Where in their life it would help."
+                },
+                "needs": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": IDEA_NEEDS },
+                    "description": "The tools doing it would use, each once; an empty list if it needs none."
+                },
+                "from": {
+                    "type": "object",
+                    "properties": {
+                        "goal": {
+                            "type": "string",
+                            "description": "The id of the open goal of theirs it comes from, as their goals show it."
+                        }
+                    },
+                    "required": ["goal"],
+                    "additionalProperties": false,
+                    "description": "Where the idea comes from: one of their open goals."
                 }
             },
-            "required": ["title", "summary", "why", "area"],
+            "required": ["title", "summary", "why", "area", "needs", "from"],
             "additionalProperties": false
         })
     }
@@ -549,11 +571,36 @@ impl Tool for IdeaSuggestTool<'_> {
                 reason: format!("'area' must be one of: {}", SUGGESTION_AREAS.join(", ")),
             }
         })?;
+        let wrong = |reason: String| LoopError::ToolFailed {
+            tool: self.name().to_owned(),
+            reason,
+        };
+        let needs = arguments
+            .get("needs")
+            .cloned()
+            .and_then(|needs| serde_json::from_value(needs).ok())
+            .ok_or_else(|| {
+                wrong(format!(
+                    "'needs' must be a list of the tools it would use, from: {} (an empty list if none)",
+                    IDEA_NEEDS.join(", ")
+                ))
+            })?;
+        let from = arguments
+            .get("from")
+            .cloned()
+            .and_then(|from| serde_json::from_value(from).ok())
+            .ok_or_else(|| {
+                wrong(String::from(
+                    "'from' must name the open goal of theirs it comes from: {\"goal\": \"<its id>\"}",
+                ))
+            })?;
         let op = hatchling_core::SuggestOp::Suggest {
             title: text("title")?,
             summary: text("summary")?,
             why: text("why")?,
             area,
+            needs,
+            from,
         };
         Ok(match crate::ideas::suggest(self.stream, op) {
             Ok(hatchling_core::SuggestResult::Suggested) => ToolOutput::Ok(json!({
@@ -5575,6 +5622,198 @@ mod tests {
         let asked = write
             .execute(json!({ "path": "a", "text": "x".repeat(most) }))
             .unwrap();
+        assert!(matches!(asked, ToolOutput::Err(_)), "{asked:?}");
+    }
+
+    /// A broker that answers each suggestion from a script, and says what
+    /// it was asked.
+    fn idea_broker(
+        answers: Vec<hatchling_core::SuggestResult>,
+    ) -> (UnixStream, std::thread::JoinHandle<Vec<SessionRequest>>) {
+        let (agent, broker) = socket_pair();
+        let serve = std::thread::spawn(move || {
+            let mut asked = Vec::new();
+            for answer in answers {
+                let Ok(frame) = hatchling_core::framing::read_frame(&broker) else {
+                    break;
+                };
+                asked.push(serde_json::from_slice(&frame).unwrap());
+                let reply = hatchling_core::SessionResponse::Suggest(answer);
+                hatchling_core::framing::write_frame(&broker, &serde_json::to_vec(&reply).unwrap())
+                    .unwrap();
+            }
+            asked
+        });
+        (agent, serve)
+    }
+
+    #[test]
+    fn the_idea_suggest_tools_metadata_is_stable() {
+        let (a, _b) = socket_pair();
+        let tool = IdeaSuggestTool::new(&a);
+        assert_eq!(tool.name(), "idea_suggest");
+        assert!(
+            tool.description()
+                .starts_with("Suggest one idea for the owner's Ideas page:")
+        );
+        for said in [
+            "nothing runs from it",
+            "Every idea comes from one of their open goals",
+            "give that goal's id as from, exactly as it is shown",
+            "An idea with no open goal behind it isn't kept, so don't suggest it",
+            "Say in needs which of your tools doing it would use",
+            "an empty list if none",
+            "needs what this install doesn't have isn't kept either",
+            "at most three in one reply",
+            "No idea is a good answer",
+        ] {
+            assert!(tool.description().contains(said), "{said}");
+        }
+        assert!(
+            !tool.description().contains("asked you to remember"),
+            "what it remembers is no source yet"
+        );
+        let schema = tool.parameters_schema();
+        assert_eq!(
+            schema.get("required"),
+            Some(&json!(["title", "summary", "why", "area", "needs", "from"]))
+        );
+        assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
+        let needs = schema.pointer("/properties/needs").unwrap();
+        assert_eq!(needs.get("type"), Some(&json!("array")));
+        assert_eq!(
+            needs.pointer("/items/enum"),
+            Some(&json!([
+                "web", "search", "browser", "skills", "goals", "memory", "schedule", "room"
+            ]))
+        );
+        // Each name the tool gives a need is one the broker reads.
+        for name in IDEA_NEEDS {
+            assert!(
+                serde_json::from_value::<hatchling_core::run_tools::ToolGroup>(json!(name)).is_ok(),
+                "{name}"
+            );
+        }
+        let from = schema.pointer("/properties/from").unwrap();
+        assert_eq!(from.get("type"), Some(&json!("object")));
+        assert_eq!(from.get("required"), Some(&json!(["goal"])));
+        assert_eq!(from.get("additionalProperties"), Some(&json!(false)));
+        assert_eq!(
+            from.pointer("/properties/goal/type"),
+            Some(&json!("string"))
+        );
+    }
+
+    /// The tool asks the broker for the idea as the model gave it, with
+    /// what it needs and the goal it comes from, and tells the model
+    /// whether it was kept, and why not.
+    #[test]
+    fn the_idea_suggest_tool_asks_the_broker_and_says_whether_it_was_kept() {
+        use hatchling_core::run_tools::ToolGroup;
+        use hatchling_core::{SuggestOp, SuggestResult, SuggestedFrom, SuggestionArea};
+        let (agent, serve) = idea_broker(vec![
+            SuggestResult::Suggested,
+            SuggestResult::Unasked {
+                reason: String::from("That goal is closed."),
+            },
+        ]);
+        let tool = IdeaSuggestTool::new(&agent);
+        let idea = |needs: Value, goal: &str| {
+            json!({
+                "title": "A run plan",
+                "summary": "A week of short runs.",
+                "why": "You set a goal to run 5k.",
+                "area": "health",
+                "needs": needs,
+                "from": { "goal": goal },
+            })
+        };
+        assert_eq!(
+            tool.execute(idea(json!(["room", "search"]), "0a1b"))
+                .unwrap(),
+            ToolOutput::Ok(json!({
+                "suggested": true,
+                "note": "It's on the owner's Ideas page. Nothing runs unless they start it."
+            }))
+        );
+        assert_eq!(
+            tool.execute(idea(json!([]), "ffff")).unwrap(),
+            ToolOutput::Ok(json!({ "suggested": false, "reason": "That goal is closed." }))
+        );
+        let asked = |needs: Vec<ToolGroup>, goal: &str| {
+            SessionRequest::Suggest(SuggestOp::Suggest {
+                title: String::from("A run plan"),
+                summary: String::from("A week of short runs."),
+                why: String::from("You set a goal to run 5k."),
+                area: SuggestionArea::Health,
+                needs,
+                from: SuggestedFrom::Goal(goal.to_owned()),
+            })
+        };
+        assert_eq!(
+            serve.join().unwrap(),
+            [
+                asked(vec![ToolGroup::Room, ToolGroup::Search], "0a1b"),
+                asked(Vec::new(), "ffff")
+            ]
+        );
+    }
+
+    /// An idea that doesn't say what it needs, or which goal it comes
+    /// from, in the tool's own terms, is the model's error: nothing is
+    /// asked of the broker.
+    #[test]
+    fn the_idea_suggest_tool_asks_nothing_for_an_idea_with_no_needs_or_no_goal() {
+        // The broker's end is closed: an idea asked for all the same
+        // fails at once, where an open end would have it wait for ever.
+        let (unasked, broker) = socket_pair();
+        drop(broker);
+        let tool = IdeaSuggestTool::new(&unasked);
+        // A whole idea, with `key` given as `value`, or left out.
+        let with = |key: &str, value: Option<Value>| {
+            let mut idea = json!({
+                "title": "A run plan",
+                "summary": "A week of short runs.",
+                "why": "You set a goal to run 5k.",
+                "area": "health",
+                "needs": [],
+                "from": { "goal": "0a1b" },
+            });
+            let fields = idea.as_object_mut().unwrap();
+            match value {
+                Some(value) => drop(fields.insert(key.to_owned(), value)),
+                None => drop(fields.remove(key)),
+            }
+            idea
+        };
+        let needs = "'needs' must be a list of the tools it would use, from: web, search, browser, skills, goals, memory, schedule, room (an empty list if none)";
+        let from =
+            "'from' must name the open goal of theirs it comes from: {\"goal\": \"<its id>\"}";
+        let cases: Vec<(Value, &str)> = vec![
+            (with("needs", None), needs),
+            (with("needs", Some(json!("room"))), needs),
+            (with("needs", Some(json!(["shell"]))), needs),
+            (with("needs", Some(json!(null))), needs),
+            (with("from", None), from),
+            (with("from", Some(json!("0a1b"))), from),
+            (with("from", Some(json!({ "memory": "runs at 8pm" }))), from),
+            (with("from", Some(json!({ "goal": 7 }))), from),
+            (with("title", None), "missing or invalid 'title' argument"),
+            (with("area", Some(json!("space"))), "'area' must be one of:"),
+        ];
+        for (arguments, why) in cases {
+            let Err(LoopError::ToolFailed {
+                tool: named,
+                reason,
+            }) = tool.execute(arguments.clone())
+            else {
+                unreachable!("{arguments} was asked for");
+            };
+            assert_eq!(named, "idea_suggest");
+            assert!(reason.contains(why), "{reason}");
+        }
+        // A whole idea is asked for: the closed end is what says no.
+        let asked = tool.execute(with("area", Some(json!("health")))).unwrap();
         assert!(matches!(asked, ToolOutput::Err(_)), "{asked:?}");
     }
 }

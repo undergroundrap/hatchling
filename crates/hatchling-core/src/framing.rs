@@ -15,6 +15,11 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v27 has a suggested idea say what it needs and where it comes from
+/// (`SuggestOp::Suggest`'s `needs` and `from`, `SuggestedFrom`): the
+/// tool groups doing it would use, and one of the owner's open goals,
+/// by its id. The broker keeps an idea only if this install has what it
+/// needs and the goal is one it can find.
 /// v26 adds writing and editing the files in the agent's computer
 /// (`RoomOp::Write`, `RoomOp::Edit`, `RoomResult::Wrote`,
 /// `RoomResult::Edited`, `RoomResult::NoChange`): a file written whole,
@@ -73,7 +78,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 26;
+pub const PROTOCOL_VERSION: u16 = 27;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

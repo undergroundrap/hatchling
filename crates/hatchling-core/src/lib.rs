@@ -51,8 +51,8 @@ pub use messages::{
     ROOM_WAIT_MAX_SECS, ROOM_WAIT_SECS, RoomOp, RoomResult, RoomStopped, RoomText, ScheduleGrant,
     ScheduleKind, ScheduleOp, ScheduleRefusal, ScheduleResult, ScheduleSpec, ScheduleSummary,
     SessionRequest, SessionResponse, SkillOp, SkillResult, SpaceOp, SpaceRefusal, SpaceResult,
-    SuggestOp, SuggestResult, SuggestionArea, SyncChange, SyncItem, VaultAction, VaultOp,
-    VaultResult, WebHit, WebOp, WebResult,
+    SuggestOp, SuggestResult, SuggestedFrom, SuggestionArea, SyncChange, SyncItem, VaultAction,
+    VaultOp, VaultResult, WebHit, WebOp, WebResult,
 };
 pub use model_reasoning::ModelReasoning;
 pub use peer::{PeerCredentials, peer_credentials};

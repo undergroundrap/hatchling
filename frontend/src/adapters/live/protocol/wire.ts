@@ -3664,6 +3664,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "area": {
                 "$ref": "#/$defs/SuggestionArea"
             },
+            "needs": {
+                "items": {
+                    "$ref": "#/$defs/ToolGroup"
+                },
+                "type": "array"
+            },
+            "run": {
+                "type": "string"
+            },
+            "source": {
+                "anyOf": [
+                    {
+                        "$ref": "#/$defs/SuggestionSource"
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
+            },
             "state": {
                 "$ref": "#/$defs/SuggestionState"
             },
@@ -3877,6 +3896,30 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "SuggestionSource": {
+        "oneOf": [
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "kind": {
+                        "const": "goal",
+                        "type": "string"
+                    },
+                    "title": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind",
+                    "id",
+                    "title"
+                ],
+                "type": "object"
+            }
+        ]
+    },
     "SuggestionState": {
         "oneOf": [
             {
@@ -3889,6 +3932,46 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "dismissed",
+                "type": "string"
+            }
+        ]
+    },
+    "ToolGroup": {
+        "oneOf": [
+            {
+                "const": "web",
+                "type": "string"
+            },
+            {
+                "const": "search",
+                "type": "string"
+            },
+            {
+                "const": "browser",
+                "type": "string"
+            },
+            {
+                "const": "skills",
+                "type": "string"
+            },
+            {
+                "const": "goals",
+                "type": "string"
+            },
+            {
+                "const": "memory",
+                "type": "string"
+            },
+            {
+                "const": "schedule",
+                "type": "string"
+            },
+            {
+                "const": "suggest",
+                "type": "string"
+            },
+            {
+                "const": "room",
                 "type": "string"
             }
         ]

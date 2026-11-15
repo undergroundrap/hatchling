@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 26;
+export const SESSION_PROTOCOL_VERSION = 27;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -3867,6 +3867,17 @@ export type SessionRequest = {
      * Where it would help.
      */
     readonly area: SuggestionArea;
+    /**
+     * Where it comes from (v27). The broker keeps no idea whose
+     * source it can't find.
+     */
+    readonly from: SuggestedFrom;
+    /**
+     * The tool groups doing it would use (v27): none when it needs
+     * none. The broker keeps no idea that needs one this install
+     * doesn't have.
+     */
+    readonly needs: readonly (ToolGroup)[];
     readonly op: 'suggest';
     /**
      * What it would do, in a sentence or two. Untrusted text.
@@ -4475,13 +4486,38 @@ export type SuggestResult = {
     readonly result: 'unasked';
 };
 /**
- * A suggestion on the owner's Ideas page: the agent's words, all of it.
+ * Where a suggested idea comes from (v27): something of the owner's that
+ * the broker can look up, so the idea can show where it came from.
+ *
+ * What the agent remembers of the owner is no source yet: the broker has
+ * nothing to look a remembered thing up by.
+ */
+export type SuggestedFrom = {
+    readonly goal: string;
+};
+/**
+ * A suggestion on the owner's Ideas page: the agent's words, all but
+ * where it came from and which run suggested it, which are the broker's.
  */
 export type Suggestion = {
     /**
      * Where it would help.
      */
     readonly area: SuggestionArea;
+    /**
+     * The tool groups doing it would use, as the agent said: none for
+     * one that needs none, or one kept before needs were.
+     */
+    readonly needs?: readonly (ToolGroup)[];
+    /**
+     * The run that suggested it, as the owner's Activity names it:
+     * empty for one kept before runs were.
+     */
+    readonly run?: string;
+    /**
+     * Where it came from: none for one kept before sources were.
+     */
+    readonly source?: SuggestionSource | null;
     /**
      * Where it stands.
      */
@@ -4559,6 +4595,21 @@ export type SuggestionResult = {
     readonly result: 'failed';
 };
 /**
+ * Where a suggestion came from, as the broker found it when the idea was
+ * suggested: the broker's record, never the agent's words.
+ */
+export type SuggestionSource = {
+    /**
+     * The goal's id.
+     */
+    readonly id: string;
+    readonly kind: 'goal';
+    /**
+     * The goal's title then.
+     */
+    readonly title: string;
+};
+/**
  * Where a suggestion on the Ideas page stands.
  */
 export type SuggestionState = 'suggested' | 'started' | 'dismissed';
@@ -4601,6 +4652,10 @@ export type SyncItem = {
      */
     readonly writer: string;
 };
+/**
+ * A tool group the operator turns on.
+ */
+export type ToolGroup = 'web' | 'search' | 'browser' | 'skills' | 'goals' | 'memory' | 'schedule' | 'suggest' | 'room';
 /**
  * How often a session used one tool, by how each use ended.
  */
