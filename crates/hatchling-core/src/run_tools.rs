@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 /// A tool group the operator turns on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolGroup {
     /// Reading a page the owner allows.

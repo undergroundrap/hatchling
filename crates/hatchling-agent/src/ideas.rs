@@ -112,6 +112,8 @@ mod tests {
             summary: String::from("A week of short runs."),
             why: String::from("You set a goal to run 5k."),
             area: hatchling_core::SuggestionArea::Health,
+            needs: vec![hatchling_core::run_tools::ToolGroup::Room],
+            from: hatchling_core::SuggestedFrom::Goal(String::from("0a1b")),
         }
     }
 

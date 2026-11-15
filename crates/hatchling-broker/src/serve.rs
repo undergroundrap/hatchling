@@ -1043,9 +1043,9 @@ fn serve_session(
                 SessionRequest::Browser(op) => SessionResponse::Browser(
                     crate::browser_ops::handle_browser_op(config, key, &mut web, &mut browser, &op),
                 ),
-                SessionRequest::Suggest(op) => {
-                    SessionResponse::Suggest(crate::suggestions::suggest(config, &op))
-                }
+                SessionRequest::Suggest(op) => SessionResponse::Suggest(
+                    crate::suggestions::suggest(config, &principal, session_id.as_str(), &op),
+                ),
                 SessionRequest::Room(op) => SessionResponse::Room(room.handle(&op)),
                 // Only the chat's run in flight is given anything: the
                 // chat named its cell, and any other gets none.

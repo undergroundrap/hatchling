@@ -84,6 +84,11 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **An idea names the goal it comes from, and what it needs.** The agent could put any idea on your Ideas page: on an install with no web search it suggested a recipe search, and asked for ideas in a chat it added four at once, none tied to anything of yours it could point to. An idea is now kept only if the broker can check two things. It names one of your open goals, by its id, and the broker finds that goal open, reading it under the run's own grant to read your goals; the idea keeps the goal as the broker found it, not as the agent described it. And it says which tools doing it would use (the web, search, a browser, skills, goals, memory, scheduled work, its computer), and this install has each of them. An idea from nothing the broker can find, from a closed goal, or that needs what this install doesn't have, isn't kept, and the agent is told why. A run puts at most three on the page, whether you pressed Suggest ideas or it is a chat. With no open goal there are no ideas: an empty page is a right answer. Each idea keeps which run suggested it, as your Activity names it.
+  - What the agent remembers of you is no source yet: the broker has nothing to look a remembered thing up by, so an idea can't claim it.
+  - The broker checks what an idea says it needs, not what doing it will turn out to take: an idea that leaves a need out is kept.
+  - Ideas already on your page stay, with no source. New ones are kept ahead of them, the newest first; the app still groups ideas by area.
+  - **Breaking for `hatchling-core`, `hatchling-agent` and `hatchling-broker`:** the session protocol is v27: `SuggestOp::Suggest` has two new required fields, `needs` (`ToolGroup`s) and `from` (`SuggestedFrom`); `Suggestion` has three new optional fields, `needs`, `source` (`SuggestionSource`) and `run`; `ToolGroup` is in the protocol's schema; `suggestions::suggest` takes the asker and the run; `MAX_PER_RUN` is new.
 - **Agent-led installation checks have a completion checklist.** The guide identifies disposable boxes, protects secret entry and screenshots, distinguishes live behavior from demo UI, and preserves failure and cleanup evidence. Contributor instructions link to it; the security overview now states the browser rail's limits.
 
 

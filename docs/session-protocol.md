@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v26 (current). This doc is the human-readable reference
+**Status:** v27 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -68,7 +68,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Subagent | `SubagentOp` | `SubagentResult` | v10 |
 | Web | `WebOp` | `WebResult` | v14 |
 | Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
-| Suggest | `SuggestOp` | `SuggestResult` | v20 |
+| Suggest | `SuggestOp` | `SuggestResult` | v20; `needs`, `from` v27 |
 | Room | `RoomOp` | `RoomResult` | v21; `Read` v22; `Search` v25; `Write`, `Edit` v26 |
 | Chat | `ChatOp` | `ChatResult` | v24 |
 
@@ -500,6 +500,36 @@ answer to the last. A chat run can now take it into the task it is on.
   never followed.
 - A change is no command: it takes no job name. The sessions that may
   run a command are the ones that may write and edit.
+
+## v27 — An idea says what it needs and where it comes from
+
+- **`SuggestOp::Suggest`** gains two fields, both required:
+  - `needs`: the tool groups doing the idea would use, each once, from
+    `web`, `search`, `browser`, `skills`, `goals`, `memory`, `schedule`,
+    `suggest`, `room`; an empty list when it needs none.
+  - `from`: where the idea comes from, as `SuggestedFrom`. The one source
+    there is yet is `{ "goal": "<id>" }`: one of the owner's open goals, by
+    its id. What the agent remembers of the owner is no source: the broker
+    has nothing to look a remembered thing up by.
+- The broker keeps an idea only if it can check both. Each group in
+  `needs` is one this install has, whoever asks: the idea is started by
+  the owner in a chat of their own, so it is held to the install's
+  settings and to no run's grants. And the goal in `from` is found, open,
+  read under the asking run's own grant to read the owner's goals: a run
+  without that grant can't suggest from a goal.
+- **`SuggestResult::Unasked { reason }`** gains reasons: the install lacks
+  something the idea needs (the reason names each thing), a need is named
+  twice, the goal isn't there, is closed, may not be read by this run or
+  couldn't be read, and the run has put three ideas on the page already.
+  Three is what one run may add, whatever became of them since.
+- The kept idea (`Suggestion`, in the app's protocol) carries `needs` as
+  the agent gave them, `source` as the broker found it (the goal's id and
+  its title then, never the agent's words for it) and `run`, the
+  suggesting run as the owner's Activity names it. One kept before v27
+  has none of the three. The page is listed as it is kept, the newest
+  first: an idea with a source is before any kept before v27.
+- The broker checks what an idea says it needs, not what doing it will
+  turn out to take.
 
 ## Device handshake
 

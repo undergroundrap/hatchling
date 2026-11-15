@@ -9382,6 +9382,17 @@
                   "$ref": "#/$defs/SuggestionArea",
                   "description": "Where it would help."
                 },
+                "from": {
+                  "$ref": "#/$defs/SuggestedFrom",
+                  "description": "Where it comes from (v27). The broker keeps no idea whose\nsource it can't find."
+                },
+                "needs": {
+                  "description": "The tool groups doing it would use (v27): none when it needs\nnone. The broker keeps no idea that needs one this install\ndoesn't have.",
+                  "items": {
+                    "$ref": "#/$defs/ToolGroup"
+                  },
+                  "type": "array"
+                },
                 "op": {
                   "const": "suggest",
                   "type": "string"
@@ -9404,7 +9415,9 @@
                 "title",
                 "summary",
                 "why",
-                "area"
+                "area",
+                "needs",
+                "from"
               ],
               "type": "object"
             }
@@ -11132,12 +11145,52 @@
         }
       ]
     },
+    "SuggestedFrom": {
+      "description": "Where a suggested idea comes from (v27): something of the owner's that\nthe broker can look up, so the idea can show where it came from.\n\nWhat the agent remembers of the owner is no source yet: the broker has\nnothing to look a remembered thing up by.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "One of the owner's open goals, by its id.",
+          "properties": {
+            "goal": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "goal"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "Suggestion": {
-      "description": "A suggestion on the owner's Ideas page: the agent's words, all of it.",
+      "description": "A suggestion on the owner's Ideas page: the agent's words, all but\nwhere it came from and which run suggested it, which are the broker's.",
       "properties": {
         "area": {
           "$ref": "#/$defs/SuggestionArea",
           "description": "Where it would help."
+        },
+        "needs": {
+          "description": "The tool groups doing it would use, as the agent said: none for\none that needs none, or one kept before needs were.",
+          "items": {
+            "$ref": "#/$defs/ToolGroup"
+          },
+          "type": "array"
+        },
+        "run": {
+          "description": "The run that suggested it, as the owner's Activity names it:\nempty for one kept before runs were.",
+          "type": "string"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SuggestionSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where it came from: none for one kept before sources were."
         },
         "state": {
           "$ref": "#/$defs/SuggestionState",
@@ -11234,7 +11287,7 @@
       "description": "An operation on the owner's Ideas page, from their app.",
       "oneOf": [
         {
-          "description": "List the suggestions, the newest first.",
+          "description": "List the suggestions, the newest first: those with a source come\nbefore any kept before sources were.",
           "properties": {
             "op": {
               "const": "list",
@@ -11385,6 +11438,34 @@
         }
       ]
     },
+    "SuggestionSource": {
+      "description": "Where a suggestion came from, as the broker found it when the idea was\nsuggested: the broker's record, never the agent's words.",
+      "oneOf": [
+        {
+          "description": "One of the owner's goals, open when the idea was suggested.",
+          "properties": {
+            "id": {
+              "description": "The goal's id.",
+              "type": "string"
+            },
+            "kind": {
+              "const": "goal",
+              "type": "string"
+            },
+            "title": {
+              "description": "The goal's title then.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "title"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "SuggestionState": {
       "description": "Where a suggestion on the Ideas page stands.",
       "oneOf": [
@@ -11464,6 +11545,56 @@
         "writer"
       ],
       "type": "object"
+    },
+    "ToolGroup": {
+      "description": "A tool group the operator turns on.",
+      "oneOf": [
+        {
+          "const": "web",
+          "description": "Reading a page the owner allows.",
+          "type": "string"
+        },
+        {
+          "const": "search",
+          "description": "Searching the web.",
+          "type": "string"
+        },
+        {
+          "const": "browser",
+          "description": "Driving a browser.",
+          "type": "string"
+        },
+        {
+          "const": "skills",
+          "description": "Invoking an installed skill.",
+          "type": "string"
+        },
+        {
+          "const": "goals",
+          "description": "Reading the owner's open goals.",
+          "type": "string"
+        },
+        {
+          "const": "memory",
+          "description": "Asking the owner to keep something in their memory.",
+          "type": "string"
+        },
+        {
+          "const": "schedule",
+          "description": "Asking the owner to schedule work.",
+          "type": "string"
+        },
+        {
+          "const": "suggest",
+          "description": "Suggesting ideas for the owner's Ideas page.",
+          "type": "string"
+        },
+        {
+          "const": "room",
+          "description": "Running commands in its own computer, the Room.",
+          "type": "string"
+        }
+      ]
     },
     "ToolTally": {
       "description": "How often a session used one tool, by how each use ended.",
@@ -14110,7 +14241,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 26,
+    "session_protocol": 27,
     "ui_schema_version": 4
   },
   "x-roots": {
