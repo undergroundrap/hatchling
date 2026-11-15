@@ -410,9 +410,11 @@ fn gated_turn<'s>(
             .is_some_and(|scope| scope.starts_with("session:")),
         "{record}"
     );
+    // The secret's own words, and all of its number: the record's scope
+    // is a random hex id, which now and then holds any four hex digits.
     let lower = log.to_lowercase();
     assert!(
-        !lower.contains("nightjar") && !lower.contains("7f3a"),
+        !lower.contains("nightjar") && !lower.contains("7f3a91c2"),
         "{log}"
     );
 
