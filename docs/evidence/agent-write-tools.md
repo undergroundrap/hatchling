@@ -254,6 +254,47 @@ coverage of the live adapter at 100%) passed on the same tree, on
 Windows (`frontend-check.log`). The app's code didn't change: only its
 generated protocol types and the version its test expects.
 
+## On a real install
+
+Added on 2026-11-15, after this change was merged. The first thing
+under "What wasn't tried" below was so when the record was written, and
+isn't now.
+
+The build of the pull request's head (merge commit `da52a571`, whose
+tree is the tree of main `19ab6890`) was put on an install, with
+`qwen3.5:9b`, and two chats were sent, each a new conversation
+(`hatchling-write-tools-and-last-step-real-install-results.tar.gz`, 3691 bytes, sha256
+`170dceb6d63b06312d9eee41de76292c2a02b3ca46d662465762292fb138e040`;
+`chat-answers.txt`, `trial-write-edit.journal.txt`,
+`trial-many-steps.journal.txt`, `install.txt`).
+
+**Three files, an edit and a search.** Asked to make a folder with
+three small files, change the word TODO to DONE in the first, then
+search the folder for TODO and say which files still had it, the agent
+answered that only the third did, and that the first now had DONE. The
+broker's log has three of "a session changes a file in the Room" with
+`edit=false`, one with `edit=true`, and one search, in nineteen seconds
+from the chat's start to its answer. The run's summary counts five uses
+of the Room, all done, none failed or refused. That is a model's
+`write` and `edit`, carried by the broker and the spawner, made by the
+supervisor on a real room disk, and read back by ripgrep in the same
+Room: the search's answer is right only if the edit was made. The
+three writes came in one turn of the model.
+
+A request much like it, with no edit in it, on the build before these
+tools and with ten steps, used all its steps and gave no answer
+([the search tool's record](agent-search-tool.md) has that chat).
+
+**Nineteen files, each read back.** Asked to make thirty files one at a
+time and read each back, the agent made nineteen and read nineteen
+before its steps ran out: thirty-eight uses of the Room, all done, none
+failed. [The last step's record](last-step-answers.md) has what it
+said then.
+
+What these two chats don't show: an edit refused because its text was
+at more than one place or wasn't there, a write refused because a file
+was there, or a change that got no answer. None of those came up.
+
 ## What wasn't tried
 
 - **A chat that writes a file in an installed Room.** Every test is
