@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 28;
+export const SESSION_PROTOCOL_VERSION = 29;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -4613,7 +4613,7 @@ export type SuggestionSource = {
 /**
  * Where a suggestion on the Ideas page stands.
  */
-export type SuggestionState = 'suggested' | 'started' | 'dismissed' | 'stale' | 'source_gone';
+export type SuggestionState = 'suggested' | 'started' | 'dismissed' | 'answered' | 'stale' | 'source_gone';
 /**
  * One change a sync push carries.
  */
@@ -4706,6 +4706,12 @@ export type UiAction = {
      * The chat.
      */
     readonly chat_id: string;
+    /**
+     * The idea on the owner's Ideas page the new conversation is
+     * for, when they started one: the broker then knows which
+     * conversation its answer comes in.
+     */
+    readonly idea?: string | null;
 } | {
     readonly action: 'decide';
     /**

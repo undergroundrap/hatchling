@@ -74,6 +74,22 @@ impl RunFailure {
     }
 }
 
+/// The status an agent exits with when it answered as its steps ran out.
+///
+/// That is: on its last step, told it was the last, or with an answer that
+/// was held back until none were left. The answer is the run's, whole, on
+/// its standard output as any answer is. It is no failure, and
+/// [`RunFailure`] has no word for it: the broker takes the answer as it
+/// takes any, and knows the run may have left work undone. It is the
+/// agent's word, like every status here.
+pub const ANSWERED_OUT_OF_STEPS: u8 = 80;
+
+/// Whether an agent's exit status says it answered as its steps ran out.
+#[must_use]
+pub fn answered_out_of_steps(code: i32) -> bool {
+    code == i32::from(ANSWERED_OUT_OF_STEPS)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +105,21 @@ mod tests {
         assert_eq!(codes.len(), RunFailure::ALL.len());
         for other in [-1, 0, 1, 64, 70, 255] {
             assert_eq!(RunFailure::from_code(other), None, "{other}");
+        }
+    }
+
+    /// Answering as the steps ran out has a status of its own: no
+    /// failure's, and none a run exits with for another reason.
+    #[test]
+    fn answering_as_the_steps_ran_out_has_a_status_of_its_own() {
+        assert_eq!(ANSWERED_OUT_OF_STEPS, 80);
+        assert!(answered_out_of_steps(ANSWERED_OUT_OF_STEPS.into()));
+        assert_eq!(RunFailure::from_code(ANSWERED_OUT_OF_STEPS.into()), None);
+        for other in [-1, 0, 1, 64, 79, 81, 255] {
+            assert!(!answered_out_of_steps(other), "{other}");
+        }
+        for failure in RunFailure::ALL {
+            assert!(!answered_out_of_steps(failure.code().into()), "{failure:?}");
         }
     }
 }

@@ -68,6 +68,8 @@ struct HubState {
     /// Each queued message, with the conversation it was sent in.
     inbound: VecDeque<(Message, u64)>,
     conversation: u64,
+    /// What the owner started the conversation for, when they said.
+    started_for: Option<String>,
     sink: Option<(SinkId, Sink)>,
     /// Where a reply goes while no client is attached: the broker's own
     /// record of the chat, which a client reads when it connects.
@@ -180,6 +182,27 @@ impl LocalHub {
     pub fn new_conversation(&self) {
         let mut state = self.state();
         state.conversation = state.conversation.wrapping_add(1);
+        state.started_for = None;
+    }
+
+    /// Starts a new conversation the owner started for `what`, which is
+    /// kept with it until the next one starts. It is kept in memory
+    /// alone: after a restart no conversation was started for anything.
+    pub fn new_conversation_for(&self, what: String) {
+        let mut state = self.state();
+        state.conversation = state.conversation.wrapping_add(1);
+        state.started_for = Some(what);
+    }
+
+    /// What the conversation numbered `conversation` was started for:
+    /// none when it isn't the one open now, or was started for nothing
+    /// the owner named.
+    #[must_use]
+    pub fn started_for(&self, conversation: u64) -> Option<String> {
+        let state = self.state();
+        (state.conversation == conversation)
+            .then(|| state.started_for.clone())
+            .flatten()
     }
 
     /// How many messages wait unreceived.
@@ -333,6 +356,33 @@ mod tests {
         assert_eq!(hub.inject(msg("now")), IngressEvent::Queued);
         assert_eq!(hub.take().map(|m| m.text), Some(String::from("now")));
         assert_eq!(hub.conversation(), 2);
+    }
+
+    /// What a conversation was started for is kept with it, in memory,
+    /// until the next one starts: asked of any other conversation, or
+    /// of one started for nothing, there is none.
+    #[test]
+    fn a_conversation_keeps_what_it_was_started_for_until_the_next() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        assert_eq!(hub.started_for(0), None, "the first is for nothing");
+        hub.new_conversation_for(String::from("idea-1"));
+        assert_eq!(hub.conversation(), 1);
+        assert_eq!(hub.started_for(1), Some(String::from("idea-1")));
+        assert_eq!(hub.started_for(0), None, "not the one before it");
+        assert_eq!(hub.started_for(2), None, "nor one not started yet");
+        assert_eq!(
+            hub.started_for(1),
+            Some(String::from("idea-1")),
+            "asking doesn't take it"
+        );
+        hub.new_conversation_for(String::from("idea-2"));
+        assert_eq!(hub.conversation(), 2);
+        assert_eq!(hub.started_for(2), Some(String::from("idea-2")));
+        assert_eq!(hub.started_for(1), None);
+        hub.new_conversation();
+        assert_eq!(hub.conversation(), 3);
+        assert_eq!(hub.started_for(3), None, "a plain one is for nothing");
+        assert_eq!(hub.started_for(2), None);
     }
 
     fn msg(text: &str) -> Message {

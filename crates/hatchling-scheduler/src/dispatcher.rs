@@ -272,7 +272,9 @@ pub trait Run {
     fn poll(&mut self) -> Option<Result<String, String>>;
 
     /// How it ended, once [`poll`](Self::poll) has said it failed:
-    /// what a person can be told. `None` when nothing more is known.
+    /// what a person can be told. Also once it has given the answer of
+    /// a run whose steps ran out as it answered, with that run's
+    /// status. `None` when nothing more is known.
     fn ending(&self) -> Option<Ending> {
         None
     }

@@ -296,6 +296,10 @@ pub struct Chat<R, K = ()> {
     /// Where the owner's messages wait, when a run in flight may be given
     /// what they send while it works ([`crate::follow_ups`]).
     waiting: Option<LocalHub>,
+    /// The conversation in which the last run to answer the owner did
+    /// so with steps to spare, until it is taken
+    /// ([`Chat::take_answered`]).
+    answered: Option<u64>,
 }
 
 impl<R: Run> Chat<R> {
@@ -334,7 +338,16 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             other: None,
             usage: None,
             waiting: None,
+            answered: None,
         }
+    }
+
+    /// The conversation in which a run answered the owner, was shown,
+    /// and had steps to spare, since this was last asked: an answer
+    /// given as the steps ran out isn't one, since it may leave work
+    /// undone, and neither is one the owner wasn't shown.
+    pub const fn take_answered(&mut self) -> Option<u64> {
+        self.answered.take()
     }
 
     /// The chat, naming `model` when it tells the person a run failed.
@@ -466,6 +479,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             return match delivery.deliver_answer(&ChannelId::local().0, &answer, cell.as_deref()) {
                 Ok(shown) => {
                     if shown && sent_in == self.conversation {
+                        self.answered = had_steps_to_spare(ending).then_some(sent_in);
                         let compacted = self.keep(user, answer);
                         if let Some(notice) = self.told.notice(compacted) {
                             if let Err(error) =
@@ -526,6 +540,17 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     }
 }
 
+/// Whether a run that answered had steps to spare, by how it ended: it
+/// had, unless its agent says by its status that they ran out as it
+/// answered. The status is the agent's own word.
+fn had_steps_to_spare(ending: Option<hatchling_scheduler::Ending>) -> bool {
+    !matches!(
+        ending,
+        Some(hatchling_scheduler::Ending::Exited(code))
+            if hatchling_core::run_failure::answered_out_of_steps(code)
+    )
+}
+
 /// What the owner said in an exchange: the message its run was started
 /// for, then each further one the run was given, a blank line between.
 fn said(first: String, more: &[String]) -> String {
@@ -578,9 +603,10 @@ pub fn chat_forever<'scope, 'env>(
         .with_usage(config.scheduler.usage.clone())
         .with_follow_ups(hub.clone());
     loop {
-        let step = chat.step(
-            || hub.take_in_conversation(),
-            hub.conversation(),
+        let step = chat_turn(
+            &mut chat,
+            config,
+            hub,
             &launcher,
             &delivery,
             Timestamp::now(),
@@ -590,6 +616,37 @@ pub fn chat_forever<'scope, 'env>(
             Step::Started | Step::Answered | Step::Undelivered => {}
         }
     }
+}
+
+/// One turn of the owner's chat, with what `hub` holds: a step, and
+/// then, when a run just answered them with steps to spare, the idea
+/// its conversation was started for is answered
+/// ([`crate::suggestions::conversation_answered`]).
+fn chat_turn<R, K, L, D>(
+    chat: &mut Chat<R, K>,
+    config: &crate::Config,
+    hub: &LocalHub,
+    launcher: &L,
+    delivery: &D,
+    now: Timestamp,
+) -> Step
+where
+    R: Run,
+    K: Keeps,
+    L: Launcher<Run = R>,
+    D: Delivery,
+{
+    let step = chat.step(
+        || hub.take_in_conversation(),
+        hub.conversation(),
+        launcher,
+        delivery,
+        now,
+    );
+    if let Some(conversation) = chat.take_answered() {
+        crate::suggestions::conversation_answered(config, hub, conversation);
+    }
+    step
 }
 
 #[cfg(test)]
@@ -1018,6 +1075,215 @@ mod tests {
             ["a0", "a1", "a2", "a3", "a4", "a5"],
             "every answer is shown"
         );
+    }
+
+    /// A run that ends at once: its outcome, and how it ended.
+    #[derive(Debug)]
+    struct EndedAs {
+        outcome: Result<String, String>,
+        ending: Option<hatchling_scheduler::Ending>,
+    }
+
+    impl Run for EndedAs {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            Some(self.outcome.clone())
+        }
+
+        fn ending(&self) -> Option<hatchling_scheduler::Ending> {
+            self.ending
+        }
+    }
+
+    /// Launches each [`EndedAs`] run in turn.
+    struct InTurn(RefCell<Vec<EndedAs>>);
+
+    impl Launcher for InTurn {
+        type Run = EndedAs;
+
+        fn launch(&self, _: RunRequest) -> Result<EndedAs, String> {
+            let mut runs = self.0.borrow_mut();
+            if runs.is_empty() {
+                Err(String::new())
+            } else {
+                Ok(runs.remove(0))
+            }
+        }
+    }
+
+    /// A run that answered, having ended as `ending` says.
+    fn answered_as(ending: Option<hatchling_scheduler::Ending>) -> EndedAs {
+        EndedAs {
+            outcome: Ok(String::from("done")),
+            ending,
+        }
+    }
+
+    /// A run that failed.
+    fn failed_run() -> EndedAs {
+        EndedAs {
+            outcome: Err(String::from("the run exited 1")),
+            ending: Some(hatchling_scheduler::Ending::Exited(1)),
+        }
+    }
+
+    /// v29: the chat says, once, which conversation a run answered the
+    /// owner in: when they were shown its answer, in the conversation
+    /// still open, and the run had steps to spare.
+    #[test]
+    fn the_chat_says_once_which_conversation_a_run_answered_in() {
+        use hatchling_core::run_failure::{ANSWERED_OUT_OF_STEPS, RunFailure};
+        use hatchling_scheduler::Ending;
+        let now = Timestamp::now();
+        let shown = Answers::default();
+        // Asked in the conversation `sent_in`, answered with `open` open.
+        let ask =
+            |chat: &mut Chat<EndedAs>, run: EndedAs, answers: &Answers, sent_in: u64, open: u64| {
+                let launches = InTurn(RefCell::new(vec![run]));
+                assert_eq!(
+                    chat.step(
+                        || Some((message("q"), sent_in)),
+                        sent_in,
+                        &launches,
+                        answers,
+                        now
+                    ),
+                    Step::Started
+                );
+                chat.step(|| None, open, &launches, answers, now)
+            };
+        let mut chat = Chat::new(vec![send_local()]);
+        assert_eq!(chat.take_answered(), None, "nothing answered yet");
+        assert_eq!(
+            ask(&mut chat, answered_as(None), &shown, 3, 3),
+            Step::Answered
+        );
+        assert_eq!(chat.take_answered(), Some(3));
+        assert_eq!(chat.take_answered(), None, "said once");
+        // Given as its steps ran out, an answer may leave work undone.
+        let spent = Ending::Exited(ANSWERED_OUT_OF_STEPS.into());
+        assert_eq!(
+            ask(&mut chat, answered_as(Some(spent)), &shown, 3, 3),
+            Step::Answered
+        );
+        assert_eq!(chat.take_answered(), None);
+        // Only that status says so. No other comes with an answer; were
+        // one to, it wouldn't be read as this.
+        let other = Ending::Exited(RunFailure::OutOfSteps.code().into());
+        assert_eq!(
+            ask(&mut chat, answered_as(Some(other)), &shown, 3, 3),
+            Step::Answered
+        );
+        assert_eq!(chat.take_answered(), Some(3));
+        // A run that failed answered nothing.
+        assert_eq!(
+            ask(&mut chat, failed_run(), &shown, 3, 3),
+            Step::Answered,
+            "the owner is told it failed"
+        );
+        assert_eq!(chat.take_answered(), None);
+        // Nor did one whose answer the owner wasn't shown,
+        let replaced = Answers::default();
+        replaced.replace.set(true);
+        assert_eq!(
+            ask(&mut chat, answered_as(None), &replaced, 3, 3),
+            Step::Answered
+        );
+        assert_eq!(chat.take_answered(), None);
+        // or one whose answer reached no one,
+        let refusing = Answers {
+            refuse: true,
+            ..Answers::default()
+        };
+        assert_eq!(
+            ask(&mut chat, answered_as(None), &refusing, 3, 3),
+            Step::Undelivered
+        );
+        assert_eq!(chat.take_answered(), None);
+        // or one that answered after the owner started another.
+        assert_eq!(
+            ask(&mut chat, answered_as(None), &shown, 3, 4),
+            Step::Answered
+        );
+        assert_eq!(chat.take_answered(), None);
+        assert_eq!(
+            ask(&mut chat, answered_as(None), &shown, 4, 4),
+            Step::Answered
+        );
+        assert_eq!(chat.take_answered(), Some(4));
+    }
+
+    /// v29: an idea the owner started a conversation for is answered
+    /// when a run answers them in it with steps to spare, as the chat's
+    /// own turn finds it: with the hub that holds the conversation, and
+    /// the page as it is kept.
+    #[test]
+    fn a_started_idea_is_answered_when_its_conversations_run_answers() {
+        use hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS;
+        use hatchling_core::ui::{SuggestionOp, SuggestionResult, SuggestionState};
+        use hatchling_scheduler::Ending;
+        let dir = crate::suggestions::tests::scratch("chat-answered");
+        let config = crate::suggestions::tests::config(&dir, None);
+        let state = |id: &str| match crate::suggestions::handle(&config, &SuggestionOp::List) {
+            SuggestionResult::Listed { suggestions } => suggestions
+                .iter()
+                .find(|kept| kept.suggestion_id == id)
+                .map(|kept| kept.state),
+            SuggestionResult::Changed { .. }
+            | SuggestionResult::NotFound
+            | SuggestionResult::Off
+            | SuggestionResult::Failed => None,
+        };
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let answers = Answers::default();
+        let now = Timestamp::now();
+        let mut chat = Chat::new(vec![send_local()]);
+        // The owner sends a message, and its run ends as `run` does.
+        let mut ask = |run: EndedAs| {
+            let launches = InTurn(RefCell::new(vec![run]));
+            assert_eq!(
+                hub.inject(message("go")),
+                hatchling_channel::IngressEvent::Queued
+            );
+            assert_eq!(
+                chat_turn(&mut chat, &config, &hub, &launches, &answers, now),
+                Step::Started
+            );
+            assert_eq!(
+                chat_turn(&mut chat, &config, &hub, &launches, &answers, now),
+                Step::Answered
+            );
+        };
+        let plan = crate::suggestions::tests::started(&dir, "A run plan");
+        // In a conversation started for nothing, an answer is no idea's.
+        ask(answered_as(None));
+        assert_eq!(state(&plan), Some(SuggestionState::Started));
+        hub.new_conversation_for(plan.clone());
+        // An answer given as the steps ran out leaves it started,
+        ask(answered_as(Some(Ending::Exited(
+            ANSWERED_OUT_OF_STEPS.into(),
+        ))));
+        assert_eq!(state(&plan), Some(SuggestionState::Started));
+        // and so does a run that failed.
+        ask(failed_run());
+        assert_eq!(state(&plan), Some(SuggestionState::Started));
+        // One with steps to spare answers it.
+        ask(answered_as(None));
+        assert_eq!(state(&plan), Some(SuggestionState::Answered));
+        // An idea the owner set aside while its run worked stays so.
+        let list = crate::suggestions::tests::started(&dir, "A reading list");
+        hub.new_conversation_for(list.clone());
+        let _ = crate::suggestions::handle(&config, &SuggestionOp::Dismiss { id: list.clone() });
+        ask(answered_as(None));
+        assert_eq!(state(&list), Some(SuggestionState::Dismissed));
+        assert_eq!(state(&plan), Some(SuggestionState::Answered));
+        // And once the owner starts a conversation for nothing, the one
+        // before it is no idea's any more.
+        let trip = crate::suggestions::tests::started(&dir, "A trip");
+        hub.new_conversation_for(trip.clone());
+        hub.new_conversation();
+        ask(answered_as(None));
+        assert_eq!(state(&trip), Some(SuggestionState::Started));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn message(text: &str) -> Message {

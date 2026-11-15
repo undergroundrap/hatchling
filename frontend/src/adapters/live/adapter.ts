@@ -105,7 +105,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.attention = this.#schedules;
         this.signIns = new LiveSignIns(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.codes = { give: (sessionId, code) => this.#surfaces.giveCode(sessionId, code) };
-        this.conversations = { start: chatId => this.#newConversation(chatId) };
+        this.conversations = { start: (chatId, idea) => this.#newConversation(chatId, idea) };
         this.#usage = new LiveUsage(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.usage = this.#usage;
         this.model = new LiveModel(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
@@ -240,9 +240,9 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#client.dispose();
         this.#listeners.clear();
     }
-    /** Start a new conversation: the agent is given nothing said before it. The broker's notice shows where. */
-    async #newConversation(chatId: string): Promise<CommandResult> {
-        const reply = await this.#client.request(`live-command-${++this.#serial}`, { action: 'new_conversation', chat_id: wireChat(chatId) });
+    /** Start a new conversation: the agent is given nothing said before it. The broker's notice shows where. With `idea`, the broker knows which idea the conversation is for. */
+    async #newConversation(chatId: string, idea?: string): Promise<CommandResult> {
+        const reply = await this.#client.request(`live-command-${++this.#serial}`, { action: 'new_conversation', chat_id: wireChat(chatId), ...(idea === undefined ? {} : { idea }) });
         if (reply.kind !== 'answered')
             return { ok: false, message: reply.detail };
         const result = reply.result;

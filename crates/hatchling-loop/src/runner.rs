@@ -61,6 +61,22 @@ pub struct LoopResult {
     pub history: Vec<Message>,
     /// How many model turns ran.
     pub steps: u32,
+    /// Whether the run's steps ran out as it answered: the answer was
+    /// given on its last step, told it was the last, or was one held
+    /// back until none were left. Such an answer may leave work undone.
+    pub out_of_steps: bool,
+}
+
+impl LoopResult {
+    /// A run's answer after `steps` model turns.
+    const fn of(answer: String, history: Vec<Message>, steps: u32, out_of_steps: bool) -> Self {
+        Self {
+            answer,
+            history,
+            steps,
+            out_of_steps,
+        }
+    }
 }
 
 /// Drives the tool-calling loop.
@@ -370,11 +386,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                         held = Some(answer);
                         continue;
                     }
-                    return Ok(LoopResult {
-                        answer,
-                        history,
-                        steps: step,
-                    });
+                    let spent = last && self.last_step.is_some();
+                    return Ok(LoopResult::of(answer, history, step, spent));
                 }
                 ModelAction::ToolCalls(calls) => {
                     // The whole batch is checked before any of it runs:
@@ -428,11 +441,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         // The steps ran out after an answer was held back: that answer is
         // the run's, as it would have been had nothing held it.
         held.map_or(Err(Error::BudgetExhausted { steps: step }), |answer| {
-            Ok(LoopResult {
-                answer,
-                history,
-                steps: step,
-            })
+            Ok(LoopResult::of(answer, history, step, true))
         })
     }
 }
@@ -1377,6 +1386,77 @@ mod tests {
             "{error:?}"
         );
         assert_eq!(asked.get(), 0, "asked only when the model answers");
+    }
+
+    /// A run says whether its steps ran out as it answered: so on its
+    /// last step, told it was the last, and so with an answer held back
+    /// until none were left. An answer with steps to spare isn't, nor
+    /// one on a run's only step, nor one by a run that is told of no
+    /// last step: it answered when it chose to.
+    #[test]
+    fn a_run_says_whether_its_steps_ran_out_as_it_answered() {
+        let (registry, _runs) = counting();
+        let run = |steps: u32, told: bool, turns: Vec<Result<ModelAction, Error>>| {
+            let model = Watched::doing(turns);
+            let asking = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .with_budget(LoopBudget { max_steps: steps });
+            let asking = if told {
+                asking.with_last_step(String::from(LAST))
+            } else {
+                asking
+            };
+            asking
+                .run(&model, String::from("go"))
+                .map(|result| result.out_of_steps)
+                .ok()
+        };
+        assert_eq!(
+            run(2, true, vec![Ok(counts()), Ok(says("this far"))]),
+            Some(true),
+            "on its last step, told so"
+        );
+        assert_eq!(
+            run(3, true, vec![Ok(counts()), Ok(says("done"))]),
+            Some(false),
+            "with a step to spare"
+        );
+        assert_eq!(
+            run(1, true, vec![Ok(says("at once"))]),
+            Some(false),
+            "a first step is never the last in this sense"
+        );
+        assert_eq!(
+            run(2, false, vec![Ok(counts()), Ok(says("done"))]),
+            Some(false),
+            "told of no last step, it answered when it chose"
+        );
+
+        let registry = empty_registry();
+        let held = |steps: u32, left: u32, turns: Vec<ModelAction>| {
+            let asked = std::cell::Cell::new(0);
+            let model = FakeModel::new(turns);
+            Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .with_budget(LoopBudget { max_steps: steps })
+                .with_unfinished(left_for(left, &asked))
+                .run(&model, String::from("go"))
+                .map(|result| result.out_of_steps)
+                .ok()
+        };
+        let text = |words: &str| ModelAction::Text(String::from(words));
+        assert_eq!(
+            held(2, u32::MAX, vec![text("first"), text("second")]),
+            Some(true),
+            "held until no step was left"
+        );
+        assert_eq!(
+            held(
+                3,
+                1,
+                vec![text("I'll look in a moment."), text("It printed 4.")]
+            ),
+            Some(false),
+            "held once, then given with a step to spare"
+        );
     }
 
     #[test]

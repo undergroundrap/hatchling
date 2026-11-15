@@ -519,6 +519,11 @@ pub enum SuggestionState {
     Started,
     /// The owner set it aside.
     Dismissed,
+    /// The owner started it, and the run in the conversation they
+    /// started for it answered them, with steps to spare. The broker's
+    /// finding: that an answer was shown, not that the idea was carried
+    /// out.
+    Answered,
     /// It waited too long: the owner neither started it nor set it
     /// aside. The broker's finding, never the agent's.
     Stale,
@@ -1380,6 +1385,11 @@ pub enum UiAction {
     NewConversation {
         /// The chat.
         chat_id: String,
+        /// The idea on the owner's Ideas page the new conversation is
+        /// for, when they started one: the broker then knows which
+        /// conversation its answer comes in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idea: Option<String>,
     },
     /// Approve or deny a confirmation, at the revision and the action
     /// digest the user saw.
@@ -2341,8 +2351,17 @@ mod tests {
         pinned(
             &UiAction::NewConversation {
                 chat_id: String::from("local"),
+                idea: None,
             },
             &json!({"action": "new_conversation", "chat_id": "local"}),
+        );
+        // v29: the idea it was started for, when the owner started one.
+        pinned(
+            &UiAction::NewConversation {
+                chat_id: String::from("local"),
+                idea: Some(String::from("0a1b")),
+            },
+            &json!({"action": "new_conversation", "chat_id": "local", "idea": "0a1b"}),
         );
         pinned(
             &UiActionResult::ConversationStarted {
@@ -3176,14 +3195,16 @@ mod tests {
         assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), new);
     }
 
-    /// A kept suggestion's state is written as one word, and the two that
-    /// say it retired are the broker's (v28).
+    /// A kept suggestion's state is written as one word. The two that
+    /// say it retired are the broker's (v28), and so is the one that says
+    /// its conversation was answered (v29).
     #[test]
     fn a_suggestions_state_has_its_wire_form() {
         for (state, word) in [
             (SuggestionState::Suggested, "suggested"),
             (SuggestionState::Started, "started"),
             (SuggestionState::Dismissed, "dismissed"),
+            (SuggestionState::Answered, "answered"),
             (SuggestionState::Stale, "stale"),
             (SuggestionState::SourceGone, "source_gone"),
         ] {
@@ -3195,6 +3216,6 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<SuggestionState>("\"retired\"").is_err());
-        assert_eq!(PROTOCOL_VERSION, 28);
+        assert_eq!(PROTOCOL_VERSION, 29);
     }
 }

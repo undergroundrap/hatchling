@@ -4,6 +4,6 @@
 // given is the owner's to reset.
 import type { CommandResult } from '../protocol/models.js';
 export interface ConversationPort {
-    /** Start a new conversation in `chatId`. */
-    start(chatId: string): Promise<CommandResult>;
+    /** Start a new conversation in `chatId`: for the idea `idea` on the Ideas page, when the owner started one. */
+    start(chatId: string, idea?: string): Promise<CommandResult>;
 }

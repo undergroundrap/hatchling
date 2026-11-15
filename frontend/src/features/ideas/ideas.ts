@@ -65,7 +65,7 @@ function openIdea(ctx: AppContext, id: string): void {
                     return;
                 ref.close();
                 // A conversation of its own, then the idea in its chat box: the owner reads it and sends it.
-                void startIdea(ctx, `${idea.title}: ${idea.summary}`);
+                void startIdea(ctx, id, `${idea.title}: ${idea.summary}`);
             });
         }, { icon: 'spark', variant: 'primary' })));
         body.append(h('p', { class: 'muted text-small' }, 'This starts a new conversation and puts it in your chat box, as Hatchling wrote it. Read it, change it, and send it when you’re ready.'));

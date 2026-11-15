@@ -288,6 +288,9 @@ export class App implements AppContext {
         }
         if (route === 'published')
             this.ui.publicationId = detail ?? '';
+        // Hatchling changes the Ideas page without the app being told: read it as the owner opens it.
+        if (route === 'ideas')
+            this.ideas?.opened();
         if (window.innerWidth <= 800)
             this.ui.navOpen = false;
         else if (route === 'library' || route === 'chat')

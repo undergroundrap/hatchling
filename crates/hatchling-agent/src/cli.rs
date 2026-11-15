@@ -33,7 +33,7 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         return ExitCode::from(EX_USAGE);
     }
     match run(program, args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(status),
         Err(err) => {
             let mut stderr = std::io::stderr().lock();
             let _ = writeln!(stderr, "{program}: failed to start: {err}");
@@ -70,9 +70,9 @@ fn valid_args(args: &[String]) -> bool {
 
 /// Dispatches on the subcommand. Bare invocation keeps the historical
 /// behavior: connect, handshake, report readiness, exit.
-fn run(program: &str, args: &[String]) -> Result<(), Error> {
+fn run(program: &str, args: &[String]) -> Result<u8, Error> {
     match args.first().map(String::as_str) {
-        None => run_lifecycle(),
+        None => run_lifecycle().map(|()| 0),
         Some("run") => run_task(args.get(1..).unwrap_or_default()),
         Some(other) => Err(Error::Usage(format!(
             "unknown subcommand {other:?}; usage: {program} run \"task\""
@@ -103,7 +103,19 @@ fn run_lifecycle() -> Result<(), Error> {
     Ok(())
 }
 
-/// Prints the final answer of one agent task to stdout.
+/// The status a run that answered exits with: its own when its steps
+/// ran out as it answered, so the broker knows its answer may leave
+/// work undone.
+const fn answered(out_of_steps: bool) -> u8 {
+    if out_of_steps {
+        hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS
+    } else {
+        0
+    }
+}
+
+/// Prints the final answer of one agent task to stdout, and says by its
+/// status whether the run's steps ran out as it answered.
 ///
 /// The library owns the whole subcommand flow (see [`run_command`]);
 /// this only moves the answer to stdout. Logs already went to stderr,
@@ -113,11 +125,11 @@ fn run_lifecycle() -> Result<(), Error> {
 ///
 /// Propagates [`Error`] from [`run_command`]: empty task, missing or
 /// invalid model configuration, mint failure, or loop failure.
-fn run_task(task_args: &[String]) -> Result<(), Error> {
-    let answer = run_command(task_args)?;
+fn run_task(task_args: &[String]) -> Result<u8, Error> {
+    let run = run_command(task_args)?;
     let mut stdout = std::io::stdout().lock();
-    let _ = writeln!(stdout, "{answer}");
-    Ok(())
+    let _ = writeln!(stdout, "{}", run.answer);
+    Ok(answered(run.out_of_steps))
 }
 
 #[cfg(test)]
@@ -183,6 +195,16 @@ mod tests {
             main("hatchling-agent", &args(&["-h", "extra"])),
             ExitCode::from(EX_USAGE)
         );
+    }
+
+    #[test]
+    fn a_run_that_answered_as_its_steps_ran_out_has_a_status_of_its_own() {
+        assert_eq!(answered(false), 0);
+        assert_eq!(
+            answered(true),
+            hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS
+        );
+        assert_ne!(answered(true), answered(false));
     }
 
     #[test]

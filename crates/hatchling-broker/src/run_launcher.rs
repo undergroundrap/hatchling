@@ -636,6 +636,14 @@ impl Run for CellRun<'_> {
             RunEnd::Exited {
                 code: 0, output, ..
             } => captured(output),
+            // An answer all the same: the agent says its steps ran out
+            // as it gave it, and whoever asked can be told so.
+            RunEnd::Exited { code, output, .. }
+                if hatchling_core::run_failure::answered_out_of_steps(code) =>
+            {
+                self.ending = Some(hatchling_scheduler::Ending::Exited(code));
+                captured(output)
+            }
             RunEnd::Exited { code, errors, .. } => {
                 self.ending = Some(hatchling_scheduler::Ending::Exited(code));
                 Err(format!(
@@ -1939,6 +1947,40 @@ mod tests {
         );
         assert_eq!(run.poll_end(), None, "an end is taken once");
         assert!(!dir.exists(), "the run directory goes with the run");
+    }
+
+    /// An agent that answered as its steps ran out exits with a status
+    /// of its own: what it wrote is the run's answer all the same, and
+    /// the run says how it ended. Any other status but 0 is a failure.
+    #[test]
+    fn a_run_that_answered_as_its_steps_ran_out_is_an_answer_that_says_so() {
+        use hatchling_scheduler::Ending;
+        let spent = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS);
+        for (code, told, ending) in [
+            (0, Ok(String::from("this far")), None),
+            (
+                spent,
+                Ok(String::from("this far")),
+                Some(Ending::Exited(spent)),
+            ),
+            (
+                spent + 1,
+                Err(format!("the run exited {}: why", spent + 1)),
+                Some(Ending::Exited(spent + 1)),
+            ),
+        ] {
+            let dir = helper_dir(&format!("spent-{code}"));
+            let mut run = helper_run(Path::new("/bin/sh"), &dir, Duration::from_secs(30));
+            run.unheld = Some(RunEnd::Exited {
+                code,
+                output: b" this far \n".to_vec(),
+                errors: b"why\n".to_vec(),
+            });
+            assert_eq!(run.poll(), Some(told), "{code}");
+            assert_eq!(run.ending(), ending, "{code}");
+            drop(run);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

@@ -20,21 +20,21 @@ test('an idea goes in the open chat, or the owner\'s own when that is a connecte
 });
 test('a started idea is given a conversation of its own, and the owner is told when it couldn\'t be', async () => {
     const asked = [];
-    const port = answer => ({ start: (chatId) => { asked.push(chatId); return Promise.resolve(answer); } });
-    assert.equal(await freshConversation(port({ ok: true, message: 'New conversation started.' }), 'main'), null);
-    assert.equal(await freshConversation(port({ ok: false, message: 'Hatchling cannot start a new conversation right now, so the agent still has the last one.' }), 'side'), 'Hatchling cannot start a new conversation right now, so the agent still has the last one. Your idea is in the chat box of the conversation that is open.');
-    assert.deepEqual(asked, ['main', 'side'], 'asked once each, of the chat named');
+    const port = answer => ({ start: (chatId, idea) => { asked.push([chatId, idea]); return Promise.resolve(answer); } });
+    assert.equal(await freshConversation(port({ ok: true, message: 'New conversation started.' }), 'main', 'idea-1'), null);
+    assert.equal(await freshConversation(port({ ok: false, message: 'Hatchling cannot start a new conversation right now, so the agent still has the last one.' }), 'side', 'idea-2'), 'Hatchling cannot start a new conversation right now, so the agent still has the last one. Your idea is in the chat box of the conversation that is open.');
+    assert.deepEqual(asked, [['main', 'idea-1'], ['side', 'idea-2']], 'asked once each, of the chat named, for the idea named');
     // No way to start one here, or no chat to start it in: nothing is asked, and nothing is said.
-    assert.equal(await freshConversation(undefined, 'main'), null);
-    assert.equal(await freshConversation(port({ ok: false, message: 'never asked' }), null), null);
-    assert.deepEqual(asked, ['main', 'side']);
+    assert.equal(await freshConversation(undefined, 'main', 'idea-3'), null);
+    assert.equal(await freshConversation(port({ ok: false, message: 'never asked' }), null, 'idea-3'), null);
+    assert.equal(asked.length, 2);
 });
 test('starting an idea starts its conversation first, then puts its text in the chat box; nothing is sent', async () => {
     const app = (answer, chats = [chat('main'), chat('signal-1', 'signal')], chatId = 'signal-1') => {
         const did = [];
         return {
             did,
-            conversations: answer === undefined ? undefined : { start: (id) => { did.push(['start', id]); return Promise.resolve(answer); } },
+            conversations: answer === undefined ? undefined : { start: (id, idea) => { did.push(['start', id, idea]); return Promise.resolve(answer); } },
             state: { chats },
             ui: { chatId },
             toast: (message, error) => { did.push(['toast', message, error]); },
@@ -42,17 +42,17 @@ test('starting an idea starts its conversation first, then puts its text in the 
         };
     };
     const started = app({ ok: true, message: 'New conversation started.' });
-    await startIdea(started, 'A run plan: A week of short runs.');
-    assert.deepEqual(started.did, [['start', 'main'], ['prefill', 'A run plan: A week of short runs.']], 'the conversation, then the text; no word when it worked');
+    await startIdea(started, 'idea-7', 'A run plan: A week of short runs.');
+    assert.deepEqual(started.did, [['start', 'main', 'idea-7'], ['prefill', 'A run plan: A week of short runs.']], 'the conversation, for this idea, then the text; no word when it worked');
     // It couldn't be started: the owner is told, and the text is put there all the same.
     const refused = app({ ok: false, message: 'Hatchling is not connected to its broker, so the agent still has the last conversation.' });
-    await startIdea(refused, 'An idea');
-    assert.deepEqual(refused.did, [['start', 'main'], ['toast', 'Hatchling is not connected to its broker, so the agent still has the last conversation. Your idea is in the chat box of the conversation that is open.', true], ['prefill', 'An idea']]);
+    await startIdea(refused, 'idea-8', 'An idea');
+    assert.deepEqual(refused.did, [['start', 'main', 'idea-8'], ['toast', 'Hatchling is not connected to its broker, so the agent still has the last conversation. Your idea is in the chat box of the conversation that is open.', true], ['prefill', 'An idea']]);
     // A preview has no way to start one, and an archived chat is left alone: the text alone.
     const preview = app(undefined);
-    await startIdea(preview, 'An idea');
+    await startIdea(preview, 'idea-9', 'An idea');
     assert.deepEqual(preview.did, [['prefill', 'An idea']]);
     const archived = app({ ok: true, message: '' }, [chat('main', null, true)], 'main');
-    await startIdea(archived, 'An idea');
+    await startIdea(archived, 'idea-9', 'An idea');
     assert.deepEqual(archived.did, [['prefill', 'An idea']]);
 });

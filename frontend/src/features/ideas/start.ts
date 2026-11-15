@@ -23,15 +23,16 @@ export function ideaChat(chats: readonly IdeaChat[], openId: string): string | n
     return own && own.channelId === null && !own.archived ? own.id : null;
 }
 /**
- * Gives a started idea a conversation of its own in `chatId`, so the agent is
- * given nothing said before it. Answers with a sentence for the owner when one
+ * Gives the started idea `idea` a conversation of its own in `chatId`, so the
+ * agent is given nothing said before it, and Hatchling knows which idea the
+ * conversation is for. Answers with a sentence for the owner when one
  * couldn't be started, and with nothing when it was, or when there is no way
  * to start one here (a preview) or no chat to start it in.
  */
-export async function freshConversation(port: ConversationPort | undefined, chatId: string | null): Promise<string | null> {
+export async function freshConversation(port: ConversationPort | undefined, chatId: string | null, idea: string): Promise<string | null> {
     if (!port || chatId === null)
         return null;
-    const started = await port.start(chatId);
+    const started = await port.start(chatId, idea);
     return started.ok ? null : `${started.message} Your idea is in the chat box of the conversation that is open.`;
 }
 /** What starting an idea uses of the app. */
@@ -47,13 +48,13 @@ export interface IdeaStart {
     prefillComposer(text: string): void;
 }
 /**
- * Starts an idea the owner pressed: a conversation of its own first, then its
+ * Starts the idea `id` the owner pressed: a conversation of its own first, then its
  * text in the chat box, for them to read, change and send. The text is put
  * there whether or not the conversation could be started; when it couldn't,
  * the owner is told before they send anything. Nothing is sent.
  */
-export async function startIdea(app: IdeaStart, text: string): Promise<void> {
-    const unstarted = await freshConversation(app.conversations, ideaChat(app.state.chats, app.ui.chatId));
+export async function startIdea(app: IdeaStart, id: string, text: string): Promise<void> {
+    const unstarted = await freshConversation(app.conversations, ideaChat(app.state.chats, app.ui.chatId), id);
     if (unstarted !== null)
         app.toast(unstarted, true);
     app.prefillComposer(text);

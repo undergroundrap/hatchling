@@ -11485,6 +11485,11 @@
           "type": "string"
         },
         {
+          "const": "answered",
+          "description": "The owner started it, and the run in the conversation they\nstarted for it answered them, with steps to spare. The broker's\nfinding: that an answer was shown, not that the idea was carried\nout.",
+          "type": "string"
+        },
+        {
           "const": "stale",
           "description": "It waited too long: the owner neither started it nor set it\naside. The broker's finding, never the agent's.",
           "type": "string"
@@ -11798,6 +11803,13 @@
             "chat_id": {
               "description": "The chat.",
               "type": "string"
+            },
+            "idea": {
+              "description": "The idea on the owner's Ideas page the new conversation is\nfor, when they started one: the broker then knows which\nconversation its answer comes in.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -14251,7 +14263,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 28,
+    "session_protocol": 29,
     "ui_schema_version": 4
   },
   "x-roots": {
