@@ -1211,6 +1211,76 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The id a run is shown is the id a goal is found by: what the
+    /// broker serves a run that reads the owner's open goals names each
+    /// by an id, and an idea that gives that id back names an open goal.
+    #[test]
+    fn the_id_a_run_is_shown_is_the_id_a_goal_is_found_by() {
+        use std::str::FromStr as _;
+
+        use hatchling_goals::{GoalOutcome, GoalsStore};
+        use hatchling_memory::SessionId;
+        let dir = scratch("store-shown");
+        let principal = MemoryPrincipal {
+            peer_uid: rustix::process::getuid().as_raw(),
+            session_id: SessionId::from_str("sess-shown").unwrap(),
+        };
+        let mut chat = config(&dir, Some("local"));
+        chat.goals.root = dir.join("goals");
+        chat.goals.grants = vec![GoalsAction::QueryGoals];
+        let store = GoalsStore::open(&chat.goals.root).unwrap();
+        let open = store
+            .create_goal(&principal, "Run 5k by June", "", 10)
+            .unwrap();
+        let done = store.create_goal(&principal, "Read more", "", 11).unwrap();
+        let _ = store
+            .close_goal(&principal, &done.id, GoalOutcome::Achieved, 12)
+            .unwrap();
+        let asked = hatchling_core::QueryOp::Goals {
+            status: String::from("open"),
+            updated_since_secs: None,
+            after: None,
+        };
+        let served =
+            crate::goals_ops::handle_query_op(&chat.goals, &chat.memory, &asked, &principal)
+                .ok()
+                .and_then(|reply| match reply {
+                    hatchling_core::QueryResult::Items { items_json, .. } => Some(items_json),
+                    hatchling_core::QueryResult::Denied
+                    | hatchling_core::QueryResult::QueryError => None,
+                })
+                .unwrap_or_default();
+        let shown: Vec<String> = served
+            .iter()
+            .filter_map(|item| {
+                serde_json::from_str::<serde_json::Value>(item)
+                    .ok()?
+                    .pointer("/item/goal/id")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect();
+        assert_eq!(shown, [open.id.as_str()], "{served:?}");
+        for id in &shown {
+            assert_eq!(
+                goal_found(&chat, &principal, id),
+                GoalFound::Open(String::from("Run 5k by June"))
+            );
+            // And an idea that gives it back is kept, through the
+            // broker's own door.
+            assert_eq!(
+                super::suggest(
+                    &chat,
+                    &principal,
+                    "run-shown",
+                    &idea_of("A run plan", &[], id)
+                ),
+                SuggestResult::Suggested
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// An idea is kept only if the goal it says it comes from is one the
     /// broker finds, open; the card keeps the goal as the broker found it.
     #[test]
