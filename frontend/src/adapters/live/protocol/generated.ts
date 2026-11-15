@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 25;
+export const SESSION_PROTOCOL_VERSION = 26;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2553,6 +2553,44 @@ export type RoomResult = {
     readonly result: 'no-search';
 } | {
     /**
+     * The file's length now, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * The file, as the Room was asked for it.
+     */
+    readonly path: string;
+    /**
+     * Whether there was a file there, which this one replaced.
+     */
+    readonly replaced: boolean;
+    readonly result: 'wrote';
+} | {
+    /**
+     * The file's length now, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * The line the first of them starts on, counted from 1.
+     */
+    readonly line: number;
+    /**
+     * The file, as the Room was asked for it.
+     */
+    readonly path: string;
+    /**
+     * How many places the text was replaced at.
+     */
+    readonly replaced: number;
+    readonly result: 'edited';
+} | {
+    /**
+     * Why, in words for the agent.
+     */
+    readonly reason: string;
+    readonly result: 'no-change';
+} | {
+    /**
      * Whether a command may have been started all the same: its
      * name, to ask after before anything is run again.
      */
@@ -3930,6 +3968,41 @@ export type SessionRequest = {
      * `literal` is set.
      */
     readonly pattern: string;
+} | {
+    readonly op: 'write';
+    /**
+     * The file, by its absolute path in the Room or a path under the
+     * workspace.
+     */
+    readonly path: string;
+    /**
+     * Whether a file already there is to be replaced.
+     */
+    readonly replace?: boolean;
+    /**
+     * What the file is to hold.
+     */
+    readonly text: string;
+} | {
+    /**
+     * Whether every place the text is at is to be replaced, where
+     * it must otherwise be at one.
+     */
+    readonly all?: boolean;
+    /**
+     * What to put in its place.
+     */
+    readonly new: string;
+    /**
+     * The text to replace, exactly as it is in the file.
+     */
+    readonly old: string;
+    readonly op: 'edit';
+    /**
+     * The file, by its absolute path in the Room or a path under the
+     * workspace.
+     */
+    readonly path: string;
 }) | {
     readonly kind: 'chat';
 } & ({

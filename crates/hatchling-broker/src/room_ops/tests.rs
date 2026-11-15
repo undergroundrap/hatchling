@@ -12,6 +12,7 @@ enum Asked {
     Output(String, Stream, End),
     Page(String, u64, u32),
     Search(RoomSearch),
+    Change(RoomChange),
 }
 
 /// A stand-in for the spawner: it answers each ask from what it was told
@@ -29,6 +30,8 @@ struct Fake {
     pages: RefCell<Vec<Result<Page, String>>>,
     /// What each search is answered, in order.
     finds: RefCell<Vec<Result<Found, String>>>,
+    /// What each change is answered, in order.
+    changes: RefCell<Vec<Result<RoomChanged, String>>>,
 }
 
 impl Fake {
@@ -50,6 +53,10 @@ impl Fake {
 
     fn finds(&self, found: Result<Found, String>) {
         self.finds.borrow_mut().push(found);
+    }
+
+    fn changes(&self, changed: Result<RoomChanged, String>) {
+        self.changes.borrow_mut().push(changed);
     }
 
     fn keeps(&self, job: &str, stream: Stream, end: End, bytes: &[u8]) {
@@ -122,6 +129,28 @@ impl Rooms for Fake {
     fn search(&self, search: &RoomSearch) -> Result<Found, String> {
         self.asked.borrow_mut().push(Asked::Search(search.clone()));
         self.finds.borrow_mut().remove(0)
+    }
+
+    fn change(&self, change: &RoomChange) -> Result<RoomChanged, String> {
+        self.asked.borrow_mut().push(Asked::Change(change.clone()));
+        self.changes.borrow_mut().remove(0)
+    }
+}
+
+fn write(path: &str, text: &str, replace: bool) -> RoomOp {
+    RoomOp::Write {
+        path: path.to_owned(),
+        text: text.to_owned(),
+        replace,
+    }
+}
+
+fn edit(path: &str, old: &str, new: &str, all: bool) -> RoomOp {
+    RoomOp::Edit {
+        path: path.to_owned(),
+        old: old.to_owned(),
+        new: new.to_owned(),
+        all,
     }
 }
 
@@ -1110,5 +1139,206 @@ fn the_most_a_search_finds_fits_one_frame() {
             written <= hatchling_core::framing::MAX_FRAME_BYTES,
             "{written} bytes for what a search found of {byte:#x}"
         );
+    }
+}
+
+/// Files are written and edited as the session names them: under the
+/// workspace unless the path is absolute, with the text and the switch it
+/// gave. What the change came to is told as the Room said it, with the
+/// file as the Room was asked for it. A change is no command: it is given
+/// no name.
+#[test]
+fn files_are_written_and_edited_as_the_session_names_them() {
+    use hatchling_core::room::{Edited, Wrote};
+    let fake = Fake::default();
+    let mut room = session(&fake);
+    fake.changes(Ok(RoomChanged::Wrote(Wrote {
+        size: 3,
+        replaced: false,
+    })));
+    assert_eq!(
+        room.handle(&write("notes/a.md", "hi\n", false)),
+        RoomResult::Wrote {
+            path: String::from("/workspace/notes/a.md"),
+            bytes: 3,
+            replaced: false,
+        }
+    );
+    fake.changes(Ok(RoomChanged::Wrote(Wrote {
+        size: 5,
+        replaced: true,
+    })));
+    assert_eq!(
+        room.handle(&write("/session/b", "caf\u{e9}", true)),
+        RoomResult::Wrote {
+            path: String::from("/session/b"),
+            bytes: 5,
+            replaced: true,
+        }
+    );
+    fake.changes(Ok(RoomChanged::Edited(Edited {
+        replaced: 2,
+        line: 7,
+        size: 40,
+    })));
+    assert_eq!(
+        room.handle(&edit("notes/a.md", "hi", "", true)),
+        RoomResult::Edited {
+            path: String::from("/workspace/notes/a.md"),
+            replaced: 2,
+            line: 7,
+            bytes: 40,
+        }
+    );
+    fake.changes(Ok(RoomChanged::Edited(Edited {
+        replaced: 1,
+        line: 1,
+        size: 2,
+    })));
+    assert!(matches!(
+        room.handle(&edit("/etc/x", "a", "b", false)),
+        RoomResult::Edited { replaced: 1, .. }
+    ));
+    assert_eq!(
+        fake.asked(),
+        [
+            Asked::Change(RoomChange::Write {
+                path: String::from("/workspace/notes/a.md"),
+                bytes: b"hi\n".to_vec(),
+                replace: false,
+            }),
+            Asked::Change(RoomChange::Write {
+                path: String::from("/session/b"),
+                bytes: "caf\u{e9}".as_bytes().to_vec(),
+                replace: true,
+            }),
+            Asked::Change(RoomChange::Edit {
+                path: String::from("/workspace/notes/a.md"),
+                old: b"hi".to_vec(),
+                new: Vec::new(),
+                all: true,
+            }),
+            Asked::Change(RoomChange::Edit {
+                path: String::from("/etc/x"),
+                old: b"a".to_vec(),
+                new: b"b".to_vec(),
+                all: false,
+            }),
+        ]
+    );
+    // The next command has the first name: a change took none.
+    fake.answers_run(Ok(ended(0, Captured::default(), Captured::default())));
+    assert!(matches!(
+        room.handle(&run(&["true"])),
+        RoomResult::Ended { job, .. } if job == "jabc-1"
+    ));
+    drop(room);
+    assert_eq!(
+        fake.asked().len(),
+        5,
+        "a change was stopped as a command is"
+    );
+}
+
+/// Why no change was made is told in the Room's words; a change that may
+/// not be asked for never is; one with no Room to ask, or made for a run
+/// with nobody there, is said as that.
+#[test]
+fn a_change_that_cannot_be_made_says_why() {
+    let fake = Fake::default();
+    let mut room = session(&fake);
+    let there = "the Room has a file at that path already, and it wasn't replaced";
+    fake.changes(Err(String::from(there)));
+    assert_eq!(
+        room.handle(&write("notes/a.md", "x", false)),
+        RoomResult::NoChange {
+            reason: String::from(there)
+        }
+    );
+    fake.changes(Err(String::from("the Room has no such file")));
+    assert_eq!(
+        room.handle(&edit("absent", "x", "y", false)),
+        RoomResult::NoChange {
+            reason: String::from("the Room has no such file")
+        }
+    );
+    assert_eq!(fake.asked().len(), 2);
+    let much = "x".repeat(hatchling_core::room::WRITE_BYTES + 1);
+    let long = "y".repeat(hatchling_core::room::EDIT_BYTES + 1);
+    for (op, why) in [
+        (write("a\0b", "x", false), "invalid or too long"),
+        (write("notes/", "x", false), "a directory"),
+        (write("a", &much, true), "32768"),
+        (edit("a", "", "y", false), "replaces 1 to"),
+        (edit("a", &long, "y", false), "replaces 1 to"),
+        (edit("a", "x", &long, false), "at most 8192"),
+        (edit("a", "same", "same", true), "the text it replaces"),
+    ] {
+        let RoomResult::Refused { reason } = room.handle(&op) else {
+            unreachable!("{op:?} was asked for");
+        };
+        assert!(reason.contains(why), "{reason}");
+    }
+    assert_eq!(fake.asked().len(), 2, "what may not be asked for was");
+    for op in [write("a", "x", false), edit("a", "x", "y", false)] {
+        let mut nowhere = RoomSession::over_rooms(true, None, Some(String::from("j")));
+        assert_eq!(
+            nowhere.handle(&op),
+            RoomResult::NoChange {
+                reason: String::from(NO_ROOM)
+            }
+        );
+        let mut alone = RoomSession::over_rooms(false, Some(&fake), Some(String::from("j")));
+        assert_eq!(alone.handle(&op), refused(UNATTENDED));
+    }
+    assert_eq!(
+        fake.asked().len(),
+        2,
+        "a run with nobody there changed a file"
+    );
+    // Only a write and an edit ask for a change to a file.
+    assert_eq!(change_of(&run(&["true"])), None);
+    assert_eq!(change_of(&search("x", None)), None);
+    assert!(matches!(
+        changed(&fake, &search("x", None)),
+        RoomResult::Refused { reason } if reason.contains("no change")
+    ));
+    assert_eq!(fake.asked().len(), 2);
+}
+
+/// What is said of a change to the file with the longest path fits one
+/// frame.
+#[test]
+fn what_is_said_of_a_change_fits_one_frame() {
+    use hatchling_core::room::{Edited, Wrote};
+    let path = format!("/{}", "\u{1}".repeat(hatchling_core::room::PATH_BYTES - 1));
+    for (op, made) in [
+        (
+            write(&path, "x", true),
+            RoomChanged::Wrote(Wrote {
+                size: u64::MAX,
+                replaced: true,
+            }),
+        ),
+        (
+            edit(&path, "x", "y", true),
+            RoomChanged::Edited(Edited {
+                replaced: u32::MAX,
+                line: u64::MAX,
+                size: u64::MAX,
+            }),
+        ),
+    ] {
+        let fake = Fake::default();
+        let mut room = session(&fake);
+        fake.changes(Ok(made));
+        let result = room.handle(&op);
+        assert!(
+            matches!(result, RoomResult::Wrote { .. } | RoomResult::Edited { .. }),
+            "{result:?}"
+        );
+        assert!(hatchling_core::fits_one_frame(
+            &hatchling_core::SessionResponse::Room(result)
+        ));
     }
 }

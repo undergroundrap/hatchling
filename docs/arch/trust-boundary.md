@@ -306,12 +306,30 @@ tells the model how many lines there are. Each search is counted in
 the owner's Activity with the commands, by how it ended, and the
 broker's log says that files were searched, and not for what or where.
 
+The same session may write a file in the Room whole (`RoomOp::Write`)
+or replace one exact piece of a file's text (`RoomOp::Edit`), and only
+that session: a chat. A path that isn't absolute is taken under
+`/workspace`. Any file the Room's user can write may be changed: a
+command the session ran could change it too. No change is put to the
+owner first, for the reason no command is. The broker checks the path
+and the lengths before anything is asked, and passes the text on as it
+is. It tells the session what the Room said: how long the file now is
+and whether one was replaced; or how many places were changed and the
+line the first starts on; or why nothing is known to have been
+changed, in the Room's words. A change is no command: it takes no job
+name and none of the session's count of commands. The agent's cell
+refuses text too long for one write or one edit, by its count or by
+how it is written in a frame, before the broker is asked. Each change
+is counted in the owner's Activity with the commands, by how it ended,
+and the broker's log says that a file was changed, and not which or
+with what.
+
 The Activity doesn't keep a command's text, the path of a file that
-was read, or what was searched for: in a chat the conversation shows
-them. Before any run without its person there is given these tools,
-the Activity must keep each command's text, each path read and each
-search made. That is the day it becomes the record of what ran with
-nobody watching.
+was read or changed, what was searched for, or what was written: in a
+chat the conversation shows them. Before any run without its person
+there is given these tools, the Activity must keep each command's
+text, each path read, each search made and each change made. That is
+the day it becomes the record of what ran with nobody watching.
 
 A session ends:
 

@@ -468,7 +468,7 @@ pub enum ToolUse {
     /// Sent a request through the egress that isn't a model call.
     Network,
     /// Ran a command in its own computer, asked after or stopped one, or
-    /// read or searched its files.
+    /// read, searched, wrote or edited its files.
     Room,
 }
 

@@ -30,7 +30,7 @@ use hatchling_core::{
 
 use crate::config::Config;
 use crate::room_job::{RoomJob, RoomJobAnswer, RoomJobState, RoomJobStopped, RoomRun};
-use crate::spawner::RoomSearch;
+use crate::spawner::{RoomChange, RoomChanged, RoomSearch};
 
 /// What a session without its person there is told.
 const UNATTENDED: &str =
@@ -53,6 +53,8 @@ pub(crate) trait Rooms {
     fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String>;
     /// As [`crate::spawner::Spawner::room_search`].
     fn search(&self, search: &RoomSearch) -> Result<Found, String>;
+    /// As [`crate::spawner::Spawner::room_change`].
+    fn change(&self, change: &RoomChange) -> Result<RoomChanged, String>;
 }
 
 impl Rooms for crate::spawner::Spawner {
@@ -78,6 +80,10 @@ impl Rooms for crate::spawner::Spawner {
 
     fn search(&self, search: &RoomSearch) -> Result<Found, String> {
         self.room_search(search)
+    }
+
+    fn change(&self, change: &RoomChange) -> Result<RoomChanged, String> {
+        self.room_change(change)
     }
 }
 
@@ -184,6 +190,8 @@ impl<'r> RoomSession<'r> {
                 RoomResult::NoPage { reason }
             } else if matches!(op, RoomOp::Search { .. }) {
                 RoomResult::NoSearch { reason }
+            } else if matches!(op, RoomOp::Write { .. } | RoomOp::Edit { .. }) {
+                RoomResult::NoChange { reason }
             } else {
                 RoomResult::Failed { reason, job: None }
             };
@@ -264,6 +272,7 @@ impl<'r> RoomSession<'r> {
                     literal: *literal,
                 },
             ),
+            RoomOp::Write { .. } | RoomOp::Edit { .. } => changed(rooms, op),
         }
     }
 
@@ -379,6 +388,71 @@ fn searched(rooms: &dyn Rooms, search: RoomSearch) -> RoomResult {
             more: found.more,
         },
         Err(reason) => RoomResult::NoSearch { reason },
+    }
+}
+
+/// The change to a file that `op` asks for, as the Room is asked for it,
+/// when it asks for one: a path that isn't absolute is under the
+/// workspace.
+fn change_of(op: &RoomOp) -> Option<RoomChange> {
+    match op {
+        RoomOp::Write {
+            path,
+            text,
+            replace,
+        } => Some(RoomChange::Write {
+            path: placed(path),
+            bytes: text.clone().into_bytes(),
+            replace: *replace,
+        }),
+        RoomOp::Edit {
+            path,
+            old,
+            new,
+            all,
+        } => Some(RoomChange::Edit {
+            path: placed(path),
+            old: old.clone().into_bytes(),
+            new: new.clone().into_bytes(),
+            all: *all,
+        }),
+        RoomOp::Run { .. }
+        | RoomOp::Job { .. }
+        | RoomOp::Stop { .. }
+        | RoomOp::Read { .. }
+        | RoomOp::Search { .. } => None,
+    }
+}
+
+/// What the change to one of the Room's files that `op` asks for comes
+/// to, asked of `rooms`.
+fn changed(rooms: &dyn Rooms, op: &RoomOp) -> RoomResult {
+    let Some(change) = change_of(op) else {
+        return refused("that asks for no change to a file");
+    };
+    // What can't be asked is known here, before anything is.
+    if let Err(reason) = change.check() {
+        return refused(reason);
+    }
+    // The log says a file was written or edited, and not which or with
+    // what.
+    let edit = matches!(change, RoomChange::Edit { .. });
+    tracing::info!(edit, "a session changes a file in the Room");
+    let made = rooms.change(&change);
+    let (RoomChange::Write { path, .. } | RoomChange::Edit { path, .. }) = change;
+    match made {
+        Ok(RoomChanged::Wrote(wrote)) => RoomResult::Wrote {
+            path,
+            bytes: wrote.size,
+            replaced: wrote.replaced,
+        },
+        Ok(RoomChanged::Edited(edited)) => RoomResult::Edited {
+            path,
+            replaced: edited.replaced,
+            line: edited.line,
+            bytes: edited.size,
+        },
+        Err(reason) => RoomResult::NoChange { reason },
     }
 }
 

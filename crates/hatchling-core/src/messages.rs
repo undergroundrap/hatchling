@@ -1448,6 +1448,36 @@ pub enum RoomOp {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         literal: bool,
     },
+    /// Write a file in the Room, whole (v26): a new file, or one in place
+    /// of the file there. The Room's supervisor writes it, and no command
+    /// is run.
+    #[serde(rename = "write")]
+    Write {
+        /// The file, by its absolute path in the Room or a path under the
+        /// workspace.
+        path: String,
+        /// What the file is to hold.
+        text: String,
+        /// Whether a file already there is to be replaced.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
+    },
+    /// Replace one exact piece of the text of a file in the Room (v26).
+    /// The Room's supervisor does it, and no command is run.
+    #[serde(rename = "edit")]
+    Edit {
+        /// The file, by its absolute path in the Room or a path under the
+        /// workspace.
+        path: String,
+        /// The text to replace, exactly as it is in the file.
+        old: String,
+        /// What to put in its place.
+        new: String,
+        /// Whether every place the text is at is to be replaced, where
+        /// it must otherwise be at one.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+    },
 }
 
 /// How many lines a read hands back when it names no count.
@@ -1600,6 +1630,37 @@ pub enum RoomResult {
     /// couldn't be asked.
     #[serde(rename = "no-search")]
     NoSearch {
+        /// Why, in words for the agent.
+        reason: String,
+    },
+    /// A file was written (v26).
+    #[serde(rename = "wrote")]
+    Wrote {
+        /// The file, as the Room was asked for it.
+        path: String,
+        /// The file's length now, in bytes.
+        bytes: u64,
+        /// Whether there was a file there, which this one replaced.
+        replaced: bool,
+    },
+    /// An edit was made (v26).
+    #[serde(rename = "edited")]
+    Edited {
+        /// The file, as the Room was asked for it.
+        path: String,
+        /// How many places the text was replaced at.
+        replaced: u32,
+        /// The line the first of them starts on, counted from 1.
+        line: u64,
+        /// The file's length now, in bytes.
+        bytes: u64,
+    },
+    /// No change is known to have been made to a file (v26): the Room
+    /// wouldn't make it, or couldn't be asked, or didn't answer. The
+    /// reason says which, and when it isn't known whether the file was
+    /// changed.
+    #[serde(rename = "no-change")]
+    NoChange {
         /// Why, in words for the agent.
         reason: String,
     },
@@ -5411,6 +5472,111 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 25);
+        assert_eq!(crate::PROTOCOL_VERSION, 26);
+    }
+
+    /// A write, an edit and what they come to go as the protocol document
+    /// says (v26): a switch that is off is left out, and a field that
+    /// isn't named never decodes.
+    #[test]
+    fn a_write_op_an_edit_op_and_their_results_have_their_wire_form() {
+        let write = |replace: bool| {
+            SessionRequest::Room(RoomOp::Write {
+                path: String::from("notes/a.md"),
+                text: String::from("hi\n"),
+                replace,
+            })
+        };
+        let json = serde_json::to_string(&write(false)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","op":"write","path":"notes/a.md","text":"hi\n"}"#
+        );
+        assert_eq!(asked(&json).unwrap(), write(false));
+        let json = serde_json::to_string(&write(true)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","op":"write","path":"notes/a.md","text":"hi\n","replace":true}"#
+        );
+        assert_eq!(asked(&json).unwrap(), write(true));
+        let edit = |all: bool| {
+            SessionRequest::Room(RoomOp::Edit {
+                path: String::from("notes/a.md"),
+                old: String::from("hi"),
+                new: String::new(),
+                all,
+            })
+        };
+        let json = serde_json::to_string(&edit(false)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","op":"edit","path":"notes/a.md","old":"hi","new":""}"#
+        );
+        assert_eq!(asked(&json).unwrap(), edit(false));
+        let json = serde_json::to_string(&edit(true)).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","op":"edit","path":"notes/a.md","old":"hi","new":"","all":true}"#
+        );
+        assert_eq!(asked(&json).unwrap(), edit(true));
+        for (bad, why) in [
+            (r#"{"kind":"room","op":"write","path":"a"}"#, "no text"),
+            (r#"{"kind":"room","op":"write","text":"x"}"#, "no path"),
+            (
+                r#"{"kind":"room","op":"write","path":"a","text":"x","mode":511}"#,
+                "a field it doesn't name",
+            ),
+            (
+                r#"{"kind":"room","op":"write","path":"a","text":"x","replace":"yes"}"#,
+                "a switch that isn't one",
+            ),
+            (
+                r#"{"kind":"room","op":"edit","path":"a","old":"x"}"#,
+                "no new text",
+            ),
+            (
+                r#"{"kind":"room","op":"edit","path":"a","new":"x"}"#,
+                "no old text",
+            ),
+            (
+                r#"{"kind":"room","op":"edit","path":"a","old":"x","new":"y","regex":true}"#,
+                "a field it doesn't name",
+            ),
+        ] {
+            assert!(asked(bad).is_err(), "{why}");
+        }
+        let said = |result: RoomResult, written: &str| {
+            let response = SessionResponse::Room(result);
+            let json = serde_json::to_string(&response).unwrap();
+            assert_eq!(json, written);
+            assert_eq!(
+                serde_json::from_str::<SessionResponse>(&json).unwrap(),
+                response
+            );
+        };
+        said(
+            RoomResult::Wrote {
+                path: String::from("/workspace/notes/a.md"),
+                bytes: 3,
+                replaced: false,
+            },
+            r#"{"kind":"room","result":"wrote","path":"/workspace/notes/a.md","bytes":3,"replaced":false}"#,
+        );
+        said(
+            RoomResult::Edited {
+                path: String::from("/workspace/notes/a.md"),
+                replaced: 2,
+                line: 7,
+                bytes: 40,
+            },
+            r#"{"kind":"room","result":"edited","path":"/workspace/notes/a.md","replaced":2,"line":7,"bytes":40}"#,
+        );
+        said(
+            RoomResult::NoChange {
+                reason: String::from("the Room has no such file"),
+            },
+            r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
+        );
+        assert_eq!(crate::PROTOCOL_VERSION, 26);
     }
 }
