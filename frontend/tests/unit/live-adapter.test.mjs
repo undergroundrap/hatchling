@@ -601,6 +601,18 @@ test('the Ideas page: the agent\'s suggestions, started, set aside and brought b
     await flush();
     await page([]);
     assert.deepEqual(adapter.getSnapshot().ideas, []);
+    // A chat's run that suggested an idea: the page is read again, with no schedule's notice.
+    const reads = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_suggestions' && frame.action.op.op === 'list').length;
+    const before = reads();
+    const ran = (seq, tools) => sampleEvent(seq, seq, { kind: 'activity', state: 'success', event: { event: 'run_summary', event_id: `chat-${seq}:summary`, run_id: `chat-${seq}`, ts: sampleTime(seq), cell_id: `run-${seq}`, chat: true, tools, model_calls: 3, model_calls_refused: 0, peak_input_tokens: 5000, output_tokens: 40, context_window: 65536 } });
+    transport.deliver(ran(2, [{ tool: 'room', done: 2, asked: 0, refused: 0, failed: 0 }]));
+    await flush();
+    assert.equal(reads(), before, 'a run that suggested nothing reads nothing');
+    transport.deliver(ran(3, [{ tool: 'idea_suggest', done: 1, asked: 0, refused: 0, failed: 0 }]));
+    await flush();
+    assert.equal(reads(), before + 1);
+    await page([suggestion()]);
+    assert.deepEqual(adapter.getSnapshot().ideas.map(idea => idea.id), ['idea-1']);
 });
 test('a closed connection\'s late callbacks are ignored', () => {
     const transport = new FakeTransport();

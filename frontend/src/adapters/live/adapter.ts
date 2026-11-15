@@ -278,6 +278,7 @@ export class LiveAdapter implements ProtocolAdapter {
                 this.#activity.apply(body.event);
                 this.#chats.trail(body.event);
                 this.#usage.observeRun(body.event);
+                this.#ideas.observeRun(body.event);
                 return undefined;
             case 'chat_message':
                 this.#chats.apply(body, event.ts);
