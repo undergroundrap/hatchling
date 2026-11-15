@@ -70,6 +70,20 @@ test('a suggestion reads as the agent\'s words, in its area\'s section, with its
     // By area, in the page's order; the newest first within each.
     assert.deepEqual(ordered([kept('a', 'shopping'), kept('b', 'health'), kept('c', 'productivity'), kept('d', 'health')]).map(one => one.suggestion_id), ['c', 'b', 'd', 'a']);
 });
+test('an idea says the goal it came from, and why it left For you when it did', () => {
+    const goal = { kind: 'goal', id: '0a1b', title: 'Run 5k by June' };
+    const plain = ideaOf(kept('idea-1', 'health'));
+    const sourced = ideaOf(kept('idea-1', 'health', { source: goal, needs: ['room'], run: '3f9c' }));
+    assert.equal(sourced.signal, `From your goal “Run 5k by June”. ${plain.signal}`);
+    assert.doesNotMatch(plain.signal, /From your goal/);
+    assert.equal(sourced.outcome, '');
+    const stale = ideaOf(kept('i', 'career', { state: 'stale' }));
+    assert.deepEqual([stale.state, stale.outcome], ['dismissed', 'It waited two weeks without being started. Restore it if you still want it.']);
+    const gone = ideaOf(kept('i', 'career', { state: 'source_gone', source: goal }));
+    assert.deepEqual([gone.state, gone.outcome], ['dismissed', 'The goal it came from is closed or gone.']);
+    for (const [state, shown] of [['suggested', 'suggested'], ['started', 'activated'], ['dismissed', 'dismissed']])
+        assert.deepEqual([ideaOf(kept('i', 'career', { state })).state, ideaOf(kept('i', 'career', { state })).outcome], [shown, ''], state);
+});
 test('the page is read each time the connection opens, and is unread until then', async () => {
     const { client, live, schedules, changes } = surface([listed([kept('idea-1', 'health')]), listed([])]);
     assert.deepEqual(live.current(), { kind: 'unread' });
@@ -163,6 +177,18 @@ test('the owner starts, sets aside and brings back an idea, and the page is read
     assert.deepEqual(await live.act('idea-9', 'start'), { ok: false, message: 'This idea is gone.' });
     assert.match((await live.act('idea-1', 'start')).message, /couldn’t read or change the Ideas page/);
     assert.deepEqual(await live.act('idea-1', 'start'), { ok: false, message: 'No answer came.' });
+});
+test('an idea whose goal is still closed stays as it is when brought back, and the owner is told', async () => {
+    const gone = kept('idea-1', 'health', { state: 'source_gone', source: { kind: 'goal', id: '0a1b', title: 'Run 5k by June' } });
+    const back = kept('idea-2', 'health', { state: 'suggested' });
+    const { client, live } = surface([answered({ result: 'changed', suggestion: gone }), listed([gone, back]), answered({ result: 'changed', suggestion: back }), listed([gone, back])]);
+    assert.deepEqual(await live.act('idea-1', 'restore'), { ok: false, message: 'Its goal is still closed, so it stays here.' });
+    assert.deepEqual(live.ideas().map(idea => [idea.id, idea.state]), [['idea-1', 'dismissed'], ['idea-2', 'suggested']], 'the page was read again all the same');
+    // One that did come back says so; and setting aside one that stays gone isn't taken for a restore.
+    assert.deepEqual(await live.act('idea-2', 'restore'), { ok: true, message: 'It’s back in For you.' });
+    assert.deepEqual(client.sent.map(action => action.op.op), ['restore', 'list', 'restore', 'list']);
+    const other = surface([answered({ result: 'changed', suggestion: gone }), listed([gone])]);
+    assert.deepEqual(await other.live.act('idea-1', 'dismiss'), { ok: true, message: 'Set aside.' });
 });
 test('asking for ideas now is a one-off run for the page, a few seconds out; it reads and suggests, nothing else', async () => {
     const { live, schedules, changes } = surface();

@@ -15,6 +15,10 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v28 adds two states a kept suggestion may be in, told to the owner's
+/// app (`SuggestionState::Stale`, `SuggestionState::SourceGone`): one
+/// that waited too long, and one whose goal is closed or gone. No
+/// session op changes.
 /// v27 has a suggested idea say what it needs and where it comes from
 /// (`SuggestOp::Suggest`'s `needs` and `from`, `SuggestedFrom`): the
 /// tool groups doing it would use, and one of the owner's open goals,
@@ -78,7 +82,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 27;
+pub const PROTOCOL_VERSION: u16 = 28;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

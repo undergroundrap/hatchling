@@ -2,7 +2,9 @@
 // every word its own, read when the connection opens, whenever a scheduled run
 // ends, and whenever any run, a chat's among them, has suggested an idea.
 // The owner starts one (the page then fills their chat box with it), sets it
-// aside, or brings it back. "Suggest ideas" is a one-off run for the page, a few
+// aside, or brings it back. One that waited two weeks, or whose goal was closed,
+// is kept with why: those are the broker's findings, shown in the app's words,
+// among the ideas set aside, where Restore is. "Suggest ideas" is a one-off run for the page, a few
 // seconds out: it may reach the model, read their goals and recall their
 // memory, and suggest; nothing else.
 import type { CommandResult, IconName, Idea, IdeaDomain } from '../../protocol/models.js';
@@ -24,6 +26,14 @@ const UNEXPECTED = 'Hatchling answered with something else.';
 const OFF = 'Hatchling keeps no Ideas page here: scheduled work is off.';
 const FAILED = 'Hatchling couldn’t read or change the Ideas page. `hatchling-broker doctor`, run as root, checks the install.';
 const GONE = 'This idea is gone.';
+const STILL_GONE = 'Its goal is still closed, so it stays here.';
+/** Each state the broker keeps an idea in, as the page shows it: one the broker retired is among those set aside. */
+const STATES: Readonly<Record<Suggestion['state'], Idea['state']>> = { suggested: 'suggested', started: 'activated', dismissed: 'dismissed', stale: 'dismissed', source_gone: 'dismissed' };
+/** Why an idea left For you without the owner setting it aside. */
+const RETIRED: Readonly<Record<'stale' | 'source_gone', string>> = {
+    stale: 'It waited two weeks without being started. Restore it if you still want it.',
+    source_gone: 'The goal it came from is closed or gone.',
+};
 const SUGGESTING = 'Thinking of ideas for you. They appear here when they’re ready, in a minute or two.';
 /** Each area: the page's section, and its picture; in the page's order. */
 const AREAS: Readonly<Record<SuggestionArea, {
@@ -47,6 +57,8 @@ export type IdeaAction = 'start' | 'dismiss' | 'restore';
 /** A kept suggestion as the page shows it: the agent's words, in its area's section. */
 export function ideaOf(suggestion: Suggestion): Idea {
     const area = AREAS[suggestion.area];
+    // Where it came from is the broker's finding, said before the note that the rest is the agent's.
+    const from = suggestion.source ? `From your goal “${suggestion.source.title}”. ` : '';
     return {
         id: suggestion.suggestion_id,
         section: area.domain,
@@ -55,10 +67,10 @@ export function ideaOf(suggestion: Suggestion): Idea {
         domain: area.domain,
         icon: area.icon,
         rationale: suggestion.why,
-        signal: SIGNAL,
+        signal: `${from}${SIGNAL}`,
         items: [],
-        state: suggestion.state === 'started' ? 'activated' : suggestion.state,
-        outcome: '',
+        state: STATES[suggestion.state],
+        outcome: suggestion.state === 'stale' || suggestion.state === 'source_gone' ? RETIRED[suggestion.state] : '',
         artifactId: null,
     };
 }
@@ -131,6 +143,9 @@ export class LiveIdeas implements IdeasPort {
         if (outcome.result !== 'changed')
             return { ok: false, message: outcome.result === 'not_found' ? GONE : this.#says(outcome) };
         await this.refresh();
+        // Brought back while its goal is closed, it stays as it was.
+        if (action === 'restore' && outcome.suggestion.state === 'source_gone')
+            return { ok: false, message: STILL_GONE };
         const done: Readonly<Record<IdeaAction, string>> = { start: 'It’s in your chat box: read it, change it, and send it when you’re ready.', dismiss: 'Set aside.', restore: 'It’s back in For you.' };
         return { ok: true, message: done[action] };
     }

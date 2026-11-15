@@ -519,6 +519,12 @@ pub enum SuggestionState {
     Started,
     /// The owner set it aside.
     Dismissed,
+    /// It waited too long: the owner neither started it nor set it
+    /// aside. The broker's finding, never the agent's.
+    Stale,
+    /// What it came from is gone: its goal was closed or removed. The
+    /// broker's finding, never the agent's.
+    SourceGone,
 }
 
 /// Where a suggestion came from, as the broker found it when the idea was
@@ -551,7 +557,8 @@ pub struct Suggestion {
     pub why: String,
     /// Where it would help.
     pub area: crate::messages::SuggestionArea,
-    /// When it was suggested, RFC 3339.
+    /// When it was suggested, or last brought back by the owner, RFC 3339:
+    /// what it has waited since.
     pub suggested_at: String,
     /// Where it stands.
     pub state: SuggestionState,
@@ -3167,5 +3174,27 @@ mod tests {
             )
         );
         assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), new);
+    }
+
+    /// A kept suggestion's state is written as one word, and the two that
+    /// say it retired are the broker's (v28).
+    #[test]
+    fn a_suggestions_state_has_its_wire_form() {
+        for (state, word) in [
+            (SuggestionState::Suggested, "suggested"),
+            (SuggestionState::Started, "started"),
+            (SuggestionState::Dismissed, "dismissed"),
+            (SuggestionState::Stale, "stale"),
+            (SuggestionState::SourceGone, "source_gone"),
+        ] {
+            let json = serde_json::to_string(&state).unwrap();
+            assert_eq!(json, format!("\"{word}\""));
+            assert_eq!(
+                serde_json::from_str::<SuggestionState>(&json).unwrap(),
+                state
+            );
+        }
+        assert!(serde_json::from_str::<SuggestionState>("\"retired\"").is_err());
+        assert_eq!(PROTOCOL_VERSION, 28);
     }
 }

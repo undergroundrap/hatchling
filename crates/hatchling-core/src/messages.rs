@@ -5492,7 +5492,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 27);
+        assert_eq!(crate::PROTOCOL_VERSION, 28);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5597,7 +5597,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 27);
+        assert_eq!(crate::PROTOCOL_VERSION, 28);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5656,6 +5656,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 27);
+        assert_eq!(crate::PROTOCOL_VERSION, 28);
     }
 }

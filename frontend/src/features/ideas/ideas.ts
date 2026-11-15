@@ -85,6 +85,6 @@ function openIdea(ctx: AppContext, id: string): void {
         }, { icon: 'edit' }), button('Let’s do this', () => { void ctx.run({ type: 'idea.activate', id }); ref.close(); ctx.ui.ideaFilter = 'active'; ctx.render(); }, { icon: 'spark', variant: 'primary' })));
     else if (idea.artifactId)
         body.append(button('Open completed artifact', () => ctx.openArtifact(idea.artifactId ?? ''), { variant: 'primary', icon: 'file' }));
-    else
-        body.append(h('p', { class: 'notice' }, idea.outcome || 'Restore this idea from Dismissed to activate it.'));
+    else if (!idea.outcome)
+        body.append(h('p', { class: 'notice' }, 'Restore this idea from Dismissed to activate it.'));
 }
