@@ -479,3 +479,58 @@ fn loop_gives_its_last_step_to_an_answer() {
         "{last}"
     );
 }
+
+/// The model's `write` and `edit` reach the broker as Room ops, and the
+/// broker's answers come back to the model: with no Room to change a
+/// file in, the broker says so, and the loop goes on to the model's
+/// answer. The model is told it has the tools.
+#[test]
+fn loop_asks_the_broker_to_write_and_edit_its_files() {
+    let broker = FixtureBroker::spawn("loop-write", BrokerBehavior::Vault(Vec::new())).unwrap();
+    let cell = ready_cell_offering(
+        &broker,
+        Some(std::collections::BTreeSet::from([ToolGroup::Room])),
+    )
+    .unwrap();
+    let model = FakeModel::new(vec![
+        ModelAction::ToolCalls(vec![
+            ToolCall {
+                name: String::from("write"),
+                arguments: json!({ "path": "notes/a.md", "text": "to do\n" }),
+            },
+            ToolCall {
+                name: String::from("edit"),
+                arguments: json!({ "path": "notes/a.md", "old": "to do", "new": "done" }),
+            },
+        ]),
+        ModelAction::Text(String::from("nothing was changed")),
+    ]);
+    let result = cell
+        .run_loop(
+            hatchling_agent::PromptKind::Chat,
+            &model,
+            String::from("note my to-dos"),
+            LoopBudget { max_steps: 5 },
+        )
+        .unwrap();
+    assert_eq!(result.answer, "nothing was changed");
+    let seen = model.seen_histories();
+    let system = format!("{:?}", seen.first().and_then(|history| history.first()));
+    assert!(
+        system.contains("`write` makes a file there, and `edit` changes part of one"),
+        "{system}"
+    );
+    let turn2 = seen.get(1).expect("model should have a second turn");
+    let results = tool_results(turn2, 2).expect("expected ToolUse at index 2");
+    assert_eq!(results.len(), 2);
+    for result in results {
+        let ToolOutput::Err(told) = result else {
+            unreachable!("nothing is changed here, got {results:?}")
+        };
+        assert!(
+            told == "commands run only in a chat, with the owner there: this run has no computer"
+                || told == "not done: there is no computer on this install",
+            "{told}"
+        );
+    }
+}

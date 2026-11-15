@@ -52,6 +52,9 @@ impl Running {
             | RoomResult::NoPage { .. }
             | RoomResult::Found { .. }
             | RoomResult::NoSearch { .. }
+            | RoomResult::Wrote { .. }
+            | RoomResult::Edited { .. }
+            | RoomResult::NoChange { .. }
             | RoomResult::Failed { job: None, .. } => {}
         }
     }
@@ -325,5 +328,37 @@ mod tests {
             why: String::from("it was closed"),
         });
         assert_eq!(seen.unfinished(), None, "the Room took j-3 with it");
+    }
+
+    /// A change to a file is no program: none is left running by one, and
+    /// a program that was running is still running after it.
+    #[test]
+    fn a_change_to_a_file_is_no_program() {
+        let changes = [
+            RoomResult::Wrote {
+                path: String::from("/w"),
+                bytes: 1,
+                replaced: false,
+            },
+            RoomResult::Edited {
+                path: String::from("/w"),
+                replaced: 1,
+                line: 1,
+                bytes: 1,
+            },
+            RoomResult::NoChange {
+                reason: String::from("no"),
+            },
+        ];
+        let seen = Running::new();
+        for change in &changes {
+            seen.saw(change);
+            assert_eq!(seen.unfinished(), None, "{change:?}");
+        }
+        seen.saw(&running("j-1"));
+        for change in &changes {
+            seen.saw(change);
+            assert!(seen.unfinished().is_some(), "{change:?} forgot j-1");
+        }
     }
 }

@@ -15,6 +15,11 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v26 adds writing and editing the files in the agent's computer
+/// (`RoomOp::Write`, `RoomOp::Edit`, `RoomResult::Wrote`,
+/// `RoomResult::Edited`, `RoomResult::NoChange`): a file written whole,
+/// or one exact piece of its text replaced, by the Room's supervisor,
+/// with no command run for it.
 /// v25 adds searching the files in the agent's computer
 /// (`RoomOp::Search`, `RoomResult::Found`, `RoomResult::NoSearch`): the
 /// lines that match a pattern, found by the Room's own search program,
@@ -68,7 +73,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 25;
+pub const PROTOCOL_VERSION: u16 = 26;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

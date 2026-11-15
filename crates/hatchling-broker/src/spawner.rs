@@ -2852,6 +2852,15 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 size: 4
             }))
         );
+        // What a session's Room asks through is this same ask.
+        assert_eq!(
+            crate::room_ops::Rooms::change(&spawner, &edit),
+            Ok(RoomChanged::Edited(Edited {
+                replaced: 1,
+                line: 1,
+                size: 4
+            }))
+        );
         assert_eq!(started.load(Ordering::SeqCst), 1);
         drop((asked, spawner));
         served.join().unwrap();

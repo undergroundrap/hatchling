@@ -621,12 +621,15 @@ const fn room_ending(result: &RoomResult) -> Ending {
         RoomResult::Ended { .. }
         | RoomResult::Running { .. }
         | RoomResult::Page { .. }
-        | RoomResult::Found { .. } => Done,
+        | RoomResult::Found { .. }
+        | RoomResult::Wrote { .. }
+        | RoomResult::Edited { .. } => Done,
         RoomResult::Refused { .. } | RoomResult::Unknown { .. } => Refused,
         RoomResult::Lost { .. }
         | RoomResult::Failed { .. }
         | RoomResult::NoPage { .. }
-        | RoomResult::NoSearch { .. } => Failed,
+        | RoomResult::NoSearch { .. }
+        | RoomResult::NoChange { .. } => Failed,
     }
 }
 
@@ -1239,6 +1242,28 @@ mod tests {
         for (response, ending) in cases {
             assert_eq!(ending_of(&response), ending, "{response:?}");
         }
+    }
+
+    /// A file that was written and an edit that was made are done; a
+    /// change that isn't known to have been made is a failure.
+    #[test]
+    fn a_change_to_a_file_ends_as_done_or_failed() {
+        use Ending::{Done, Failed};
+        let wrote = SessionResponse::Room(RoomResult::Wrote {
+            path: s("/a"),
+            bytes: 1,
+            replaced: true,
+        });
+        assert_eq!(ending_of(&wrote), Done);
+        let edited = SessionResponse::Room(RoomResult::Edited {
+            path: s("/a"),
+            replaced: 1,
+            line: 1,
+            bytes: 1,
+        });
+        assert_eq!(ending_of(&edited), Done);
+        let none = SessionResponse::Room(RoomResult::NoChange { reason: s("no") });
+        assert_eq!(ending_of(&none), Failed);
     }
 
     /// A run's session finds the store's activity log through its

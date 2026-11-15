@@ -6249,6 +6249,93 @@
           "type": "object"
         },
         {
+          "description": "A file was written (v26).",
+          "properties": {
+            "bytes": {
+              "description": "The file's length now, in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "description": "The file, as the Room was asked for it.",
+              "type": "string"
+            },
+            "replaced": {
+              "description": "Whether there was a file there, which this one replaced.",
+              "type": "boolean"
+            },
+            "result": {
+              "const": "wrote",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "path",
+            "bytes",
+            "replaced"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An edit was made (v26).",
+          "properties": {
+            "bytes": {
+              "description": "The file's length now, in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "line": {
+              "description": "The line the first of them starts on, counted from 1.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "description": "The file, as the Room was asked for it.",
+              "type": "string"
+            },
+            "replaced": {
+              "description": "How many places the text was replaced at.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "result": {
+              "const": "edited",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "path",
+            "replaced",
+            "line",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No change is known to have been made to a file (v26): the Room\nwouldn't make it, or couldn't be asked, or didn't answer. The\nreason says which, and when it isn't known whether the file was\nchanged.",
+          "properties": {
+            "reason": {
+              "description": "Why, in words for the agent.",
+              "type": "string"
+            },
+            "result": {
+              "const": "no-change",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
           "description": "The Room said no, or couldn't be asked.",
           "properties": {
             "job": {
@@ -9509,6 +9596,65 @@
                 "pattern"
               ],
               "type": "object"
+            },
+            {
+              "description": "Write a file in the Room, whole (v26): a new file, or one in place\nof the file there. The Room's supervisor writes it, and no command\nis run.",
+              "properties": {
+                "op": {
+                  "const": "write",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "The file, by its absolute path in the Room or a path under the\nworkspace.",
+                  "type": "string"
+                },
+                "replace": {
+                  "description": "Whether a file already there is to be replaced.",
+                  "type": "boolean"
+                },
+                "text": {
+                  "description": "What the file is to hold.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "path",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Replace one exact piece of the text of a file in the Room (v26).\nThe Room's supervisor does it, and no command is run.",
+              "properties": {
+                "all": {
+                  "description": "Whether every place the text is at is to be replaced, where\nit must otherwise be at one.",
+                  "type": "boolean"
+                },
+                "new": {
+                  "description": "What to put in its place.",
+                  "type": "string"
+                },
+                "old": {
+                  "description": "The text to replace, exactly as it is in the file.",
+                  "type": "string"
+                },
+                "op": {
+                  "const": "edit",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "The file, by its absolute path in the Room or a path under the\nworkspace.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "path",
+                "old",
+                "new"
+              ],
+              "type": "object"
             }
           ],
           "properties": {
@@ -11470,7 +11616,7 @@
         },
         {
           "const": "room",
-          "description": "Ran a command in its own computer, asked after or stopped one, or\nread or searched its files.",
+          "description": "Ran a command in its own computer, asked after or stopped one, or\nread, searched, wrote or edited its files.",
           "type": "string"
         }
       ]
@@ -13964,7 +14110,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 25,
+    "session_protocol": 26,
     "ui_schema_version": 4
   },
   "x-roots": {

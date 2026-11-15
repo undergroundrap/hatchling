@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v25 (current). This doc is the human-readable reference
+**Status:** v26 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -69,7 +69,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Web | `WebOp` | `WebResult` | v14 |
 | Browser | `BrowserOp` | `BrowserResult` | v15; `SignIn` v16; `Code` v17 |
 | Suggest | `SuggestOp` | `SuggestResult` | v20 |
-| Room | `RoomOp` | `RoomResult` | v21; `Read` v22; `Search` v25 |
+| Room | `RoomOp` | `RoomResult` | v21; `Read` v22; `Search` v25; `Write`, `Edit` v26 |
 | Chat | `ChatOp` | `ChatResult` | v24 |
 
 ## v9 — Artifact ops
@@ -457,6 +457,49 @@ answer to the last. A chat run can now take it into the task it is on.
   session's that reach the search program, and each reaches it as a
   value, never as an option: the rest of what the program is told is
   fixed in the Room's supervisor.
+
+## v26 — Writing and editing the files in the agent's computer
+
+- **`RoomOp::Write { path, text, replace? }`**: a file in the Room,
+  written whole. The Room's supervisor writes it, as the Room's user:
+  no command is run for it. `path` is absolute, or is taken under
+  `/workspace`, and names a file: it doesn't end in `/`. `text` is what
+  the file is to hold, at most 32 KiB. The directories the file is
+  under are made if they aren't there. A file already at the path is
+  left alone unless `replace` is set; one that is replaced keeps its
+  mode.
+- **`RoomOp::Edit { path, old, new, all? }`**: one exact piece of a
+  file's text replaced with another. `old` is the text to find, 1 byte
+  to 8 KiB, and must be in the file byte for byte; `new` is what to put
+  in its place, at most 8 KiB, and isn't `old`. The text must be at one
+  place in the file unless `all` is set, which replaces it at every
+  place it is at. The file is UTF-8 text of at most 4 MiB, before the
+  edit and after it.
+- **`RoomResult`** gains:
+  - `Wrote { path, bytes, replaced }`: the file as the Room was asked
+    for it, its length now, and whether a file was there, which this
+    one replaced.
+  - `Edited { path, replaced, line, bytes }`: the file as the Room was
+    asked for it, how many places the text was replaced at, the line
+    the first of them starts on (counted from 1), and the file's length
+    now.
+  - `NoChange { reason }`: no change is known to have been made. A file
+    is at the path already and wasn't to be replaced; there is no file
+    at the path to edit; what is at the path isn't a file, or isn't
+    text, or is too long to edit; the text to find isn't there, or is
+    at more than one place (the reason says how many, and the lines the
+    first eight start on); the Room's user may not write there; or the
+    Room couldn't be asked. When the Room was asked and didn't answer,
+    the reason says the file may or may not have been changed.
+- A change that may not be asked for (a path that is too long or names
+  a directory, text over its limit, an edit with nothing to find or
+  with `new` the same as `old`) is `Refused`, and nothing is asked of
+  the Room.
+- A file is never changed where it lies: what it is to hold is written
+  beside it and given its name in one step. A link at the path is
+  never followed.
+- A change is no command: it takes no job name. The sessions that may
+  run a command are the ones that may write and edit.
 
 ## Device handshake
 
