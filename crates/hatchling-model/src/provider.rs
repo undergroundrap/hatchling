@@ -59,14 +59,26 @@ fn thought(message: &Value) -> bool {
     })
 }
 
-/// How many times one request is tried when the model's reply is a stray.
+/// How many times one request is tried when the model's reply is a stray,
+/// or its server failed on it.
 ///
 /// A stray is an empty reply, a reply that is all thinking, or the
 /// capability probe answered without its tool. A small local model's odd
 /// reply now and then isn't its last word; one that can't do the job fails
-/// every time. Nothing runs before a reply is used, so asking again is
-/// safe.
+/// every time. A server's failure ([`server_failed`]) counts among the
+/// tries. Nothing runs before a reply is used, so asking again is safe.
 pub const ATTEMPTS: usize = 3;
+
+/// Whether an endpoint's HTTP `status` says its server failed on the
+/// request (5xx), and not that it refused the request as sent (4xx).
+///
+/// A local server answers so when it can't read what its own model
+/// wrote: a tool call cut short, say. The model's next reply needn't be
+/// the same, so the request is asked again, as after a stray reply. A
+/// refusal would be refused again.
+const fn server_failed(status: u16) -> bool {
+    matches!(status, 500..=599)
+}
 
 /// The smallest context window, in tokens, a model may declare.
 ///
@@ -204,13 +216,22 @@ impl<T: Transport> ChatCompletionsProvider<T> {
     /// # Errors
     ///
     /// [`Error::Incapable`] for a model that does not call tools;
-    /// [`Error::Transport`] when the endpoint cannot be reached or
-    /// refuses the probe.
+    /// [`Error::Transport`] when the endpoint cannot be reached,
+    /// refuses the probe, or its server fails on it every time.
     pub fn verify_capabilities(&self) -> Result<(), Error> {
         let body = self.probe_body();
         let mut refusal = String::new();
-        for _ in 0..ATTEMPTS {
-            let reply = self.post(&body)?;
+        for attempt in 1..=ATTEMPTS {
+            let reply = match self.post(&body) {
+                // Its server failed on the probe: asked again, unless
+                // this was the last try, and then that is the failure.
+                Err(Error::Transport(TransportError::HttpStatus(status)))
+                    if server_failed(status) && attempt < ATTEMPTS =>
+                {
+                    continue;
+                }
+                reply => reply?,
+            };
             refusal = match Self::parse_response(&reply) {
                 Ok(ModelAction::ToolCalls(calls))
                     if calls.iter().any(|call| call.name == PROBE_TOOL) =>
@@ -273,6 +294,15 @@ impl<T: Transport> ChatCompletionsProvider<T> {
                 Err(Error::Transport(TransportError::HttpStatus(_))) if turned_off => {
                     self.fallback.store(LEFT_ON, Ordering::Relaxed);
                     return Err(Error::ThoughtOnly);
+                }
+                // Its server failed on this request: nothing was used,
+                // so it is asked again, among the same tries as a stray
+                // reply.
+                Err(Error::Transport(TransportError::HttpStatus(status)))
+                    if server_failed(status) && tries < ATTEMPTS =>
+                {
+                    tries += 1;
+                    continue;
                 }
                 reply => reply?,
             };
@@ -1590,12 +1620,12 @@ mod tests {
             Err(LoopError::ModelFailed(reason)) if reason.contains("400")
         ));
         // So is one that comes a turn after thinking was turned off.
-        let later = Script::of(&[Ok(THOUGHT), Ok(SAID), Err(500)]);
+        let later = Script::of(&[Ok(THOUGHT), Ok(SAID), Err(404)]);
         let provider = scripted(&later);
         assert!(ask(&provider).is_ok());
         assert!(matches!(
             ask(&provider),
-            Err(LoopError::ModelFailed(reason)) if reason.contains("500")
+            Err(LoopError::ModelFailed(reason)) if reason.contains("404")
         ));
         assert_eq!(later.thinking_off(), [false, true, true]);
     }
@@ -1637,6 +1667,83 @@ mod tests {
             Err(LoopError::ModelFailed(reason)) if reason.contains("400")
         ));
         assert_eq!(refused.thinking_off(), [true, true]);
+    }
+
+    /// A server that fails on a request (5xx) is asked again, among the
+    /// same tries as a stray reply, and no more than those. A status
+    /// that refuses the request as sent (4xx) is the failure at once.
+    #[test]
+    fn a_servers_failure_is_asked_again_and_a_refusal_is_not() {
+        let sent = |transport: &Script| transport.thinking_off().len();
+        let failed_with = |transport: &Script, status: u16| {
+            matches!(
+                ask(&scripted(transport)),
+                Err(LoopError::ModelFailed(reason)) if reason.contains(&status.to_string())
+            )
+        };
+        // Asked again, twice if it must be, and then it answers.
+        for status in [500, 503, 599] {
+            let once = Script::of(&[Err(status), Ok(SAID)]);
+            assert!(ask(&scripted(&once)).is_ok(), "{status}");
+            assert_eq!(sent(&once), 2, "{status}");
+        }
+        let twice = Script::of(&[Err(500), Err(502), Ok(SAID)]);
+        assert!(ask(&scripted(&twice)).is_ok());
+        assert_eq!(sent(&twice), ATTEMPTS);
+        // A server that fails every time is that failure, after as
+        // many tries as a stray gets.
+        let down = Script::of(&[Err(500), Err(500), Err(500), Ok(SAID)]);
+        assert!(failed_with(&down, 500));
+        assert_eq!(sent(&down), ATTEMPTS, "never more than {ATTEMPTS}");
+        // The tries are shared with stray replies.
+        let mixed = Script::of(&[Err(500), Ok(EMPTY), Err(503), Ok(SAID)]);
+        assert!(failed_with(&mixed, 503));
+        assert_eq!(sent(&mixed), ATTEMPTS);
+        let strays = Script::of(&[Ok(EMPTY), Err(500), Ok(SAID)]);
+        assert!(ask(&scripted(&strays)).is_ok());
+        assert_eq!(sent(&strays), ATTEMPTS);
+        // A refusal, or a status that is neither, isn't asked again.
+        for status in [400, 401, 404, 429, 499, 600] {
+            let refused = Script::of(&[Err(status), Ok(SAID)]);
+            assert!(failed_with(&refused, status), "{status}");
+            assert_eq!(sent(&refused), 1, "{status}");
+        }
+    }
+
+    /// The capability probe is asked again when the server fails on it,
+    /// and a server that fails every time is the transport's failure,
+    /// never a model said not to call tools.
+    #[test]
+    fn a_servers_failure_at_the_probe_is_asked_again() {
+        let probe = probe_reply(PROBE_TOOL);
+        let sent = |transport: &Script| transport.thinking_off().len();
+        let once = Script::of(&[Err(500), Ok(&probe)]);
+        assert!(scripted(&once).verify_capabilities().is_ok());
+        assert_eq!(sent(&once), 2);
+        let twice = Script::of(&[Err(502), Err(503), Ok(&probe)]);
+        assert!(scripted(&twice).verify_capabilities().is_ok());
+        assert_eq!(sent(&twice), ATTEMPTS);
+        let down = Script::of(&[Err(500), Err(500), Err(500), Ok(&probe)]);
+        assert!(matches!(
+            scripted(&down).verify_capabilities(),
+            Err(Error::Transport(TransportError::HttpStatus(500)))
+        ));
+        assert_eq!(sent(&down), ATTEMPTS);
+        // A stray after a failure is still a stray: the model is
+        // refused for what it said.
+        let stray = Script::of(&[Err(500), Ok(SAID), Ok(SAID)]);
+        assert!(matches!(
+            scripted(&stray).verify_capabilities(),
+            Err(Error::Incapable { reason }) if reason.contains("in text")
+        ));
+        assert_eq!(sent(&stray), ATTEMPTS);
+        // A refusal ends it at once.
+        let refused = Script::of(&[Err(400), Ok(&probe)]);
+        assert!(matches!(
+            scripted(&refused).verify_capabilities(),
+            Err(Error::Transport(TransportError::HttpStatus(400)))
+        ));
+        assert_eq!(sent(&refused), 1);
     }
 
     /// The capability probe turns nothing off: a model that only thinks
