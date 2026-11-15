@@ -44,8 +44,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hatchling_core::room::{
-    Ask, Captured, End, Ended, Found, JobId, NoPage, NoSearch, Page, RUNNING_MAX, Say, Stream,
-    check_page, check_search,
+    Ask, Captured, Edited, End, Ended, Found, JobId, NoEdit, NoPage, NoSearch, NoWrite, Page,
+    RUNNING_MAX, Say, Stream, Wrote, check_edit, check_page, check_search, check_write,
 };
 
 use crate::room_disk::{RoomDiskOp, RoomDiskStatus};
@@ -74,6 +74,12 @@ const BAD_END: &str = "the Room supervisor said a job ended in a way it can't ha
 const BAD_PIECE: &str = "the Room supervisor sent a piece of output of the wrong length";
 const BAD_PAGE: &str = "the Room supervisor sent a page of a file that can't be one";
 const BAD_FOUND: &str = "the Room supervisor sent what a search found that can't be it";
+const BAD_WROTE: &str = "the Room supervisor said it wrote a file in a way it can't have";
+const BAD_EDITED: &str = "the Room supervisor said it made an edit in a way it can't have";
+/// Said after why a session ended, to whoever asked for a change the
+/// supervisor had been given and hadn't answered.
+const UNHEARD: &str =
+    ". The file may or may not have been changed: read it before changing it again";
 const UNANSWERED: &str = "the Room supervisor didn't answer in time";
 const UNSTOPPED: &str = "a Room job didn't end when it was stopped";
 const UNSENT: &str = "could not send to the Room supervisor";
@@ -115,6 +121,137 @@ pub struct Search {
     pub ignore_case: bool,
     /// Whether the pattern is the very words to find.
     pub literal: bool,
+}
+
+/// What changing a file in the Room comes to.
+pub(crate) type ChangeReply = Result<Changed, String>;
+
+/// A change to one file in the Room, as its caller gave it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "change", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum Change {
+    /// Write the file whole: a new file, or one in place of the file
+    /// there when `replace` is set.
+    Write {
+        /// The file's absolute path in the Room.
+        path: String,
+        /// What the file is to hold.
+        #[serde(with = "hatchling_core::room::b64")]
+        bytes: Vec<u8>,
+        /// Whether a file already there is to be replaced.
+        replace: bool,
+    },
+    /// Replace `old` with `new` in the file: at the one place it is, or
+    /// at every place when `all` is set.
+    Edit {
+        /// The file's absolute path in the Room.
+        path: String,
+        /// The text to replace, exactly as it is in the file.
+        #[serde(with = "hatchling_core::room::b64")]
+        old: Vec<u8>,
+        /// What to put in its place.
+        #[serde(with = "hatchling_core::room::b64")]
+        new: Vec<u8>,
+        /// Whether every place the text is at is to be replaced.
+        all: bool,
+    },
+}
+
+impl Change {
+    /// Whether this may be asked for.
+    ///
+    /// # Errors
+    ///
+    /// Why it may not.
+    pub fn check(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Write { path, bytes, .. } => check_write(path, bytes.len()),
+            Self::Edit { path, old, new, .. } => check_edit(path, old, new),
+        }
+    }
+
+    /// What the supervisor's answer to this must agree with.
+    fn expect(&self) -> Expect {
+        match self {
+            Self::Write { bytes, replace, .. } => Expect::Write {
+                size: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                replace: *replace,
+            },
+            Self::Edit { all, .. } => Expect::Edit { all: *all },
+        }
+    }
+}
+
+/// What a change to a file in the Room came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Changed {
+    /// The file was written.
+    Wrote(Wrote),
+    /// The edit was made.
+    Edited(Edited),
+}
+
+/// What the answer to a change the supervisor was asked for must agree
+/// with: the change itself has gone to the supervisor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expect {
+    /// A file of this length, replaced only if it was to be.
+    Write { size: u64, replace: bool },
+    /// One place, unless every place was asked for.
+    Edit { all: bool },
+}
+
+impl Expect {
+    /// Whether `wrote` can be what this write came to.
+    fn wrote(self, wrote: Wrote) -> bool {
+        wrote.check().is_ok()
+            && matches!(self, Self::Write { size, replace } if wrote.size == size && (replace || !wrote.replaced))
+    }
+
+    /// Whether `edited` can be what this edit came to.
+    const fn edited(self, edited: Edited) -> bool {
+        edited.check().is_ok() && matches!(self, Self::Edit { all } if all || edited.replaced == 1)
+    }
+}
+
+/// Why the supervisor wrote no file, in words for whoever asked.
+fn no_write(why: NoWrite) -> String {
+    String::from(match why {
+        NoWrite::Exists => "the Room has a file at that path already, and it wasn't replaced",
+        NoWrite::NotAFile => {
+            "what the Room has at that path isn't a file: it is a directory or a link, or is under something that is no directory"
+        }
+        NoWrite::Denied => "the Room's user may not write there",
+        NoWrite::Failed => "the Room couldn't write the file",
+    })
+}
+
+/// Why the supervisor made no edit, in words for whoever asked.
+fn no_edit(why: NoEdit) -> String {
+    match why {
+        NoEdit::NoSuchFile => String::from("the Room has no such file"),
+        NoEdit::Denied => {
+            String::from("the Room's user may not read that file, or may not write there")
+        }
+        NoEdit::NotAFile => String::from("that is a directory or a link, not a file"),
+        NoEdit::NotText => String::from("that file isn't text, or what was to be put in it isn't"),
+        NoEdit::TooBig => {
+            String::from("that file is longer than 4 MiB, or the edit would make it so")
+        }
+        NoEdit::NotFound => String::from(
+            "the text to replace isn't in the file as it was given: nothing was changed",
+        ),
+        NoEdit::Ambiguous { places, lines } => {
+            let named: Vec<String> = lines.iter().map(u64::to_string).collect();
+            format!(
+                "the text to replace is in the file at {places} places, and one was wanted: nothing was changed. The first {} start on lines {}",
+                named.len(),
+                named.join(", ")
+            )
+        }
+        NoEdit::Failed => String::from("the Room couldn't make the edit"),
+    }
 }
 
 /// Why the supervisor handed back nothing of a search, in words for
@@ -297,6 +434,12 @@ pub(crate) enum Message {
         requester: UnixStream,
         reply: Sender<SearchReply>,
     },
+    /// Change a file in the Room, for the connection at `requester`.
+    Change {
+        change: Change,
+        requester: UnixStream,
+        reply: Sender<ChangeReply>,
+    },
     /// Say whether the installed Room works.
     Probe { reply: Sender<Result<(), String>> },
     /// Do this to the room disk.
@@ -417,6 +560,8 @@ enum Asking {
     Page,
     /// The search the first connection waiting for one wants.
     Search,
+    /// The change the first connection waiting for one wants.
+    Change,
 }
 
 /// A job's end as the supervisor said it, while its kept output is
@@ -473,6 +618,13 @@ struct Seeker {
     reply: Sender<SearchReply>,
 }
 
+/// A connection waiting for a change to a file in the Room.
+struct Changer {
+    change: Change,
+    requester: UnixStream,
+    reply: Sender<ChangeReply>,
+}
+
 /// An answer kept until the Room is down.
 enum Owed {
     /// How a job came out, or why it isn't known.
@@ -481,6 +633,8 @@ enum Owed {
     Page(Sender<PageReply>, String),
     /// Why nothing was searched.
     Search(Sender<SearchReply>, String),
+    /// Why no change is known to have been made.
+    Change(Sender<ChangeReply>, String),
 }
 
 impl Owed {
@@ -496,6 +650,9 @@ impl Owed {
             Self::Search(reply, reason) => {
                 let _ = reply.send(Err(reason));
             }
+            Self::Change(reply, reason) => {
+                let _ = reply.send(Err(reason));
+            }
         }
     }
 
@@ -509,6 +666,9 @@ impl Owed {
                 let _ = reply.send(Err(reason.to_owned()));
             }
             Self::Search(reply, _) => {
+                let _ = reply.send(Err(reason.to_owned()));
+            }
+            Self::Change(reply, _) => {
                 let _ = reply.send(Err(reason.to_owned()));
             }
         }
@@ -588,6 +748,11 @@ pub(crate) struct Kept<D> {
     seekers: VecDeque<Seeker>,
     /// Who is told of the search the supervisor has been asked for.
     seeking: Option<Sender<SearchReply>>,
+    /// The connections waiting for a change that hasn't been asked for.
+    changers: VecDeque<Changer>,
+    /// Who is told of the change the supervisor has been asked for, and
+    /// what its answer must agree with.
+    changing: Option<(Sender<ChangeReply>, Expect)>,
     /// What is still to be asked of the supervisor.
     asks: VecDeque<Asking>,
     /// What it has been asked and hasn't answered: its nonce, and when.
@@ -621,6 +786,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
             reading: None,
             seekers: VecDeque::new(),
             seeking: None,
+            changers: VecDeque::new(),
+            changing: None,
             asks: VecDeque::new(),
             asked: None,
             probes: Vec::new(),
@@ -628,6 +795,15 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
             after: None,
             left: false,
         }
+    }
+
+    /// Whether anything waits for a Room: a job, a page, a search or a
+    /// change.
+    fn wanted(&self) -> bool {
+        !self.flights.is_empty()
+            || !self.readers.is_empty()
+            || !self.seekers.is_empty()
+            || !self.changers.is_empty()
     }
 
     /// How a job that is over came out.
@@ -642,6 +818,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
         !self.flights.is_empty()
             || !self.readers.is_empty()
             || !self.seekers.is_empty()
+            || !self.changers.is_empty()
             || self.asked.is_some()
     }
 
@@ -702,6 +879,18 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                         reply,
                     });
                     self.asks.push_back(Asking::Search);
+                }
+                Message::Change {
+                    change,
+                    requester,
+                    reply,
+                } => {
+                    self.changers.push_back(Changer {
+                        change,
+                        requester,
+                        reply,
+                    });
+                    self.asks.push_back(Asking::Change);
                 }
                 Message::Probe { reply } => self.probes.push(reply),
                 Message::Disk {
@@ -885,6 +1074,19 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
         }
     }
 
+    /// Lets go of every caller waiting for a change that has gone: a
+    /// file is changed for nobody.
+    fn unchanged(&mut self) {
+        let (staying, gone): (VecDeque<Changer>, VecDeque<Changer>) =
+            std::mem::take(&mut self.changers)
+                .into_iter()
+                .partition(|changer| quiet(&changer.requester));
+        self.changers = staying;
+        for changer in gone {
+            let _ = changer.reply.send(Err(String::from(REQUESTER_GONE)));
+        }
+    }
+
     /// Sends the supervisor the next thing to ask, when it isn't still
     /// answering the last. One ask is with the supervisor at a time, so
     /// its socket has room for a whole one: a supervisor that can't take
@@ -945,6 +1147,37 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                             glob: seeker.search.glob,
                             ignore_case: seeker.search.ignore_case,
                             literal: seeker.search.literal,
+                        }
+                    })
+                }
+                // And no file is changed for one.
+                Asking::Change => {
+                    self.unchanged();
+                    self.changers.pop_front().map(|changer| {
+                        self.changing = Some((changer.reply, changer.change.expect()));
+                        match changer.change {
+                            Change::Write {
+                                path,
+                                bytes,
+                                replace,
+                            } => Ask::Write {
+                                nonce: nonce.clone(),
+                                path,
+                                bytes,
+                                replace,
+                            },
+                            Change::Edit {
+                                path,
+                                old,
+                                new,
+                                all,
+                            } => Ask::Edit {
+                                nonce: nonce.clone(),
+                                path,
+                                old,
+                                new,
+                                all,
+                            },
                         }
                     })
                 }
@@ -1189,8 +1422,49 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                 self.sought(Err(no_search(why)));
                 Ok(())
             }
+            (Asking::Change, said) => self.changed(said),
             _ => Err(String::from(OUT_OF_TURN)),
         }
+    }
+
+    /// Takes the supervisor's answer to the change it was asked for,
+    /// holds it to what was asked, and tells whoever waits. An answer to
+    /// the other kind of change, or to nothing that was asked, ends the
+    /// session.
+    fn changed(&mut self, said: Say) -> Result<(), String> {
+        let Some((reply, expect)) = self.changing.take() else {
+            return Err(String::from(OUT_OF_TURN));
+        };
+        let answer = match (expect, said) {
+            (Expect::Write { .. }, Say::Wrote { wrote, .. }) => {
+                if !expect.wrote(wrote) {
+                    self.changing = Some((reply, expect));
+                    return Err(String::from(BAD_WROTE));
+                }
+                Ok(Changed::Wrote(wrote))
+            }
+            (Expect::Write { .. }, Say::NoWrite { why, .. }) => Err(no_write(why)),
+            (Expect::Edit { .. }, Say::Edited { edited, .. }) => {
+                if !expect.edited(edited) {
+                    self.changing = Some((reply, expect));
+                    return Err(String::from(BAD_EDITED));
+                }
+                Ok(Changed::Edited(edited))
+            }
+            (Expect::Edit { .. }, Say::NoEdit { why, .. }) => {
+                if why.check().is_err() {
+                    self.changing = Some((reply, expect));
+                    return Err(String::from(BAD_EDITED));
+                }
+                Err(no_edit(why))
+            }
+            _ => {
+                self.changing = Some((reply, expect));
+                return Err(String::from(OUT_OF_TURN));
+            }
+        };
+        let _ = reply.send(answer);
+        Ok(())
     }
 
     /// Tells whoever waits for the search the supervisor was asked for.
@@ -1360,6 +1634,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                 Message::Search { reply, .. } => {
                     let _ = reply.send(Err(held(reason)));
                 }
+                Message::Change { reply, .. } => {
+                    let _ = reply.send(Err(held(reason)));
+                }
                 Message::Probe { reply } => {
                     let _ = reply.send(Err(held(reason)));
                 }
@@ -1405,6 +1682,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
             for seeker in self.seekers.drain(..) {
                 let _ = seeker.reply.send(Err(reason.clone()));
             }
+            for changer in self.changers.drain(..) {
+                let _ = changer.reply.send(Err(reason.clone()));
+            }
             while let Ok(message) = self.seat.inbox.try_recv() {
                 match message {
                     Message::Run { reply, .. } => {
@@ -1414,6 +1694,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Search { reply, .. } => {
+                        let _ = reply.send(Err(reason.clone()));
+                    }
+                    Message::Change { reply, .. } => {
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Job { .. }
@@ -1437,12 +1720,12 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Session for Kept<D> {
     fn begin(&mut self) -> Result<(), String> {
         self.intake()?;
         // Nothing is launched for callers that have all gone.
-        let asked =
-            !self.flights.is_empty() || !self.readers.is_empty() || !self.seekers.is_empty();
+        let asked = self.wanted();
         self.part(|waiter| !quiet(&waiter.requester));
         self.unread();
         self.unsought();
-        if asked && self.flights.is_empty() && self.readers.is_empty() && self.seekers.is_empty() {
+        self.unchanged();
+        if asked && !self.wanted() {
             return Err(String::from(REQUESTER_GONE));
         }
         Ok(())
@@ -1479,6 +1762,16 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Session for Kept<D> {
         let unsought = self.seekers.drain(..).map(|seeker| seeker.reply);
         for reply in self.seeking.take().into_iter().chain(unsought) {
             self.owed.push(Owed::Search(reply, reason.clone()));
+        }
+        // A change the supervisor was given and didn't answer may have
+        // been made, and nobody heard: its caller is told that. One it
+        // was never given wasn't made.
+        if let Some((reply, _)) = self.changing.take() {
+            self.owed
+                .push(Owed::Change(reply, format!("{reason}{UNHEARD}")));
+        }
+        for changer in self.changers.drain(..) {
+            self.owed.push(Owed::Change(changer.reply, reason.clone()));
         }
     }
 
@@ -1662,6 +1955,25 @@ impl Sessions {
         let message = |reply: Sender<SearchReply>| -> Result<Message, String> {
             Ok(Message::Search {
                 search: search.clone(),
+                requester: requester.try_clone().map_err(|error| error.to_string())?,
+                reply,
+            })
+        };
+        self.ask_or_start(&message, || None)
+    }
+
+    /// Makes `change` to a file in the kept Room, for the connection at
+    /// `requester`. A session is started when there is none.
+    ///
+    /// A change is handed to a session again only when that session ended
+    /// without having taken it. One the supervisor was given and didn't
+    /// answer is never asked again: its caller is told it isn't known
+    /// whether the file was changed.
+    pub(crate) fn change(&self, change: &Change, requester: &UnixStream) -> ChangeReply {
+        change.check()?;
+        let message = |reply: Sender<ChangeReply>| -> Result<Message, String> {
+            Ok(Message::Change {
+                change: change.clone(),
                 requester: requester.try_clone().map_err(|error| error.to_string())?,
                 reply,
             })

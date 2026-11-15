@@ -29,9 +29,17 @@
 //! either: it has no name, nothing of it is kept, and it is over before
 //! the supervisor answers.
 //!
+//! And it may ask for a file to be written ([`Ask::Write`]), or for one
+//! exact piece of a file's text to be replaced ([`Ask::Edit`]). The
+//! supervisor writes the file itself, as the Room's user, whole and in
+//! one step: no job is started for it, and nothing that reads the file
+//! sees half of it. A write or an edit that got no answer isn't known to
+//! have happened, and is never asked again by itself.
+//!
 //! The supervisor runs in the Room, as the Room's user: everything it says
-//! is untrusted. [`Captured::check`], [`Ended::check`], [`Page::check`]
-//! and [`Found::check`] are what the spawner holds its words to; unknown
+//! is untrusted. [`Captured::check`], [`Ended::check`], [`Page::check`],
+//! [`Found::check`], [`Wrote::check`], [`Edited::check`] and
+//! [`NoEdit::check`] are what the spawner holds its words to; unknown
 //! fields never decode.
 
 use std::fmt;
@@ -93,6 +101,21 @@ pub const PATTERN_BYTES: usize = 1024;
 
 /// The longest a search's file-name glob may be, in bytes.
 pub const GLOB_BYTES: usize = 256;
+
+/// The most a file may be written with at once, in bytes.
+pub const WRITE_BYTES: usize = 32 * 1024;
+
+/// The longest text an edit may replace, and the longest it may put in
+/// that text's place, in bytes.
+pub const EDIT_BYTES: usize = 8 * 1024;
+
+/// The longest a file may be for an edit to be made in it, before the
+/// edit and after it, in bytes.
+pub const EDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// How many of the places an edit's text was found at are named, when
+/// it was found at more than the one wanted.
+pub const EDIT_PLACES: usize = 8;
 
 /// Where a job starts when its caller names no directory.
 pub const WORKSPACE: &str = "/workspace";
@@ -323,6 +346,59 @@ pub fn check_search(pattern: &str, path: &str, glob: Option<&str>) -> Result<(),
     Ok(())
 }
 
+/// Whether `path` can name a file to be written or edited: absolute, at
+/// most [`PATH_BYTES`], and not ending in `/`.
+fn check_file(path: &str) -> Result<(), &'static str> {
+    if !path.starts_with('/') {
+        return Err("a Room file is named by its absolute path");
+    }
+    if path.len() > PATH_BYTES || path.contains('\0') {
+        return Err("a Room file's path is invalid or too long");
+    }
+    if path.ends_with('/') {
+        return Err("a Room file's path names a file, and this one a directory");
+    }
+    Ok(())
+}
+
+/// Whether a file may be asked to be written: at an absolute `path` of at
+/// most [`PATH_BYTES`] that names a file, with at most [`WRITE_BYTES`].
+/// The Room decides whether it can be written there.
+///
+/// # Errors
+///
+/// Why it may not.
+pub fn check_write(path: &str, bytes: usize) -> Result<(), &'static str> {
+    check_file(path)?;
+    if bytes > WRITE_BYTES {
+        return Err("a file is written with at most 32768 bytes at once");
+    }
+    Ok(())
+}
+
+/// Whether an edit may be asked for.
+///
+/// It may of the file at an absolute `path`, replacing `old`, of 1 to
+/// [`EDIT_BYTES`], with `new`, of at most [`EDIT_BYTES`] and not the
+/// same. The Room decides whether the file is there and has the text.
+///
+/// # Errors
+///
+/// Why it may not.
+pub fn check_edit(path: &str, old: &[u8], new: &[u8]) -> Result<(), &'static str> {
+    check_file(path)?;
+    if old.is_empty() || old.len() > EDIT_BYTES {
+        return Err("an edit replaces 1 to 8192 bytes of text");
+    }
+    if new.len() > EDIT_BYTES {
+        return Err("an edit puts at most 8192 bytes in the text's place");
+    }
+    if old == new {
+        return Err("an edit's new text is the text it replaces");
+    }
+    Ok(())
+}
+
 /// What the spawner asks the supervisor. Each carries a nonce the answer
 /// must echo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,6 +468,35 @@ pub enum Ask {
         /// Whether `pattern` is the very words to find, and no expression.
         literal: bool,
     },
+    /// Write the file at `path` with `bytes`, whole: a new file, or one
+    /// in place of the file there when `replace` is set.
+    Write {
+        /// Echoed by the answer.
+        nonce: String,
+        /// The file's absolute path in the Room.
+        path: String,
+        /// What the file is to hold.
+        #[serde(with = "b64")]
+        bytes: Vec<u8>,
+        /// Whether a file already there is to be replaced.
+        replace: bool,
+    },
+    /// Replace `old` with `new` in the file at `path`: at the one place
+    /// it is, or at every place when `all` is set.
+    Edit {
+        /// Echoed by the answer.
+        nonce: String,
+        /// The file's absolute path in the Room.
+        path: String,
+        /// The text to replace, exactly as it is in the file.
+        #[serde(with = "b64")]
+        old: Vec<u8>,
+        /// What to put in its place.
+        #[serde(with = "b64")]
+        new: Vec<u8>,
+        /// Whether every place the text is at is to be replaced.
+        all: bool,
+    },
 }
 
 impl Ask {
@@ -403,7 +508,9 @@ impl Ask {
             | Self::Stop { nonce, .. }
             | Self::Piece { nonce, .. }
             | Self::Page { nonce, .. }
-            | Self::Search { nonce, .. } => nonce,
+            | Self::Search { nonce, .. }
+            | Self::Write { nonce, .. }
+            | Self::Edit { nonce, .. } => nonce,
         }
     }
 }
@@ -528,6 +635,134 @@ impl Found {
     }
 }
 
+/// Why the supervisor wrote no file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoWrite {
+    /// There is a file at that path, and it wasn't to be replaced.
+    Exists,
+    /// What is at that path is a directory, a link, or something else
+    /// that isn't a file.
+    NotAFile,
+    /// The Room's user may not write there.
+    Denied,
+    /// It couldn't be written.
+    Failed,
+}
+
+/// A file as the supervisor wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Wrote {
+    /// The file's length now, in bytes.
+    pub size: u64,
+    /// Whether there was a file there, which this one replaced.
+    pub replaced: bool,
+}
+
+impl Wrote {
+    /// Whether this can be what a write came to: a file no longer than
+    /// one may be written with.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub fn check(&self) -> Result<(), &'static str> {
+        if usize::try_from(self.size).map_or(true, |size| size > WRITE_BYTES) {
+            return Err("a file is said to be written with more than one may be");
+        }
+        Ok(())
+    }
+}
+
+/// Why the supervisor made no edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoEdit {
+    /// There is no file at that path.
+    NoSuchFile,
+    /// The Room's user may not read it, or may not write there.
+    Denied,
+    /// It is a directory, a link, or something else that isn't a file.
+    NotAFile,
+    /// It isn't text: it has a byte no text has, or isn't UTF-8.
+    NotText,
+    /// It is longer than [`EDIT_FILE_BYTES`], or the edit would make it
+    /// so.
+    TooBig,
+    /// The text to replace isn't in it.
+    NotFound,
+    /// The text to replace is in it at more than one place, and one was
+    /// wanted.
+    Ambiguous {
+        /// How many places it is at.
+        places: u32,
+        /// The lines the first [`EDIT_PLACES`] of them start on, counted
+        /// from 1, in order.
+        lines: Vec<u64>,
+    },
+    /// It couldn't be read, or couldn't be written.
+    Failed,
+}
+
+impl NoEdit {
+    /// Whether this can be why no edit was made: text found at more than
+    /// one place is at two or more, and names 1 to [`EDIT_PLACES`] of
+    /// them, no more than there are, by lines counted from 1 that never
+    /// go back.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub fn check(&self) -> Result<(), &'static str> {
+        let Self::Ambiguous { places, lines } = self else {
+            return Ok(());
+        };
+        let named = u32::try_from(lines.len()).unwrap_or(u32::MAX);
+        if *places < 2 || lines.is_empty() || lines.len() > EDIT_PLACES || named > *places {
+            return Err("an edit's text is said to be at places that can't be");
+        }
+        let in_order = lines
+            .iter()
+            .zip(lines.iter().skip(1))
+            .all(|(line, next)| line <= next);
+        if lines.first() == Some(&0) || !in_order {
+            return Err("an edit's text is said to be on lines that can't be");
+        }
+        Ok(())
+    }
+}
+
+/// An edit as the supervisor made it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Edited {
+    /// How many places the text was replaced at.
+    pub replaced: u32,
+    /// The line the first of them starts on, counted from 1.
+    pub line: u64,
+    /// The file's length now, in bytes.
+    pub size: u64,
+}
+
+impl Edited {
+    /// Whether this can be what an edit came to: at least one place, on a
+    /// line counted from 1, in a file no longer than one may be.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub const fn check(&self) -> Result<(), &'static str> {
+        if self.replaced == 0 || self.line == 0 {
+            return Err("an edit is said to be made at no place");
+        }
+        if self.size > EDIT_FILE_BYTES {
+            return Err("an edit is said to leave a file longer than one may");
+        }
+        Ok(())
+    }
+}
+
 /// What the supervisor says. All but [`Say::Ended`] answer an [`Ask`],
 /// and echo its nonce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,6 +827,34 @@ pub enum Say {
         /// Why not.
         why: NoSearch,
     },
+    /// The file was written.
+    Wrote {
+        /// The ask's nonce.
+        nonce: String,
+        /// What was written.
+        wrote: Wrote,
+    },
+    /// No file was written.
+    NoWrite {
+        /// The ask's nonce.
+        nonce: String,
+        /// Why not.
+        why: NoWrite,
+    },
+    /// The edit was made.
+    Edited {
+        /// The ask's nonce.
+        nonce: String,
+        /// What was made.
+        edited: Edited,
+    },
+    /// No edit was made: the file is as it was.
+    NoEdit {
+        /// The ask's nonce.
+        nonce: String,
+        /// Why not.
+        why: NoEdit,
+    },
     /// A job has ended. Said once for each job that was started, unasked.
     Ended {
         /// The job's name.
@@ -618,7 +881,11 @@ impl Say {
             | Self::Page { nonce, .. }
             | Self::NoPage { nonce, .. }
             | Self::Found { nonce, .. }
-            | Self::NoSearch { nonce, .. } => Some(nonce),
+            | Self::NoSearch { nonce, .. }
+            | Self::Wrote { nonce, .. }
+            | Self::NoWrite { nonce, .. }
+            | Self::Edited { nonce, .. }
+            | Self::NoEdit { nonce, .. } => Some(nonce),
             Self::Ended { .. } => None,
         }
     }
@@ -1388,5 +1655,272 @@ mod tests {
             },
         };
         assert!(crate::fits_one_frame(&largest));
+    }
+
+    /// A write and an edit are each of a file named by its whole path;
+    /// a write carries no more than it may, and an edit two texts that
+    /// differ, the one to find not empty. The most of each fits one
+    /// frame.
+    #[test]
+    fn a_write_and_an_edit_are_of_a_file_named_whole_and_bounded() {
+        assert_eq!(
+            (WRITE_BYTES, EDIT_BYTES, EDIT_FILE_BYTES, EDIT_PLACES),
+            (32_768, 8_192, 4_194_304, 8)
+        );
+        let deepest = format!("/{}", "\u{1}".repeat(PATH_BYTES - 1));
+        assert!(check_write("/workspace/notes.txt", 0).is_ok());
+        assert!(check_write(&deepest, WRITE_BYTES).is_ok());
+        assert!(
+            check_write("/a", WRITE_BYTES + 1)
+                .unwrap_err()
+                .contains("32768 bytes")
+        );
+        assert!(check_edit("/a", b"x", b"y").is_ok());
+        assert!(check_edit("/a", b"x", b"").is_ok(), "text taken out");
+        let longest = vec![b'x'; EDIT_BYTES];
+        let other = vec![b'y'; EDIT_BYTES];
+        assert!(check_edit(&deepest, &longest, &other).is_ok());
+        let over = vec![b'x'; EDIT_BYTES + 1];
+        for old in [&b""[..], &over[..]] {
+            assert!(
+                check_edit("/a", old, b"y")
+                    .unwrap_err()
+                    .contains("replaces 1 to 8192"),
+                "{} bytes",
+                old.len()
+            );
+        }
+        assert!(
+            check_edit("/a", b"x", &over)
+                .unwrap_err()
+                .contains("at most 8192")
+        );
+        assert!(
+            check_edit("/a", b"same", b"same")
+                .unwrap_err()
+                .contains("the text it replaces")
+        );
+        let too_deep = format!("{deepest}d");
+        for (path, why) in [
+            ("notes.txt", "absolute"),
+            ("", "absolute"),
+            ("/a\0", "invalid or too long"),
+            (too_deep.as_str(), "invalid or too long"),
+            ("/workspace/", "a directory"),
+            ("/", "a directory"),
+        ] {
+            assert!(check_write(path, 1).unwrap_err().contains(why), "{path:?}");
+            assert!(
+                check_edit(path, b"x", b"y").unwrap_err().contains(why),
+                "{path:?}"
+            );
+        }
+        let most = Ask::Write {
+            nonce: "f".repeat(64),
+            path: deepest.clone(),
+            bytes: vec![0xff; WRITE_BYTES],
+            replace: true,
+        };
+        assert!(crate::fits_one_frame(&most));
+        let most = Ask::Edit {
+            nonce: "f".repeat(64),
+            path: deepest,
+            old: vec![0xff; EDIT_BYTES],
+            new: vec![0xfe; EDIT_BYTES],
+            all: true,
+        };
+        assert!(crate::fits_one_frame(&most));
+    }
+
+    /// A write and an edit go on the wire as they are written here, each
+    /// with its nonce, and a field that isn't named never decodes.
+    #[test]
+    fn a_write_and_an_edit_have_their_wire_form() {
+        let write = Ask::Write {
+            nonce: String::from("n1"),
+            path: String::from("/workspace/a.txt"),
+            bytes: b"hi\n".to_vec(),
+            replace: false,
+        };
+        let json = serde_json::to_string(&write).unwrap();
+        assert_eq!(
+            json,
+            r#"{"ask":"write","nonce":"n1","path":"/workspace/a.txt","bytes":"aGkK","replace":false}"#
+        );
+        assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), write);
+        assert_eq!(write.nonce(), "n1");
+        assert!(
+            serde_json::from_str::<Ask>(&json.replace("\"replace\"", "\"mode\":511,\"replace\""))
+                .is_err()
+        );
+        let edit = Ask::Edit {
+            nonce: String::from("n2"),
+            path: String::from("/workspace/a.txt"),
+            old: b"hi".to_vec(),
+            new: b"yo".to_vec(),
+            all: true,
+        };
+        let json = serde_json::to_string(&edit).unwrap();
+        assert_eq!(
+            json,
+            r#"{"ask":"edit","nonce":"n2","path":"/workspace/a.txt","old":"aGk=","new":"eW8=","all":true}"#
+        );
+        assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), edit);
+        assert_eq!(edit.nonce(), "n2");
+        assert!(
+            serde_json::from_str::<Ask>(&json.replace("\"all\"", "\"regex\":true,\"all\""))
+                .is_err()
+        );
+    }
+
+    /// What the supervisor says of a write and of an edit goes on the
+    /// wire as it is written here, each echoing its nonce, and a field or
+    /// a reason that isn't named never decodes.
+    #[test]
+    fn what_is_said_of_a_write_and_an_edit_has_its_wire_form() {
+        let said = |say: &Say, written: &str| {
+            let json = serde_json::to_string(say).unwrap();
+            assert_eq!(json, written);
+            assert_eq!(serde_json::from_str::<Say>(&json).unwrap(), *say);
+            assert_eq!(say.nonce(), Some("n3"));
+        };
+        let nonce = || String::from("n3");
+        said(
+            &Say::Wrote {
+                nonce: nonce(),
+                wrote: Wrote {
+                    size: 3,
+                    replaced: true,
+                },
+            },
+            r#"{"say":"wrote","nonce":"n3","wrote":{"size":3,"replaced":true}}"#,
+        );
+        said(
+            &Say::Edited {
+                nonce: nonce(),
+                edited: Edited {
+                    replaced: 2,
+                    line: 7,
+                    size: 40,
+                },
+            },
+            r#"{"say":"edited","nonce":"n3","edited":{"replaced":2,"line":7,"size":40}}"#,
+        );
+        for (why, word) in [
+            (NoWrite::Exists, "exists"),
+            (NoWrite::NotAFile, "not-a-file"),
+            (NoWrite::Denied, "denied"),
+            (NoWrite::Failed, "failed"),
+        ] {
+            said(
+                &Say::NoWrite {
+                    nonce: nonce(),
+                    why,
+                },
+                &format!(r#"{{"say":"no-write","nonce":"n3","why":"{word}"}}"#),
+            );
+        }
+        for (why, word) in [
+            (NoEdit::NoSuchFile, "no-such-file"),
+            (NoEdit::Denied, "denied"),
+            (NoEdit::NotAFile, "not-a-file"),
+            (NoEdit::NotText, "not-text"),
+            (NoEdit::TooBig, "too-big"),
+            (NoEdit::NotFound, "not-found"),
+            (NoEdit::Failed, "failed"),
+        ] {
+            said(
+                &Say::NoEdit {
+                    nonce: nonce(),
+                    why,
+                },
+                &format!(r#"{{"say":"no-edit","nonce":"n3","why":"{word}"}}"#),
+            );
+        }
+        said(
+            &Say::NoEdit {
+                nonce: nonce(),
+                why: NoEdit::Ambiguous {
+                    places: 3,
+                    lines: vec![1, 3, 3],
+                },
+            },
+            r#"{"say":"no-edit","nonce":"n3","why":{"ambiguous":{"places":3,"lines":[1,3,3]}}}"#,
+        );
+        for unknown in [
+            r#"{"say":"wrote","nonce":"n3","wrote":{"size":3,"replaced":true,"mode":420}}"#,
+            r#"{"say":"edited","nonce":"n3","edited":{"replaced":2,"line":7,"size":40,"old":"x"}}"#,
+            r#"{"say":"no-write","nonce":"n3","why":"gone"}"#,
+            r#"{"say":"no-edit","nonce":"n3","why":{"ambiguous":{"places":3}}}"#,
+        ] {
+            assert!(serde_json::from_str::<Say>(unknown).is_err(), "{unknown}");
+        }
+    }
+
+    /// What a write and an edit are said to have come to is held to what
+    /// either can come to: a file no longer than may be, an edit at a
+    /// place there is, and text at more places than one named by lines
+    /// that can be lines.
+    #[test]
+    fn what_was_written_and_edited_is_held_to_its_bounds() {
+        let most = u64::try_from(WRITE_BYTES).unwrap();
+        let wrote = |size: u64| Wrote {
+            size,
+            replaced: false,
+        };
+        assert!(Wrote::default().check().is_ok());
+        assert!(wrote(most).check().is_ok());
+        assert!(wrote(most + 1).check().unwrap_err().contains("more than"));
+        assert!(wrote(u64::MAX).check().is_err());
+        let edited = |replaced: u32, line: u64, size: u64| Edited {
+            replaced,
+            line,
+            size,
+        };
+        assert!(edited(1, 1, 0).check().is_ok());
+        assert!(edited(u32::MAX, u64::MAX, EDIT_FILE_BYTES).check().is_ok());
+        assert!(edited(0, 1, 9).check().unwrap_err().contains("no place"));
+        assert!(edited(1, 0, 9).check().unwrap_err().contains("no place"));
+        assert!(
+            edited(1, 1, EDIT_FILE_BYTES + 1)
+                .check()
+                .unwrap_err()
+                .contains("longer")
+        );
+        for plain in [
+            NoEdit::NoSuchFile,
+            NoEdit::Denied,
+            NoEdit::NotAFile,
+            NoEdit::NotText,
+            NoEdit::TooBig,
+            NoEdit::NotFound,
+            NoEdit::Failed,
+        ] {
+            assert!(plain.check().is_ok(), "{plain:?}");
+        }
+        let at = |places: u32, lines: &[u64]| NoEdit::Ambiguous {
+            places,
+            lines: lines.to_vec(),
+        };
+        assert!(at(2, &[1, 1]).check().is_ok());
+        assert!(at(2, &[4]).check().is_ok(), "fewer named than there are");
+        assert!(at(u32::MAX, &[1, 2, 3, 4, 5, 6, 7, 8]).check().is_ok());
+        for (bad, why) in [
+            (at(1, &[1]), "places"),
+            (at(0, &[]), "places"),
+            (at(2, &[]), "places"),
+            (at(2, &[1, 2, 3]), "places"),
+            (at(9, &[1, 2, 3, 4, 5, 6, 7, 8, 9]), "places"),
+            (at(2, &[0, 1]), "lines"),
+            (at(3, &[5, 4]), "lines"),
+            (at(3, &[1, 3, 2]), "lines"),
+        ] {
+            assert!(bad.check().unwrap_err().contains(why), "{bad:?}");
+        }
+        let longest = Say::NoEdit {
+            nonce: "f".repeat(64),
+            why: at(u32::MAX, &[u64::MAX; 8]),
+        };
+        assert!(crate::fits_one_frame(&longest));
     }
 }

@@ -1371,6 +1371,7 @@ fn check_room_foreground(
     check_room_job_surroundings(spawner)?;
     check_room_pages(spawner)?;
     check_room_search(spawner)?;
+    check_room_change(spawner)?;
 
     // Closing the disk ends the Room first: nothing of it is left, and
     // the next job starts another, with scratch of its own. A page starts
@@ -1485,6 +1486,88 @@ fn check_room_search(spawner: &Spawner) -> Result<(), Failed> {
     // The Room it was asked in is the one the jobs ran in, and still is.
     let same = foreground(spawner, &["kept"])?;
     assert_eq!(exit_code(&same)?, 0, "a search ended the Room");
+    Ok(())
+}
+
+/// A file is written and edited by the Room's supervisor, under the
+/// Room's filter and as its user, through the spawner's own protocol. It
+/// is on the room disk, where a page of it reads it back; the image is
+/// read-only, and a file there isn't written. Neither starts a job, and
+/// neither ends the Room.
+fn check_room_change(spawner: &Spawner) -> Result<(), Failed> {
+    use hatchling_broker::spawner::{Edited, RoomChange, RoomChanged, Wrote};
+    let path = "/workspace/made/by/the/supervisor.txt";
+    let write = |path: &str, bytes: &[u8], replace: bool| RoomChange::Write {
+        path: path.to_owned(),
+        bytes: bytes.to_vec(),
+        replace,
+    };
+    let edit = |old: &str, new: &str, all: bool| RoomChange::Edit {
+        path: path.to_owned(),
+        old: old.as_bytes().to_vec(),
+        new: new.as_bytes().to_vec(),
+        all,
+    };
+    let refused = |change: &RoomChange| -> Result<String, Failed> {
+        Ok(spawner
+            .room_change(change)
+            .err()
+            .ok_or_else(|| format!("{change:?} was made"))?)
+    };
+    let made = spawner.room_change(&write(path, b"one\ntwo\none\n", false))?;
+    assert_eq!(
+        made,
+        RoomChanged::Wrote(Wrote {
+            size: 12,
+            replaced: false
+        })
+    );
+    let there = refused(&write(path, b"again\n", false))?;
+    assert!(there.contains("already"), "{there}");
+    let twice = refused(&edit("one", "1", false))?;
+    assert!(
+        twice.contains("at 2 places") && twice.ends_with("lines 1, 3"),
+        "{twice}"
+    );
+    let one = spawner.room_change(&edit("two", "2", false))?;
+    assert_eq!(
+        one,
+        RoomChanged::Edited(Edited {
+            replaced: 1,
+            line: 2,
+            size: 10
+        })
+    );
+    let every = spawner.room_change(&edit("one", "1", true))?;
+    assert_eq!(
+        every,
+        RoomChanged::Edited(Edited {
+            replaced: 2,
+            line: 1,
+            size: 6
+        })
+    );
+    let page = spawner.room_page(path, 1, 5)?;
+    assert_eq!(page.bytes, b"1\n2\n1\n");
+    let replaced = spawner.room_change(&write(path, b"all new\n", true))?;
+    assert_eq!(
+        replaced,
+        RoomChanged::Wrote(Wrote {
+            size: 8,
+            replaced: true
+        })
+    );
+    assert_eq!(spawner.room_page(path, 1, 5)?.bytes, b"all new\n");
+    let absent = refused(&edit("nowhere", "x", false))?;
+    assert!(absent.contains("isn't in the file"), "{absent}");
+    // The image is read-only: nothing is written into it.
+    let image = refused(&write("/etc/made-by-the-supervisor", b"x", false))?;
+    assert!(image.contains("may not write there"), "{image}");
+    let relative = refused(&write("workspace/made", b"x", false))?;
+    assert!(relative.contains("absolute"), "{relative}");
+    // The Room it was written in is the one the jobs ran in, and still is.
+    let same = foreground(spawner, &["kept"])?;
+    assert_eq!(exit_code(&same)?, 0, "a change ended the Room");
     Ok(())
 }
 

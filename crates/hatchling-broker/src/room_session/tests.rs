@@ -1945,6 +1945,22 @@ pub(crate) fn stood_found(generation: usize, search: &Search) -> Found {
     }
 }
 
+/// What a stand-in session says a change came to: a file as long as
+/// what was asked, or an edit at as many places as the stand-in's number.
+pub(crate) fn stood_changed(generation: usize, change: &Change) -> Changed {
+    match change {
+        Change::Write { bytes, replace, .. } => Changed::Wrote(Wrote {
+            size: u64::try_from(bytes.len()).unwrap(),
+            replaced: *replace,
+        }),
+        Change::Edit { old, .. } => Changed::Edited(Edited {
+            replaced: u32::try_from(generation).unwrap(),
+            line: 1,
+            size: u64::try_from(old.len()).unwrap(),
+        }),
+    }
+}
+
 /// A stand-in for the thread that holds a session: it answers with its
 /// own number, and ends when told to or on the jobs that say so.
 fn stand_in(generation: usize, seat: &Seat) {
@@ -1986,6 +2002,12 @@ fn stand_in(generation: usize, seat: &Seat) {
                     return;
                 }
                 let _ = reply.send(Ok(stood_found(generation, &search)));
+            }
+            Message::Change { change, reply, .. } => {
+                if matches!(&change, Change::Write { path, .. } if path == "/vanish") {
+                    return;
+                }
+                let _ = reply.send(Ok(stood_changed(generation, &change)));
             }
             Message::Probe { reply } => {
                 let _ = reply.send(Ok(()));
@@ -2133,6 +2155,7 @@ fn output_is_read_once_a_job_is_over() {
                     }
                     Message::Page { .. }
                     | Message::Search { .. }
+                    | Message::Change { .. }
                     | Message::Probe { .. }
                     | Message::Disk { .. }
                     | Message::End { .. } => continue,
@@ -3003,4 +3026,569 @@ fn a_started_session_finds_its_first_search_waiting() {
     let mut byte = [0_u8; 1];
     broker.read_exact(&mut byte).unwrap();
     assert_eq!(&byte, b"!");
+}
+
+/// A write of `text` to the file at `path`.
+fn write_of(path: &str, text: &[u8], replace: bool) -> Change {
+    Change::Write {
+        path: path.to_owned(),
+        bytes: text.to_vec(),
+        replace,
+    }
+}
+
+/// An edit of the file at `path`: `old` for `new`.
+fn edit_of(path: &str, old: &str, new: &str, all: bool) -> Change {
+    Change::Edit {
+        path: path.to_owned(),
+        old: old.as_bytes().to_vec(),
+        new: new.as_bytes().to_vec(),
+        all,
+    }
+}
+
+/// Asks the session for a change: the broker's end of the connection it
+/// is asked on, and where its answer comes.
+fn ask_change(door: &Door, change: Change) -> (UnixStream, Receiver<ChangeReply>) {
+    let (broker, requester) = UnixStream::pair().unwrap();
+    let (reply, answer) = mpsc::channel();
+    let sent = door.send(Message::Change {
+        change,
+        requester,
+        reply,
+    });
+    assert!(sent.is_ok(), "the session had ended");
+    (broker, answer)
+}
+
+/// Takes the ask for a change as the supervisor hears it: its nonce, and
+/// the change it asks for.
+fn change_asked(room: &UnixStream) -> (String, Change) {
+    match hears(room) {
+        Ask::Write {
+            nonce,
+            path,
+            bytes,
+            replace,
+        } => (
+            nonce,
+            Change::Write {
+                path,
+                bytes,
+                replace,
+            },
+        ),
+        Ask::Edit {
+            nonce,
+            path,
+            old,
+            new,
+            all,
+        } => (
+            nonce,
+            Change::Edit {
+                path,
+                old,
+                new,
+                all,
+            },
+        ),
+        ask @ (Ask::Start { .. }
+        | Ask::Stop { .. }
+        | Ask::Piece { .. }
+        | Ask::Page { .. }
+        | Ask::Search { .. }) => unreachable!("asked {ask:?}, not for a change"),
+    }
+}
+
+const fn wrote(size: u64, replaced: bool) -> Wrote {
+    Wrote { size, replaced }
+}
+
+const fn edited(replaced: u32, line: u64, size: u64) -> Edited {
+    Edited {
+        replaced,
+        line,
+        size,
+    }
+}
+
+/// A change is asked of the supervisor in its turn, as it was asked for,
+/// one thing at a time, and what it came to goes to whoever asked. That
+/// a change wasn't made is no fault of the session's. Nothing of a change
+/// is kept.
+#[test]
+fn a_change_is_asked_of_the_supervisor_in_its_turn_and_handed_back() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let write = write_of("/workspace/notes/a.md", b"TODO: buy milk\n", false);
+        let edit = edit_of("/workspace/notes/a.md", "TODO", "DONE", false);
+        // Asked for before the supervisor is ready, it waits, as a job
+        // does.
+        let (_first_broker, first) = ask_change(&rig.door, write.clone());
+        let (_job_broker, ran) = ask_run(&rig.door, "between");
+        let (_second_broker, second) = ask_change(&rig.door, edit.clone());
+        assert!(unasked(&rig.room, SHORT), "asked before it was ready");
+        say_ready(&rig.room);
+        let (nonce, asked) = change_asked(&rig.room);
+        assert_eq!(asked, write);
+        assert!(unasked(&rig.room, SHORT), "asked two things at once");
+        assert!(unanswered(&first));
+        let said = Say::Wrote {
+            nonce,
+            wrote: wrote(15, false),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&first), Ok(Changed::Wrote(wrote(15, false))));
+        starts(&rig.room, "between");
+        let (nonce, asked) = change_asked(&rig.room);
+        assert_eq!(asked, edit);
+        let why = NoEdit::Ambiguous {
+            places: 3,
+            lines: vec![1, 3, 3],
+        };
+        says(&rig.room, &Say::NoEdit { nonce, why });
+        let told = wait(&second).unwrap_err();
+        assert!(
+            told.contains("at 3 places") && told.ends_with("The first 3 start on lines 1, 3, 3"),
+            "{told}"
+        );
+        ends(&rig.room, "between", Ended::Exited(0), b"");
+        assert_eq!(outcome(&answered(&ran).1).0, Ended::Exited(0));
+        // A file that was replaced, an edit at every place, and a write
+        // that wasn't made, each as the supervisor said it.
+        let replace = write_of("/workspace/notes/a.md", b"all new\n", true);
+        let (_broker, answer) = ask_change(&rig.door, replace.clone());
+        let (nonce, asked) = change_asked(&rig.room);
+        assert_eq!(asked, replace, "asked for another write");
+        let said = Say::Wrote {
+            nonce,
+            wrote: wrote(8, true),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&answer), Ok(Changed::Wrote(wrote(8, true))));
+        let every = edit_of("/workspace/notes/a.md", "a", "b", true);
+        let (_broker, answer) = ask_change(&rig.door, every.clone());
+        let (nonce, asked) = change_asked(&rig.room);
+        assert_eq!(asked, every, "asked for another edit");
+        let said = Say::Edited {
+            nonce,
+            edited: edited(4, 2, 9),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&answer), Ok(Changed::Edited(edited(4, 2, 9))));
+        let again = write_of("/workspace/notes/a.md", b"x", false);
+        let (_broker, answer) = ask_change(&rig.door, again);
+        let (nonce, _) = change_asked(&rig.room);
+        let said = Say::NoWrite {
+            nonce,
+            why: NoWrite::Exists,
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&answer), Err(no_write(NoWrite::Exists)));
+        assert!(!held.is_finished(), "the session ended over a change");
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+    assert_eq!(
+        opened(&rig.ledger).over.len(),
+        1,
+        "a change was kept as a job"
+    );
+}
+
+/// How a change comes out when the session that was asked for it ends on
+/// what `script` has its supervisor do with the ask's nonce: nothing is
+/// heard until the Room is down, and then why it ended.
+fn changed_by(change: Change, script: impl FnOnce(&UnixStream, String)) -> ChangeReply {
+    let (rig, mut kept) = new_rig(limits());
+    let (_broker, answer) = ask_change(&rig.door, change);
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (nonce, _) = change_asked(&rig.room);
+        script(&rig.room, nonce);
+        seen_out(held, &rig.room);
+    });
+    assert!(
+        answer.try_recv().is_err(),
+        "answered before the Room was down"
+    );
+    kept.finish(Ok(()), |_| unreachable!());
+    wait(&answer)
+}
+
+/// What a change is said to have come to that can't be it, an answer to
+/// the other kind of change, and anything but an answer to a change end
+/// the session. Whoever asked hears why, and that the file may or may
+/// not have been changed.
+#[test]
+fn what_a_change_came_to_that_cannot_be_it_ends_the_session() {
+    let unheard = |reason: &str| Err(format!("{reason}{UNHEARD}"));
+    let write = || write_of("/workspace/a", b"abc", false);
+    let edit = || edit_of("/workspace/a", "x", "y", false);
+    // A file of another length, or one replaced that wasn't to be.
+    for bad in [wrote(4, false), wrote(2, false), wrote(3, true)] {
+        let came = changed_by(write(), |room, nonce| {
+            says(room, &Say::Wrote { nonce, wrote: bad });
+        });
+        assert_eq!(came, unheard(BAD_WROTE), "{bad:?}");
+    }
+    // An edit at more places than the one wanted, at none, on no line,
+    // or one that leaves a file longer than may be.
+    let too_long = hatchling_core::room::EDIT_FILE_BYTES + 1;
+    for bad in [
+        edited(2, 1, 9),
+        edited(0, 1, 9),
+        edited(1, 0, 9),
+        edited(1, 1, too_long),
+    ] {
+        let came = changed_by(edit(), |room, nonce| {
+            says(room, &Say::Edited { nonce, edited: bad });
+        });
+        assert_eq!(came, unheard(BAD_EDITED), "{bad:?}");
+    }
+    // Text said to be at more places than one, at one.
+    let came = changed_by(edit(), |room, nonce| {
+        let why = NoEdit::Ambiguous {
+            places: 1,
+            lines: vec![1],
+        };
+        says(room, &Say::NoEdit { nonce, why });
+    });
+    assert_eq!(came, unheard(BAD_EDITED));
+    // What a write comes to isn't what an edit does, nor the other way.
+    let came = changed_by(write(), |room, nonce| {
+        let said = Say::Edited {
+            nonce,
+            edited: edited(1, 1, 3),
+        };
+        says(room, &said);
+    });
+    assert_eq!(came, unheard(OUT_OF_TURN));
+    let came = changed_by(write(), |room, nonce| {
+        let why = NoEdit::NotFound;
+        says(room, &Say::NoEdit { nonce, why });
+    });
+    assert_eq!(came, unheard(OUT_OF_TURN));
+    let came = changed_by(edit(), |room, nonce| {
+        let said = Say::Wrote {
+            nonce,
+            wrote: wrote(3, false),
+        };
+        says(room, &said);
+    });
+    assert_eq!(came, unheard(OUT_OF_TURN));
+    let came = changed_by(edit(), |room, nonce| {
+        let why = NoWrite::Exists;
+        says(room, &Say::NoWrite { nonce, why });
+    });
+    assert_eq!(came, unheard(OUT_OF_TURN));
+    // An answer to something else, anything but an answer to a change,
+    // and a supervisor that goes.
+    let came = changed_by(write(), |room, _| {
+        let said = Say::Wrote {
+            nonce: "0".repeat(64),
+            wrote: wrote(3, false),
+        };
+        says(room, &said);
+    });
+    assert_eq!(came, unheard(OUT_OF_TURN));
+    let came = changed_by(write(), |room, nonce| says(room, &Say::Started { nonce }));
+    assert_eq!(came, unheard(OUT_OF_TURN));
+    let came = changed_by(write(), |room, _| gone(room));
+    assert_eq!(came, unheard(CLOSED));
+    // What a change came to, in answer to anything else, is out of turn.
+    let wrong: [fn(String) -> Say; 4] = [
+        |nonce| Say::Wrote {
+            nonce,
+            wrote: Wrote::default(),
+        },
+        |nonce| Say::NoWrite {
+            nonce,
+            why: NoWrite::Failed,
+        },
+        |nonce| Say::Edited {
+            nonce,
+            edited: Edited {
+                replaced: 1,
+                line: 1,
+                size: 1,
+            },
+        },
+        |nonce| Say::NoEdit {
+            nonce,
+            why: NoEdit::Failed,
+        },
+    ];
+    for said in wrong {
+        let ended = ended_by(true, |far| {
+            say_ready(far.room());
+            let asked = hears(far.room());
+            says(far.room(), &said(asked.nonce().to_owned()));
+        });
+        assert_eq!(ended, OUT_OF_TURN);
+    }
+}
+
+/// When a session ends, a change the supervisor was given isn't known to
+/// have been made or not, and its caller is told so; one still waiting
+/// wasn't made. Both hear once the Room is down.
+#[test]
+fn a_change_not_answered_is_not_known_to_have_been_made() {
+    let (rig, mut kept) = new_rig(limits());
+    let (_asked_broker, asked) = ask_change(&rig.door, write_of("/workspace/a", b"a", false));
+    let (_waiting_broker, waiting) = ask_change(&rig.door, write_of("/workspace/b", b"b", false));
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (_nonce, of) = change_asked(&rig.room);
+        assert_eq!(of, write_of("/workspace/a", b"a", false));
+        assert!(rig.door.send(Message::End { reason: "gone" }).is_ok());
+        held.join().unwrap();
+    });
+    assert!(asked.try_recv().is_err() && waiting.try_recv().is_err());
+    assert_eq!(kept.owed.len(), 2);
+    assert!(kept.changers.is_empty() && kept.changing.is_none());
+    kept.finish(Ok(()), |_| unreachable!());
+    assert_eq!(wait(&asked), Err(format!("gone{UNHEARD}")));
+    assert_eq!(wait(&waiting), Err(String::from("gone")));
+    assert!(UNHEARD.contains("may or may not have been changed"));
+}
+
+/// Before anything is launched: a change whose caller has gone launches
+/// nothing, a change to ask for is something in hand, and one still
+/// there is a reason to launch whoever else has gone. A launch that
+/// fails answers a waiting change with why.
+#[test]
+fn nothing_is_launched_for_a_changer_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    assert!(!kept.busy() && !kept.wanted());
+    let (_broker, answer) = ask_change(&rig.door, write_of("/workspace/a", b"a", false));
+    assert_eq!(kept.begin(), Ok(()));
+    assert!(kept.busy(), "a change to ask for is something in hand");
+    assert!(kept.wanted());
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&answer), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_change(&rig.door, write_of("/workspace/unwanted", b"a", false));
+    let (_staying, stayed) = ask_change(&rig.door, write_of("/workspace/wanted", b"b", false));
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()), "one caller is still there");
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+    assert_eq!(kept.changers.len(), 1);
+    assert!(unanswered(&stayed));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_change(&rig.door, write_of("/workspace/unwanted", b"a", false));
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Err(String::from(REQUESTER_GONE)));
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+    // A change that comes in after a launch failed hears why too.
+    let (rig, kept) = new_rig(limits());
+    let (_broker, late) = ask_change(&rig.door, edit_of("/workspace/a", "x", "y", false));
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&late), Err(String::from("no launch")));
+}
+
+/// A caller that goes while its change waits its turn has nothing changed
+/// for it: the supervisor is asked only for the change of the one still
+/// there.
+#[test]
+fn nothing_is_changed_for_a_caller_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let unwanted = write_of("/workspace/unwanted", b"a", false);
+        let wanted = edit_of("/workspace/wanted", "x", "y", true);
+        let (broker, answer) = ask_change(&rig.door, unwanted);
+        let (_staying, stayed) = ask_change(&rig.door, wanted.clone());
+        gone(&broker);
+        drop(broker);
+        say_ready(&rig.room);
+        let (nonce, asked) = change_asked(&rig.room);
+        assert_eq!(asked, wanted);
+        assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+        let said = Say::Edited {
+            nonce,
+            edited: edited(2, 5, 40),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&stayed), Ok(Changed::Edited(edited(2, 5, 40))));
+        assert!(unasked(&rig.room, SHORT), "a file was changed for nobody");
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+}
+
+/// An answer to a change is held to what was asked: a file of the length
+/// that was sent, replaced only if it was to be; an edit at one place
+/// unless every place was asked for; and each to its own kind of change.
+#[test]
+fn an_answer_to_a_change_is_held_to_what_was_asked() {
+    let write = |replace: bool| write_of("/a", b"abc", replace).expect();
+    assert_eq!(
+        write(false),
+        Expect::Write {
+            size: 3,
+            replace: false
+        }
+    );
+    assert!(write(false).wrote(wrote(3, false)));
+    assert!(!write(false).wrote(wrote(3, true)));
+    assert!(!write(false).wrote(wrote(4, false)));
+    assert!(!write(false).wrote(wrote(2, false)));
+    assert!(write(true).wrote(wrote(3, true)));
+    assert!(write(true).wrote(wrote(3, false)), "nothing was there");
+    assert!(!write(true).edited(edited(1, 1, 3)));
+    let edit = |all: bool| edit_of("/a", "x", "y", all).expect();
+    assert_eq!(edit(true), Expect::Edit { all: true });
+    assert!(edit(false).edited(edited(1, 7, 3)));
+    assert!(!edit(false).edited(edited(2, 7, 3)));
+    assert!(!edit(false).edited(edited(0, 7, 3)));
+    assert!(edit(true).edited(edited(2, 7, 3)));
+    assert!(edit(true).edited(edited(1, 7, 3)));
+    assert!(!edit(true).edited(edited(0, 7, 3)));
+    assert!(!edit(true).edited(edited(2, 0, 3)));
+    assert!(!edit(true).wrote(wrote(3, false)));
+    // What a write comes to is held to what a write may come to as well.
+    let most = hatchling_core::room::WRITE_BYTES;
+    let full = write_of("/a", &vec![b'x'; most], false).expect();
+    assert!(full.wrote(wrote(u64::try_from(most).unwrap(), false)));
+    let over = Expect::Write {
+        size: u64::try_from(most).unwrap() + 1,
+        replace: false,
+    };
+    assert!(!over.wrote(wrote(u64::try_from(most).unwrap() + 1, false)));
+}
+
+/// A change may be asked for only as a write or an edit may.
+#[test]
+fn a_change_may_be_asked_for_only_as_a_write_or_an_edit_may() {
+    let most = hatchling_core::room::WRITE_BYTES;
+    assert!(write_of("/a", b"", false).check().is_ok());
+    assert!(
+        write_of("a", b"", false)
+            .check()
+            .unwrap_err()
+            .contains("absolute")
+    );
+    assert!(
+        write_of("/a", &vec![0; most + 1], true)
+            .check()
+            .unwrap_err()
+            .contains("32768")
+    );
+    assert!(edit_of("/a", "x", "y", false).check().is_ok());
+    assert!(
+        edit_of("/a", "", "y", false)
+            .check()
+            .unwrap_err()
+            .contains("replaces 1 to")
+    );
+    assert!(
+        edit_of("/a/", "x", "y", false)
+            .check()
+            .unwrap_err()
+            .contains("a directory")
+    );
+}
+
+#[test]
+fn every_reason_no_change_was_made_has_its_words() {
+    let writes = [
+        NoWrite::Exists,
+        NoWrite::NotAFile,
+        NoWrite::Denied,
+        NoWrite::Failed,
+    ]
+    .map(no_write);
+    let edits = [
+        NoEdit::NoSuchFile,
+        NoEdit::Denied,
+        NoEdit::NotAFile,
+        NoEdit::NotText,
+        NoEdit::TooBig,
+        NoEdit::NotFound,
+        NoEdit::Failed,
+    ]
+    .map(no_edit);
+    let mut distinct: Vec<String> = writes.iter().chain(edits.iter()).cloned().collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), writes.len() + edits.len());
+    assert!(no_write(NoWrite::Exists).contains("already"));
+    assert!(no_write(NoWrite::NotAFile).contains("isn't a file"));
+    assert!(no_write(NoWrite::Denied).contains("may not write"));
+    assert!(no_write(NoWrite::Failed).contains("couldn't write"));
+    assert_eq!(no_edit(NoEdit::NoSuchFile), "the Room has no such file");
+    assert!(no_edit(NoEdit::Denied).contains("may not"));
+    assert!(no_edit(NoEdit::NotAFile).contains("not a file"));
+    assert!(no_edit(NoEdit::NotText).contains("isn't text"));
+    assert!(no_edit(NoEdit::TooBig).contains("4 MiB"));
+    assert!(no_edit(NoEdit::NotFound).contains("nothing was changed"));
+    assert!(no_edit(NoEdit::Failed).contains("couldn't make"));
+    let many = NoEdit::Ambiguous {
+        places: 12,
+        lines: vec![2, 2, 9],
+    };
+    assert_eq!(
+        no_edit(many),
+        "the text to replace is in the file at 12 places, and one was wanted: nothing was changed. The first 3 start on lines 2, 2, 9"
+    );
+}
+
+/// A change starts a session when there is none, as a job does, and is
+/// asked of the one there is. One that may not be asked for starts none.
+#[test]
+fn a_change_starts_a_session_and_the_next_uses_it() {
+    let change = |sessions: &Sessions, change: &Change| {
+        let (_broker, requester) = UnixStream::pair().unwrap();
+        sessions.change(change, &requester)
+    };
+    let (sessions, started, ended) = stand_ins();
+    let first = write_of("/workspace/a", b"abc", true);
+    let second = edit_of("/workspace/a", "abcd", "x", true);
+    assert_eq!(change(&sessions, &first), Ok(stood_changed(1, &first)));
+    assert_eq!(
+        change(&sessions, &first),
+        Ok(Changed::Wrote(wrote(3, true)))
+    );
+    assert_eq!(change(&sessions, &second), Ok(stood_changed(1, &second)));
+    assert_eq!(
+        change(&sessions, &second),
+        Ok(Changed::Edited(edited(1, 1, 4)))
+    );
+    assert_eq!(run(&sessions, "j"), Ok(stood_in(1, "j")));
+    assert_eq!(started.load(Atomic::SeqCst), 1);
+    assert_eq!(ended.load(Atomic::SeqCst), 0);
+
+    let (sessions, started, _ended) = stand_ins();
+    let said = change(&sessions, &write_of("workspace/a", b"x", false)).unwrap_err();
+    assert!(said.contains("absolute"), "{said}");
+    let said = change(&sessions, &edit_of("/workspace/a", "same", "same", false)).unwrap_err();
+    assert!(said.contains("the text it replaces"), "{said}");
+    assert_eq!(started.load(Atomic::SeqCst), 0, "a session was started");
+    // A session that keeps ending before it takes a change up is given
+    // up on.
+    assert_eq!(
+        change(&sessions, &write_of("/vanish", b"x", false)),
+        Err(String::from(UNSETTLED))
+    );
+    let tried = started.load(Atomic::SeqCst);
+    assert!((2..=ATTEMPTS).contains(&tried), "started {tried} sessions");
 }

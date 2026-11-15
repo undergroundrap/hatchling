@@ -203,18 +203,55 @@ What is handed back is whole lines, each `path:line:text` with at most
 had looked everywhere. A path with nothing at it is said before any
 program is started. A search is not kept: asking again looks again.
 
+The spawner may ask the supervisor to change a file: to write it whole
+(a path, absolute and at most 1024 bytes; at most 32 KiB; and whether
+a file already there is to be replaced), or to replace one exact piece
+of its text (the text to find, 1 to 8 KiB; what to put in its place, at
+most 8 KiB; and whether every place the text is at is meant, or the one
+place it must then be at). The supervisor does it itself, as the Room's
+user, under the Room's filter: no job is started, and no program is
+run. It adds nothing to what a job could already do to the same files.
+
+A file is never changed where it lies. What it is to hold is written
+beside it, under a name of the supervisor's own, and given the file's
+name in one step, so nothing that reads the file sees half of it and a
+write that fails leaves the file as it was. A new file is given its
+name only if nothing has that name, by a rename that replaces nothing:
+there are no hard links in the Room. The directories a new file is
+under are made if they aren't there. A file that is replaced or edited
+keeps its mode. Only a file is written over or edited: a directory, a
+link, or anything else at the path is left alone and said, and a link
+is never followed to what it names.
+
+An edit is exact. The file must be UTF-8 text of at most 4 MiB, before
+the edit and after it, and the text to find must be in it byte for
+byte. Text that isn't there changes nothing. Text that is there more
+than once changes nothing either, unless every place was asked for: how
+many places there are is said, and the lines the first eight start on.
+
+A change that got no answer is never asked again. When a session ends
+with a change the supervisor was given and hadn't answered, whoever
+asked is told the file may or may not have been changed; a change the
+supervisor was never given wasn't made, and is said as that. No file is
+changed for a caller that has gone.
+
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
 together, takes each kept piece only at the length the supervisor said it
 had, takes a page only if it is no longer than a page and cut only where
 it could be, takes what a search found only if it is no longer than it
 may be and ends at the end of a line, and names each stream's file
-itself, from the job's name.
+itself, from the job's name. It takes what a write came to only if the
+file is as long as what was sent and was replaced only if it was to be;
+what an edit came to only if it was at one place, unless every place
+was asked for, in a file no longer than one may be; and the places
+text is said to be at only if they can be places. Anything else ends
+the session.
 
 The Room is kept between jobs, as one session for the install. One
 spawner thread holds it from its launch until it is down, and holds the
-disk's exclusive claim for as long. The first job, page or search
-starts the session, and later ones use it.
+disk's exclusive claim for as long. The first job, page, search or
+change starts the session, and later ones use it.
 
 A job has a limit: 120 seconds unless its caller names one, and never
 more than 600. A job still running at its limit is stopped, which kills

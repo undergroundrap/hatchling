@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hatchling_core::framing::read_frame;
-use hatchling_core::room::JOBS_DIR;
+use hatchling_core::room::{Edited, JOBS_DIR, NoEdit, NoWrite, Wrote};
 
 use super::*;
 
@@ -345,6 +345,93 @@ fn a_job_runs_on_through_a_search() {
     let (how, _, _) = bench.ended("j1");
     assert_eq!(how, Ended::Exited(0));
     assert_eq!(bench.output("j1", Stream::Stdout), "started\ndone\n");
+    assert!(bench.close());
+}
+
+/// A file is written and edited by the supervisor itself, over its
+/// socket: what it says is what is in the file, a page of it reads back
+/// what was written, and what can't be done is said and changes nothing.
+#[test]
+fn a_file_is_written_and_edited_and_read_back() {
+    let mut bench = Bench::new("write");
+    let path = bench
+        .dir
+        .join("notes/todo.md")
+        .to_string_lossy()
+        .into_owned();
+    let write = |bench: &mut Bench, bytes: &[u8], replace: bool| {
+        let ask = Ask::Write {
+            nonce: bench.nonce(),
+            path: path.clone(),
+            bytes: bytes.to_vec(),
+            replace,
+        };
+        bench.ask(&ask)
+    };
+    let edit = |bench: &mut Bench, old: &str, new: &str, all: bool| {
+        let ask = Ask::Edit {
+            nonce: bench.nonce(),
+            path: path.clone(),
+            old: old.as_bytes().to_vec(),
+            new: new.as_bytes().to_vec(),
+            all,
+        };
+        bench.ask(&ask)
+    };
+    let said = write(&mut bench, b"TODO: buy milk\nTODO: call home\n", false);
+    assert!(
+        matches!(said, Say::Wrote { wrote, .. } if wrote == Wrote { size: 31, replaced: false }),
+        "{said:?}"
+    );
+    let said = write(&mut bench, b"again\n", false);
+    assert!(
+        matches!(
+            said,
+            Say::NoWrite {
+                why: NoWrite::Exists,
+                ..
+            }
+        ),
+        "{said:?}"
+    );
+    let said = edit(&mut bench, "TODO", "DONE", false);
+    assert!(
+        matches!(&said, Say::NoEdit { why: NoEdit::Ambiguous { places: 2, lines }, .. } if *lines == [1, 2]),
+        "{said:?}"
+    );
+    let said = edit(&mut bench, "TODO: buy milk", "DONE: bought milk", false);
+    assert!(
+        matches!(said, Say::Edited { edited, .. } if edited == Edited { replaced: 1, line: 1, size: 34 }),
+        "{said:?}"
+    );
+    let said = edit(&mut bench, "nowhere", "x", true);
+    assert!(
+        matches!(
+            said,
+            Say::NoEdit {
+                why: NoEdit::NotFound,
+                ..
+            }
+        ),
+        "{said:?}"
+    );
+    let ask = Ask::Page {
+        nonce: bench.nonce(),
+        path: path.clone(),
+        from: 1,
+        lines: 10,
+    };
+    let said = bench.ask(&ask);
+    assert!(
+        matches!(&said, Say::Page { page, .. } if page.bytes == b"DONE: bought milk\nTODO: call home\n"),
+        "{said:?}"
+    );
+    let said = write(&mut bench, b"all new\n", true);
+    assert!(
+        matches!(said, Say::Wrote { wrote, .. } if wrote == Wrote { size: 8, replaced: true }),
+        "{said:?}"
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"all new\n");
     assert!(bench.close());
 }
 
