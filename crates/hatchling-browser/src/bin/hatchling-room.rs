@@ -54,6 +54,12 @@ use rustix::process::{Pid, PidfdFlags, Signal, kill_process_group, pidfd_open};
 )]
 #[path = "hatchling-room/search.rs"]
 mod search;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the supervisor is one program: what its parts share is the crate's"
+)]
+#[path = "hatchling-room/write.rs"]
+mod write;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -646,6 +652,25 @@ impl Room<'_> {
                     Err(why) => Say::NoSearch { nonce, why },
                 }
             }
+            Ask::Write {
+                nonce,
+                path,
+                bytes,
+                replace,
+            } => match write::wrote(Path::new(&path), &bytes, replace) {
+                Ok(wrote) => Say::Wrote { nonce, wrote },
+                Err(why) => Say::NoWrite { nonce, why },
+            },
+            Ask::Edit {
+                nonce,
+                path,
+                old,
+                new,
+                all,
+            } => match write::edited_bytes(Path::new(&path), &old, &new, all) {
+                Ok(edited) => Say::Edited { nonce, edited },
+                Err(why) => Say::NoEdit { nonce, why },
+            },
         }
     }
 

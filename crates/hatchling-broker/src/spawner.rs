@@ -585,6 +585,9 @@ enum Request {
     RoomPage { path: String, from: u64, lines: u32 },
     /// Search the files of the installed Room.
     RoomSearch { search: RoomSearch },
+    /// Change a file of the installed Room: write it whole, or replace
+    /// one exact piece of its text.
+    RoomChange { change: RoomChange },
 }
 
 /// What the spawner answers.
@@ -614,10 +617,12 @@ enum Reply {
     RoomPage { page: Page },
     /// What a search of the Room's files found.
     RoomFound { found: Found },
+    /// What a change to a file of the Room came to.
+    RoomChanged { changed: RoomChanged },
 }
 
-pub use crate::room_session::Search as RoomSearch;
-pub use hatchling_core::room::{Found, Page};
+pub use crate::room_session::{Change as RoomChange, Changed as RoomChanged, Search as RoomSearch};
+pub use hatchling_core::room::{Edited, Found, Page, Wrote};
 
 pub use crate::room_job::{
     Captured, End, Ended, JOB_CEILING_SECS, JOB_DEFAULT_SECS, JobId, RoomJob, RoomJobAnswer,
@@ -814,7 +819,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => {
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -889,7 +895,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -918,7 +925,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -942,7 +950,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1035,7 +1044,8 @@ impl Spawner {
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1075,6 +1085,44 @@ impl Spawner {
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Changes a file in the installed Room: writes it whole, or replaces
+    /// one exact piece of its text. The Room is started for it when it
+    /// isn't running. The file is written by the Room's supervisor, as
+    /// the Room's user, in one step.
+    ///
+    /// A change that isn't known to have been made is said as that, and is
+    /// never made again by itself: read the file before changing it again.
+    ///
+    /// # Errors
+    ///
+    /// When the change may not be asked for; when the Room wouldn't make
+    /// it, and why; and as a job's are, when the Room can't be started or
+    /// asked.
+    pub fn room_change(&self, change: &RoomChange) -> Result<RoomChanged, String> {
+        change.check()?;
+        let connection = self.connect().map_err(|error| error.to_string())?;
+        connection
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        let request = Request::RoomChange {
+            change: change.clone(),
+        };
+        send(&connection, &request).map_err(|error| error.to_string())?;
+        match receive(&connection).map_err(|error| error.to_string())? {
+            Reply::RoomChanged { changed } => Ok(changed),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. }
             | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -1114,7 +1162,8 @@ impl Spawner {
             | Reply::RoomDisk { .. }
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
-            | Reply::RoomPage { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPage { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1136,7 +1185,8 @@ impl Spawner {
             | Reply::RoomDisk { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1173,7 +1223,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 }
@@ -1217,7 +1268,8 @@ impl SpawnedProcess {
                     | Reply::RoomJob { .. }
                     | Reply::RoomOutput { .. }
                     | Reply::RoomPage { .. }
-                    | Reply::RoomFound { .. },
+                    | Reply::RoomFound { .. }
+                    | Reply::RoomChanged { .. },
                 ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
@@ -1655,28 +1707,54 @@ fn serve_connection(
             job,
             stream: which,
             end,
-        } => {
-            let reply = match sessions.output(&job, which, end) {
-                Ok(bytes) => Reply::RoomOutput { bytes },
-                Err(reason) => Reply::Refused { reason },
-            };
-            send(stream, &reply)
-        }
+        } => told(stream, sessions.output(&job, which, end), Reply::output),
         Request::RoomPage { path, from, lines } => {
-            let reply = match sessions.page(&path, from, lines, stream) {
-                Ok(page) => Reply::RoomPage { page },
-                Err(reason) => Reply::Refused { reason },
-            };
-            send(stream, &reply)
+            let page = sessions.page(&path, from, lines, stream);
+            told(stream, page, Reply::page)
         }
         Request::RoomSearch { search } => {
-            let reply = match sessions.search(&search, stream) {
-                Ok(found) => Reply::RoomFound { found },
-                Err(reason) => Reply::Refused { reason },
-            };
-            send(stream, &reply)
+            told(stream, sessions.search(&search, stream), Reply::found)
+        }
+        Request::RoomChange { change } => {
+            told(stream, sessions.change(&change, stream), Reply::changed)
         }
     }
+}
+
+impl Reply {
+    /// A kept piece of what a Room job wrote, as a reply.
+    const fn output(bytes: Vec<u8>) -> Self {
+        Self::RoomOutput { bytes }
+    }
+
+    /// A page of a file in the Room, as a reply.
+    const fn page(page: Page) -> Self {
+        Self::RoomPage { page }
+    }
+
+    /// What a search of the Room's files found, as a reply.
+    const fn found(found: Found) -> Self {
+        Self::RoomFound { found }
+    }
+
+    /// What a change to a file of the Room came to, as a reply.
+    const fn changed(changed: RoomChanged) -> Self {
+        Self::RoomChanged { changed }
+    }
+}
+
+/// Answers a request about what is in the Room: what was asked for, as
+/// `reply` says it, or why there is none.
+fn told<T>(
+    stream: &UnixStream,
+    asked: Result<T, String>,
+    reply: fn(T) -> Reply,
+) -> Result<(), Error> {
+    let reply = match asked {
+        Ok(answer) => reply(answer),
+        Err(reason) => Reply::Refused { reason },
+    };
+    send(stream, &reply)
 }
 
 /// What the spawner answers about a Room job.
@@ -2710,6 +2788,171 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             serde_json::to_string(&reply).unwrap(),
             r#"{"reply":"room-found","found":{"bytes":"L3dvcmtzcGFjZS9hOjE6eAo=","more":true}}"#
         );
+    }
+
+    /// A change reaches the spawner's one session, as it was asked for,
+    /// and starts it when there is none. One that may not be asked for is
+    /// refused by the spawner, and starts nothing.
+    #[test]
+    fn a_change_reaches_the_session_and_starts_it() {
+        use crate::room_job::tests::run;
+        use crate::room_session::tests::{stand_ins, stood_changed, stood_in};
+        let (sessions, started, _ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let asked = spawner.connect().unwrap();
+        let wanted = RoomChange::Write {
+            path: String::from("/workspace/notes/a.md"),
+            bytes: b"TODO: buy milk\n".to_vec(),
+            replace: true,
+        };
+        let invalid = Request::RoomChange {
+            change: RoomChange::Write {
+                path: String::from("workspace/notes/a.md"),
+                bytes: Vec::new(),
+                replace: false,
+            },
+        };
+        send(&asked, &invalid).unwrap();
+        assert!(matches!(
+            receive(&asked).unwrap(),
+            Reply::Refused { reason } if reason.contains("absolute")
+        ));
+        assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
+        assert_eq!(spawner.room_change(&wanted), Ok(stood_changed(1, &wanted)));
+        assert_eq!(
+            spawner.room_change(&wanted),
+            Ok(RoomChanged::Wrote(Wrote {
+                size: 15,
+                replaced: true
+            }))
+        );
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        // A job is run in the session a change started, and an edit made
+        // in it after.
+        let ran = spawner.room_run(&run("j", &["true"]));
+        assert_eq!(ran, Ok(stood_in(1, "j")));
+        let edit = RoomChange::Edit {
+            path: String::from("/workspace/notes/a.md"),
+            old: b"TODO".to_vec(),
+            new: b"DONE".to_vec(),
+            all: false,
+        };
+        assert_eq!(
+            spawner.room_change(&edit),
+            Ok(RoomChanged::Edited(Edited {
+                replaced: 1,
+                line: 1,
+                size: 4
+            }))
+        );
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        drop((asked, spawner));
+        served.join().unwrap();
+    }
+
+    /// A change that may not be asked for is refused by whoever asks,
+    /// before the spawner is asked anything; and a change is written to
+    /// the spawner as it is here, with no field it doesn't name.
+    #[test]
+    fn a_change_that_may_not_be_asked_for_never_reaches_the_spawner() {
+        // Shut, and not only dropped: another test's forked child may hold
+        // a copy of the far end for a moment, and it must be seen gone now.
+        let (alone, closed) = UnixStream::pair().unwrap();
+        closed.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(closed);
+        let nobody = Spawner::over(alone);
+        let write = |path: &str, bytes: &[u8]| RoomChange::Write {
+            path: path.to_owned(),
+            bytes: bytes.to_vec(),
+            replace: false,
+        };
+        let edit = |old: &str, new: &str| RoomChange::Edit {
+            path: String::from("/workspace/a"),
+            old: old.as_bytes().to_vec(),
+            new: new.as_bytes().to_vec(),
+            all: false,
+        };
+        let refused = nobody.room_change(&write("workspace/a", b"x")).unwrap_err();
+        assert!(refused.contains("absolute"), "{refused}");
+        let too_much = vec![0; hatchling_core::room::WRITE_BYTES + 1];
+        let refused = nobody
+            .room_change(&write("/workspace/a", &too_much))
+            .unwrap_err();
+        assert!(refused.contains("32768"), "{refused}");
+        let refused = nobody.room_change(&edit("", "x")).unwrap_err();
+        assert!(refused.contains("replaces 1 to"), "{refused}");
+        let refused = nobody.room_change(&edit("x", "x")).unwrap_err();
+        assert!(refused.contains("the text it replaces"), "{refused}");
+        let unasked = nobody
+            .room_change(&write("/workspace/a", b"x"))
+            .unwrap_err();
+        assert!(!unasked.contains("absolute"), "{unasked}");
+
+        let request = Request::RoomChange {
+            change: write("/workspace/a", b"hi\n"),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            json,
+            r#"{"request":"room-change","change":{"change":"write","path":"/workspace/a","bytes":"aGkK","replace":false}}"#
+        );
+        assert!(
+            serde_json::from_str::<Request>(
+                &json.replace("\"replace\"", "\"mode\":511,\"replace\"")
+            )
+            .is_err(),
+            "a field the write doesn't name was read"
+        );
+        let request = Request::RoomChange {
+            change: edit("hi", "yo"),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            json,
+            r#"{"request":"room-change","change":{"change":"edit","path":"/workspace/a","old":"aGk=","new":"eW8=","all":false}}"#
+        );
+        assert!(
+            serde_json::from_str::<Request>(&json.replace("\"all\"", "\"regex\":true,\"all\""))
+                .is_err(),
+            "a field the edit doesn't name was read"
+        );
+        let reply = Reply::RoomChanged {
+            changed: RoomChanged::Wrote(Wrote {
+                size: 3,
+                replaced: false,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            r#"{"reply":"room-changed","changed":{"wrote":{"size":3,"replaced":false}}}"#
+        );
+        let reply = Reply::RoomChanged {
+            changed: RoomChanged::Edited(Edited {
+                replaced: 2,
+                line: 7,
+                size: 40,
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&reply).unwrap(),
+            r#"{"reply":"room-changed","changed":{"edited":{"replaced":2,"line":7,"size":40}}}"#
+        );
+        // The most a change may carry fits one frame of the spawner's.
+        let most = Request::RoomChange {
+            change: RoomChange::Write {
+                path: format!("/{}", "\u{1}".repeat(hatchling_core::room::PATH_BYTES - 1)),
+                bytes: vec![0xff; hatchling_core::room::WRITE_BYTES],
+                replace: true,
+            },
+        };
+        assert!(hatchling_core::fits_one_frame(&most));
     }
 
     /// A session asks for the disk it holds from inside its own claim on

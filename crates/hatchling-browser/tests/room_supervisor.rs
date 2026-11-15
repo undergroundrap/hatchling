@@ -20,7 +20,10 @@ mod proof {
     use std::time::Duration;
 
     use hatchling_core::framing::{read_frame, write_frame};
-    use hatchling_core::room::{Ask, Captured, End, Ended, JobId, NoPage, NoSearch, Say, Stream};
+    use hatchling_core::room::{
+        Ask, Captured, Edited, End, Ended, JobId, NoEdit, NoPage, NoSearch, NoWrite, Say, Stream,
+        Wrote,
+    };
     use hatchling_sys::{Child, ForkResult, SeccompProfile};
     use rustix::event::{PollFd, PollFlags, poll};
     use rustix::process::{
@@ -180,6 +183,7 @@ mod proof {
         assert!(!kept.join("writer.stdin").exists());
         the_supervisor_hands_back_pages(&peer, &dir);
         the_supervisor_answers_a_search(&peer, &dir);
+        the_supervisor_writes_and_edits_a_file(&peer, &dir);
         drop(peer);
         assert_eq!(supervisor.wait_deadline(Duration::from_secs(4)).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
@@ -311,6 +315,90 @@ mod proof {
             ),
             "{absent:?}"
         );
+    }
+
+    /// The supervisor, under the filter, writes a file and makes an
+    /// exact edit in it: it makes the directory the file is under, writes
+    /// beside the file, gives what it wrote the file's name, keeps the
+    /// mode of a file it replaces, and goes on. Whatever it asks of the
+    /// kernel for that, the filter lets it ask: a supervisor the filter
+    /// ended would answer nothing more.
+    fn the_supervisor_writes_and_edits_a_file(peer: &UnixStream, dir: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = dir.join("made/by/the/supervisor.txt");
+        let named = path.to_str().unwrap().to_owned();
+        let nonce = || String::from("change");
+        let write = |bytes: &[u8], replace: bool| {
+            let asked = Ask::Write {
+                nonce: nonce(),
+                path: named.clone(),
+                bytes: bytes.to_vec(),
+                replace,
+            };
+            ask(peer, &asked)
+        };
+        let edit = |old: &str, new: &str, all: bool| {
+            let asked = Ask::Edit {
+                nonce: nonce(),
+                path: named.clone(),
+                old: old.as_bytes().to_vec(),
+                new: new.as_bytes().to_vec(),
+                all,
+            };
+            ask(peer, &asked)
+        };
+        let written = |size: u64, replaced: bool| Say::Wrote {
+            nonce: nonce(),
+            wrote: Wrote { size, replaced },
+        };
+        let changed = |replaced: u32, line: u64, size: u64| Say::Edited {
+            nonce: nonce(),
+            edited: Edited {
+                replaced,
+                line,
+                size,
+            },
+        };
+        assert_eq!(write(b"one\ntwo\none\n", false), written(12, false));
+        assert_eq!(std::fs::read(&path).unwrap(), b"one\ntwo\none\n");
+        let there = Say::NoWrite {
+            nonce: nonce(),
+            why: NoWrite::Exists,
+        };
+        assert_eq!(write(b"again\n", false), there);
+        let twice = Say::NoEdit {
+            nonce: nonce(),
+            why: NoEdit::Ambiguous {
+                places: 2,
+                lines: vec![1, 3],
+            },
+        };
+        assert_eq!(edit("one", "1", false), twice);
+        assert_eq!(edit("two", "2", false), changed(1, 2, 10));
+        assert_eq!(edit("one", "1", true), changed(2, 1, 6));
+        assert_eq!(std::fs::read(&path).unwrap(), b"1\n2\n1\n");
+        // A file that is replaced keeps its mode.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert_eq!(write(b"all new\n", true), written(8, true));
+        assert_eq!(std::fs::read(&path).unwrap(), b"all new\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o750);
+        // Nothing is left beside it, and it reads back as a page.
+        let beside: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(beside, ["supervisor.txt"]);
+        let asked = Ask::Page {
+            nonce: String::from("page-made"),
+            path: named.clone(),
+            from: 1,
+            lines: 5,
+        };
+        let Say::Page { page, .. } = ask(peer, &asked) else {
+            unreachable!("what was written isn't a page");
+        };
+        assert_eq!(page.bytes, b"all new\n");
     }
 
     fn the_supervisor_ends_on_what_it_cannot_read() {
