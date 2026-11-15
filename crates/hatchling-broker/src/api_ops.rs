@@ -265,11 +265,11 @@ impl<'a> Ops<'a> {
                 }
                 self.send(chat_id, text, replies)
             }
-            UiAction::NewConversation { chat_id } => {
+            UiAction::NewConversation { chat_id, idea } => {
                 if !owns {
                     return refused(ActionRefusal::NotGranted);
                 }
-                self.new_conversation(chat_id)
+                self.new_conversation(chat_id, idea.as_deref())
             }
             UiAction::InvokeSkill { op } => {
                 if !owns {
@@ -770,8 +770,11 @@ impl<'a> Ops<'a> {
 impl Ops<'_> {
     /// Starts a new conversation on the local channel (WO-026): the next
     /// run is given nothing said before it. Every app is told, in
-    /// Hatchling's words, where the new one starts.
-    fn new_conversation(&self, chat_id: &str) -> (UiActionResult, ApiOutcome) {
+    /// Hatchling's words, where the new one starts. When the owner
+    /// started it for `idea`, one on their Ideas page that they started,
+    /// the conversation is kept as that idea's; for any other id it is a
+    /// new conversation like any.
+    fn new_conversation(&self, chat_id: &str, idea: Option<&str>) -> (UiActionResult, ApiOutcome) {
         let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
         if chat_id != LOCAL_CHAT {
             return refused(ActionRefusal::BadRequest);
@@ -782,16 +785,24 @@ impl Ops<'_> {
         let Ok(message_id) = crate::approval::random_hex("msg-") else {
             return refused(ActionRefusal::Unavailable);
         };
+        // Only an idea the owner started has a conversation of its own.
+        let idea = idea
+            .filter(|idea| crate::suggestions::is_started(self.config, idea))
+            .map(str::to_owned);
+        let start = || match idea {
+            Some(idea) => hub.new_conversation_for(idea),
+            None => hub.new_conversation(),
+        };
         // What was kept is removed before the hub moves on, so a new
         // conversation the owner is told started outlives a restart.
         match ConversationStore::of(self.config, self.key) {
             Some(store) => {
-                if let Err(error) = store.start_new(|| hub.new_conversation()) {
+                if let Err(error) = store.start_new(start) {
                     tracing::error!(%error, "a new conversation couldn't start");
                     return refused(ActionRefusal::Unavailable);
                 }
             }
-            None => hub.new_conversation(),
+            None => start(),
         }
         self.bus.push(
             Timestamp::now().to_string(),
@@ -3097,6 +3108,7 @@ mod tests {
         let mut replies = Replies::default();
         let new = |chat: &str| UiAction::NewConversation {
             chat_id: chat.to_owned(),
+            idea: None,
         };
         let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
         // A caller holding less than the owner's grants can't.
@@ -3139,6 +3151,49 @@ mod tests {
         );
     }
 
+    /// v29: a new conversation the owner starts for an idea they started
+    /// is kept as that idea's, with a store or without. For an idea that
+    /// isn't started, or isn't on the page, it starts all the same, as a
+    /// conversation for nothing.
+    #[test]
+    fn a_new_conversation_is_kept_as_the_started_idea_it_is_for() {
+        let dir = scratch("api-idea-conversation");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = Vec::new();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        let owner = caller(&[local_send()]);
+        let start = |config: &Config, idea: Option<&str>| {
+            let ops = Ops::new(config, &key, &skills, Some(&hub), Arc::clone(&bus));
+            let new = UiAction::NewConversation {
+                chat_id: String::from(LOCAL_CHAT),
+                idea: idea.map(str::to_owned),
+            };
+            let mut replies = Replies::default();
+            assert_eq!(
+                ops.handle(&owner, &new, &mut replies).1,
+                ApiOutcome::Served,
+                "{idea:?}"
+            );
+            (hub.conversation(), hub.started_for(hub.conversation()))
+        };
+        let started = crate::suggestions::tests::started(&dir.0, "A run plan");
+        let waiting = crate::suggestions::tests::waiting(&dir.0, "A reading list");
+        assert_eq!(start(&config, Some(&waiting)), (1, None), "not started");
+        assert_eq!(
+            start(&config, Some("idea-none")),
+            (2, None),
+            "not on the page"
+        );
+        assert_eq!(start(&config, Some(&started)), (3, Some(started.clone())));
+        assert_eq!(start(&config, None), (4, None));
+        config.scheduler.conversation = dir.0.join("conversation");
+        assert_eq!(start(&config, Some(&started)), (5, Some(started.clone())));
+        assert_eq!(start(&config, Some(&waiting)), (6, None));
+    }
+
     /// WO-026: with a store, what was kept is removed before the hub moves
     /// on; one that can't be removed starts nothing, and the owner is told.
     #[test]
@@ -3154,6 +3209,7 @@ mod tests {
         let mut replies = Replies::default();
         let new = UiAction::NewConversation {
             chat_id: String::from(LOCAL_CHAT),
+            idea: None,
         };
         let owner = caller(&[local_send()]);
         let store = ConversationStore::of(&config, &key).unwrap();

@@ -390,6 +390,65 @@ fn the_budget_holds_against_a_local_endpoint() {
     );
 }
 
+/// The binary says by its exit status whether its steps ran out as it
+/// answered: a status of its own then, and 0 for an answer with a step
+/// to spare. Either way the answer is on its standard output.
+#[test]
+fn the_binary_says_by_its_status_whether_its_steps_ran_out_as_it_answered() {
+    let fetch = || {
+        tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        )
+    };
+    let run = |name: &str, steps: &str, said: &str| {
+        let server = LocalServer::start(vec![probe_reply(), fetch(), text_reply(said)]);
+        let broker = local_broker(name, server.port);
+        let uid = rustix::process::getuid().as_raw().to_string();
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_hatchling-agent"))
+            .args(["run", "count to two"])
+            .env("HATCHLING_CELL_ID", "cell-local")
+            .env("HATCHLING_BROKER_SOCKET", &broker.socket_path)
+            .env("HATCHLING_BROKER_UID", &uid)
+            .env("HATCHLING_LOG_LEVEL", "error")
+            .env(
+                "HATCHLING_MODEL_ENDPOINT",
+                format!("http://localhost:{}/v1", server.port),
+            )
+            .env("HATCHLING_MODEL_NAME", "local-model")
+            .env("HATCHLING_MODEL_CONTEXT_WINDOW", "32768")
+            .env("HATCHLING_MODEL_MAX_STEPS", steps)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        // A run that hangs is a failure, not a slow test.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let output = child.wait_with_output().unwrap();
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let spent = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS);
+    let (status, answer, errors) = run("local-status-spent", "2", "this far");
+    assert_eq!(
+        (status, answer.as_str()),
+        (Some(spent), "this far"),
+        "{errors}"
+    );
+    let (status, answer, errors) = run("local-status-spare", "3", "all done");
+    assert_eq!((status, answer.as_str()), (Some(0), "all done"), "{errors}");
+}
+
 #[test]
 fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
     // Asked as often as a stray reply is, it answers in text every time.

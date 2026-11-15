@@ -1,10 +1,13 @@
 // The owner's Ideas page, as the broker keeps it: what the agent suggested,
 // every word its own, read when the connection opens, whenever a scheduled run
-// ends, and whenever any run, a chat's among them, has suggested an idea.
+// ends, whenever any run, a chat's among them, has suggested an idea, and
+// whenever the owner opens the page.
 // The owner starts one (the page then fills their chat box with it), sets it
 // aside, or brings it back. One that waited two weeks, or whose goal was closed,
 // is kept with why: those are the broker's findings, shown in the app's words,
-// among the ideas set aside, where Restore is. "Suggest ideas" is a one-off run for the page, a few
+// among the ideas set aside, where Restore is. One whose conversation was
+// answered stays among those started, and says so: the broker knows an answer
+// was shown, not that the idea was carried out. "Suggest ideas" is a one-off run for the page, a few
 // seconds out: it may reach the model, read their goals and recall their
 // memory, and suggest; nothing else.
 import type { CommandResult, IconName, Idea, IdeaDomain } from '../../protocol/models.js';
@@ -28,11 +31,12 @@ const FAILED = 'Hatchling couldn’t read or change the Ideas page. `hatchling-b
 const GONE = 'This idea is gone.';
 const STILL_GONE = 'Its goal is still closed, so it stays here.';
 /** Each state the broker keeps an idea in, as the page shows it: one the broker retired is among those set aside. */
-const STATES: Readonly<Record<Suggestion['state'], Idea['state']>> = { suggested: 'suggested', started: 'activated', dismissed: 'dismissed', stale: 'dismissed', source_gone: 'dismissed' };
-/** Why an idea left For you without the owner setting it aside. */
-const RETIRED: Readonly<Record<'stale' | 'source_gone', string>> = {
+const STATES: Readonly<Record<Suggestion['state'], Idea['state']>> = { suggested: 'suggested', started: 'activated', answered: 'activated', dismissed: 'dismissed', stale: 'dismissed', source_gone: 'dismissed' };
+/** What the broker found of an idea, said under it: why it left For you without the owner setting it aside, or that its conversation was answered. */
+const FOUND: Readonly<Partial<Record<Suggestion['state'], string>>> = {
     stale: 'It waited two weeks without being started. Restore it if you still want it.',
     source_gone: 'The goal it came from is closed or gone.',
+    answered: 'Hatchling answered in the conversation you started for it.',
 };
 const SUGGESTING = 'Thinking of ideas for you. They appear here when they’re ready, in a minute or two.';
 /** Each area: the page's section, and its picture; in the page's order. */
@@ -70,7 +74,7 @@ export function ideaOf(suggestion: Suggestion): Idea {
         signal: `${from}${SIGNAL}`,
         items: [],
         state: STATES[suggestion.state],
-        outcome: suggestion.state === 'stale' || suggestion.state === 'source_gone' ? RETIRED[suggestion.state] : '',
+        outcome: FOUND[suggestion.state] ?? '',
         artifactId: null,
     };
 }
@@ -133,6 +137,11 @@ export class LiveIdeas implements IdeasPort {
     /** A run's record: one that suggested an idea put it on the page, a chat's run too. */
     observeRun(event: ActivityEvent): void {
         if (event.event === 'run_summary' && event.tools.some(use => use.tool === 'idea_suggest' && use.done > 0))
+            this.#again();
+    }
+    /** The owner opened the page: read it again when there is a connection to read it over. */
+    opened(): void {
+        if (this.#ready)
             this.#again();
     }
     /** Start, set aside or bring back the idea `id`. */

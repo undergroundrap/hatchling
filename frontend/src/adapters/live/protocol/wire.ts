@@ -3935,6 +3935,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "answered",
+                "type": "string"
+            },
+            {
                 "const": "stale",
                 "type": "string"
             },
@@ -4137,6 +4141,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "chat_id": {
                         "type": "string"
+                    },
+                    "idea": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
                     }
                 },
                 "required": [

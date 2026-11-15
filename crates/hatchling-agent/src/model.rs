@@ -296,6 +296,26 @@ pub fn scheduled_task(task: &str) -> String {
     )
 }
 
+/// A run's final answer, and whether its steps ran out as it gave it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunAnswer {
+    /// The answer, as the caller prints it.
+    pub answer: String,
+    /// Whether the run's steps ran out as it answered
+    /// ([`hatchling_loop::LoopResult::out_of_steps`]). Never so for a
+    /// subagent: its parent reads its status as done or failed.
+    pub out_of_steps: bool,
+}
+
+impl From<LoopResult> for RunAnswer {
+    fn from(result: LoopResult) -> Self {
+        Self {
+            answer: result.answer,
+            out_of_steps: result.out_of_steps,
+        }
+    }
+}
+
 /// Runs the `run` subcommand's full flow as library code.
 ///
 /// The binary stays thin: this joins the task arguments, loads the
@@ -311,7 +331,7 @@ pub fn scheduled_task(task: &str) -> String {
 /// [`Error::MissingConfig`] for absent model configuration,
 /// [`Error::InvalidConfig`] for an unusable endpoint or model
 /// name, and propagates mint and loop failures.
-pub fn run_command(task_args: &[String]) -> Result<String, Error> {
+pub fn run_command(task_args: &[String]) -> Result<RunAnswer, Error> {
     let task = task_args.join(" ");
     if task.trim().is_empty() {
         return Err(Error::Usage(String::from(
@@ -360,9 +380,12 @@ pub fn run_command(task_args: &[String]) -> Result<String, Error> {
     // which answers the user.
     let outcome = cell.run_task(prompt, task, provider, max_steps);
     if config_subagent {
-        return subagent_report(outcome);
+        return subagent_report(outcome).map(|answer| RunAnswer {
+            answer,
+            out_of_steps: false,
+        });
     }
-    Ok(outcome?.answer)
+    Ok(outcome?.into())
 }
 
 /// The prompt a `run` speaks with: the chat prompt when the broker says
@@ -539,6 +562,7 @@ mod tests {
             answer: String::from("a"),
             history: Vec::new(),
             steps: 2,
+            out_of_steps: false,
         }))
         .unwrap();
         let done_wire = r#"{"status":"done","verdict":"ok","answer":"a","steps":2}"#;
@@ -551,5 +575,25 @@ mod tests {
             matches!(&other, Error::LoopFailed(reason) if reason == "x"),
             "{other:?}"
         );
+    }
+
+    /// A run's answer keeps what the loop said of its steps.
+    #[test]
+    fn a_runs_answer_says_whether_its_steps_ran_out() {
+        for out_of_steps in [true, false] {
+            let answer = RunAnswer::from(LoopResult {
+                answer: String::from("this far"),
+                history: Vec::new(),
+                steps: 3,
+                out_of_steps,
+            });
+            assert_eq!(
+                answer,
+                RunAnswer {
+                    answer: String::from("this far"),
+                    out_of_steps,
+                }
+            );
+        }
     }
 }

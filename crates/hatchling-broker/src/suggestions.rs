@@ -28,6 +28,13 @@
 //! way to retire, set aside or remove a suggestion. The owner brings a
 //! stale one back; one whose goal is closed stays as it is.
 //!
+//! A suggestion the owner started is answered when the run in the
+//! conversation they started for it answers them, with steps to spare
+//! ([`conversation_answered`]). Which conversation that is, the owner's
+//! app says as it starts one; the hub keeps it in memory alone, so
+//! after a restart a started suggestion stays started. The broker
+//! knows an answer was shown, not that the idea was carried out.
+//!
 //! The page is listed as it is kept, the newest first. Every idea kept
 //! now has a source and goes on top, so those with a source come before
 //! any kept before sources were, with nothing to sort.
@@ -513,6 +520,59 @@ pub(crate) fn handle_at(
     }
 }
 
+/// Whether the owner has started the suggestion `id` and it stands as
+/// they left it: what a new conversation may be started for.
+#[must_use]
+pub(crate) fn is_started(config: &Config, id: &str) -> bool {
+    if !config.scheduler.enabled() {
+        return false;
+    }
+    let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
+    read(&config.scheduler.ideas_log()).is_ok_and(|page| {
+        page.iter()
+            .any(|kept| kept.suggestion_id == id && kept.state == SuggestionState::Started)
+    })
+}
+
+/// A run answered the owner in the local chat's `conversation`, was
+/// shown, and had steps to spare: the suggestion that conversation was
+/// started for, if it was for one and the owner left it started, is
+/// answered. Says whether one was.
+pub(crate) fn conversation_answered(
+    config: &Config,
+    hub: &hatchling_channel::LocalHub,
+    conversation: u64,
+) -> bool {
+    let Some(id) = hub.started_for(conversation) else {
+        return false;
+    };
+    if !config.scheduler.enabled() {
+        return false;
+    }
+    let path = config.scheduler.ideas_log();
+    let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
+    let Ok(mut page) = read(&path) else {
+        return false;
+    };
+    let Some(kept) = page
+        .iter_mut()
+        .find(|kept| kept.suggestion_id == id && kept.state == SuggestionState::Started)
+    else {
+        return false;
+    };
+    kept.state = SuggestionState::Answered;
+    match write(&path, &page) {
+        Ok(()) => {
+            tracing::info!("an idea the owner started was answered");
+            true
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the Ideas page couldn't be written");
+            false
+        }
+    }
+}
+
 /// Whether `kept`'s source is still gone, with the owner's open goals
 /// as `open`: it is unless its goal is among them. A suggestion with no
 /// source has none to be gone.
@@ -558,14 +618,18 @@ fn write(path: &Path, page: &[Suggestion]) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "crate-visible on purpose: the chat's and the API's tests put ideas on a page"
+)]
+pub(crate) mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::*;
     use crate::config::FollowupScope;
     use hatchling_core::SuggestionArea;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
+    pub(crate) fn scratch(name: &str) -> std::path::PathBuf {
         let dir =
             std::env::temp_dir().join(format!("hatchling-ideas-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -577,7 +641,7 @@ mod tests {
     /// delivering to `channel`, or for no run. A run's own config doesn't
     /// name the store, as [`crate::run_launcher::scoped_config`] makes it:
     /// only its follow-up scope does.
-    fn config(dir: &Path, channel: Option<&str>) -> Config {
+    pub(crate) fn config(dir: &Path, channel: Option<&str>) -> Config {
         let mut config =
             crate::api_auth::tests::owner_config(Some(&dir.join("schedules").to_string_lossy()));
         config.scheduler.followup = channel.map(|channel| FollowupScope {
@@ -672,6 +736,25 @@ mod tests {
         } else {
             Vec::new()
         }
+    }
+
+    /// An idea put on the page kept under `dir`, where it waits: its id.
+    pub(crate) fn waiting(dir: &Path, title: &str) -> String {
+        let chat = config(dir, Some("local"));
+        assert_eq!(suggest(&chat, &idea(title)), SuggestResult::Suggested);
+        listed(&chat)
+            .iter()
+            .find(|kept| kept.title == title)
+            .map(|kept| kept.suggestion_id.clone())
+            .unwrap_or_default()
+    }
+
+    /// An idea on the page kept under `dir` that the owner started: its
+    /// id.
+    pub(crate) fn started(dir: &Path, title: &str) -> String {
+        let id = waiting(dir, title);
+        let _ = handle(&config(dir, None), &SuggestionOp::Start { id: id.clone() });
+        id
     }
 
     #[test]
@@ -844,6 +927,127 @@ mod tests {
             ),
             SuggestionResult::NotFound
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v29: a suggestion the owner started is answered when the
+    /// conversation they started for it is, while they leave it
+    /// started, and only a started one may have a conversation.
+    #[test]
+    fn a_started_suggestion_is_answered_with_the_conversation_started_for_it() {
+        let dir = scratch("answered");
+        let chat = config(&dir, Some("local"));
+        let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let plan = waiting(&dir, "A run plan");
+        let list = waiting(&dir, "A reading list");
+        let trip = waiting(&dir, "A trip");
+        let state = |id: &str| {
+            listed(&chat)
+                .iter()
+                .find(|kept| kept.suggestion_id == id)
+                .map(|kept| kept.state)
+        };
+        let act = |op: SuggestionOp| {
+            let _ = handle(&chat, &op);
+        };
+        // Only a started suggestion may have a conversation of its own.
+        assert!(!is_started(&chat, &plan), "it waits");
+        assert!(!is_started(&chat, "idea-none"), "not on the page");
+        act(SuggestionOp::Start { id: plan.clone() });
+        assert!(is_started(&chat, &plan));
+        assert!(!is_started(&chat, &list), "one started isn't another");
+        // No conversation was started for it yet.
+        assert!(!conversation_answered(&chat, &hub, 0));
+        // Another the owner started, later, isn't the one this
+        // conversation is for.
+        act(SuggestionOp::Start { id: trip.clone() });
+        hub.new_conversation_for(plan.clone());
+        assert!(
+            !conversation_answered(&chat, &hub, 0),
+            "the conversation before it"
+        );
+        assert_eq!(state(&plan), Some(SuggestionState::Started));
+        assert!(conversation_answered(&chat, &hub, 1));
+        assert_eq!(
+            (state(&plan), state(&list)),
+            (
+                Some(SuggestionState::Answered),
+                Some(SuggestionState::Suggested)
+            )
+        );
+        assert_eq!(state(&trip), Some(SuggestionState::Started));
+        assert!(!is_started(&chat, &plan), "answered, it isn't started");
+        assert!(!conversation_answered(&chat, &hub, 1), "answered once");
+        // One the owner didn't start isn't answered, nor one they set
+        // aside while its run worked.
+        hub.new_conversation_for(list.clone());
+        assert!(!conversation_answered(&chat, &hub, 2));
+        assert_eq!(state(&list), Some(SuggestionState::Suggested));
+        act(SuggestionOp::Start { id: list.clone() });
+        act(SuggestionOp::Dismiss { id: list.clone() });
+        assert!(!conversation_answered(&chat, &hub, 2));
+        assert_eq!(state(&list), Some(SuggestionState::Dismissed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// v29: an answered suggestion is still the owner's to start again,
+    /// set aside or bring back. And where there is no page to ask, or
+    /// one that can't be read, nothing is started and nothing answered.
+    #[test]
+    fn an_answered_suggestion_is_the_owners_and_no_page_answers_nothing() {
+        let dir = scratch("answered-owner");
+        let chat = config(&dir, Some("local"));
+        let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let plan = started(&dir, "A run plan");
+        let state = |id: &str| {
+            listed(&chat)
+                .iter()
+                .find(|kept| kept.suggestion_id == id)
+                .map(|kept| kept.state)
+        };
+        let act = |op: SuggestionOp| {
+            let _ = handle(&chat, &op);
+        };
+        hub.new_conversation_for(plan.clone());
+        assert!(conversation_answered(&chat, &hub, 1));
+        assert_eq!(state(&plan), Some(SuggestionState::Answered));
+        for (op, then) in [
+            (
+                SuggestionOp::Start { id: plan.clone() },
+                SuggestionState::Started,
+            ),
+            (
+                SuggestionOp::Dismiss { id: plan.clone() },
+                SuggestionState::Dismissed,
+            ),
+            (
+                SuggestionOp::Restore { id: plan.clone() },
+                SuggestionState::Suggested,
+            ),
+            (
+                SuggestionOp::Start { id: plan.clone() },
+                SuggestionState::Started,
+            ),
+        ] {
+            act(op);
+            assert_eq!(state(&plan), Some(then));
+        }
+        hub.new_conversation_for(plan.clone());
+        // With scheduled work off there is no page to ask.
+        let mut off = config(&dir, Some("local"));
+        off.scheduler.root = std::path::PathBuf::new();
+        assert!(!is_started(&off, &plan));
+        assert!(!conversation_answered(&off, &hub, 2));
+        // A page that can't be read answers nothing, and is left alone.
+        let path = chat.scheduler.ideas_log();
+        let kept = std::fs::read(&path).unwrap();
+        std::fs::write(&path, "not a page").unwrap();
+        assert!(!is_started(&chat, &plan));
+        assert!(!conversation_answered(&chat, &hub, 2));
+        assert_eq!(std::fs::read(&path).unwrap(), b"not a page");
+        std::fs::write(&path, kept).unwrap();
+        assert!(conversation_answered(&chat, &hub, 2));
+        assert_eq!(state(&plan), Some(SuggestionState::Answered));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

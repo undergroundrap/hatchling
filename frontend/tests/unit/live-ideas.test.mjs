@@ -83,6 +83,9 @@ test('an idea says the goal it came from, and why it left For you when it did', 
     assert.deepEqual([gone.state, gone.outcome], ['dismissed', 'The goal it came from is closed or gone.']);
     for (const [state, shown] of [['suggested', 'suggested'], ['started', 'activated'], ['dismissed', 'dismissed']])
         assert.deepEqual([ideaOf(kept('i', 'career', { state })).state, ideaOf(kept('i', 'career', { state })).outcome], [shown, ''], state);
+    // One whose conversation was answered is started still, and says so: the broker knows an answer was shown, not that the idea was carried out.
+    const told = ideaOf(kept('i', 'career', { state: 'answered' }));
+    assert.deepEqual([told.state, told.outcome], ['activated', 'Hatchling answered in the conversation you started for it.']);
 });
 test('the page is read each time the connection opens, and is unread until then', async () => {
     const { client, live, schedules, changes } = surface([listed([kept('idea-1', 'health')]), listed([])]);
@@ -104,6 +107,24 @@ test('the page is read each time the connection opens, and is unread until then'
     await flush();
     assert.equal(client.sent.length, 2, 'again after it reopens');
     assert.deepEqual(live.ideas(), []);
+});
+test('opening the page reads it again, while there is a connection to read it over', async () => {
+    const { client, live } = surface([listed([kept('idea-1', 'health', { state: 'started' })]), listed([kept('idea-1', 'health', { state: 'answered' })])]);
+    live.opened();
+    await flush();
+    assert.deepEqual(client.sent, [], 'not before the connection opens: its opening reads the page');
+    client.set('ready');
+    await flush();
+    assert.deepEqual([live.ideas()[0].state, live.ideas()[0].outcome], ['activated', '']);
+    // Hatchling answered in the idea's conversation meanwhile, and the app wasn't told: opening the page finds it.
+    live.opened();
+    await flush();
+    assert.equal(client.sent.length, 2);
+    assert.deepEqual([live.ideas()[0].state, live.ideas()[0].outcome], ['activated', 'Hatchling answered in the conversation you started for it.']);
+    client.set('offline');
+    live.opened();
+    await flush();
+    assert.equal(client.sent.length, 2, 'nor once it has closed');
 });
 test('a run that ends reads the page again; one that only started does not', async () => {
     const { client, live } = surface([listed([]), listed([])]);

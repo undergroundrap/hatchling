@@ -52,4 +52,4 @@ pub use hatchling_core::{
     VaultAction, VaultOp, VaultResult, peer_credentials,
 };
 pub use hatchling_loop::PromptKind;
-pub use model::{EgressTransport, MODEL_SURROGATE_TTL_SECS, run_command};
+pub use model::{EgressTransport, MODEL_SURROGATE_TTL_SECS, RunAnswer, run_command};

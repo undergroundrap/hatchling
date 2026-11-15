@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v28 (current). This doc is the human-readable reference
+**Status:** v29 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -555,6 +555,36 @@ reads a kept idea's state.
   idea whose source is gone is answered as it stands while its goal is
   closed, and comes back once the goal is open again.
 - The agent has no op that retires, sets aside or removes an idea.
+
+## v29 — A started idea says when it was answered
+
+No session op changes. The version is raised for the owner's app, which
+names an idea as it starts a conversation and reads a kept idea's state.
+
+- **`UiAction::NewConversation`** (the app's protocol) gains an optional
+  `idea`: the id of the idea on the owner's Ideas page the conversation
+  is for. The broker keeps the conversation as that idea's only when the
+  idea is on the page and `started`; for any other id the conversation
+  starts all the same, for nothing. Which conversation is an idea's is
+  kept in memory alone, until the next conversation starts: after a
+  broker restart no conversation is any idea's.
+- **`SuggestionState`** gains `answered`, the broker's finding and never
+  the agent's: a run answered the owner in the conversation they started
+  for the idea. It is found when the answer was shown to them, in that
+  conversation while it was still the open one, by a run that had steps
+  to spare, and the idea was still `started`. The broker knows an answer
+  was shown, not that the idea was carried out, and not that the message
+  answered was the idea's: any answer in the idea's conversation marks
+  it.
+- **An agent's exit status** says when its steps ran out as it answered:
+  `80` (`run_failure::ANSWERED_OUT_OF_STEPS`), when it answered on its
+  last step, told it was the last, or with an answer held back until no
+  step was left. Its answer is on its standard output as any answer is,
+  and the broker delivers it as it delivers any. A subagent never exits
+  with it. It is the agent's word, read from the kernel like every exit
+  status: the broker uses it only to leave an idea `started`.
+- `Start`, `Dismiss` and `Restore` act on an answered idea as on any
+  other. The agent has no op that marks an idea answered.
 
 ## Device handshake
 

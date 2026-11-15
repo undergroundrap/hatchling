@@ -1150,6 +1150,12 @@ test('a new conversation: the typed new_conversation action on the local chat, n
     assert.deepEqual(transport.last().action, { action: 'new_conversation', chat_id: 'local' });
     answer(transport, transport.last().request_id, { result: 'conversation_started', chat_id: 'local' });
     assert.deepEqual(await started, { ok: true, message: 'New conversation started.' });
+    // Started for an idea on the Ideas page, it names the idea: the broker then knows which conversation its answer comes in.
+    const forIdea = adapter.conversations.start('main', 'idea-1');
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'new_conversation', chat_id: 'local', idea: 'idea-1' });
+    answer(transport, transport.last().request_id, { result: 'conversation_started', chat_id: 'local' });
+    assert.deepEqual(await forIdea, { ok: true, message: 'New conversation started.' });
     for (const [result, words] of [
         [{ result: 'refused', reason: 'not_connected' }, /not connected to its broker, so the agent still has the last conversation/],
         [{ result: 'refused', reason: 'bad_request' }, /no such conversation/],

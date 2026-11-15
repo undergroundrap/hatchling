@@ -19,4 +19,6 @@ export interface IdeasPort {
     current(): IdeasState;
     /** Ask for ideas now, from what Hatchling can read about the owner. */
     suggestNow(): Promise<CommandResult>;
+    /** The owner opened the page: read it again, since Hatchling changes it without the app being told. */
+    opened(): void;
 }

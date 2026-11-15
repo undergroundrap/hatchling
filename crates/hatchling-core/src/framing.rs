@@ -15,6 +15,11 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v29 has the owner's app say which idea a new conversation is for
+/// (`UiAction::NewConversation`'s `idea`), and adds the state of an idea
+/// whose conversation was answered (`SuggestionState::Answered`). An
+/// agent that answered as its steps ran out exits with a status of its
+/// own (`run_failure::ANSWERED_OUT_OF_STEPS`). No session op changes.
 /// v28 adds two states a kept suggestion may be in, told to the owner's
 /// app (`SuggestionState::Stale`, `SuggestionState::SourceGone`): one
 /// that waited too long, and one whose goal is closed or gone. No
@@ -82,7 +87,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 28;
+pub const PROTOCOL_VERSION: u16 = 29;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

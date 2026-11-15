@@ -229,7 +229,10 @@ mod tests {
                 ApiRequest::SendMessage,
             ),
             (
-                action(UiAction::NewConversation { chat_id: id() }),
+                action(UiAction::NewConversation {
+                    chat_id: id(),
+                    idea: None,
+                }),
                 ApiRequest::NewConversation,
             ),
             (
