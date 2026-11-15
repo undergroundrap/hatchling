@@ -101,6 +101,30 @@ test('a run that ends reads the page again; one that only started does not', asy
     await flush();
     assert.equal(client.sent.length, 2);
 });
+test('a run that suggested an idea reads the page again, in a chat or not; a burst of them reads it once more; any other record does not', async () => {
+    const { client, live } = surface([listed([kept('idea-1', 'health')]), listed([kept('idea-1', 'health'), kept('idea-2', 'career')]), listed([])]);
+    const used = (tool, done) => ({ tool, done, asked: 0, refused: 0, failed: 0 });
+    const summary = (chat, tools) => ({ event: 'run_summary', event_id: 'e', ts: 't', run_id: 'r', cell_id: 'c', chat, tools, model_calls: 2, model_calls_refused: 0, peak_input_tokens: 1, output_tokens: 1 });
+    // A run that used something else, one whose idea wasn't kept, and a record that is no summary.
+    live.observeRun(summary(true, [used('room', 3)]));
+    live.observeRun(summary(true, [{ ...used('idea_suggest', 0), refused: 1 }]));
+    live.observeRun({ event: 'tool_call', event_id: 'e', ts: 't', run_id: 'r', tool: 'idea_suggest' });
+    await flush();
+    assert.deepEqual(client.sent, []);
+    // A chat's run that suggested four, then two more records before the page was read.
+    live.observeRun(summary(true, [used('memory_recall', 2), used('idea_suggest', 4)]));
+    live.observeRun(summary(false, [used('idea_suggest', 1)]));
+    live.observeRun(summary(true, [used('idea_suggest', 1)]));
+    assert.equal(client.sent.length, 1, 'one read at a time');
+    await flush();
+    assert.deepEqual(client.sent, [{ action: 'manage_suggestions', op: { op: 'list' } }, { action: 'manage_suggestions', op: { op: 'list' } }], 'once for the first, once for all that came meanwhile');
+    assert.deepEqual(live.ideas().map(idea => idea.id), ['idea-2', 'idea-1']);
+    // The burst is over: the next one reads again.
+    live.observeRun(summary(true, [used('idea_suggest', 1)]));
+    await flush();
+    assert.equal(client.sent.length, 3);
+    assert.deepEqual(live.ideas(), []);
+});
 test('a read that fails says why, and a later one recovers', async () => {
     const { live } = surface([
         { kind: 'unsent', detail: 'Not connected.' },

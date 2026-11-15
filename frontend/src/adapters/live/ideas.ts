@@ -1,5 +1,6 @@
 // The owner's Ideas page, as the broker keeps it: what the agent suggested,
-// every word its own, read when the connection opens and whenever a run ends.
+// every word its own, read when the connection opens, whenever a scheduled run
+// ends, and whenever any run, a chat's among them, has suggested an idea.
 // The owner starts one (the page then fills their chat box with it), sets it
 // aside, or brings it back. "Suggest ideas" is a one-off run for the page, a few
 // seconds out: it may reach the model, read their goals and recall their
@@ -7,7 +8,7 @@
 import type { CommandResult, IconName, Idea, IdeaDomain } from '../../protocol/models.js';
 import type { IdeasPort, IdeasState } from '../../session/ideas.js';
 import type { LiveClient } from './client.js';
-import type { ScheduleNotice, ScheduleSummary, Suggestion, SuggestionArea, SuggestionOp, SuggestionResult } from './protocol/generated.js';
+import type { ActivityEvent, ScheduleNotice, ScheduleSummary, Suggestion, SuggestionArea, SuggestionOp, SuggestionResult } from './protocol/generated.js';
 import type { FeedSchedules } from './feed.js';
 import { feedGrants, localDateTime } from './feed.js';
 import { browserTimeZone } from './schedules.js';
@@ -76,6 +77,8 @@ export class LiveIdeas implements IdeasPort {
     #failed: string | null = null;
     #read = false;
     #ready = false;
+    #reading = false;
+    #stale = false;
     /** `zone` and `now` are the browser's, unless a test says. */
     constructor(client: LiveClient, schedules: FeedSchedules, changed: () => void, nextId: () => string, zone: () => string = browserTimeZone, now: () => Date = () => new Date()) {
         this.#client = client;
@@ -115,6 +118,11 @@ export class LiveIdeas implements IdeasPort {
         if (notice.outcome === 'completed' || notice.outcome === 'failed')
             void this.refresh();
     }
+    /** A run's record: one that suggested an idea put it on the page, a chat's run too. */
+    observeRun(event: ActivityEvent): void {
+        if (event.event === 'run_summary' && event.tools.some(use => use.tool === 'idea_suggest' && use.done > 0))
+            this.#again();
+    }
     /** Start, set aside or bring back the idea `id`. */
     async act(id: string, action: IdeaAction): Promise<CommandResult> {
         const outcome = await this.#ask({ op: action, id });
@@ -135,6 +143,21 @@ export class LiveIdeas implements IdeasPort {
             return made;
         this.#changed();
         return { ok: true, message: SUGGESTING };
+    }
+    /** Read the page again: now, or once more after the read under way, however many asked meanwhile. */
+    #again(): void {
+        if (this.#reading) {
+            this.#stale = true;
+            return;
+        }
+        this.#reading = true;
+        void this.refresh().then(() => {
+            this.#reading = false;
+            if (this.#stale) {
+                this.#stale = false;
+                this.#again();
+            }
+        });
     }
     #says(outcome: SuggestionResult): string {
         switch (outcome.result) {
