@@ -150,6 +150,19 @@ fn goal_lifecycle_and_tracking_through_the_real_broker() {
     assert!(
         matches!(open.first().map(FeedItem::body), Some(FeedBody::Goal(g)) if g.id.as_str() == id)
     );
+    // What the model reads of it names it by that same id: the id an
+    // idea gives as the goal it comes from.
+    let read = hatchling_loop::Tool::execute(
+        &hatchling_agent::tools::GoalsReadTool::new(stream),
+        serde_json::json!({}),
+    )
+    .unwrap();
+    assert!(
+        matches!(&read, hatchling_loop::ToolOutput::Ok(shown)
+            if shown.pointer("/goals/0/id").and_then(serde_json::Value::as_str) == Some(id.as_str())
+                && shown.pointer("/goals/0/title").and_then(serde_json::Value::as_str) == Some("run a 5k")),
+        "{read:?}"
+    );
 
     assert_eq!(
         goals::update_goal(stream, &id, Some("run a 10k"), None).unwrap(),

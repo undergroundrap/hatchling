@@ -340,7 +340,7 @@ impl Tool for GoalsReadTool<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Read the owner's open goals: what they're working toward, each a title, what reaching it looks like, and the date they set it. The owner sets and closes goals in the app; you can only read them."
+        "Read the owner's open goals: what they're working toward, each its id, a title, what reaching it looks like, and the date they set it. A goal's id is how you name it to another tool. The owner sets and closes goals in the app; you can only read them."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -394,8 +394,10 @@ fn utc_date(secs: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// A goal as the model reads it, from a query's item: its title, detail and
-/// the day it was set (UTC); `None` for an item that isn't a goal.
+/// A goal as the model reads it, from a query's item: its id, title, detail
+/// and the day it was set (UTC); `None` for an item that isn't a goal. The
+/// id is what another tool is given to name the goal: an idea says the goal
+/// it comes from by it.
 fn goal_of(item_json: &str) -> Option<Value> {
     let item: Value = serde_json::from_str(item_json).ok()?;
     let goal = item.get("item")?.get("goal")?;
@@ -404,6 +406,7 @@ fn goal_of(item_json: &str) -> Option<Value> {
         .and_then(Value::as_u64)
         .map(utc_date);
     Some(json!({
+        "id": goal.get("id")?.as_str()?,
         "title": goal.get("title")?.as_str()?,
         "detail": goal.get("detail").and_then(Value::as_str).unwrap_or_default(),
         "set": set,
@@ -4198,12 +4201,12 @@ mod tests {
         .unwrap()
     }
 
-    /// A goal as a query returns it.
+    /// A goal as a query returns it, its id made from its title.
     fn goal_item(title: &str, created: u64) -> String {
         json!({
             "provenance": {"store": "goal", "origin": "user-explicit"},
             "label": "goal (user-explicit)",
-            "item": {"goal": {"id": "g", "title": title, "detail": "under an hour", "created_at_secs": created}},
+            "item": {"goal": {"id": format!("g-{}", title.len()), "title": title, "detail": "under an hour", "created_at_secs": created}},
         })
         .to_string()
     }
@@ -4253,8 +4256,8 @@ mod tests {
         assert_eq!(
             value,
             json!({"goals": [
-                {"title": "Run a 10k", "detail": "under an hour", "set": "2026-11-03"},
-                {"title": "Read twelve books", "detail": "under an hour", "set": "2026-11-03"},
+                {"id": "g-9", "title": "Run a 10k", "detail": "under an hour", "set": "2026-11-03"},
+                {"id": "g-17", "title": "Read twelve books", "detail": "under an hour", "set": "2026-11-03"},
             ], "more": false})
         );
         let asked = broker.join().unwrap();
