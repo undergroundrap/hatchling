@@ -46,7 +46,9 @@
 //!
 //! The page is one file in the broker's directory of the owner's records
 //! (`<scheduler dir>.owner/ideas`), `0600`, rewritten whole through a
-//! sibling `.next` file: the newest [`MAX_KEPT`].
+//! sibling `.next` file: the newest [`MAX_KEPT`]. What became of each
+//! idea, from when it was put on the page, is kept beside it
+//! ([`crate::idea_signals`]), once the page is written.
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -68,6 +70,7 @@ pub use hatchling_core::ui::IDEAS_PAGE;
 
 use crate::Config;
 use crate::config::GoalsAction;
+use crate::idea_signals::Event;
 
 /// How many suggestions the page keeps: the newest.
 pub const MAX_KEPT: usize = 100;
@@ -215,13 +218,13 @@ pub(crate) struct Ground<'a> {
 /// isn't among the owner's `open` goals has lost its source, and one
 /// that has waited more than [`STALE_SECS`] at `now` is stale. With no
 /// `open` goals known (a run can't ask, or they couldn't be read) no
-/// source is judged. Says whether anything changed.
+/// source is judged. Returns what it retired, as it now stands.
 fn retire(
     page: &mut [Suggestion],
     now: hatchling_scheduler::Timestamp,
     open: Option<&BTreeSet<String>>,
-) -> bool {
-    let mut changed = false;
+) -> Vec<Suggestion> {
+    let mut retired = Vec::new();
     for kept in page
         .iter_mut()
         .filter(|kept| kept.state == SuggestionState::Suggested)
@@ -243,9 +246,22 @@ fn retire(
         } else {
             continue;
         }
-        changed = true;
+        retired.push(kept.clone());
     }
-    changed
+    retired
+}
+
+/// Keeps, beside the page at `path`, that each of `retired` was retired
+/// at `now`: stale, or its source gone.
+fn record_retired(path: &Path, retired: &[Suggestion], now: hatchling_scheduler::Timestamp) {
+    for kept in retired {
+        let event = if kept.state == SuggestionState::SourceGone {
+            Event::SourceGone
+        } else {
+            Event::Stale
+        };
+        crate::idea_signals::record(path, kept, event, now);
+    }
 }
 
 /// The ids of the owner's open goals, as their own goals page reads
@@ -404,7 +420,7 @@ fn suggest_from(config: &Config, ground: &Ground<'_>, op: &SuggestOp) -> Suggest
     };
     // What has waited too long no longer waits: a run can't ask after the
     // owner's goals, so no source is judged here.
-    let _ = retire(&mut page, ground.now, None);
+    let retired = retire(&mut page, ground.now, None);
     let waiting = || {
         page.iter()
             .filter(|kept| kept.state == SuggestionState::Suggested)
@@ -419,24 +435,26 @@ fn suggest_from(config: &Config, ground: &Ground<'_>, op: &SuggestOp) -> Suggest
     if page.iter().filter(|kept| kept.run == ground.run).count() >= MAX_PER_RUN {
         return unasked("This run has put three ideas on the page: that is all one run may.");
     }
-    page.insert(
-        0,
-        Suggestion {
-            suggestion_id,
-            title: title.to_owned(),
-            summary: summary.to_owned(),
-            why: why.to_owned(),
-            area: *area,
-            suggested_at: ground.now.to_string(),
-            state: SuggestionState::Suggested,
-            needs: needs.clone(),
-            source: Some(source),
-            run: ground.run.to_owned(),
-        },
-    );
+    let suggested = Suggestion {
+        suggestion_id,
+        title: title.to_owned(),
+        summary: summary.to_owned(),
+        why: why.to_owned(),
+        area: *area,
+        suggested_at: ground.now.to_string(),
+        state: SuggestionState::Suggested,
+        needs: needs.clone(),
+        source: Some(source),
+        run: ground.run.to_owned(),
+    };
+    page.insert(0, suggested.clone());
     trim(&mut page);
     match write(&path, &page) {
-        Ok(()) => SuggestResult::Suggested,
+        Ok(()) => {
+            record_retired(&path, &retired, ground.now);
+            crate::idea_signals::record(&path, &suggested, Event::Suggested, ground.now);
+            SuggestResult::Suggested
+        }
         Err(error) => {
             tracing::warn!(%error, "the Ideas page couldn't be written");
             unasked("Hatchling couldn't keep it; its log says why.")
@@ -486,20 +504,22 @@ pub(crate) fn handle_at(
             return SuggestionResult::Failed;
         }
     };
-    let (id, state) = match op {
+    let (id, state, event) = match op {
         SuggestionOp::List => {
             // A page that can't be written back is still shown as it
             // stands: the next reading finds the same.
-            if retire(&mut page, now, open().as_ref()) {
-                if let Err(error) = write(&path, &page) {
-                    tracing::warn!(%error, "the Ideas page couldn't be written");
+            let retired = retire(&mut page, now, open().as_ref());
+            if !retired.is_empty() {
+                match write(&path, &page) {
+                    Ok(()) => record_retired(&path, &retired, now),
+                    Err(error) => tracing::warn!(%error, "the Ideas page couldn't be written"),
                 }
             }
             return SuggestionResult::Listed { suggestions: page };
         }
-        SuggestionOp::Start { id } => (id, SuggestionState::Started),
-        SuggestionOp::Dismiss { id } => (id, SuggestionState::Dismissed),
-        SuggestionOp::Restore { id } => (id, SuggestionState::Suggested),
+        SuggestionOp::Start { id } => (id, SuggestionState::Started, Event::Fired),
+        SuggestionOp::Dismiss { id } => (id, SuggestionState::Dismissed, Event::Dismissed),
+        SuggestionOp::Restore { id } => (id, SuggestionState::Suggested, Event::Restored),
         // What a chat offers to keep is the hub's: kept through `keep`.
         SuggestionOp::Keep { .. } => return SuggestionResult::NotFound,
     };
@@ -519,7 +539,10 @@ pub(crate) fn handle_at(
     kept.state = state;
     let suggestion = kept.clone();
     match write(&path, &page) {
-        Ok(()) => SuggestionResult::Changed { suggestion },
+        Ok(()) => {
+            crate::idea_signals::record(&path, &suggestion, event, now);
+            SuggestionResult::Changed { suggestion }
+        }
         Err(error) => {
             tracing::warn!(%error, "the Ideas page couldn't be written");
             SuggestionResult::Failed
@@ -568,8 +591,15 @@ pub(crate) fn conversation_answered(
         return false;
     };
     kept.state = SuggestionState::Answered;
+    let answered = kept.clone();
     match write(&path, &page) {
         Ok(()) => {
+            crate::idea_signals::record(
+                &path,
+                &answered,
+                Event::Answered,
+                hatchling_scheduler::Timestamp::now(),
+            );
             tracing::info!("an idea the owner started was answered");
             true
         }
@@ -671,6 +701,7 @@ fn keep_at(
     match write(&path, &page) {
         Ok(()) => {
             hub.withdraw(run);
+            crate::idea_signals::record(&path, &suggestion, Event::Kept, now);
             tracing::info!("the owner kept an unfinished chat for later");
             SuggestionResult::Changed { suggestion }
         }
@@ -2337,6 +2368,106 @@ pub(crate) mod tests {
         chat.goals.root = dir.join("a-file");
         std::fs::write(&chat.goals.root, "").unwrap();
         assert_eq!(open_goals(&chat), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The record kept beside the page at `path`, in order: each event,
+    /// when, and the title the idea has on the page.
+    fn signals(path: &Path) -> Vec<(Event, String, String)> {
+        let page = read(path).unwrap();
+        let title = |id: &str| {
+            page.iter()
+                .find(|kept| kept.suggestion_id == id)
+                .map(|kept| kept.title.clone())
+                .unwrap_or_default()
+        };
+        std::fs::read_to_string(crate::idea_signals::beside(path))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str::<crate::idea_signals::Signal>(line).unwrap())
+            .map(|signal| (signal.event, title(&signal.idea), signal.at))
+            .collect()
+    }
+
+    /// What became of each idea is kept beside the page as it happens,
+    /// once the page is written: put there, kept from a chat, fired, set
+    /// aside, brought back, stale, its source gone, answered. What
+    /// changes nothing, or isn't written, keeps nothing.
+    #[test]
+    fn what_became_of_each_idea_is_kept_beside_the_page() {
+        use crate::idea_signals::Event::{
+            Answered, Dismissed, Fired, Kept, Restored, SourceGone, Stale, Suggested,
+        };
+        let dir = scratch("signals");
+        let chat = config(&dir, Some("local"));
+        let all = everything();
+        let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let path = chat.scheduler.ideas_log();
+        let id = |title: &str| {
+            read(&path)
+                .unwrap()
+                .into_iter()
+                .find(|kept| kept.title == title)
+                .unwrap()
+                .suggestion_id
+        };
+        let act = |op: SuggestionOp, now| handle_at(&chat, &op, now, &|| Some(ids(&["g-open"])));
+        for (run, title) in [("r1", "Plan"), ("r2", "Waits")] {
+            assert_eq!(
+                suggest_at(&chat, run, &all, at(0), &idea(title)),
+                SuggestResult::Suggested
+            );
+        }
+        let refused = suggest_at(&chat, "r3", &all, at(0), &idea("Plan"));
+        assert_ne!(refused, SuggestResult::Suggested, "already on the page");
+        let _ = act(SuggestionOp::Start { id: id("Plan") }, at(1));
+        let _ = act(SuggestionOp::Dismiss { id: id("Plan") }, at(2));
+        let _ = act(SuggestionOp::Restore { id: id("Plan") }, at(3));
+        let missing = act(
+            SuggestionOp::Start {
+                id: String::from("idea-none"),
+            },
+            at(3),
+        );
+        assert_eq!(missing, SuggestionResult::NotFound);
+        // Nothing to retire yet; then "Waits" is stale, and "Plan",
+        // brought back at 3, isn't; then its goal is closed.
+        let _ = act(SuggestionOp::List, at(4));
+        let _ = act(SuggestionOp::List, at(STALE_SECS + 1));
+        let _ = handle_at(&chat, &SuggestionOp::List, at(STALE_SECS + 2), &|| {
+            Some(ids(&[]))
+        });
+        hub.offer(String::from("run-9"), String::from("finish the list"), 0);
+        let _ = keep_at(&chat, Some(&hub), "run-9", at(STALE_SECS + 3));
+        let _ = act(
+            SuggestionOp::Start { id: id(KEPT_TITLE) },
+            at(STALE_SECS + 4),
+        );
+        hub.new_conversation_for(id(KEPT_TITLE));
+        assert!(conversation_answered(&chat, &hub, 1));
+        let mut kept = signals(&path);
+        let answered = kept.pop().unwrap();
+        assert_eq!((answered.0, answered.1.as_str()), (Answered, KEPT_TITLE));
+        let event = |event, title: &str, now| (event, title.to_owned(), at(now).to_string());
+        assert_eq!(
+            kept,
+            [
+                event(Suggested, "Plan", 0),
+                event(Suggested, "Waits", 0),
+                event(Fired, "Plan", 1),
+                event(Dismissed, "Plan", 2),
+                event(Restored, "Plan", 3),
+                event(Stale, "Waits", STALE_SECS + 1),
+                event(SourceGone, "Plan", STALE_SECS + 2),
+                event(Kept, KEPT_TITLE, STALE_SECS + 3),
+                event(Fired, KEPT_TITLE, STALE_SECS + 4),
+            ]
+        );
+        // A page that can't be written keeps nothing of what wasn't done.
+        std::fs::create_dir_all(crate::kept_log::next_path(&path)).unwrap();
+        let failed = act(SuggestionOp::Dismiss { id: id("Plan") }, at(STALE_SECS + 5));
+        assert_eq!(failed, SuggestionResult::Failed);
+        assert_eq!(signals(&path).len(), kept.len() + 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

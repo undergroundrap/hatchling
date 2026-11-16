@@ -59,6 +59,7 @@ pub mod egress_authority;
 pub mod egress_pages;
 pub mod egress_path;
 pub mod goal_ops;
+pub mod idea_signals;
 pub mod kept_log;
 pub mod suggestions;
 pub use custody::{AccountBook, HandleRejection};

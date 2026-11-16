@@ -4,7 +4,8 @@
 //! [`MAX_LINES`] lines it's cut back to the newest [`MAX_KEPT`], through a
 //! sibling `.next` file renamed over it. The owner's decisions
 //! ([`crate::decisions`]) and their Feed page's posts
-//! ([`crate::feed_page`]) are kept this way.
+//! ([`crate::feed_page`]) are kept this way, and what became of the ideas
+//! on their Ideas page ([`crate::idea_signals`]), with a bound of its own.
 
 use std::fs::OpenOptions;
 use std::io::{BufRead as _, BufReader, Write as _};
@@ -36,6 +37,23 @@ static WRITES: Mutex<()> = Mutex::new(());
 /// Returns the error if the record can't be written, or the log can't be
 /// read back or cut.
 pub fn append<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
+    append_within(path, record, MAX_LINES, MAX_KEPT)
+}
+
+/// Appends `record` to the log at `path`, cutting it back to the newest
+/// `kept` lines if it's grown past `max_lines`: [`append`] with a bound
+/// of the log's own.
+///
+/// # Errors
+///
+/// Returns the error if the record can't be written, or the log can't be
+/// read back or cut.
+pub fn append_within<T: Serialize>(
+    path: &Path,
+    record: &T,
+    max_lines: usize,
+    kept: usize,
+) -> std::io::Result<()> {
     let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
     ensure_parent(path)?;
     let mut line = serde_json::to_string(record)?;
@@ -47,10 +65,12 @@ pub fn append<T: Serialize>(path: &Path, record: &T) -> std::io::Result<()> {
         .open(path)?
         .write_all(line.as_bytes())?;
     let lines = lines(path)?;
-    if lines.len() > MAX_LINES {
-        let kept = lines.get(lines.len() - MAX_KEPT..).unwrap_or_default();
+    if lines.len() > max_lines {
+        let newest = lines
+            .get(lines.len().saturating_sub(kept)..)
+            .unwrap_or_default();
         let next = next_path(path);
-        let mut text = kept.join("\n");
+        let mut text = newest.join("\n");
         text.push('\n');
         OpenOptions::new()
             .create(true)
@@ -172,6 +192,24 @@ mod tests {
             0o600,
             "the cut-back file is the owner's alone too"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_log_with_a_bound_of_its_own_is_cut_back_to_it() {
+        let dir = scratch("own-bound");
+        let path = dir.join("idea-signals");
+        for n in 0..5_u32 {
+            append_within(&path, &n, 5, 3).unwrap();
+        }
+        assert_eq!(list::<u32>(&path), [4, 3, 2, 1, 0], "not past its bound");
+        append_within(&path, &5_u32, 5, 3).unwrap();
+        assert_eq!(
+            list::<u32>(&path),
+            [5, 4, 3],
+            "past it: the newest it keeps"
+        );
+        assert!(!next_path(&path).exists(), "nothing left over");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
