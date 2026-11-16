@@ -54,6 +54,46 @@ and [the queue](docs/workorders/README.md). These are the rules to work by.
 
 **Never:** leave a merged work order's issue open, reuse a WO number, or let work that needed a work order ship without one. If that happened, write the work order after the fact, from what shipped, and close it the same way.
 
+## Milestones, releases and the changelog
+
+The details are in [docs/releasing.md](docs/releasing.md) and [MAINTAINING.md](MAINTAINING.md#changelog).
+
+**The changelog, every pull request:** a user-visible change adds its line under `## [Unreleased]` in `CHANGELOG.md` in the same pull request, under **Fixed**, **Added** or **Changed**, saying what the user saw before and sees now, and naming the work order when there is one. A breaking change says `**Breaking for <crate>:**` and what callers or operators must change. A pull request with no user-visible change says why in its description. The changelog is the release notes: nothing is added to it afterwards from memory.
+
+**A milestone is a release:**
+
+- Each version is a milestone named `vX.Y.Z: <what it's for>`, made when its scope is agreed, before its work starts. Its order is [the queue's](docs/workorders/README.md#order-of-work).
+- Every issue and work order for it carries the milestone; a pull request carries its issue's. Work that moves to a later release moves milestone, with a note on the issue why.
+- A milestone is done when every issue on it is closed, or moved with a reason. It is closed when its release is out, not before.
+
+**A tag is the release itself, and the maintainer's alone:**
+
+- A version is cut when its milestone is done and the maintainer says so. An agent prepares the release pull request ([docs/releasing.md, "Cutting a release"](docs/releasing.md#cutting-a-release)): the version bumped everywhere at once, the Unreleased section renamed to the version and dated, the install guide and `SECURITY.md` naming it, the [release security checklist](docs/release-security-checklist.md) run and recorded, and [the scorecard](docs/scorecard.md) checked on a fresh install.
+- **Only the maintainer creates and pushes a `v*` tag.** A tag can't be taken back: it publishes the release, its files and every crate. Ask, and wait for a yes.
+- Before 1.0, a breaking change bumps the minor version (0.9 to 0.10); anything else, the patch. The `semver checks` job says when a change needs the minor bump.
+- A new published crate in the release is named to the maintainer before the tag (see below): its first publish is theirs, by hand.
+
+## Adding, splitting or renaming a crate
+
+A new crate is a decision about crates.io as well as code. Say which it is in the pull request.
+
+**Unpublished** (a tool, a fixture, something only built for a cell's image): `publish = false` in its `Cargo.toml`, and the module map says *Not published.* with what it is.
+
+**Published** (anything a published crate depends on must be published too):
+
+1. Its `Cargo.toml` takes the workspace's fields like the others (`version`, `edition`, `rust-version`, `license`, `authors`, `repository`, `homepage`, `readme`, `[lints]`), with its own `description`, `keywords` and `categories`.
+2. It gets a line in the root `Cargo.toml`'s `[workspace.dependencies]`: `name = { version = "<workspace version>", path = "crates/<name>" }`. Other crates depend on it through that line.
+3. The publish scripts find it by themselves: `scripts/publish-crates.sh` and `scripts/setup-trusted-publishing.sh` read `cargo metadata` and skip `publish = false`. There is no list to edit.
+4. **Its first publish is the maintainer's, by hand.** crates.io lets only a crate's owner create it, so the release workflow publishes everything else and skips the new crate, and any crate that depends on it, with a warning. Tell the maintainer before the release is cut, in the pull request and on its issue. After the release they follow [docs/releasing.md, "Adding a crate"](docs/releasing.md#adding-a-crate): a one-day token, the first publish, the token revoked, then trusted publishing set up for it. An agent walks them through it and never handles the token: they type it into a terminal they opened themselves.
+
+**Either way:**
+
+- A row in [the module map](docs/arch/module-map.md), whose count of unpublished crates stays right (the audit checks every crate has a row).
+- Its dependencies reviewed in [docs/dependency-review.md](docs/dependency-review.md).
+- If it runs inside a cell, its name in the audit's `CELL_CRATES` (`crates/hatchling-dev/src/checks/arch.rs`), so it can never depend on the trusted side.
+- **Splitting a crate** is a move first and a change after: the moved code byte for byte, its mutants listed before and after and the same, then any change in its own pull request (as #475 did for `hatchling-room`).
+- **Renaming a published crate** makes a new crate on crates.io: the old name stays published at its last version. Avoid it; if it's needed, it follows the steps above as a new crate, and the old one's README says where it went.
+
 ## Repository layout
 
 - `crates/` — Rust workspace. See `docs/arch/module-map.md` for what each

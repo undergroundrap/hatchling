@@ -49,7 +49,8 @@ expectations. Labels describe the work; several may apply together.
    criteria, inline evidence (commands, environment and actual counts),
    `CLOSED` status and a matching queue row. A dropped WO keeps its reason.
 
-Close a milestone when all of its included work is complete. A completed
+Close a milestone when all of its included work is complete and its
+release is out. A completed
 security subset alone does not finish a release's other commitments.
 
 ## Review and merge
