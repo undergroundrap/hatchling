@@ -68,7 +68,7 @@ function openIdea(ctx: AppContext, id: string): void {
                 void startIdea(ctx, id, `${idea.title}: ${idea.summary}`);
             });
         }, { icon: 'spark', variant: 'primary' })));
-        body.append(h('p', { class: 'muted text-small' }, 'This starts a new conversation and puts it in your chat box, as Hatchling wrote it. Read it, change it, and send it when you’re ready.'));
+        body.append(h('p', { class: 'muted text-small' }, 'This starts a new conversation and puts the idea in your chat box. Read it, change it, and send it when you’re ready.'));
     }
     else if (idea.state === 'suggested' || idea.state === 'needs_user' || idea.state === 'failed')
         body.append(h('div', { class: 'action-row' }, button('Adjust scope', () => {
