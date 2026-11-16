@@ -125,3 +125,20 @@ Unviable:
   button, a checkbox under its label, and a button's own text; pages that
   put something over an element in other ways (a shadow root, a frame
   over a frame) weren't.
+
+## After review: two test messages, tree `9fb799699a9d0bf6d878d0d6156e22757915a5c2`
+
+CodeQL's `rust/cleartext-logging` flagged two messages in the new browser
+test (`an_act_allowed_is_made_only_on_the_page_the_owner_was_shown`): a
+`BrowserResult` printed in a panic's message, one that could carry what
+was typed. In the test it's a fake page, but nothing needs it printed:
+both messages now say what failed in plain words. Tests only; no code
+outside them changes.
+
+On that tree (`hatchling-approval-binding-codeql-quick.log`, 861 bytes,
+sha256 `f430bb69959f8b8e01d8cdbd9c37939d90edbdb19c7a61f9d9642fc33056ee22`,
+attached with the bundle): `cargo fmt --check`, the broker's tests of what
+it touches (87), its `artifacts` tests (31), the real-browser test and the
+browser's library tests (31), all passed; clippy `-D warnings` clean on
+1.85.0 and 1.98.1. The full gate wasn't run again for two messages in a
+test; CI runs it.
