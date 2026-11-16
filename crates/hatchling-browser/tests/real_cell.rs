@@ -122,6 +122,24 @@ Object.defineProperty(HTMLAnchorElement.prototype, 'protocol', { get() { return 
 const LONG: &str = "<!doctype html><title>A title far longer than any label may be, and longer again, \
 and longer still, until it runs past the bound a snapshot keeps, and far past it</title><p>Long</p>";
 
+/// A button under a layer the page put over it, which would take a click
+/// at the button's centre; and a styled checkbox under its own label,
+/// which a person's click there toggles.
+const COVERED: &str = r#"<!doctype html><title>Covered</title>
+<p id="status">waiting</p>
+<button onclick="document.getElementById('status').textContent = 'clicked under'"
+  style="position: absolute; left: 20px; top: 80px; width: 160px; height: 40px">Pay</button>
+<div onclick="document.getElementById('status').textContent = 'clicked over'"
+  style="position: absolute; left: 0; top: 60px; width: 400px; height: 100px; opacity: 0.01"></div>
+<label style="position: absolute; left: 20px; top: 220px; width: 120px; height: 40px">
+  <input type="checkbox" onchange="document.getElementById('status').textContent = 'agreed'"
+    style="position: absolute; left: 10px; top: 10px; width: 20px; height: 20px">
+  <span style="position: absolute; left: 0; top: 0; width: 60px; height: 40px; background: white"></span>
+  Agree
+</label>
+<button onclick="document.getElementById('status').textContent = 'inner'"
+  style="position: absolute; left: 20px; top: 300px"><span style="display: inline-block; padding: 12px">Inner</span></button>"#;
+
 /// Whether `name`'s requirement makes a missing prerequisite a failure.
 fn required(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| value == "1")
@@ -304,6 +322,7 @@ fn answer(mut stream: std::net::TcpStream, seen: &Mutex<Vec<String>>) {
         (HOST, "/moves") => ("200 OK", MOVES),
         (HOST, "/links") => ("200 OK", LINKS),
         (HOST, "/long") => ("200 OK", LONG),
+        (HOST, "/covered") => ("200 OK", COVERED),
         (HOST, "/hop") => ("302 Found", ""),
         _ => ("404 Not Found", "not here"),
     };
@@ -833,6 +852,54 @@ fn a_clipped_label_is_said(connection: &UnixStream) {
     assert!(long.truncated, "a clipped title wasn't said to be cut");
 }
 
+/// A click is made only where it lands on the element: one on a button
+/// under a layer the page put over it is refused, and nothing is clicked;
+/// one on a checkbox under its own label lands on the label, and one on a
+/// button's own text inside it lands on the button, as a person's would.
+fn covered_never_clicked(connection: &UnixStream) {
+    let shown = page(send(
+        connection,
+        &BrowserCommand::Open {
+            url: format!("http://{HOST}/covered"),
+        },
+    ));
+    let pay = element(&shown, "button", "Pay");
+    assert_eq!(
+        send(
+            connection,
+            &BrowserCommand::Act {
+                element: pay,
+                action: PageAction::Click,
+            }
+        ),
+        BrowserReply::Failed {
+            failure: BrowserFailure::NotPossible
+        },
+        "a covered button"
+    );
+    let after = page(send(connection, &BrowserCommand::Snapshot));
+    assert!(after.text.contains("waiting"), "{}", after.text);
+    let agree = element(&after, "checkbox", "Agree");
+    let agreed = page(send(
+        connection,
+        &BrowserCommand::Act {
+            element: agree,
+            action: PageAction::Click,
+        },
+    ));
+    assert!(agreed.text.contains("agreed"), "{}", agreed.text);
+    // A click on what's inside the element is a click on it.
+    let inner = element(&agreed, "button", "Inner");
+    let pressed = page(send(
+        connection,
+        &BrowserCommand::Act {
+            element: inner,
+            action: PageAction::Click,
+        },
+    ));
+    assert!(pressed.text.contains("inner"), "{}", pressed.text);
+}
+
 fn element(snapshot: &PageSnapshot, role: &str, name: &str) -> u32 {
     let found = snapshot
         .elements
@@ -1005,6 +1072,7 @@ fn the_controller_drives_a_real_browser_in_a_cell_through_the_relay_alone() {
     webrtc_loads(&connection);
     links_told_from_the_element(&connection);
     a_clipped_label_is_said(&connection);
+    covered_never_clicked(&connection);
     sign_in_filled(&connection);
     filled_hidden_from_refused_sites(&connection);
     kept_sign_in_filled(&connection, &vault);

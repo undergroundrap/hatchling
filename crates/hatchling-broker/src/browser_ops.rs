@@ -1088,6 +1088,28 @@ impl BrowserSession {
         })
     }
 
+    /// Whether the page is still as the owner approved it for `approved`,
+    /// an act of `action` on `element` signed in to `profile`: looked at
+    /// again, the same page, the element there by the same role and name,
+    /// and the same typing. `None` when it is; otherwise what the agent is
+    /// told, and nothing is done. The owner may take minutes to decide, and
+    /// a page can change in them, under the element's number too: the act
+    /// is made only on what they were shown.
+    fn changed_since(
+        &mut self,
+        profile: &str,
+        element: u32,
+        action: &PageAction,
+        approved: &serde_json::Value,
+    ) -> Option<BrowserResult> {
+        let looked = self.command(&BrowserCommand::Snapshot);
+        if !matches!(looked, BrowserResult::Page { .. }) {
+            return Some(looked);
+        }
+        let now = self.act_ask(profile, element, action).map(|ask| ask.action);
+        (now.as_ref() != Some(approved)).then(|| refused(CHANGED_SINCE))
+    }
+
     /// Records that the agent typed `text` into `element` on the page last
     /// shown.
     fn typed_into(&mut self, element: u32, text: &str) {
@@ -1179,8 +1201,14 @@ fn answer(
             if let Some(profile) = browser.profile.clone() {
                 if let Some(ask) = browser.act_ask(&profile, *element, action) {
                     let site = browser.page_site();
+                    let approved = ask.action.clone();
                     if let Some(answer) = owner_approves(config, web, ask, &site) {
                         return answer;
+                    }
+                    if let Some(changed) =
+                        browser.changed_since(&profile, *element, action, &approved)
+                    {
+                        return changed;
                     }
                 }
             }
@@ -1658,6 +1686,10 @@ fn typed_secret(
     }
 }
 
+/// What the agent is told when the page changed while the owner decided
+/// on an act there: the yes was for the page as it was.
+const CHANGED_SINCE: &str = "the page changed while the owner decided, so nothing was done: look at the page again, and ask again";
+
 /// A field of the broker's own words.
 fn broker_field(label: &str, value: &str) -> ConfirmationField {
     ConfirmationField {
@@ -1823,6 +1855,9 @@ mod tests {
         /// them (WO-031).
         vault: Vault,
         jar: Arc<Mutex<Vec<Cookie>>>,
+        /// Once set, a look at the page fails while the browser goes on, as
+        /// a controller answers when its page is gone.
+        look_fails: Arc<AtomicBool>,
     }
 
     impl Browsers for Fake {
@@ -1859,6 +1894,11 @@ mod tests {
             } = command
             {
                 self.typed(*element, *field, text, origin);
+            }
+            if self.look_fails.load(Ordering::SeqCst) && *command == BrowserCommand::Snapshot {
+                return Ok(BrowserReply::Failed {
+                    failure: BrowserFailure::NoPage,
+                });
             }
             if let BrowserCommand::SignIn {
                 nonce,
@@ -2754,6 +2794,118 @@ mod tests {
             !matches!(answer, BrowserResult::Page { .. }),
             "sent what the owner wasn't shown"
         );
+    }
+
+    /// An act the owner allowed is made only on the page they were shown:
+    /// it's looked at again just before, and when the element by that
+    /// number is another, or the page is, nothing is done. On the page as
+    /// it was, the act is made.
+    #[test]
+    fn an_act_allowed_is_made_only_on_the_page_the_owner_was_shown() {
+        let (config, scratch, keys, _profile) =
+            profiled("profile-act-changed", &["mail.example:443"], Vec::new());
+        let config = with_vault(config, &scratch);
+        let fake = Fake::default();
+        let compose = "https://mail.example/compose";
+        page_with(&fake, compose, &[(3, "button", "Send")]);
+        let (mut web, mut browser) = session("t", &fake);
+        as_owner_allows(&config, &keys, &mut web, &mut browser, &open(compose));
+        let acts = |fake: &Fake| {
+            fake.log
+                .lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| matches!(command, BrowserCommand::Act { .. }))
+                .count()
+        };
+        let send = BrowserOp::Act {
+            element: 3,
+            action: PageAction::Click,
+        };
+        let board = crate::approval_board::board(&config);
+        let approve = |answer: &BrowserResult| {
+            let BrowserResult::Waiting { request, .. } = answer else {
+                unreachable!("answered otherwise, not waiting for the owner");
+            };
+            let asked = board.approvals().get(request).unwrap();
+            board
+                .decide(
+                    request,
+                    asked.revision,
+                    &asked.digest,
+                    Decision::Approve,
+                    hatchling_scheduler::Timestamp::now().as_second(),
+                )
+                .unwrap();
+        };
+        let changed = || BrowserResult::Refused {
+            reason: String::from(CHANGED_SINCE),
+        };
+        // While the owner decided, the button by that number became another.
+        approve(&handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &send,
+        ));
+        page_with(&fake, compose, &[(3, "button", "Delete the account")]);
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        assert_eq!(answer, changed());
+        assert_eq!(acts(&fake), 0, "nothing was done");
+        // Or the page went elsewhere, the button by that number the same.
+        page_with(&fake, compose, &[(3, "button", "Send")]);
+        let _ = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
+        approve(&handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &send,
+        ));
+        page_with(
+            &fake,
+            "https://mail.example/settings",
+            &[(3, "button", "Send")],
+        );
+        let answer = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        assert_eq!(answer, changed());
+        assert_eq!(acts(&fake), 0, "nothing was done");
+        // On the page as it was shown, it's made.
+        page_with(&fake, compose, &[(3, "button", "Send")]);
+        let _ = handle_browser_op(&config, &keys, &mut web, &mut browser, &BrowserOp::Read {});
+        approve(&handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &send,
+        ));
+        let made = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        assert!(
+            matches!(made, BrowserResult::Page { .. }),
+            "the act wasn't made"
+        );
+        assert_eq!(acts(&fake), 1);
+        // A page that can't be looked at again isn't acted on, though the
+        // browser goes on.
+        approve(&handle_browser_op(
+            &config,
+            &keys,
+            &mut web,
+            &mut browser,
+            &send,
+        ));
+        fake.look_fails.store(true, Ordering::SeqCst);
+        let unseen = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
+        assert_eq!(
+            unseen,
+            BrowserResult::Failed {
+                failure: BrowserFailure::NoPage
+            }
+        );
+        assert_eq!(acts(&fake), 1, "nothing more was done");
     }
 
     #[test]

@@ -77,6 +77,39 @@ pub fn confirm_activation(
     activation: &str,
     now: i64,
 ) -> Result<String, ConfirmError> {
+    confirm(config, key, activation, None, now)
+}
+
+/// [`confirm_activation`], for the request the owner approved.
+///
+/// Only while the idea pins the request whose hash is `approved`, the one
+/// their approval's record holds. An activation id is kept only for the
+/// same request, so this holds of itself; it is checked here as well, at
+/// the run, so an approval never builds anything else.
+///
+/// # Errors
+///
+/// As [`confirm_activation`]'s, and [`ConfirmError::NoProposal`] when the
+/// idea pins a request other than the approved one.
+pub fn confirm_approved(
+    config: &Config,
+    key: &dyn OpensStores,
+    activation: &str,
+    approved: &str,
+    now: i64,
+) -> Result<String, ConfirmError> {
+    confirm(config, key, activation, Some(approved), now)
+}
+
+/// Mints the confirmation for `activation` at `now`, if an idea pins it,
+/// and, when `approved` is given, pins the request with that hash.
+fn confirm(
+    config: &Config,
+    key: &dyn OpensStores,
+    activation: &str,
+    approved: Option<&str>,
+    now: i64,
+) -> Result<String, ConfirmError> {
     let ideas = SealedArtifactStore::new(&config.artifacts.root, key)
         .ideas()
         .map_err(|_| ConfirmError::Unavailable)?;
@@ -86,6 +119,7 @@ pub fn confirm_activation(
             idea.pinned(activation)
                 .map(|(_, proposal)| proposal.request_hash.clone())
         })
+        .filter(|pinned| approved.is_none_or(|approved| pinned.as_str() == approved))
         .ok_or(ConfirmError::NoProposal)?;
     let token =
         crate::approval::random_hex(CONFIRMATION_PREFIX).map_err(|_| ConfirmError::Unavailable)?;

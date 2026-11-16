@@ -55,6 +55,9 @@ pub struct ActivationRun {
     pub activation: String,
     /// The idea.
     pub idea: String,
+    /// The hash of the request the owner approved: the run builds that
+    /// request or nothing.
+    pub request_hash: String,
 }
 
 /// What an approval is for: the broker's own record of it.
@@ -270,6 +273,7 @@ impl Board {
                 run: Approved::Activation(ActivationRun {
                     activation: proposal.activation.clone(),
                     idea: proposal.idea.idea.clone(),
+                    request_hash: proposal.request_hash.clone(),
                 }),
                 action,
                 fingerprint: effect,
@@ -996,7 +1000,13 @@ pub fn run_approved(
             return format!("Approval {id} was not run: it is not the worker's to run.");
         }
     };
-    let token = match crate::activation::confirm_activation(config, key, &run.activation, now) {
+    let token = match crate::activation::confirm_approved(
+        config,
+        key,
+        &run.activation,
+        &run.request_hash,
+        now,
+    ) {
         Ok(token) => token,
         Err(error) => {
             claim.failed();
