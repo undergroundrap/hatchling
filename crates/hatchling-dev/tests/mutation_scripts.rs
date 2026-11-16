@@ -776,6 +776,50 @@ fn the_wrapper_refuses_to_launch_when_preflight_finds_anything() {
     );
 }
 
+/// A program a run leaves behind doesn't hold the runner's lock: the next
+/// run starts (#415). The mutation command here leaves a `sleep` running,
+/// as a test's timed-out child can; with the lock's descriptor inherited,
+/// the second run was refused.
+#[test]
+fn a_program_a_run_leaves_behind_doesnt_hold_its_lock() {
+    let fixture = Fixture::new("run-leftover");
+    let base = fixture.git(&["rev-parse", "HEAD"]).trim().to_owned();
+    let entries = vec![(name(1), "CaughtMutant")];
+    let report = fixture.file("fake-outcomes.json", &outcomes(&entries, 1).to_string());
+    let listed = fixture.file(
+        "fake-mutants.json",
+        &discovered(&names_of(&entries)).to_string(),
+    );
+    let left = fixture.dir.join("left.pids");
+    let fake = fixture.exe(
+        "fake-mutants",
+        &format!(
+            "#!/bin/bash\nmkdir -p mutants.out\ncp '{}' mutants.out/outcomes.json\ncp '{}' mutants.out/mutants.json\nsleep 30 &\necho $! >> '{}'\necho '1 mutants tested in 1s'\n",
+            report.display(),
+            listed.display(),
+            left.display(),
+        ),
+    );
+    let run = || {
+        fixture.run(
+            &mut wrapper(&fixture, &fake, &base, &["crates/demo/src/lib.rs"]),
+            QUICK,
+        )
+    };
+    let first = run();
+    let second = run();
+    for pid in fs::read_to_string(&left).unwrap_or_default().lines() {
+        signal("KILL", pid);
+    }
+    assert_eq!(first.code, Some(0), "{first:?}");
+    assert!(
+        !second.stderr.contains("another run holds"),
+        "a leftover held the lock: {}",
+        second.stderr
+    );
+    assert_eq!(second.code, Some(0), "{second:?}");
+}
+
 #[test]
 fn the_wrapper_prefixes_bare_paths_and_records_a_complete_run() {
     let fixture = Fixture::new("run-complete");

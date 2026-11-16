@@ -138,11 +138,14 @@ MUTANTS_CMD="${HATCHLING_MUTANTS_CMD:-$SCRIPTS/mutate-targeted.sh}"
 # A run is judged only by its own report, never a stale one.
 rm -f "$ROOT/mutants.out/outcomes.json" "$ROOT/mutants.out/mutants.json"
 cd "$ROOT"
-setsid "$MUTANTS_CMD" "${ARGS[@]}" >"$LOG" 2>&1 </dev/null &
+# The lock's descriptor (9) is this wrapper's alone: a program the run
+# leaves behind, as a timed-out test's child can, would otherwise hold the
+# lock after the wrapper has gone, and refuse every run after it (#415).
+setsid "$MUTANTS_CMD" "${ARGS[@]}" >"$LOG" 2>&1 </dev/null 9>&- &
 RUN_PID=$!
 echo "$RUN_PID" >"$PIDFILE"
 MUTANT_ROOT="$ROOT" MUTANT_PIDFILE="$PIDFILE" MUTANT_LOG="$LOG" \
-  setsid "$SCRIPTS/mutant-watchdog.sh" "$EXPECTED" >"$WATCHDOG_LOG" 2>&1 </dev/null &
+  setsid "$SCRIPTS/mutant-watchdog.sh" "$EXPECTED" >"$WATCHDOG_LOG" 2>&1 </dev/null 9>&- &
 echo "$!" >"$WATCHDOG_PIDFILE"
 echo "mutant-run: $RUN_ID: run $RUN_PID launched: ${ARGS[*]} (log: $LOG)"
 
