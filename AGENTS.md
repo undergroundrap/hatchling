@@ -54,6 +54,25 @@ and [the queue](docs/workorders/README.md). These are the rules to work by.
 
 **Never:** leave a merged work order's issue open, reuse a WO number, or let work that needed a work order ship without one. If that happened, write the work order after the fact, from what shipped, and close it the same way.
 
+## Milestones, releases and the changelog
+
+The details are in [docs/releasing.md](docs/releasing.md) and [MAINTAINING.md](MAINTAINING.md#changelog).
+
+**The changelog, every pull request:** a user-visible change adds its line under `## [Unreleased]` in `CHANGELOG.md` in the same pull request, under **Fixed**, **Added** or **Changed**, saying what the user saw before and sees now, and naming the work order when there is one. A breaking change says `**Breaking for <crate>:**` and what callers or operators must change. A pull request with no user-visible change says why in its description. The changelog is the release notes: nothing is added to it afterwards from memory.
+
+**A milestone is a release:**
+
+- Each version is a milestone named `vX.Y.Z: <what it's for>`, made when its scope is agreed, before its work starts. Its order is [the queue's](docs/workorders/README.md#order-of-work).
+- Every issue and work order for it carries the milestone; a pull request carries its issue's. Work that moves to a later release moves milestone, with a note on the issue why.
+- A milestone is done when every issue on it is closed, or moved with a reason. It is closed when its release is out, not before.
+
+**A tag is the release itself, and the maintainer's alone:**
+
+- A version is cut when its milestone is done and the maintainer says so. An agent prepares the release pull request ([docs/releasing.md, "Cutting a release"](docs/releasing.md#cutting-a-release)): the version bumped everywhere at once, the Unreleased section renamed to the version and dated, the install guide and `SECURITY.md` naming it, the [release security checklist](docs/release-security-checklist.md) run and recorded, and [the scorecard](docs/scorecard.md) checked on a fresh install.
+- **Only the maintainer creates and pushes a `v*` tag.** A tag can't be taken back: it publishes the release, its files and every crate. Ask, and wait for a yes.
+- Before 1.0, a breaking change bumps the minor version (0.9 to 0.10); anything else, the patch. The `semver checks` job says when a change needs the minor bump.
+- A new published crate in the release is named to the maintainer before the tag (see below): its first publish is theirs, by hand.
+
 ## Adding, splitting or renaming a crate
 
 A new crate is a decision about crates.io as well as code. Say which it is in the pull request.
