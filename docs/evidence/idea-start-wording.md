@@ -32,7 +32,7 @@ send it when you're ready."
 - Unit tests: 502 passed, 0 failed.
 - The live adapter's tests: 184 passed, 0 failed, coverage 100% of lines,
   branches and functions.
-- The operator page's tests: 16 passed, 0 failed, coverage 100%.
+- The operator adapter's tests: 16 passed, 0 failed, coverage 100%.
 
 ## What wasn't tried
 
