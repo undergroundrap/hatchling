@@ -12,6 +12,17 @@ export interface IdeaChat {
 /** The owner's own chat with Hatchling. */
 const MAIN = 'main';
 /**
+ * What starting an idea puts in the chat box: its title and what it would do.
+ * Never its note: of a card kept from a chat, that holds where the run said it
+ * stopped, the agent's unchecked words, which a new run isn't given.
+ */
+export function ideaText(idea: {
+    readonly title: string;
+    readonly summary: string;
+}): string {
+    return `${idea.title}: ${idea.summary}`;
+}
+/**
  * The chat an idea's text is put in: the open one, unless that is a connected
  * app's or isn't there, and then the owner's own. None when that chat is
  * archived or there is none: the text then goes where the chat box is, with no

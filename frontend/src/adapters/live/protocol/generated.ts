@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 30;
+export const SESSION_PROTOCOL_VERSION = 31;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -4522,6 +4522,14 @@ export type Suggestion = {
      */
     readonly run?: string;
     /**
+     * v31: where the run said it stopped, of a card the owner kept from
+     * a chat ([`SuggestionSource::Chat`]): the last answer of the run
+     * that ran out of steps, as the agent wrote it, trimmed. The agent's
+     * claim, never checked, and never given to a run started from the
+     * card. None for any other card.
+     */
+    readonly run_said?: string | null;
+    /**
      * Where it came from: none for one kept before sources were.
      */
     readonly source?: SuggestionSource | null;
@@ -4598,7 +4606,8 @@ export type SuggestionResult = {
 } | {
     readonly result: 'changed';
     /**
-     * It.
+     * It, boxed (v31): a card is many times the size of any other
+     * answer here. Written as the card itself.
      */
     readonly suggestion: Suggestion;
 } | {

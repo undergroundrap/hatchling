@@ -588,6 +588,13 @@ pub struct Suggestion {
     /// empty for one kept before runs were.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub run: String,
+    /// v31: where the run said it stopped, of a card the owner kept from
+    /// a chat ([`SuggestionSource::Chat`]): the last answer of the run
+    /// that ran out of steps, as the agent wrote it, trimmed. The agent's
+    /// claim, never checked, and never given to a run started from the
+    /// card. None for any other card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_said: Option<String>,
 }
 
 /// An operation on the owner's Ideas page, from their app.
@@ -635,8 +642,9 @@ pub enum SuggestionResult {
     },
     /// It was changed: as it now stands.
     Changed {
-        /// It.
-        suggestion: Suggestion,
+        /// It, boxed (v31): a card is many times the size of any other
+        /// answer here. Written as the card itself.
+        suggestion: Box<Suggestion>,
     },
     /// No suggestion has the id.
     NotFound,
@@ -2869,6 +2877,7 @@ mod tests {
                         needs: Vec::new(),
                         source: None,
                         run: String::new(),
+                        run_said: None,
                     }],
                 },
             },
@@ -3235,7 +3244,7 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<SuggestionState>("\"retired\"").is_err());
-        assert_eq!(PROTOCOL_VERSION, 30);
+        assert_eq!(PROTOCOL_VERSION, 31);
     }
 
     /// v30: a chat answer says when its run ran out of steps, and is
@@ -3266,5 +3275,29 @@ mod tests {
             &json!({"op": "keep", "run": "run-1"}),
         );
         pinned(&SuggestionSource::Chat, &json!({"kind": "chat"}));
+    }
+
+    /// v31: a card kept from a chat carries where its run said it
+    /// stopped, and a card without it is written as before.
+    #[test]
+    fn a_kept_card_carries_where_its_run_said_it_stopped() {
+        let old = r#"{"suggestion_id":"idea-1","title":"Pick up where a chat stopped","summary":"make the tools","why":"You kept it.","area":"productivity","suggested_at":"2026-11-16T08:30:00Z","state":"suggested","source":{"kind":"chat"},"run":"run-1"}"#;
+        let kept: Suggestion = serde_json::from_str(old).unwrap();
+        assert_eq!(kept.run_said, None);
+        assert_eq!(serde_json::to_string(&kept).unwrap(), old);
+        let said = Suggestion {
+            run_said: Some(String::from("Two tools made; the third is left.")),
+            ..kept
+        };
+        let json = serde_json::to_string(&said).unwrap();
+        assert_eq!(
+            json,
+            format!(
+                r#"{},"run_said":"Two tools made; the third is left."}}"#,
+                old.trim_end_matches('}')
+            )
+        );
+        assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), said);
+        assert_eq!(PROTOCOL_VERSION, 31);
     }
 }

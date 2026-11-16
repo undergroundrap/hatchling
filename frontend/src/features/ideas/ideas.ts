@@ -4,7 +4,7 @@ import { h, valueOf } from '../../components/dom.js';
 import { pictogram } from '../../components/pictograms.js';
 import { icon } from '../../components/icons.js';
 import { button, emptyState, menu, pill, tabs, textareaField } from '../../components/ui.js';
-import { startIdea } from './start.js';
+import { ideaText, startIdea } from './start.js';
 export function renderIdeas(ctx: AppContext): HTMLElement {
     const page = h('div', { class: 'page ideas-page reading-wide', 'data-scroll': 'ideas' }, h('header', { class: 'page-header' }, h('h1', {}, 'Ideas'), menu('Idea views', [
         { label: 'Suggested ideas', icon: 'idea', action: () => { ctx.ui.ideaFilter = 'suggested'; ctx.render(); } },
@@ -65,7 +65,7 @@ function openIdea(ctx: AppContext, id: string): void {
                     return;
                 ref.close();
                 // A conversation of its own, then the idea in its chat box: the owner reads it and sends it.
-                void startIdea(ctx, id, `${idea.title}: ${idea.summary}`);
+                void startIdea(ctx, id, ideaText(idea));
             });
         }, { icon: 'spark', variant: 'primary' })));
         body.append(h('p', { class: 'muted text-small' }, 'This starts a new conversation and puts the idea in your chat box. Read it, change it, and send it when you’re ready.'));

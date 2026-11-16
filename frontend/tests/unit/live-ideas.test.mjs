@@ -163,7 +163,12 @@ test('a run that suggested an idea reads the page again, in a chat or not; a bur
 test('the owner keeps what they asked in a chat that ran out of steps: a card in their own words', async () => {
     const card = kept('idea-k', 'productivity', { title: 'Pick up where a chat stopped', summary: 'Make the tools.', source: { kind: 'chat' }, run: 'run-1' });
     assert.equal(ideaOf(card).signal, 'You kept this from a chat that ran out of steps. These are your own words: nothing runs unless you start it.');
-    assert.doesNotMatch(ideaOf(card).signal, /From your goal|its words/);
+    assert.doesNotMatch(ideaOf(card).signal, /From your goal|its words|said it stopped/);
+    // v31: where the run said it stopped, labelled as the agent's claim; the card's own words are still the owner's.
+    const said = { ...card, run_said: 'Two tools made; the third is left.' };
+    assert.equal(ideaOf(said).signal, 'You kept this from a chat that ran out of steps. These are your own words: nothing runs unless you start it. Where the run said it stopped: “Two tools made; the third is left.” Those are the agent’s words, not checked, and a run you start from this card isn’t given them.');
+    assert.equal(ideaOf(said).summary, 'Make the tools.');
+    assert.equal(ideaOf({ ...card, run_said: '' }).signal, ideaOf(card).signal, 'an empty account is none');
     const changed = suggestion => answered({ result: 'changed', suggestion });
     const { client, live } = surface([changed(card), listed([card]), answered({ result: 'not_found' }), answered({ result: 'off' }), { kind: 'unknown', detail: 'No answer came.' }]);
     assert.deepEqual(await live.keep('run-1'), { ok: true, message: 'Kept on your Ideas page. Start it from there when you’re ready.' });

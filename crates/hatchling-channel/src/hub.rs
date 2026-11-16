@@ -48,6 +48,9 @@ struct Offer {
     run: String,
     /// What they asked, as it would be kept.
     words: String,
+    /// What the run last said, as it would be kept: the agent's own
+    /// words, a claim. Empty when it said nothing.
+    run_said: String,
 }
 
 /// What the ingress tells its client, one frame per event.
@@ -214,11 +217,11 @@ impl LocalHub {
 
     /// Offers the owner to keep for later what they asked in the run
     /// `run`, `words`, whose answer ran out of steps in the conversation
-    /// numbered `conversation`. Held in memory alone, while that
+    /// numbered `conversation`, with that answer, `run_said`. Held in memory alone, while that
     /// conversation is open: a new one, or a restart, withdraws it. One
     /// for a conversation no longer open isn't held, and past
     /// [`MAX_OFFERS`] the oldest goes.
-    pub fn offer(&self, run: String, words: String, conversation: u64) {
+    pub fn offer(&self, run: String, words: String, run_said: String, conversation: u64) {
         let mut state = self.state();
         if state.conversation != conversation {
             return;
@@ -227,7 +230,11 @@ impl LocalHub {
         if state.offers.len() >= MAX_OFFERS {
             state.offers.pop_front();
         }
-        state.offers.push_back(Offer { run, words });
+        state.offers.push_back(Offer {
+            run,
+            words,
+            run_said,
+        });
     }
 
     /// What the owner asked in the run `run`, if it is offered to keep.
@@ -238,6 +245,17 @@ impl LocalHub {
             .iter()
             .find(|offer| offer.run == run)
             .map(|offer| offer.words.clone())
+    }
+
+    /// What the owner asked in the run `run`, and what that run last
+    /// said, if it is offered to keep.
+    #[must_use]
+    pub fn offer_of(&self, run: &str) -> Option<(String, String)> {
+        self.state()
+            .offers
+            .iter()
+            .find(|offer| offer.run == run)
+            .map(|offer| (offer.words.clone(), offer.run_said.clone()))
     }
 
     /// Withdraws the offer for the run `run`: what it held was kept.
@@ -445,19 +463,28 @@ mod tests {
     fn an_unfinished_ask_is_offered_while_its_conversation_is_open() {
         let hub = LocalHub::new(OutputGate::disabled());
         let words = |n: usize| format!("ask {n}");
-        hub.offer(String::from("run-a"), words(1), 0);
+        let said = |n: usize| format!("stopped at {n}");
+        hub.offer(String::from("run-a"), words(1), said(1), 0);
         assert_eq!(hub.offered("run-a"), Some(words(1)));
+        assert_eq!(hub.offer_of("run-a"), Some((words(1), said(1))));
+        assert_eq!(hub.offer_of("run-b"), None);
         assert_eq!(hub.offered("run-b"), None);
-        hub.offer(String::from("run-b"), words(2), 1);
+        hub.offer(String::from("run-b"), words(2), said(2), 1);
         assert_eq!(hub.offered("run-b"), None, "not the conversation open");
-        hub.offer(String::from("run-a"), words(3), 0);
+        hub.offer(String::from("run-a"), words(3), said(3), 0);
         assert_eq!(hub.offered("run-a"), Some(words(3)));
-        hub.offer(String::from("run-c"), words(4), 0);
+        assert_eq!(
+            hub.offer_of("run-a"),
+            Some((words(3), said(3))),
+            "its newest"
+        );
+        hub.offer(String::from("run-c"), words(4), said(4), 0);
         hub.withdraw("run-a");
         assert_eq!(hub.offered("run-a"), None);
+        assert_eq!(hub.offer_of("run-a"), None);
         assert_eq!(hub.offered("run-c"), Some(words(4)), "only that one");
         for n in 0..MAX_OFFERS {
-            hub.offer(format!("run-{n}"), words(n), 0);
+            hub.offer(format!("run-{n}"), words(n), said(n), 0);
         }
         assert_eq!(hub.offered("run-c"), None, "the oldest went");
         assert_eq!(hub.offered("run-0"), Some(words(0)));
@@ -465,7 +492,7 @@ mod tests {
         assert_eq!(hub.offered(&newest), Some(words(MAX_OFFERS - 1)));
         hub.new_conversation();
         assert_eq!(hub.offered("run-0"), None, "a new conversation");
-        hub.offer(String::from("run-d"), words(5), 1);
+        hub.offer(String::from("run-d"), words(5), said(5), 1);
         assert_eq!(hub.offered("run-d"), Some(words(5)));
         hub.new_conversation_for(String::from("idea-1"));
         assert_eq!(hub.offered("run-d"), None, "one for an idea too");

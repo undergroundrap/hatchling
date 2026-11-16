@@ -3676,6 +3676,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "run": {
                 "type": "string"
             },
+            "run_said": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
             "source": {
                 "anyOf": [
                     {

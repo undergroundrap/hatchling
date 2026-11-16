@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v30 (current). This doc is the human-readable reference
+**Status:** v31 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -613,6 +613,25 @@ which reads a chat answer's ending and keeps an ask for later.
   card does and goes stale after fourteen days; it has no goal to
   lose. The cap on waiting ideas is the agent's: what the owner keeps
   isn't refused for it, and the page still holds at most 100.
+
+## v31 — Where a kept chat's run said it stopped
+
+No session op changes. The version is raised for the owner's app,
+which shows a card kept from a chat with its run's own account.
+
+- **`Suggestion`** (the app's protocol) gains `run_said`, written only
+  when there is one: of a card the owner kept from a chat, the last
+  answer of the run that ran out of steps, as the agent wrote it,
+  trimmed and at most 400 bytes as the owner's words are. The broker
+  holds it with the offer, from the answer the owner was shown, and
+  keeps it on the card when they keep it. No new model call makes it.
+- It is the agent's claim, kept apart from the owner's words and never
+  checked: a card can't tell a true account from a false one. The app
+  says whose words it is. No run is given it: a run started from the
+  card is given the owner's words, and finds for itself where things
+  stand.
+- A run that answered with nothing leaves a card without it, and so is
+  every card a run suggested.
 
 ## Device handshake
 
