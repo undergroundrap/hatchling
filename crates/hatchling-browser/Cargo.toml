@@ -8,23 +8,10 @@ publish = false
 default-run = "hatchling-browser"
 authors.workspace = true
 repository.workspace = true
-description = "Cell-side controllers for Hatchling's browser and room."
+description = "The cell-side controller for Hatchling's browser."
 
 [lints]
 workspace = true
-
-[features]
-room-supervisor = []
-
-[[bin]]
-name = "hatchling-room"
-path = "src/bin/hatchling-room.rs"
-required-features = ["room-supervisor"]
-
-[[test]]
-name = "room_supervisor"
-harness = false
-required-features = ["room-supervisor"]
 
 [dependencies]
 # The browser cell's protocol, and its framing.
@@ -32,10 +19,8 @@ hatchling-core.workspace = true
 # Starting the browser: fork, the pipe placed on fds 3 and 4, exec; and
 # the inherited connection to the broker.
 hatchling-sys.workspace = true
-# The DevTools pipe: made, made non-blocking, polled with a deadline. The
-# Room's supervisor: a job's process group killed, its first process
-# watched through a pidfd.
-rustix = { version = "0.38", features = ["event", "fs", "pipe", "process"] }
+# The DevTools pipe: made, made non-blocking, polled with a deadline.
+rustix = { version = "0.38", features = ["event", "fs", "pipe"] }
 serde_json = "1"
 thiserror = "2"
 

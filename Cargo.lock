@@ -628,6 +628,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hatchling-room"
+version = "0.9.0"
+dependencies = [
+ "hatchling-core",
+ "hatchling-sys",
+ "rustix",
+ "serde_json",
+]
+
+[[package]]
 name = "hatchling-runtime"
 version = "0.9.0"
 dependencies = [

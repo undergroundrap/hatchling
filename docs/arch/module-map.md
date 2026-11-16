@@ -29,9 +29,9 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 
   The owner's sockets admit the owner recorded at start (`owner.rs`). Without root, all four run as the owner, and the broker is still confined.
 - **The agent is the cell side.** It runs inside a cell and reaches the outside only through its one peer-authorized session with the broker.
-- **The cell side never links the trusted side.** `hatchling-agent`'s dependencies, and those of `hatchling-browser` (the browser cell's controller), followed all the way down, never reach `hatchling-broker`, `hatchling-vault`, `hatchling-egress`, `hatchling-isolation`, `hatchling-fido2` or `hatchling-runtime`. The code that runs in a cell is built without the code that holds your keys or the network, and `hatchling-dev audit` fails the gate if that ever changes.
+- **The cell side never links the trusted side.** `hatchling-agent`'s dependencies, and those of `hatchling-browser` (the browser cell's controller) and `hatchling-room` (the Room's supervisor), followed all the way down, never reach `hatchling-broker`, `hatchling-vault`, `hatchling-egress`, `hatchling-isolation`, `hatchling-fido2` or `hatchling-runtime`. The code that runs in a cell is built without the code that holds your keys or the network, and `hatchling-dev audit` fails the gate if that ever changes.
 - **One binary, both sides.** `hatchling-runtime` installs one `hatchling` command that is both the broker and the agent: point `HATCHLING_AGENT_BIN` at it, and the broker runs it inside each cell as the agent. That's the pattern Chrome and OpenSSH use for their sandboxed processes. What keeps the agent away from your keys is the cell (no keys or vault files, no network, a seccomp allowlist, no capabilities), not which code is in the program file, so the broker's code in a cell's program has nothing to work with. The crate split above is about keeping the code honest: the agent's code is written and reviewed without the trusted side. (Building from source also gives a `hatchling-agent` binary, the agent alone; it works as `HATCHLING_AGENT_BIN` too.)
-- **What's published:** every crate here is on crates.io at the workspace version, except the four marked *not published*.
+- **What's published:** every crate here is on crates.io at the workspace version, except the five marked *not published*.
 
 ## The front door
 
@@ -45,7 +45,8 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 | --- | --- |
 | `hatchling-broker` | Central coordinator. Spawns cells, routes messages, enforces grants, serves the local API, and holds the owner's approvals (`approvals`, WO-027). Never executes untrusted code. |
 | `hatchling-agent` | The binary that runs inside a cell. It reaches the broker over its one peer-authorized session; all its logic is library code, tested without spawning it. |
-| `hatchling-browser` | *Not published.* Cell-side controllers. The browser binary starts headless Chromium and drives it over its DevTools pipe (WO-029). The default-off `hatchling-room` binary runs and captures foreground commands inside the room (WO-034). Both run on the untrusted side. |
+| `hatchling-browser` | *Not published.* The browser cell's controller: it starts headless Chromium and drives it over its DevTools pipe (WO-029). It runs on the untrusted side. |
+| `hatchling-room` | *Not published.* The supervisor inside the Room, the agent's computer (WO-034): it runs the agent's commands, keeps their output, and reads and searches its files, speaking `hatchling-core`'s room protocol to the spawner. Built static for the Room's image. It runs on the untrusted side. |
 | `hatchling-core` | The shared foundation: identity newtypes, protocol framing and message types, grants, kernel peer credentials, and the canonical form and digest an approval binds (`action`). The vocabulary everything else speaks. |
 | `hatchling-loop` | The agent's tool-calling loop. The model proposes; the host validates and bounds. LLM-agnostic. |
 
