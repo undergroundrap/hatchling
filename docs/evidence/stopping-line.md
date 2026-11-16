@@ -7,7 +7,7 @@ release that carries this change.
 
 | | |
 |---|---|
-| Base commit | `5689ee8b`: the idea signals change (`docs/evidence/idea-signals.md`) on `e9f8e4df` (`fix(app): drop 'as Hatchling wrote it' from an idea's start note (#471)`) |
+| Base commit | `a5b5f4b5` (`feat(ideas): keep what becomes of each idea (#472)`); tested on a commit of the same tree, `2b5614beec6aa13c2424b69e6063b41ef57452af`, before #472 was merged |
 | Tested tree | `3079c65f88271043a3d651ea63937eff4c650411` |
 | Date | 2026-11-16 (UTC) |
 | Machine | x86_64, Ubuntu 26.04.1, kernel 6.6.87.2 (WSL2), 28 threads, in a sandbox; the app's check and breaks on Windows 11, Node 22.17.0 |
