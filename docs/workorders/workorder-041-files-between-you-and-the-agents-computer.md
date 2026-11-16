@@ -49,6 +49,7 @@ Settled from an independent threat model of this work order and the code (2026-1
 - **Bounds:** 8 MiB a file; the inbox holds 64 files and 256 MiB. A full inbox refuses a file; nothing is evicted. The owner removes files.
 - The model is told of a file by a line the broker writes, with its place, its size, and that its name and what is in it are untrusted. The line is given in the next run's task alone, never kept as the owner's words. The owner's original name is shown only in the app, as text; the inbox's name is made of it in plain ASCII.
 - A file in that holds a secret the broker keeps gets a warning in the app, not a refusal: it is the owner's file.
+- **In the app** (no change to the frozen protocol): an optional live capability sends the file straight to the broker, never as a Command, so automation can't send one. The main chat's + gives a file; it is sent at once, one at a time for the app. Up to its end, a file not answered wasn't put; after its end, it isn't known, the inbox's list says, and the stream's word of the file settles it; it is never sent again unasked. The chat's notice is the app's, by the inbox's name; the owner's name is shown beside it inert, in an isolated direction, its hidden characters as code points. A file holding a secret, or not checked, is followed by a warning with Remove. Settings › Data lists the inbox and removes a file.
 
 **A file out.**
 
@@ -85,5 +86,6 @@ Each slice's record, as it lands:
 
 - Slice 1, the inbox put: [room-inbox-put](../evidence/room-inbox-put.md).
 - Slice 2, a file in through the local API: [room-file-in](../evidence/room-file-in.md).
+- Slice 2, a file in from the app: [room-file-in-app](../evidence/room-file-in-app.md).
 
 The whole is filled in at close.

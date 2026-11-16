@@ -3,6 +3,7 @@ import { ContentLoading } from './content-loading.js';
 import { ApprovalReview } from '../features/approvals/review.js';
 import type { TaskApprovalPort } from '../session/task-approvals.js';
 import type { CodePort } from '../session/codes.js';
+import type { InboxPort } from '../session/inbox.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
 import type { UsagePort } from '../session/usage.js';
@@ -57,6 +58,9 @@ export class App implements AppContext {
     readonly contentLoading: ContentLoading;
     readonly approvals: ApprovalReview;
     readonly dialogs: DialogManager;
+    get inbox(): InboxPort | undefined {
+        return this.adapter.inbox;
+    }
     get codes(): CodePort | undefined {
         return this.adapter.codes;
     }
@@ -104,6 +108,7 @@ export class App implements AppContext {
         readonly chatSession?: ChatSessionPort;
         readonly taskApprovals?: TaskApprovalPort;
         readonly codes?: CodePort;
+        readonly inbox?: InboxPort;
         readonly conversations?: ConversationPort;
         readonly usage?: UsagePort;
         readonly model?: ModelPort;

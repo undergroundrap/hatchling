@@ -24,6 +24,7 @@ import type { ConversationPort } from '../../session/conversations.js';
 import type { UsagePort } from '../../session/usage.js';
 import type { SetupPort } from '../../session/setup.js';
 import type { ModelPort } from '../../session/model.js';
+import type { InboxPort } from '../../session/inbox.js';
 import type { GoalsPort } from '../../session/goals.js';
 import type { FeedPort } from '../../session/feed.js';
 import type { IdeasPort } from '../../session/ideas.js';
@@ -32,6 +33,7 @@ import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
 import { LiveSetup } from './setup.js';
 import { LiveModel } from './model.js';
+import { LiveInbox } from './inbox.js';
 import { LiveGoals } from './goals.js';
 import { LiveFeed } from './feed.js';
 import { LiveIdeas } from './ideas.js';
@@ -85,6 +87,9 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #ideas: LiveIdeas;
     /** Scheduled work that needs the owner: straight to the broker, never as a Command. */
     readonly attention: AttentionPort;
+    /** Files the owner gives the agent: straight to the broker in parts, never as a Command (WO-041). */
+    readonly inbox: InboxPort;
+    readonly #inbox: LiveInbox;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = { ...SETTINGS, ...rememberedPreferences() };
     #clock = '';
@@ -117,6 +122,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#ideas = new LiveIdeas(this.#client, this.#schedules, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.ideas = this.#ideas;
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.#inbox = new LiveInbox(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.inbox = this.#inbox;
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -332,6 +339,10 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'messages_joined':
                 this.#activity.joined(body.count, event.ts);
                 return undefined;
+            case 'file_in':
+                this.#chats.fileIn(body, event.ts);
+                this.#inbox.observe(body);
+                return undefined;
             case 'artifact':
             case 'agent_status':
             case 'artifact_listed':
@@ -340,9 +351,7 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'browser_action':
             case 'browser_control':
             case 'browser_code':
-            case 'file_in':
-                // Build notices and files put in the agent's inbox have no
-                // view yet; the surfaces took the rest.
+                // Build notices have no view yet; the surfaces took the rest.
                 return undefined;
         }
     }
