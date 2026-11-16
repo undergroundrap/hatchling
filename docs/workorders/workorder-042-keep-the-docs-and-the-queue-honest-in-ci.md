@@ -15,7 +15,7 @@ On 2026-11-16 a read of the docs against the code found about twenty-five places
 
 - In `hatchling-dev audit`: the versions the docs state (`docs/arch/protocol.md`, `docs/session-protocol.md`) against `PROTOCOL_VERSION` and `UI_SCHEMA_VERSION`; the system users `docs/install.md` names against `packaging/sysusers.d`.
 - In `hatchling-dev audit`, the queue: every work-order file has a row with the same status and every row a file; numbers run without a gap; every work order names an issue; a `CLOSED` one has every acceptance item ticked or struck through with its reason.
-- A CI job, read-only on GitHub: a `CLOSED` work order whose issue is open, or an open one whose issue is closed, fails it; a pull request that changes `crates/` and says neither `Closes #N` nor `Part of #N`, and isn't labelled `trivial`, fails it.
+- A CI job, read-only on GitHub: a `CLOSED` work order whose issue is open, or an open one whose issue is closed, fails it; so does an open work order whose issue is on no milestone; a pull request that changes `crates/` and says neither `Closes #N` nor `Part of #N`, and isn't labelled `trivial`, fails it.
 - The README says the test count in words that don't go stale, or the count is made by the gate.
 
 **Not in scope:** checking prose for meaning; a model in CI.
