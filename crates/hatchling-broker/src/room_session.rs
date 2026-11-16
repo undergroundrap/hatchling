@@ -101,6 +101,8 @@ const LEDGER_MAX: usize = 64;
 pub(crate) type JobReply = Result<RoomJobAnswer, String>;
 /// What a room disk operation comes to.
 pub(crate) type DiskReply = Result<Option<RoomDiskStatus>, String>;
+/// What putting a file in the room disk's inbox comes to: its name.
+pub(crate) type PutReply = Result<String, String>;
 /// What asking for a page of a file comes to.
 pub(crate) type PageReply = Result<Page, String>;
 
@@ -447,6 +449,12 @@ pub(crate) enum Message {
         op: RoomDiskOp,
         reply: Sender<DiskReply>,
     },
+    /// Put a file in the room disk's inbox, named for `stem`.
+    Put {
+        stem: String,
+        bytes: Vec<u8>,
+        reply: Sender<PutReply>,
+    },
     /// End the session: the broker has gone.
     End { reason: &'static str },
 }
@@ -732,11 +740,13 @@ fn held(reason: &str) -> String {
 ///
 /// `disk` does what may be done to the room disk while the session has it
 /// claimed: anything but closing or wiping it, which end the session.
-pub(crate) struct Kept<D> {
+/// `put` puts a file in its inbox, under the same claim.
+pub(crate) struct Kept<D, P> {
     seat: Seat,
     limits: Limits,
     ledger: Arc<Mutex<Ledger>>,
     disk: D,
+    put: P,
     /// The jobs in hand: running, or ended with output still to fetch.
     flights: BTreeMap<JobId, Flight>,
     waiters: Vec<Waiter>,
@@ -768,18 +778,20 @@ pub(crate) struct Kept<D> {
     left: bool,
 }
 
-impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
+impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Kept<D, P> {
     pub(crate) const fn new(
         seat: Seat,
         limits: Limits,
         ledger: Arc<Mutex<Ledger>>,
         disk: D,
+        put: P,
     ) -> Self {
         Self {
             seat,
             limits,
             ledger,
             disk,
+            put,
             flights: BTreeMap::new(),
             waiters: Vec::new(),
             readers: VecDeque::new(),
@@ -902,6 +914,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                 }
                 Message::Disk { op, reply } => {
                     let _ = reply.send((self.disk)(op));
+                }
+                Message::Put { stem, bytes, reply } => {
+                    let _ = reply.send((self.put)(&stem, &bytes));
                 }
                 Message::End { reason } => {
                     self.left = true;
@@ -1650,6 +1665,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                 Message::Disk { op, reply } => {
                     let _ = reply.send((self.disk)(op));
                 }
+                Message::Put { stem, bytes, reply } => {
+                    let _ = reply.send((self.put)(&stem, &bytes));
+                }
                 Message::End { .. } => {
                     self.left = true;
                     return;
@@ -1703,6 +1721,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
                     | Message::Stop { .. }
                     | Message::Probe { .. }
                     | Message::Disk { .. }
+                    | Message::Put { .. }
                     | Message::End { .. } => {}
                 }
             }
@@ -1716,7 +1735,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply> Kept<D> {
     }
 }
 
-impl<D: FnMut(RoomDiskOp) -> DiskReply> Session for Kept<D> {
+impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Session for Kept<D, P> {
     fn begin(&mut self) -> Result<(), String> {
         self.intake()?;
         // Nothing is launched for callers that have all gone.
@@ -2085,6 +2104,25 @@ impl Sessions {
             Ok(Message::Disk { op, reply })
         };
         self.ask_or(&message, || direct(op))
+    }
+
+    /// Puts `bytes` in the room disk's inbox as a file named for `stem`:
+    /// through the live session, which holds the disk, or `direct`ly when
+    /// there is none. No session is started for it.
+    pub(crate) fn put(
+        &self,
+        stem: &str,
+        bytes: &[u8],
+        direct: impl FnOnce() -> PutReply,
+    ) -> PutReply {
+        let message = |reply: Sender<PutReply>| -> Result<Message, String> {
+            Ok(Message::Put {
+                stem: stem.to_owned(),
+                bytes: bytes.to_vec(),
+                reply,
+            })
+        };
+        self.ask_or(&message, direct)
     }
 
     /// Ends the session, waits until it is down, and lets no other start.

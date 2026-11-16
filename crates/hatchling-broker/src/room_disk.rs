@@ -1131,6 +1131,16 @@ pub(crate) fn with_open_volume<T>(
 ) -> Result<T, String> {
     let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
     let _process = disk.claim_operation()?;
+    let (mount, device) = open_volume(disk)?;
+    let _pin = hatchling_sys::locked_mount::pin_locked_ext4_root(&mount, &device)
+        .map_err(|error| error.to_string())?;
+    check(&mount, &device)
+}
+
+/// Where the room disk's volume is mounted, and the device it is: when it
+/// is there, recorded as made, and open. The caller holds the disk's turn
+/// and its claim.
+fn open_volume(disk: &RoomDisk) -> Result<(PathBuf, String), String> {
     disk.check_dir()?;
     if disk.image_at(&disk.image())?.is_none() {
         return Err(String::from("there's no room disk"));
@@ -1142,10 +1152,37 @@ pub(crate) fn with_open_volume<T>(
         .ok_or_else(|| String::from("the room disk isn't mapped"))?;
     let device = std::fs::read_to_string(mapping.join("dev"))
         .map_err(|error| format!("the room mapping's device can't be read: {error}"))?;
-    let mount = disk.mount_point();
-    let _pin = hatchling_sys::locked_mount::pin_locked_ext4_root(&mount, device.trim_end())
+    Ok((disk.mount_point(), device.trim_end().to_owned()))
+}
+
+/// Puts `bytes` in the room disk's inbox, as a file named for `stem`
+/// (WO-041), and says the name it was given. It takes the disk's turn,
+/// as an op does: for when no Room holds it.
+///
+/// # Errors
+///
+/// Why not, in a sentence: the inbox refused it, or the disk isn't open.
+pub(crate) fn put_inbox(disk: &RoomDisk, stem: &str, bytes: &[u8]) -> Result<String, String> {
+    with_open_volume(disk, |mount, device| put_at(mount, device, stem, bytes))
+}
+
+/// [`put_inbox`], for a Room session that holds the disk's turn and its
+/// claim already.
+///
+/// # Errors
+///
+/// As [`put_inbox`].
+pub(crate) fn put_inbox_held(disk: &RoomDisk, stem: &str, bytes: &[u8]) -> Result<String, String> {
+    let (mount, device) = open_volume(disk)?;
+    put_at(&mount, &device, stem, bytes)
+}
+
+/// Puts `bytes` in the inbox of the volume mounted at `mount` from
+/// `device`, pinned for it.
+fn put_at(mount: &Path, device: &str, stem: &str, bytes: &[u8]) -> Result<String, String> {
+    let volume = hatchling_sys::locked_mount::pin_locked_ext4_root(mount, device)
         .map_err(|error| error.to_string())?;
-    check(&mount, device.trim_end())
+    hatchling_sys::room_inbox::put(volume.as_fd(), stem, bytes).map_err(|error| error.to_string())
 }
 
 /// Does the room disk's `op`, one at a time however many connections ask:

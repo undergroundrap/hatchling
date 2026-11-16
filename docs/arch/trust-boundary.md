@@ -393,7 +393,26 @@ Opening the disk also prepares the workspace and inbox siblings and the
 inbox attachment point under the workspace. The spawner creates these
 relative to the authenticated volume, refuses links and nested mounts at
 those names, and leaves existing directory contents in place. Newly made
-directories are private to root until the launcher provisions room access.
+directories are private to root until the launcher provisions room access,
+except the inbox, which every open leaves root's and `0755`, so the Room's
+user can read it and change nothing in it.
+
+A file the owner hands the agent is put in the inbox by the spawner, as
+root, through the volume's own `inbox` directory, never through the
+`workspace/inbox` name the Room can reach (WO-041). The owner's name for
+the file never reaches the disk: the broker sends a stem the spawner
+checks again (ASCII letters, digits, `.`, `_` and `-`, at most 64 bytes,
+not starting with a dot), and the spawner names the file `NNNN-<stem>`,
+numbered past the highest number the inbox has given. That number is
+kept in a root file of the inbox's, so no number is given twice, even
+after the owner removes its file. It writes an unnamed `O_TMPFILE`, makes
+it `0444`, syncs it, and links it in by its name, which never replaces
+anything; a put that fails leaves no file. The inbox holds at most 64
+files and 256 MiB, each file at most 8 MiB, and a full inbox refuses a
+file. The Room's own files can fill the disk the inbox is on: a put then
+says the disk is full (reserving room for the inbox is WO-040's). The put
+holds the disk's turn as an operation does, through the live Room session
+when there is one, and a disk that isn't open refuses it.
 
 ## What's inside the boundary (trusted)
 

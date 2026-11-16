@@ -588,6 +588,9 @@ enum Request {
     /// Change a file of the installed Room: write it whole, or replace
     /// one exact piece of its text.
     RoomChange { change: RoomChange },
+    /// Put the next `size` bytes, sent in frames, in the Room's inbox as a
+    /// new file named for `stem` (WO-041).
+    RoomInboxPut { stem: String, size: usize },
 }
 
 /// What the spawner answers.
@@ -619,6 +622,8 @@ enum Reply {
     RoomFound { found: Found },
     /// What a change to a file of the Room came to.
     RoomChanged { changed: RoomChanged },
+    /// A file was put in the Room's inbox, and this is its name.
+    RoomPlaced { name: String },
 }
 
 pub use crate::room_session::{Change as RoomChange, Changed as RoomChanged, Search as RoomSearch};
@@ -820,7 +825,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => {
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -896,6 +902,50 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Has the spawner put `bytes` in the Room's inbox as a new file named
+    /// for `stem` (WO-041), and says the name it was given: `NNNN-<stem>`.
+    ///
+    /// # Errors
+    ///
+    /// Why not: a file past the inbox's bound (refused before anything is
+    /// sent), the inbox's refusal, a disk that isn't open, or a spawner
+    /// that can't be reached.
+    pub fn room_inbox_put(&self, stem: &str, bytes: &[u8]) -> Result<String, String> {
+        if bytes.len() > INBOX_FILE_BYTES {
+            return Err(inbox_too_large());
+        }
+        let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| format!("cannot bound the spawner's answer: {error}"))?;
+        let request = Request::RoomInboxPut {
+            stem: stem.to_owned(),
+            size: bytes.len(),
+        };
+        send(&stream, &request).map_err(|error| error.to_string())?;
+        for chunk in bytes.chunks(DELIVERY_CHUNK) {
+            write_frame(&stream, chunk).map_err(|error| gone(error).to_string())?;
+        }
+        // Once the whole file is sent, the spawner may have put it: no
+        // answer is never taken for no file, and a caller doesn't put it
+        // again.
+        let answer = receive(&stream).map_err(|error| format!("{INBOX_UNHEARD}: {error}"))?;
+        match answer {
+            Reply::RoomPlaced { name } => Ok(name),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -926,7 +976,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -951,7 +1002,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1045,7 +1097,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1086,7 +1139,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1123,7 +1177,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomFound { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomFound { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1163,7 +1218,8 @@ impl Spawner {
             | Reply::RoomJob { .. }
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1186,7 +1242,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1224,7 +1281,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 }
@@ -1269,7 +1327,8 @@ impl SpawnedProcess {
                     | Reply::RoomOutput { .. }
                     | Reply::RoomPage { .. }
                     | Reply::RoomFound { .. }
-                    | Reply::RoomChanged { .. },
+                    | Reply::RoomChanged { .. }
+                    | Reply::RoomPlaced { .. },
                 ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
@@ -1613,9 +1672,13 @@ fn hold_room_session(
     seat: Seat,
     ledger: Arc<Mutex<Ledger>>,
 ) {
-    let mut kept = Kept::new(seat, Limits::INSTALLED, ledger, |op| {
-        room_disk_done(policy, keeper, op, true)
-    });
+    let mut kept = Kept::new(
+        seat,
+        Limits::INSTALLED,
+        ledger,
+        |op| room_disk_done(policy, keeper, op, true),
+        |stem: &str, bytes: &[u8]| room_inbox_done(policy, keeper, stem, bytes, true),
+    );
     let launched = room_launch(program, policy, keeper, Some(&mut kept));
     kept.finish(launched, |op| room_disk_done(policy, keeper, op, false));
 }
@@ -1718,6 +1781,15 @@ fn serve_connection(
         Request::RoomChange { change } => {
             told(stream, sessions.change(&change, stream), Reply::changed)
         }
+        Request::RoomInboxPut { stem, size } => {
+            let put =
+                read_sized(stream, size, INBOX_FILE_BYTES, inbox_too_large).and_then(|bytes| {
+                    sessions.put(&stem, &bytes, || {
+                        room_inbox_done(policy, keeper, &stem, &bytes, false)
+                    })
+                });
+            told(stream, put, Reply::placed)
+        }
     }
 }
 
@@ -1740,6 +1812,11 @@ impl Reply {
     /// What a change to a file of the Room came to, as a reply.
     const fn changed(changed: RoomChanged) -> Self {
         Self::RoomChanged { changed }
+    }
+
+    /// The name a file put in the Room's inbox was given, as a reply.
+    const fn placed(name: String) -> Self {
+        Self::RoomPlaced { name }
     }
 }
 
@@ -1919,6 +1996,37 @@ fn room_disk_done(
     }
 }
 
+/// Puts a file in the room disk's inbox (WO-041): the ordinary way, or,
+/// `held`, for a Room session that holds the disk already.
+fn room_inbox_done(
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+    stem: &str,
+    bytes: &[u8],
+    held: bool,
+) -> Result<String, String> {
+    let (Some(room), Some(_)) = (&policy.room, keeper) else {
+        return Err(String::from(crate::room_disk::NOT_HERE));
+    };
+    if held {
+        crate::room_disk::put_inbox_held(room, stem, bytes)
+    } else {
+        crate::room_disk::put_inbox(room, stem, bytes)
+    }
+}
+
+/// The largest file the Room's inbox takes.
+const INBOX_FILE_BYTES: usize = hatchling_sys::room_inbox::FILE_BYTES;
+
+/// What a file sent for the Room's inbox, and never answered, is.
+pub(crate) const INBOX_UNHEARD: &str =
+    "the spawner didn't answer: it isn't known whether the file was put in the Room's inbox";
+
+/// Why a file is refused the Room's inbox for its size.
+fn inbox_too_large() -> String {
+    String::from(hatchling_sys::room_inbox::TOO_LARGE)
+}
+
 /// The largest delivery the spawner writes: a harness's patch of a whole
 /// work tree, as it was and as it is (twice
 /// [`crate::harness::MAX_WORK_BYTES`]), with room for its headers.
@@ -1940,7 +2048,18 @@ fn too_large() -> String {
 /// Why not: too large, frames that don't add up to `size`, or a broker
 /// gone.
 fn read_delivery(stream: &UnixStream, size: usize) -> Result<Vec<u8>, String> {
-    if size > MAX_DELIVERY_BYTES {
+    read_sized(stream, size, MAX_DELIVERY_BYTES, too_large)
+}
+
+/// [`read_delivery`], held to `most` bytes, and refused with what
+/// `too_large` says past them.
+fn read_sized(
+    stream: &UnixStream,
+    size: usize,
+    most: usize,
+    too_large: fn() -> String,
+) -> Result<Vec<u8>, String> {
+    if size > most {
         return Err(too_large());
     }
     let mut bytes = Vec::with_capacity(size);
@@ -2342,6 +2461,96 @@ pub(crate) mod tests {
         assert!(read_delivery(&theirs, 1).is_err(), "the broker gone");
     }
 
+    /// A file for the Room's inbox past its bound is refused before
+    /// anything is sent; one whose frames don't add up to the size said,
+    /// or that says a size past the bound, is refused by the spawner, and
+    /// nothing reaches the session.
+    #[test]
+    fn a_file_for_the_inbox_is_held_to_its_bound_and_its_frames() {
+        use crate::room_session::tests::stand_ins;
+        let (sessions, started, _ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let large = vec![b'x'; INBOX_FILE_BYTES + 1];
+        assert_eq!(
+            spawner.room_inbox_put("large", &large),
+            Err(String::from(hatchling_sys::room_inbox::TOO_LARGE))
+        );
+        for (size, frames, refusal) in [
+            (3, vec![&b"abcd"[..]], "isn't the 3 bytes"),
+            (4, vec![&b"ab"[..], &b""[..]], "isn't the 4 bytes"),
+            (
+                INBOX_FILE_BYTES + 1,
+                Vec::new(),
+                hatchling_sys::room_inbox::TOO_LARGE,
+            ),
+        ] {
+            let stream = spawner.connect().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let stem = String::from("lied");
+            send(&stream, &Request::RoomInboxPut { stem, size }).unwrap();
+            for frame in frames {
+                write_frame(&stream, frame).unwrap();
+            }
+            let reply = receive(&stream).unwrap();
+            assert!(
+                matches!(&reply, Reply::Refused { reason } if reason.contains(refusal)),
+                "{reply:?}"
+            );
+        }
+        // The largest file the inbox takes is sent, and reaches the inbox
+        // (no Room disk is here to take it).
+        let most = vec![b'x'; INBOX_FILE_BYTES];
+        let said = spawner.room_inbox_put("most", &most).unwrap_err();
+        assert!(said.contains("no room disk here"), "{said}");
+        assert_eq!(started.load(Ordering::SeqCst), 0, "a put started a session");
+        drop(spawner);
+        served.join().unwrap();
+    }
+
+    /// A file for the inbox of many frames, put through `spawner`, reaches
+    /// the stand-in session of `generation` whole.
+    fn reaches_the_session_whole(spawner: &Spawner, generation: usize) {
+        let file: Vec<u8> = (0..100 * 1024_u32)
+            .map(|at| u8::try_from(at % 251).unwrap())
+            .collect();
+        assert_eq!(
+            spawner.room_inbox_put("notes", &file),
+            Err(format!("session {generation} put notes {}", file.len()))
+        );
+    }
+
+    /// A file sent whole for the inbox and never answered is said not to
+    /// be known either way: the spawner may have put it.
+    #[test]
+    fn a_put_never_answered_isnt_known_either_way() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let silent = std::thread::spawn(move || {
+            let stream = UnixStream::from(hatchling_sys::net::recv_fd(theirs.as_fd()).unwrap());
+            let request: Request = serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
+            let Request::RoomInboxPut { stem, size } = request else {
+                unreachable!("not a put: {request:?}");
+            };
+            let bytes = read_sized(&stream, size, INBOX_FILE_BYTES, inbox_too_large).unwrap();
+            (stem, bytes)
+        });
+        let spawner = Spawner::over(ours);
+        let said = spawner.room_inbox_put("notes", b"abc").unwrap_err();
+        assert!(said.starts_with(INBOX_UNHEARD), "{said}");
+        assert_eq!(
+            silent.join().unwrap(),
+            (String::from("notes"), b"abc".to_vec())
+        );
+    }
+
     /// The spawner writes an approved delivery into the workspace, as a
     /// new file of the owner's; a name that isn't a workspace name, a file
     /// already there, a delivery too large, and no workspace configured
@@ -2578,6 +2787,8 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             Err(String::from("session 1 asked of j for 0ns"))
         );
         assert_eq!(spawner.check_room_mount(), Ok(()));
+        // A file for the inbox reaches the session whole, in its frames.
+        reaches_the_session_whole(&spawner, 1);
         assert_eq!(
             spawner.room_disk(RoomDiskOp::Close),
             Err(String::from("session 1 Close"))

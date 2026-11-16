@@ -64,6 +64,7 @@ impl RoomMounts {
         require_root_control(volume, "verify room volume root ownership")?;
         let inbox = ensure_directory_at(volume, "inbox")?;
         require_root_control(inbox.as_fd(), "verify room inbox ownership")?;
+        crate::room_inbox::let_the_room_read(volume)?;
         let workspace = ensure_directory_at(volume, "workspace")?;
         ensure_directory_at(workspace.as_fd(), "inbox").map(drop)
     }
@@ -302,10 +303,20 @@ fn pin_encrypted_sources(volume: &Path, device: &str) -> Result<(OwnedFd, OwnedF
 }
 
 fn require_root_control(directory: BorrowedFd<'_>, operation: &'static str) -> Result<(), Error> {
+    require_control(directory, 0, operation)
+}
+
+/// Refuses `directory` unless it is `uid`'s and no one else may write
+/// it: root, but for a test, which isn't.
+pub(crate) fn require_control(
+    directory: BorrowedFd<'_>,
+    uid: u32,
+    operation: &'static str,
+) -> Result<(), Error> {
     let stat = rustix::fs::fstat(directory).map_err(failed(operation))?;
     // A root-controlled parent keeps the room user from replacing either
     // source directory. The inbox itself must also refuse untrusted writers.
-    if stat.st_uid != 0 || stat.st_mode & 0o022 != 0 {
+    if stat.st_uid != uid || stat.st_mode & 0o022 != 0 {
         return Err(refused(operation, "directory must be controlled by root"));
     }
     Ok(())
@@ -393,14 +404,14 @@ fn single_threaded_init() -> Result<bool, Error> {
     Ok(threads.next().is_none())
 }
 
-fn failed(operation: &'static str) -> impl Fn(rustix::io::Errno) -> Error {
+pub(crate) fn failed(operation: &'static str) -> impl Fn(rustix::io::Errno) -> Error {
     move |source| Error::Mount {
         operation,
         source: source.into(),
     }
 }
 
-fn refused(operation: &'static str, why: &'static str) -> Error {
+pub(crate) fn refused(operation: &'static str, why: &'static str) -> Error {
     Error::Mount {
         operation,
         source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, why),
