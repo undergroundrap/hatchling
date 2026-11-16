@@ -52,6 +52,7 @@ pub fn dispatch(
             all.extend(checks::dep_direction::run(root)?);
             all.extend(checks::pins::run(root)?);
             all.extend(checks::arch::run(root)?);
+            all.extend(checks::drift::run(root)?);
             Ok(all)
         }
         "mutants" => checks::mutants::run(root),

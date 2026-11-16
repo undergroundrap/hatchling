@@ -2,7 +2,7 @@
 
 **Status:** DONE (2026-10-31)
 **Area:** `crates/hatchling-core` (`action`: canonical form and digest; `ui`), `crates/hatchling-broker` (`approvals`, `api_ops`, `artifact_ops`), `frontend/` (the live approvals adapter and review screen), `docs/`
-**Issue:** none yet
+**Issue:** none
 **Trust boundary:** yes
 
 ## Problem

@@ -1,6 +1,6 @@
 # WO-042: Keep the docs and the queue honest in CI
 
-**Status:** QUEUED
+**Status:** CLOSED
 **Area:** `crates/hatchling-dev` (the audit's checks), `.github/workflows/` (a check of pull requests and issues), `README.md`, `docs/workorders/`
 **Issue:** [#487](https://github.com/undergroundrap/hatchling/issues/487)
 **Trust boundary:** no
@@ -22,10 +22,10 @@ On 2026-11-16 a read of the docs against the code found about twenty-five places
 
 ## Acceptance criteria
 
-- [ ] Each check fails on a deliberately stale tree (a wrong version, a missing queue row, a gap in numbers, a closed work order with an unticked item, a missing issue) and passes on the real one; each is a test.
-- [ ] The issue check fails on a fixture of a closed work order with an open issue, and passes on the repository as it is.
-- [ ] The pull-request check fails on a body with no reference and passes with `Closes #N`, `Part of #N` or the `trivial` label.
-- [ ] `AGENTS.md` and `MAINTAINING.md` say what each check holds.
+- [x] Each check fails on a deliberately stale tree (a wrong version, a missing queue row, a gap in numbers, a closed work order with an unticked item, a missing issue) and passes on the real one; each is a test. (`checks::drift` tests, and the audit on eight stale copies of the real tree: [the record](../evidence/drift-checks.md).)
+- [x] The issue check fails on a fixture of a closed work order with an open issue, and passes on the repository as it is. (`scripts/test_tracking.py`; `tracking.py issues` on the repository: no findings.)
+- [x] The pull-request check fails on a body with no reference and passes with `Closes #N`, `Part of #N` or the `trivial` label. (`scripts/test_tracking.py`.)
+- [x] `AGENTS.md` and `MAINTAINING.md` say what each check holds.
 
 ## Gates
 
@@ -33,4 +33,4 @@ As [TEMPLATE.md](TEMPLATE.md).
 
 ## Evidence
 
-Filled in at close.
+[docs/evidence/drift-checks.md](../evidence/drift-checks.md).

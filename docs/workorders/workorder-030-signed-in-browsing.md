@@ -2,7 +2,7 @@
 
 **Status:** DONE (2026-10-30)
 **Area:** `crates/hatchling-broker` (profiles, the fill, the session's sites), `crates/hatchling-vault` (two sealed stores: cookie jars and site credentials), `crates/hatchling-browser` (reading and restoring cookies, the fill), `crates/hatchling-core` (the ops; the UI's surfaces), `crates/hatchling-agent` (the fill tool), `frontend/` (signed-in sites, credentials, codes)
-**Issue:** none yet
+**Issue:** none
 **Trust boundary:** yes
 
 ## Problem

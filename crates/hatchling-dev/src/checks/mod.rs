@@ -9,6 +9,7 @@
 pub mod arch;
 pub mod coverage;
 pub mod dep_direction;
+pub mod drift;
 pub mod driver;
 pub mod mutant_cache;
 pub mod mutants;
@@ -124,6 +125,7 @@ mod tests {
             ("dep_direction", dep_direction::run(&root).unwrap()),
             ("pins", pins::run(&root).unwrap()),
             ("arch", arch::run(&root).unwrap()),
+            ("drift", drift::run(&root).unwrap()),
             ("vault_surface", vault_surface::run(&root).unwrap()),
             ("space_surface", space_surface::run(&root).unwrap()),
         ] {

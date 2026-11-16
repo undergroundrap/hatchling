@@ -52,6 +52,8 @@ and [the queue](docs/workorders/README.md). These are the rules to work by.
 - In the same pull request, the work order's acceptance criteria are ticked against the evidence that proves each one (or say plainly which isn't proven), its status is `CLOSED`, and its queue row matches.
 - After the merge: check the issue closed, and close the milestone when all its work is done.
 
+**What CI holds you to:** `hatchling-dev audit` (in the gate) fails when the queue and the work orders' files disagree, a number is skipped, an open work order names no issue, or a closed one has an unticked item; it also fails when the docs state a protocol version, or a count of system users, the code doesn't have. The `tracking` workflow fails when a work order's issue is open or closed against its status, an open one's issue is on no milestone, or a pull request that changes `crates/` says neither `Closes #N` nor `Part of #N` and isn't labelled `trivial`.
+
 **Never:** leave a merged work order's issue open, reuse a WO number, or let work that needed a work order ship without one. If that happened, write the work order after the fact, from what shipped, and close it the same way.
 
 ## Milestones, releases and the changelog

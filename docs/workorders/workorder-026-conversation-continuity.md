@@ -2,7 +2,7 @@
 
 **Status:** DONE (2026-11-01)
 **Area:** `crates/hatchling-core` (`conversation`), `crates/hatchling-broker` (`chat_run`, run cells, delivery), `crates/hatchling-scheduler` (`RunRequest`, `Delivery`), `crates/hatchling-agent` (config), `crates/hatchling-loop` (prior turns), `docs/`
-**Issue:** none yet
+**Issue:** none
 **Trust boundary:** yes
 
 ## Problem
