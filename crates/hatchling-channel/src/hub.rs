@@ -41,6 +41,11 @@ pub const MAX_INGRESS_TEXT_BYTES: usize = 16 * 1024;
 /// the oldest offer goes.
 pub const MAX_OFFERS: usize = 8;
 
+/// Most of the broker's own notes the hub holds for the next run that
+/// answers the owner. Past it the oldest goes: a note is a reminder of
+/// something that is there to see, never the only word of it.
+pub const MAX_NOTES: usize = 64;
+
 /// What the owner asked in a chat run whose answer ran out of steps,
 /// offered for them to keep for later.
 struct Offer {
@@ -89,6 +94,9 @@ struct HubState {
     /// What the owner may keep for later from the conversation open now,
     /// the oldest first.
     offers: VecDeque<Offer>,
+    /// The broker's own notes for the next run that answers the owner,
+    /// each by a key it can be forgotten by, the oldest first.
+    notes: VecDeque<(String, String)>,
     sink: Option<(SinkId, Sink)>,
     /// Where a reply goes while no client is attached: the broker's own
     /// record of the chat, which a client reads when it connects.
@@ -203,6 +211,43 @@ impl LocalHub {
         state.conversation = state.conversation.wrapping_add(1);
         state.started_for = None;
         state.offers.clear();
+    }
+
+    /// Keeps `line`, a note of the broker's own, for the next run that
+    /// answers the owner, by `key`: a note by the same key is replaced.
+    /// Held in memory alone; past [`MAX_NOTES`] the oldest goes.
+    pub fn note(&self, key: String, line: String) {
+        let mut state = self.state();
+        state.notes.retain(|(held, _)| *held != key);
+        if state.notes.len() >= MAX_NOTES {
+            state.notes.pop_front();
+        }
+        state.notes.push_back((key, line));
+    }
+
+    /// Forgets the note kept by `key`, if one is.
+    pub fn forget_note(&self, key: &str) {
+        self.state().notes.retain(|(held, _)| held != key);
+    }
+
+    /// Takes every note kept, the oldest first, by key.
+    #[must_use]
+    pub fn take_notes(&self) -> Vec<(String, String)> {
+        self.state().notes.drain(..).collect()
+    }
+
+    /// Gives back `notes` taken for a run that didn't start, ahead of any
+    /// kept since, as [`note`](Self::note) would keep them.
+    pub fn give_back_notes(&self, notes: Vec<(String, String)>) {
+        let mut state = self.state();
+        let since: Vec<(String, String)> = state.notes.drain(..).collect();
+        for (key, line) in notes.into_iter().chain(since) {
+            state.notes.retain(|(held, _)| *held != key);
+            if state.notes.len() >= MAX_NOTES {
+                state.notes.pop_front();
+            }
+            state.notes.push_back((key, line));
+        }
     }
 
     /// Starts a new conversation the owner started for `what`, which is
@@ -381,6 +426,46 @@ impl LocalHub {
 mod tests {
     use super::*;
     use crate::{ChannelId, SenderId};
+
+    #[test]
+    fn notes_are_kept_by_key_taken_once_and_bounded() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        assert!(hub.take_notes().is_empty());
+        let pair = |key: &str, line: &str| (key.to_owned(), line.to_owned());
+        hub.note(String::from("a"), String::from("first"));
+        hub.note(String::from("b"), String::from("second"));
+        hub.note(String::from("a"), String::from("again"));
+        hub.forget_note("missing");
+        assert_eq!(hub.take_notes(), [pair("b", "second"), pair("a", "again")]);
+        assert!(hub.take_notes().is_empty(), "a note was taken twice");
+        // Given back ahead of any since, and one forgotten is gone.
+        hub.note(String::from("c"), String::from("since"));
+        hub.give_back_notes(vec![pair("b", "second"), pair("c", "older")]);
+        hub.forget_note("b");
+        assert_eq!(hub.take_notes(), [pair("c", "since")]);
+        for number in 0..=MAX_NOTES {
+            hub.note(number.to_string(), number.to_string());
+        }
+        let kept = hub.take_notes();
+        assert_eq!(kept.len(), MAX_NOTES);
+        assert_eq!(
+            kept.first(),
+            Some(&pair("1", "1")),
+            "the oldest wasn't the one to go"
+        );
+        let full: Vec<_> = (0..MAX_NOTES)
+            .map(|n| pair(&n.to_string(), "old"))
+            .collect();
+        hub.note(String::from("new"), String::from("new"));
+        hub.give_back_notes(full);
+        let kept = hub.take_notes();
+        assert_eq!(kept.len(), MAX_NOTES);
+        assert_eq!(
+            kept.last(),
+            Some(&pair("new", "new")),
+            "a note kept since was lost"
+        );
+    }
 
     #[test]
     fn only_queued_messages_are_arrivals_and_taking_resets_the_count() {

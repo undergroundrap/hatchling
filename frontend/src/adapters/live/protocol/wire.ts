@@ -319,6 +319,33 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "output_tokens"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "bytes": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "ended": {
+                        "$ref": "#/$defs/FileInEnded"
+                    },
+                    "event": {
+                        "const": "file_in",
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "event",
+                    "bytes",
+                    "ended"
+                ],
+                "type": "object"
             }
         ],
         "properties": {
@@ -554,6 +581,26 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "decline_code",
+                "type": "string"
+            },
+            {
+                "const": "begin_file_in",
+                "type": "string"
+            },
+            {
+                "const": "file_in_part",
+                "type": "string"
+            },
+            {
+                "const": "end_file_in",
+                "type": "string"
+            },
+            {
+                "const": "list_inbox",
+                "type": "string"
+            },
+            {
+                "const": "remove_inbox_file",
                 "type": "string"
             }
         ]
@@ -1443,6 +1490,155 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "FileIn": {
+        "properties": {
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "chat_id": {
+                "type": "string"
+            },
+            "holds_secret": {
+                "type": "boolean"
+            },
+            "message_id": {
+                "type": "string"
+            },
+            "name": {
+                "type": "string"
+            },
+            "placed_as": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "chat_id",
+            "message_id",
+            "name",
+            "placed_as",
+            "bytes",
+            "holds_secret"
+        ],
+        "type": "object"
+    },
+    "FileInEnded": {
+        "oneOf": [
+            {
+                "const": "placed",
+                "type": "string"
+            },
+            {
+                "const": "refused",
+                "type": "string"
+            },
+            {
+                "const": "unknown",
+                "type": "string"
+            },
+            {
+                "const": "abandoned",
+                "type": "string"
+            }
+        ]
+    },
+    "FileInRefusal": {
+        "oneOf": [
+            {
+                "properties": {
+                    "limit": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "refusal": {
+                        "const": "too_large",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal",
+                    "limit"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "busy",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "no_room",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "unknown_upload",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "out_of_step",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "refused",
+                        "type": "string"
+                    },
+                    "said": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal",
+                    "said"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "unknown",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            }
+        ]
+    },
     "FileRefusal": {
         "oneOf": [
             {
@@ -1834,6 +2030,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             }
         ]
+    },
+    "InboxFile": {
+        "properties": {
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "name": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "name",
+            "bytes"
+        ],
+        "type": "object"
     },
     "InlineImage": {
         "properties": {
@@ -4688,6 +4900,100 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "request_id"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "begin_file_in",
+                        "type": "string"
+                    },
+                    "bytes": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "chat_id": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "chat_id",
+                    "name",
+                    "bytes"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "file_in_part",
+                        "type": "string"
+                    },
+                    "data": {
+                        "type": "string"
+                    },
+                    "seq": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "upload_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "upload_id",
+                    "seq",
+                    "data"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "end_file_in",
+                        "type": "string"
+                    },
+                    "upload_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "upload_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "list_inbox",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "remove_inbox_file",
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "name"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -5281,6 +5587,119 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "session_id"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "part_bytes": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "result": {
+                        "const": "file_in_begun",
+                        "type": "string"
+                    },
+                    "upload_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "upload_id",
+                    "part_bytes"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "file_in_part_taken",
+                        "type": "string"
+                    },
+                    "seq": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "upload_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "upload_id",
+                    "seq"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "file": {
+                        "$ref": "#/$defs/FileIn"
+                    },
+                    "result": {
+                        "const": "file_in_placed",
+                        "type": "string"
+                    },
+                    "upload_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "upload_id",
+                    "file"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "reason": {
+                        "$ref": "#/$defs/FileInRefusal"
+                    },
+                    "result": {
+                        "const": "file_in_refused",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "reason"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "files": {
+                        "items": {
+                            "$ref": "#/$defs/InboxFile"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "inbox",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "files"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "inbox_file_removed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "name"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -5525,6 +5944,19 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "properties": {
                     "kind": {
                         "const": "artifact_listed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind"
+                ],
+                "type": "object"
+            },
+            {
+                "$ref": "#/$defs/FileIn",
+                "properties": {
+                    "kind": {
+                        "const": "file_in",
                         "type": "string"
                     }
                 },

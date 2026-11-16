@@ -68,6 +68,11 @@ pub mod environment;
 pub mod error;
 pub mod feed_page;
 pub mod feed_run;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the API's actions and its connections share a file on its way in"
+)]
+mod file_in;
 pub use feed_run::{FEED_TASK, FeedLauncher, FeedRun};
 pub mod follow_ups;
 pub mod goals_ops;

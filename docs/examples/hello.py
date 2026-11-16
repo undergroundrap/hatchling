@@ -48,7 +48,7 @@ def main(path):
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.connect(path)
 
-    send(sock, {"type": "hello", "schema_version": 4, "client": "hello.py", "token": None})
+    send(sock, {"type": "hello", "schema_version": 5, "client": "hello.py", "token": None})
     welcome = receive(sock)
     if welcome.get("type") != "welcome":
         print("handshake failed:", json.dumps(welcome))

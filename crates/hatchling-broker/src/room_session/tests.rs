@@ -27,9 +27,9 @@ const fn limits() -> Limits {
 }
 
 type Disk = Box<dyn FnMut(RoomDiskOp) -> DiskReply + Send>;
-type Put = Box<dyn FnMut(&str, &[u8]) -> PutReply + Send>;
-/// Each file put, by its stem and its bytes.
-type Puts = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+type Put = Box<dyn FnMut(&InboxOp) -> InboxReply + Send>;
+/// Each op done to the inbox.
+type Puts = Arc<Mutex<Vec<InboxOp>>>;
 
 /// The far ends of everything a session watches.
 struct Rig {
@@ -43,7 +43,7 @@ struct Rig {
     alive: OwnedFd,
     /// What the session did to the disk while it held it.
     ops: Arc<Mutex<Vec<RoomDiskOp>>>,
-    /// What it put in the disk's inbox while it held it.
+    /// What it did to the disk's inbox while it held it.
     puts: Puts,
     ledger: Arc<Mutex<Ledger>>,
 }
@@ -61,13 +61,17 @@ fn new_rig(limits: Limits) -> (Rig, Kept<Disk, Put>) {
     });
     let puts: Puts = Arc::default();
     let put_seen = Arc::clone(&puts);
-    let put: Put = Box::new(move |stem, bytes| {
+    let put: Put = Box::new(move |op| {
         let count = {
             let mut puts = put_seen.lock().unwrap();
-            puts.push((stem.to_owned(), bytes.to_vec()));
+            puts.push(op.clone());
             puts.len()
         };
-        Ok(format!("{count:04}-{stem}"))
+        Ok(match op {
+            InboxOp::Put { stem, .. } => InboxAnswer::Placed(format!("{count:04}-{stem}")),
+            InboxOp::List => InboxAnswer::Listed(Vec::new()),
+            InboxOp::Remove { .. } => InboxAnswer::Removed,
+        })
     });
     let ledger: Arc<Mutex<Ledger>> = Arc::default();
     (
@@ -240,15 +244,27 @@ fn found_of(text: &[u8]) -> Found {
     }
 }
 
-fn ask_put(door: &Door, stem: &str, bytes: &[u8]) -> Receiver<PutReply> {
+fn ask_inbox(door: &Door, op: InboxOp) -> Receiver<InboxReply> {
     let (reply, answer) = mpsc::channel();
-    let message = Message::Put {
+    assert!(door.send(Message::Inbox { op, reply }).is_ok());
+    answer
+}
+
+/// A put of `bytes` named for `stem`.
+fn put_op(stem: &str, bytes: &[u8]) -> InboxOp {
+    InboxOp::Put {
         stem: stem.to_owned(),
         bytes: bytes.to_vec(),
-        reply,
-    };
-    assert!(door.send(message).is_ok());
-    answer
+    }
+}
+
+/// An inbox op, as a stand-in session says it.
+fn op_said(op: &InboxOp) -> String {
+    match op {
+        InboxOp::Put { stem, bytes } => format!("put {stem} {}", bytes.len()),
+        InboxOp::List => String::from("list"),
+        InboxOp::Remove { name } => format!("remove {name}"),
+    }
 }
 
 fn ask_disk(door: &Door, op: RoomDiskOp) -> Receiver<DiskReply> {
@@ -1651,9 +1667,24 @@ fn closing_or_wiping_the_disk_ends_the_session_first() {
             for op in [RoomDiskOp::Status, RoomDiskOp::Open, RoomDiskOp::Create] {
                 assert_eq!(wait(&ask_disk(&rig.door, op)), Ok(None));
             }
-            let put = ask_put(&rig.door, "notes.txt", b"from the owner");
-            assert_eq!(wait(&put), Ok(String::from("0001-notes.txt")));
-            assert!(!held.is_finished(), "a status or a put ended the session");
+            let put = ask_inbox(&rig.door, put_op("notes.txt", b"from the owner"));
+            assert_eq!(
+                wait(&put),
+                Ok(InboxAnswer::Placed(String::from("0001-notes.txt")))
+            );
+            let listed = ask_inbox(&rig.door, InboxOp::List);
+            assert_eq!(wait(&listed), Ok(InboxAnswer::Listed(Vec::new())));
+            let removed = ask_inbox(
+                &rig.door,
+                InboxOp::Remove {
+                    name: String::from("0001-notes.txt"),
+                },
+            );
+            assert_eq!(wait(&removed), Ok(InboxAnswer::Removed));
+            assert!(
+                !held.is_finished(),
+                "a status or an inbox op ended the session"
+            );
             let closed = ask_disk(&rig.door, closing);
             held.join().unwrap();
             closed
@@ -1665,7 +1696,13 @@ fn closing_or_wiping_the_disk_ends_the_session_first() {
         );
         assert_eq!(
             *rig.puts.lock().unwrap(),
-            [(String::from("notes.txt"), b"from the owner".to_vec())]
+            [
+                put_op("notes.txt", b"from the owner"),
+                InboxOp::List,
+                InboxOp::Remove {
+                    name: String::from("0001-notes.txt")
+                },
+            ]
         );
         assert!(
             answer.try_recv().is_err(),
@@ -1875,8 +1912,11 @@ fn a_session_that_cannot_be_cleared_stays_held_and_says_so() {
         assert_eq!(wait(&stopped), Err(String::from(HELD)));
         assert_eq!(wait(&ask_probe(&rig.door)), Err(String::from(HELD)));
         assert_eq!(wait(&ask_disk(&rig.door, RoomDiskOp::Status)), Ok(None));
-        let put = ask_put(&rig.door, "held", b"x");
-        assert_eq!(wait(&put), Ok(String::from("0001-held")));
+        let put = ask_inbox(&rig.door, put_op("held", b"x"));
+        assert_eq!(
+            wait(&put),
+            Ok(InboxAnswer::Placed(String::from("0001-held")))
+        );
         let before = cleanup.tries();
         std::thread::sleep(Duration::from_millis(450));
         assert!(
@@ -1888,10 +1928,7 @@ fn a_session_that_cannot_be_cleared_stays_held_and_says_so() {
         settled.join().unwrap();
     });
     assert_eq!(*rig.ops.lock().unwrap(), [RoomDiskOp::Status]);
-    assert_eq!(
-        *rig.puts.lock().unwrap(),
-        [(String::from("held"), b"x".to_vec())]
-    );
+    assert_eq!(*rig.puts.lock().unwrap(), [put_op("held", b"x")]);
 }
 
 /// A close or a wipe asked of a held session is a reason to try again at
@@ -2055,11 +2092,8 @@ fn stand_in(generation: usize, seat: &Seat) {
             Message::Disk { op, reply } => {
                 let _ = reply.send(Err(format!("session {generation} {op:?}")));
             }
-            Message::Put { stem, bytes, reply } => {
-                let _ = reply.send(Err(format!(
-                    "session {generation} put {stem} {}",
-                    bytes.len()
-                )));
+            Message::Inbox { op, reply } => {
+                let _ = reply.send(Err(format!("session {generation} {}", op_said(&op))));
             }
             Message::End { .. } => return,
         }
@@ -2204,7 +2238,7 @@ fn output_is_read_once_a_job_is_over() {
                     | Message::Change { .. }
                     | Message::Probe { .. }
                     | Message::Disk { .. }
-                    | Message::Put { .. }
+                    | Message::Inbox { .. }
                     | Message::End { .. } => continue,
                 };
                 let state = RoomJobState::Running { ran_ms: 1 };
@@ -2256,8 +2290,11 @@ fn the_disk_and_the_check_go_through_a_live_session_only() {
         Err(String::from("direct Status"))
     );
     assert_eq!(
-        sessions.put("notes", b"abc", || Err(String::from("put directly"))),
-        Err(String::from("put directly"))
+        sessions.inbox(&put_op("notes", b"abc"), |op| Err(format!(
+            "direct {}",
+            op_said(op)
+        ))),
+        Err(String::from("direct put notes 3"))
     );
     assert_eq!(started.load(Atomic::SeqCst), 0, "a check started a session");
 
@@ -2271,8 +2308,14 @@ fn the_disk_and_the_check_go_through_a_live_session_only() {
         Err(String::from("session 1 Open"))
     );
     assert_eq!(
-        sessions.put("notes", b"abc", || unreachable!("a live session puts it")),
+        sessions.inbox(&put_op("notes", b"abc"), |_| unreachable!(
+            "a live session puts it"
+        )),
         Err(String::from("session 1 put notes 3"))
+    );
+    assert_eq!(
+        sessions.inbox(&InboxOp::List, |_| unreachable!("a live session lists it")),
+        Err(String::from("session 1 list"))
     );
 
     assert_eq!(run(&sessions, "once"), Ok(stood_in(1, "once")));
@@ -2304,7 +2347,9 @@ fn a_shut_spawner_ends_its_session_and_starts_no_other() {
         Err(String::from(LEAVING))
     );
     assert_eq!(
-        sessions.put("notes", b"", || unreachable!("nothing is put after")),
+        sessions.inbox(&put_op("notes", b""), |_| unreachable!(
+            "nothing is put after"
+        )),
         Err(String::from(LEAVING))
     );
     assert_eq!(started.load(Atomic::SeqCst), 1);

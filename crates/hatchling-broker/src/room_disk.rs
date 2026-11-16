@@ -1155,34 +1155,95 @@ fn open_volume(disk: &RoomDisk) -> Result<(PathBuf, String), String> {
     Ok((disk.mount_point(), device.trim_end().to_owned()))
 }
 
-/// Puts `bytes` in the room disk's inbox, as a file named for `stem`
-/// (WO-041), and says the name it was given. It takes the disk's turn,
+/// What is asked of the room disk's inbox (WO-041).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InboxOp {
+    /// Put `bytes` in it as a new file named for `stem`.
+    Put {
+        /// The stem its name ends with.
+        stem: String,
+        /// The file.
+        bytes: Vec<u8>,
+    },
+    /// Say what files it holds.
+    List,
+    /// Take the file `name` out of it.
+    Remove {
+        /// Its name in the inbox.
+        name: String,
+    },
+}
+
+/// A file in the room disk's inbox, as the owner is shown it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboxEntry {
+    /// Its name in the inbox: `NNNN-<stem>`.
+    pub name: String,
+    /// Its size.
+    pub bytes: u64,
+}
+
+/// What the room disk's inbox did, as asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InboxAnswer {
+    /// A file was put, and this is its name.
+    Placed(String),
+    /// The files it holds, by number.
+    Listed(Vec<InboxEntry>),
+    /// The file was taken out.
+    Removed,
+}
+
+/// Does `op` on the room disk's inbox (WO-041). It takes the disk's turn,
 /// as an op does: for when no Room holds it.
 ///
 /// # Errors
 ///
 /// Why not, in a sentence: the inbox refused it, or the disk isn't open.
-pub(crate) fn put_inbox(disk: &RoomDisk, stem: &str, bytes: &[u8]) -> Result<String, String> {
-    with_open_volume(disk, |mount, device| put_at(mount, device, stem, bytes))
+pub(crate) fn inbox(disk: &RoomDisk, op: &InboxOp) -> Result<InboxAnswer, String> {
+    with_open_volume(disk, |mount, device| inbox_at(mount, device, op))
 }
 
-/// [`put_inbox`], for a Room session that holds the disk's turn and its
+/// [`inbox`], for a Room session that holds the disk's turn and its
 /// claim already.
 ///
 /// # Errors
 ///
-/// As [`put_inbox`].
-pub(crate) fn put_inbox_held(disk: &RoomDisk, stem: &str, bytes: &[u8]) -> Result<String, String> {
+/// As [`inbox`].
+pub(crate) fn inbox_held(disk: &RoomDisk, op: &InboxOp) -> Result<InboxAnswer, String> {
     let (mount, device) = open_volume(disk)?;
-    put_at(&mount, &device, stem, bytes)
+    inbox_at(&mount, &device, op)
 }
 
-/// Puts `bytes` in the inbox of the volume mounted at `mount` from
-/// `device`, pinned for it.
-fn put_at(mount: &Path, device: &str, stem: &str, bytes: &[u8]) -> Result<String, String> {
+/// Does `op` on the inbox of the volume mounted at `mount` from `device`,
+/// pinned for it.
+fn inbox_at(mount: &Path, device: &str, op: &InboxOp) -> Result<InboxAnswer, String> {
+    use hatchling_sys::room_inbox;
     let volume = hatchling_sys::locked_mount::pin_locked_ext4_root(mount, device)
         .map_err(|error| error.to_string())?;
-    hatchling_sys::room_inbox::put(volume.as_fd(), stem, bytes).map_err(|error| error.to_string())
+    let said = |error: &dyn std::fmt::Display| error.to_string();
+    match op {
+        InboxOp::Put { stem, bytes } => room_inbox::put(volume.as_fd(), stem, bytes)
+            .map(InboxAnswer::Placed)
+            .map_err(|error| said(&error)),
+        InboxOp::List => room_inbox::list(volume.as_fd())
+            .map(|files| {
+                InboxAnswer::Listed(
+                    files
+                        .into_iter()
+                        .map(|file| InboxEntry {
+                            name: file.name,
+                            bytes: file.bytes,
+                        })
+                        .collect(),
+                )
+            })
+            .map_err(|error| said(&error)),
+        InboxOp::Remove { name } => room_inbox::remove(volume.as_fd(), name)
+            .map(|()| InboxAnswer::Removed)
+            .map_err(|error| said(&error)),
+    }
 }
 
 /// Does the room disk's `op`, one at a time however many connections ask:

@@ -47,15 +47,28 @@ def connect(path, wait=START_WAIT_SECS):
             time.sleep(0.2)
 
 
+# The local API's version this script speaks: the commit's. The release it
+# upgrades from may speak an older one, which it is told, and speaks then.
+SCHEMA_VERSION = 5
+
+
 def session(path):
     """A welcomed API connection, and the grants the welcome named (none
-    from a broker too old to say)."""
-    sock = connect(path)
-    send(sock, {"type": "hello", "schema_version": 4, "client": "upgrade_state.py", "token": None})
-    welcome = receive(sock)
-    if welcome.get("type") != "welcome":
-        raise SystemExit(f"handshake failed: {welcome}")
-    return sock, welcome.get("grants")
+    from a broker too old to say). A broker of another version says its
+    own, and is asked again in it: the schedule actions this script uses
+    are the same in every version it meets."""
+    version = SCHEMA_VERSION
+    for _ in range(2):
+        sock = connect(path)
+        send(sock, {"type": "hello", "schema_version": version, "client": "upgrade_state.py", "token": None})
+        welcome = receive(sock)
+        if welcome.get("type") == "welcome":
+            return sock, welcome.get("grants")
+        sock.close()
+        if welcome.get("type") != "incompatible" or welcome.get("backend") == version:
+            break
+        version = welcome.get("backend")
+    raise SystemExit(f"handshake failed: {welcome}")
 
 
 def ask(sock, request_id, op):

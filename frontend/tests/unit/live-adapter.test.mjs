@@ -394,6 +394,44 @@ test('coding-harness runs are a thread of their own: one lane per harness, one r
         for (const words of [row.title, row.subtitle, row.report])
             assert.doesNotMatch(words, /cccc|dddd|harness-\d/, `${row.id} shows no hash or id`);
 });
+test('files sent into the agent\'s inbox are a thread of their own: a row per file by the inbox\'s name, never the owner\'s', () => {
+    const { transport, adapter } = connected();
+    const states = { placed: 'success', refused: 'failed', unknown: 'interrupted', abandoned: 'interrupted' };
+    const file = (seq, id, ended, name, bytes) => sampleEvent(seq, seq, { kind: 'activity', state: states[ended], event: { event: 'file_in', event_id: `api-${id}`, run_id: 'api', ts: sampleTime(seq), ...(name === null ? {} : { name }), bytes, ended } });
+    replay(transport, [
+        file(1, 1, 'placed', '0001-notes.txt', 512),
+        file(2, 2, 'refused', null, 2048),
+        file(3, 3, 'unknown', null, 3 * 1048576),
+        // The same line seen again changes nothing.
+        file(4, 3, 'unknown', null, 3 * 1048576),
+        // The chat's own word of a file in has no view of its own yet.
+        sampleEvent(5, 5, { kind: 'file_in', chat_id: 'local', message_id: 'file-1', name: '../owner name.txt', placed_as: '0001-notes.txt', bytes: 512, holds_secret: true }),
+        file(6, 6, 'placed', '0002-one', 1),
+        file(7, 7, 'abandoned', null, 4096),
+    ]);
+    const threads = adapter.getSnapshot().threads;
+    assert.deepEqual(threads.map(item => item.id), ['api:files']);
+    const files = threads[0];
+    assert.deepEqual([files.name, files.subtitle, files.statusTitle, files.state, files.verdict], ['Files for the agent', '5 files · 2 put in its inbox', 'Files recorded', 'completed', null]);
+    assert.ok(validThreadCopy(files.name, files.subtitle, files.statusTitle));
+    assert.equal(files.summary, '5 files sent to the agent: 2 put in its inbox, 3 not.');
+    assert.deepEqual(files.pendingSteps, []);
+    assert.deepEqual(files.lanes.map(item => [item.id, item.name, item.parentId, item.rows.length]), [['api:files', 'Into the agent’s inbox', null, 5]]);
+    assert.deepEqual(files.lanes[0].rows.map(row => [row.title, row.subtitle, row.status, row.outputFailed, row.icon, row.phase]), [
+        ['Put a file in the agent’s inbox', '0001-notes.txt, 512 bytes', 'success', false, 'file', 'action'],
+        ['A file wasn’t put in the agent’s inbox', 'A file of 2 KB', 'failed', true, 'warning', 'action'],
+        ['Not known whether a file was put', 'A file of 3 MB', 'interrupted', false, 'warning', 'action'],
+        ['Put a file in the agent’s inbox', '0002-one, 1 byte', 'success', false, 'file', 'action'],
+        ['A file was let go before it was whole', 'A file of 4 KB', 'interrupted', false, 'warning', 'action'],
+    ]);
+    const [first, refused] = files.lanes[0].rows;
+    assert.equal(first.report, '0001-notes.txt, 512 bytes. The agent can read it there, and can change none of it. The agent reads it at /workspace/inbox/0001-notes.txt.');
+    assert.equal(refused.report, 'A file of 2 KB. The inbox didn’t take it, and nothing was put. Hatchling said why when it was sent.');
+    assert.deepEqual([first.id, first.laneId, first.startedAt, first.endedAt, first.durationMs], ['api-1', 'api:files', sampleTime(1), sampleTime(1), null]);
+    for (const row of files.lanes[0].rows)
+        for (const words of [row.title, row.subtitle, row.report])
+            assert.doesNotMatch(words, /owner name|\.\.\//, `${row.id} shows the owner's name`);
+});
 test('a run\'s trail is a thread of its own: a row per tool by how its uses ended, and the model\'s calls', () => {
     const { transport, adapter } = connected();
     const tally = (tool, done, asked, refused, failed) => ({ tool, done, asked, refused, failed });

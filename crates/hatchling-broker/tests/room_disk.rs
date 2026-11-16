@@ -678,6 +678,48 @@ fn check_inbox_put(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
     assert_eq!(crossed, 0, "a put crossed into a mount over the inbox");
     let names = std::fs::read_dir(&inbox)?.count();
     assert_eq!(names, 3, "the inbox under the mount changed");
+    check_inbox_list_and_remove(spawner, &inbox, &first, &third)
+}
+
+/// The inbox's files are listed by number, with their sizes, and one is
+/// removed by its name alone: never by a name a put doesn't give, and
+/// never one that isn't there.
+fn check_inbox_list_and_remove(
+    spawner: &Spawner,
+    inbox: &Path,
+    first: &str,
+    third: &str,
+) -> Result<(), Failed> {
+    let listed = |spawner: &Spawner| -> Result<Vec<(String, u64)>, Failed> {
+        Ok(spawner
+            .room_inbox_list()?
+            .into_iter()
+            .map(|file| (file.name, file.bytes))
+            .collect())
+    };
+    assert_eq!(
+        listed(spawner)?,
+        [(first.to_owned(), 14), (third.to_owned(), 5)]
+    );
+    let outside = inbox.with_file_name("outside-the-inbox");
+    std::fs::write(&outside, b"kept")?;
+    for (name, why) in [
+        ("../outside-the-inbox", "isn't the name"),
+        (".numbered", "isn't the name"),
+        ("0009-gone", "no file of that name"),
+    ] {
+        let refused = spawner
+            .room_inbox_remove(name)
+            .err()
+            .ok_or_else(|| format!("{name:?} was removed"))?;
+        assert!(refused.contains(why), "{name}: {refused}");
+    }
+    assert_eq!(std::fs::read(&outside)?, b"kept");
+    std::fs::remove_file(&outside)?;
+    spawner.room_inbox_remove(first)?;
+    assert!(!inbox.join(first).exists());
+    assert_eq!(listed(spawner)?, [(third.to_owned(), 5)]);
+    assert!(inbox.join(".numbered").is_file());
     Ok(())
 }
 
@@ -723,8 +765,17 @@ fn check_room_inbox(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
     let put = place.disk.mount_point().join("inbox").join(&name);
     assert_eq!(std::fs::read(&put)?, b"from the owner");
     assert!(!place.disk.mount_point().join("inbox/planted").exists());
+    // Listed and removed by the Room's session too, which holds the disk.
+    let names: Vec<String> = spawner
+        .room_inbox_list()?
+        .into_iter()
+        .map(|file| file.name)
+        .collect();
+    assert!(names.contains(&name), "{names:?}");
+    spawner.room_inbox_remove(&name)?;
+    assert!(!put.exists(), "the held session didn't remove it");
     let same = foreground(spawner, &["kept"])?;
-    assert_eq!(exit_code(&same)?, 0, "a put ended the Room");
+    assert_eq!(exit_code(&same)?, 0, "a put or a removal ended the Room");
     Ok(())
 }
 

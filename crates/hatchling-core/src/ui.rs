@@ -46,15 +46,21 @@ use crate::PROTOCOL_VERSION;
 use crate::messages::{
     BuildFailure, DeliveryRefusal, ScheduleOp, ScheduleResult, SkillOp, SkillResult,
 };
-use crate::subagent::{ActivityEvent, ChildVerdict, HarnessOutcome, SubagentEvent, ToolUse};
+use crate::subagent::{
+    ActivityEvent, ChildVerdict, FileInEnded, HarnessOutcome, SubagentEvent, ToolUse,
+};
 
 pub mod api;
 pub mod control;
+pub mod files;
 pub mod operator;
 pub mod surfaces;
 
 pub use api::{ApiOutcome, ApiRequest, ApiToken};
 pub use control::{Actor, Control, Handoff};
+pub use files::{
+    FILE_IN_BYTES, FILE_IN_NAME_BYTES, FILE_IN_PART_BYTES, FileIn, FileInRefusal, InboxFile,
+};
 pub use surfaces::{
     AgentState, ArtifactBody, ArtifactRefusal, ArtifactRevision, BrowserAction, BrowserFrame,
     BrowserSession, BrowserState, ControlRefusal, FileContent, FileFormat, FileRefusal, ImageType,
@@ -67,7 +73,9 @@ pub use surfaces::{
 /// 3: the local API: `Hello`'s token, the `not_granted`
 /// refusal, and `api_call` activity.
 /// 4: coding-harness runs: `harness_run` activity.
-pub const UI_SCHEMA_VERSION: u16 = 4;
+/// 5: files into the Room's inbox (WO-041): the file-in and inbox
+/// actions, the `file_in` event, and `file_in` activity.
+pub const UI_SCHEMA_VERSION: u16 = 5;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -245,6 +253,8 @@ pub enum UiEventBody {
     },
     /// An artifact was listed or changed: its whole record (v2).
     ArtifactListed(UiArtifact),
+    /// The owner put a file in the Room's inbox (v5).
+    FileIn(FileIn),
     /// A file was sent in a chat, as an artifact revision (v2).
     Attachment {
         /// The chat.
@@ -315,7 +325,9 @@ pub enum ActivityState {
 /// a finish is its verdict, a kill is interrupted, and a failure is
 /// failed. An API call the API served is a success, and one it refused
 /// is failed. A run's summary is a record of a session that ended: a
-/// success, whatever its tools' endings.
+/// success, whatever its tools' endings. A file in that was put is a
+/// success, one refused is failed, and one not known either way, or let
+/// go before it was whole, was interrupted.
 #[must_use]
 pub const fn activity_state(event: &SubagentEvent) -> ActivityState {
     match event {
@@ -332,7 +344,11 @@ pub const fn activity_state(event: &SubagentEvent) -> ActivityState {
             outcome: HarnessOutcome::Done,
             ..
         }
-        | SubagentEvent::RunSummary { .. } => ActivityState::Success,
+        | SubagentEvent::RunSummary { .. }
+        | SubagentEvent::FileIn {
+            ended: FileInEnded::Placed,
+            ..
+        } => ActivityState::Success,
         SubagentEvent::Finished {
             verdict: ChildVerdict::Partial,
             ..
@@ -341,8 +357,16 @@ pub const fn activity_state(event: &SubagentEvent) -> ActivityState {
             outcome: HarnessOutcome::NeedsClarification,
             ..
         } => ActivityState::Partial,
-        SubagentEvent::Killed { .. } => ActivityState::Interrupted,
+        SubagentEvent::Killed { .. }
+        | SubagentEvent::FileIn {
+            ended: FileInEnded::Unknown | FileInEnded::Abandoned,
+            ..
+        } => ActivityState::Interrupted,
         SubagentEvent::Failed { .. }
+        | SubagentEvent::FileIn {
+            ended: FileInEnded::Refused,
+            ..
+        }
         | SubagentEvent::ApiCall {
             outcome: ApiOutcome::Refused,
             ..
@@ -1595,6 +1619,38 @@ pub enum UiAction {
         /// The request, as the stream showed it.
         request_id: String,
     },
+    /// Begin sending a file for the Room's inbox (v5): the owner's alone,
+    /// one file at a time. Its parts follow, then its end.
+    BeginFileIn {
+        /// The chat it is sent in.
+        chat_id: String,
+        /// The owner's name for it. Untrusted text, never used on disk.
+        name: String,
+        /// Its size: every part together is exactly this.
+        bytes: u64,
+    },
+    /// One part of the file being sent (v5), in order from 0, each at
+    /// most [`FILE_IN_PART_BYTES`].
+    FileInPart {
+        /// The file, as its beginning answered.
+        upload_id: String,
+        /// Its place: one past the last part's.
+        seq: u32,
+        /// Its bytes, base64.
+        data: String,
+    },
+    /// End the file being sent (v5): put it in the inbox.
+    EndFileIn {
+        /// The file, as its beginning answered.
+        upload_id: String,
+    },
+    /// List the files in the Room's inbox (v5): the owner's alone.
+    ListInbox {},
+    /// Remove a file from the Room's inbox (v5): the owner's alone.
+    RemoveInboxFile {
+        /// Its name in the inbox.
+        name: String,
+    },
 }
 
 /// What an action did.
@@ -1794,6 +1850,43 @@ pub enum UiActionResult {
         /// The session.
         session_id: String,
     },
+    /// A file may be sent: its parts follow (v5).
+    FileInBegun {
+        /// The file's id, for its parts and its end.
+        upload_id: String,
+        /// The most bytes a part carries.
+        part_bytes: u32,
+    },
+    /// A part of the file was taken (v5).
+    FileInPartTaken {
+        /// The file.
+        upload_id: String,
+        /// The part.
+        seq: u32,
+    },
+    /// The file was put in the Room's inbox (v5).
+    FileInPlaced {
+        /// The file.
+        upload_id: String,
+        /// How the chat shows it.
+        file: FileIn,
+    },
+    /// The file wasn't taken in, or the inbox wasn't listed or changed
+    /// (v5).
+    FileInRefused {
+        /// Why.
+        reason: FileInRefusal,
+    },
+    /// The files in the Room's inbox, by number (v5).
+    Inbox {
+        /// Its files.
+        files: Vec<InboxFile>,
+    },
+    /// The file was taken out of the Room's inbox (v5).
+    InboxFileRemoved {
+        /// Its name, as it was.
+        name: String,
+    },
 }
 
 /// Why a confirmation stopped waiting without the owner's decision.
@@ -1963,6 +2056,30 @@ mod tests {
         }
     }
 
+    fn file_in(ended: FileInEnded) -> SubagentEvent {
+        SubagentEvent::FileIn {
+            name: (ended == FileInEnded::Placed).then(|| String::from("0001-notes.txt")),
+            bytes: 3,
+            ended,
+        }
+    }
+
+    /// A file in is activity by the inbox's name, its size and how it
+    /// ended: never what it held, nor the owner's name for it.
+    #[test]
+    fn a_file_in_is_activity_by_its_inbox_name_size_and_ending() {
+        pinned(
+            &event(file_in(FileInEnded::Placed)),
+            &json!({"event_id": "run-1:3", "ts": "2026-10-07T02:00:00Z", "run_id": "run-1",
+                "event": "file_in", "name": "0001-notes.txt", "bytes": 3, "ended": "placed"}),
+        );
+        pinned(
+            &event(file_in(FileInEnded::Unknown)),
+            &json!({"event_id": "run-1:3", "ts": "2026-10-07T02:00:00Z", "run_id": "run-1",
+                "event": "file_in", "bytes": 3, "ended": "unknown"}),
+        );
+    }
+
     #[test]
     fn a_harness_run_is_activity_with_its_pinned_binary_and_brief_hash() {
         pinned(
@@ -2048,6 +2165,10 @@ mod tests {
             (harness_run(HarnessOutcome::Failed), ActivityState::Failed),
             (harness_run(HarnessOutcome::TimedOut), ActivityState::Failed),
             (harness_run(HarnessOutcome::Refused), ActivityState::Failed),
+            (file_in(FileInEnded::Placed), ActivityState::Success),
+            (file_in(FileInEnded::Refused), ActivityState::Failed),
+            (file_in(FileInEnded::Unknown), ActivityState::Interrupted),
+            (file_in(FileInEnded::Abandoned), ActivityState::Interrupted),
             (
                 SubagentEvent::RunSummary {
                     cell_id: String::from("run-1"),
@@ -2729,6 +2850,127 @@ mod tests {
         for (result, expected) in &results {
             pinned(result, expected);
         }
+    }
+
+    /// A file in travels as its wire says (v5): its parts as base64, its
+    /// owner's name as text, and every refusal by a fixed word.
+    #[test]
+    fn a_file_in_and_the_inbox_travel_as_the_wire_says() {
+        for (action, expected) in [
+            (
+                UiAction::BeginFileIn {
+                    chat_id: s("main"),
+                    name: s("notes.txt"),
+                    bytes: 3,
+                },
+                json!({"action": "begin_file_in", "chat_id": "main", "name": "notes.txt", "bytes": 3}),
+            ),
+            (
+                UiAction::FileInPart {
+                    upload_id: s("file-1"),
+                    seq: 0,
+                    data: s("YWJj"),
+                },
+                json!({"action": "file_in_part", "upload_id": "file-1", "seq": 0, "data": "YWJj"}),
+            ),
+            (
+                UiAction::EndFileIn {
+                    upload_id: s("file-1"),
+                },
+                json!({"action": "end_file_in", "upload_id": "file-1"}),
+            ),
+            (UiAction::ListInbox {}, json!({"action": "list_inbox"})),
+            (
+                UiAction::RemoveInboxFile {
+                    name: s("0001-notes.txt"),
+                },
+                json!({"action": "remove_inbox_file", "name": "0001-notes.txt"}),
+            ),
+        ] {
+            pinned(&action, &expected);
+        }
+    }
+
+    /// A file in is answered as the wire says (v5).
+    #[test]
+    fn a_file_in_is_answered_as_the_wire_says() {
+        let file = FileIn {
+            chat_id: s("main"),
+            message_id: s("file-1"),
+            name: s("notes.txt"),
+            placed_as: s("0001-notes.txt"),
+            bytes: 3,
+            holds_secret: false,
+        };
+        let shown = json!({"chat_id": "main", "message_id": "file-1", "name": "notes.txt", "placed_as": "0001-notes.txt", "bytes": 3, "holds_secret": false});
+        for (result, expected) in [
+            (
+                UiActionResult::FileInBegun {
+                    upload_id: s("file-1"),
+                    part_bytes: FILE_IN_PART_BYTES,
+                },
+                json!({"result": "file_in_begun", "upload_id": "file-1", "part_bytes": 32768}),
+            ),
+            (
+                UiActionResult::FileInPartTaken {
+                    upload_id: s("file-1"),
+                    seq: 4,
+                },
+                json!({"result": "file_in_part_taken", "upload_id": "file-1", "seq": 4}),
+            ),
+            (
+                UiActionResult::FileInPlaced {
+                    upload_id: s("file-1"),
+                    file: file.clone(),
+                },
+                json!({"result": "file_in_placed", "upload_id": "file-1", "file": shown}),
+            ),
+            (
+                UiActionResult::FileInRefused {
+                    reason: FileInRefusal::TooLarge {
+                        limit: FILE_IN_BYTES,
+                    },
+                },
+                json!({"result": "file_in_refused", "reason": {"refusal": "too_large", "limit": 8_388_608}}),
+            ),
+            (
+                UiActionResult::FileInRefused {
+                    reason: FileInRefusal::Refused { said: s("full") },
+                },
+                json!({"result": "file_in_refused", "reason": {"refusal": "refused", "said": "full"}}),
+            ),
+            (
+                UiActionResult::FileInRefused {
+                    reason: FileInRefusal::Unknown,
+                },
+                json!({"result": "file_in_refused", "reason": {"refusal": "unknown"}}),
+            ),
+            (
+                UiActionResult::Inbox {
+                    files: vec![InboxFile {
+                        name: s("0001-notes.txt"),
+                        bytes: 3,
+                    }],
+                },
+                json!({"result": "inbox", "files": [{"name": "0001-notes.txt", "bytes": 3}]}),
+            ),
+            (
+                UiActionResult::InboxFileRemoved {
+                    name: s("0001-notes.txt"),
+                },
+                json!({"result": "inbox_file_removed", "name": "0001-notes.txt"}),
+            ),
+        ] {
+            pinned(&result, &expected);
+        }
+        pinned(
+            &UiEventBody::FileIn(file),
+            &json!({"kind": "file_in", "chat_id": "main", "message_id": "file-1", "name": "notes.txt",
+                "placed_as": "0001-notes.txt", "bytes": 3, "holds_secret": false}),
+        );
+        // A part's bytes fit one frame as base64, with room for the rest.
+        let part = usize::try_from(FILE_IN_PART_BYTES).unwrap();
+        assert!(part.div_ceil(3) * 4 + 1024 < crate::framing::MAX_FRAME_BYTES);
     }
 
     #[test]

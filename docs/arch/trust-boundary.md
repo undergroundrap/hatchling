@@ -414,6 +414,28 @@ says the disk is full (reserving room for the inbox is WO-040's). The put
 holds the disk's turn as an operation does, through the live Room session
 when there is one, and a disk that isn't open refuses it.
 
+The owner sends the file from the app or a local API client, in parts on
+its own connection, and only a caller holding every grant the owner holds
+can. The broker holds the whole file in memory, at most 8 MiB, one file at
+a time for the whole broker, and checks each part's place, size and
+encoding as it comes. The stem is the broker's: the last component of the
+owner's name, with each run of characters outside the grammar made one
+`_` and no leading dot. The owner's name goes back to the app, as text,
+and nowhere else. One file is sent at a time; one that goes a minute
+without a part may be let go for another. The model is told of a put
+file by a line of the broker's when the next run that answers the owner
+starts, in that run's task alone and never kept as the owner's words:
+its place in the Room, its size, and that its name, made of the owner's
+in plain ASCII, and what it holds are untrusted data. Only the inbox's
+own refusals reach the owner word for word; anything else the spawner
+said goes to the broker's log. The keeper checks the file for
+a held secret; a hit warns the owner and the file is put all the same.
+The owner lists the inbox and removes a file through the spawner too,
+under the same turn: the spawner takes a name of the inbox's own grammar,
+never a path. Activity keeps one line for each file, once it ended: the
+inbox's name for it, its size and how it ended, a file let go before it
+was whole among them.
+
 ## What's inside the boundary (trusted)
 
 - **The broker.** The central coordinator. It spawns cells,

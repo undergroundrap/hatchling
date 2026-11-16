@@ -39,7 +39,7 @@ def connect(path, wait=START_WAIT_SECS):
 
 def main(path):
     sock = connect(path)
-    send(sock, {"type": "hello", "schema_version": 4, "client": "first-run.py", "token": None})
+    send(sock, {"type": "hello", "schema_version": 5, "client": "first-run.py", "token": None})
     if receive(sock).get("type") != "welcome":
         print("handshake failed")
         return 1

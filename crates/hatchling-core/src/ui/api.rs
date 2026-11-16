@@ -115,6 +115,16 @@ pub enum ApiRequest {
     GiveCode,
     /// [`UiAction::DeclineCode`].
     DeclineCode,
+    /// [`UiAction::BeginFileIn`].
+    BeginFileIn,
+    /// [`UiAction::FileInPart`].
+    FileInPart,
+    /// [`UiAction::EndFileIn`].
+    EndFileIn,
+    /// [`UiAction::ListInbox`].
+    ListInbox,
+    /// [`UiAction::RemoveInboxFile`].
+    RemoveInboxFile,
 }
 
 impl ApiRequest {
@@ -162,6 +172,11 @@ impl ApiRequest {
             UiAction::ManageSuggestions { .. } => Self::ManageSuggestions,
             UiAction::GiveCode { .. } => Self::GiveCode,
             UiAction::DeclineCode { .. } => Self::DeclineCode,
+            UiAction::BeginFileIn { .. } => Self::BeginFileIn,
+            UiAction::FileInPart { .. } => Self::FileInPart,
+            UiAction::EndFileIn { .. } => Self::EndFileIn,
+            UiAction::ListInbox {} => Self::ListInbox,
+            UiAction::RemoveInboxFile { .. } => Self::RemoveInboxFile,
         }
     }
 }
@@ -383,6 +398,31 @@ mod tests {
                     request_id: id(),
                 }),
                 ApiRequest::DeclineCode,
+            ),
+            (
+                action(UiAction::BeginFileIn {
+                    chat_id: id(),
+                    name: id(),
+                    bytes: 1,
+                }),
+                ApiRequest::BeginFileIn,
+            ),
+            (
+                action(UiAction::FileInPart {
+                    upload_id: id(),
+                    seq: 0,
+                    data: String::from("eA=="),
+                }),
+                ApiRequest::FileInPart,
+            ),
+            (
+                action(UiAction::EndFileIn { upload_id: id() }),
+                ApiRequest::EndFileIn,
+            ),
+            (action(UiAction::ListInbox {}), ApiRequest::ListInbox),
+            (
+                action(UiAction::RemoveInboxFile { name: id() }),
+                ApiRequest::RemoveInboxFile,
             ),
         ];
         for (request, kind) in cases {

@@ -94,6 +94,9 @@ pub enum CheckFor {
     Search,
     /// Text the agent types into a page.
     Typed,
+    /// A file the owner sends into the Room's inbox (WO-041): a hit warns
+    /// the owner, and the file is put all the same.
+    FileIn,
 }
 
 impl CheckFor {
@@ -105,6 +108,7 @@ impl CheckFor {
             Self::Web => "web-check",
             Self::Search => "search-check",
             Self::Typed => "typed-check",
+            Self::FileIn => "file-in-check",
         }
     }
 }
