@@ -93,8 +93,9 @@ HATCHLING_ROOT_PASS=1 bash scripts/check.sh
 ```
 
 It builds as you, then runs each suite's test binary under `sudo`, from
-a copy in `/tmp` the cells' user can read. Those users are the README's,
-and the pass never makes them itself. The room mount proof also needs
+a copy in `/tmp` the cells' user can read. The first four users are the
+README's, and `hatchling-room` is the one the agent's computer runs as;
+the pass never makes them itself. The room mount proof also needs
 kernel SquashFS support; it builds a minimal fixture image and exercises
 the real dm-verity, LUKS2 and mount paths. Set `HATCHLING_TEST_BROWSER` to a
 headless Chromium every user can read (not under your home) to run the

@@ -117,9 +117,9 @@ when one exists, and describe the user's before/after behavior.
 - **Added:** a new capability.
 - **Changed:** existing behavior, configuration or an API changes.
 
-Mark breaking changes under **Changed** with `**Breaking, <crate>:**` and
-say what callers or operators must change. Several affected crates may be
-named together. Avoid entries that only list functions or files edited.
+Mark a breaking change in the entry it belongs to, under whichever heading
+fits, with `**Breaking for <crate>:**` (or `<crate> and <crate>`), and say
+what callers or operators must change. Avoid entries that only list functions or files edited.
 At release, Unreleased becomes the version entry and a new empty Unreleased
 is added; follow [the release procedure](docs/releasing.md#cutting-a-release).
 

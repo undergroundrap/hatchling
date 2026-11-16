@@ -51,7 +51,7 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 | --- | --- |
 | **Your model** | Any OpenAI-compatible chat-completions endpoint: Ollama, llama.cpp, LM Studio and vLLM locally, or a hosted API. The agent never holds a key: the broker adds it to the request on the way out. |
 | **Coding harnesses** | Claude Code and Codex CLI, pinned to a SHA-256 and verified before they run, inside cells, with only the tools you approve: **[approved tools](docs/approved-tools.md)**. Add another CLI, OpenCode for one, by a manifest: **[harness manifests](docs/harness-manifests.md)**. |
-| **Chat** | Each message you send on the local chat is answered by the agent in a fresh cell, holding your API client's grants and nothing more. It's given the conversation so far, as the broker recorded it: what you said, and what you were shown. |
+| **Chat** | Each message you send on the local chat is answered by the agent in a fresh cell, holding your API client's grants and nothing more; one you send while it works joins that answer. It's given the conversation so far, as the broker recorded it: what you said, and what you were shown. |
 | **Scheduling** | Cron or one-off tasks in explicit IANA timezones; each schedule runs with exactly the grants it was created with. |
 | **Memory and goals** | Broker-owned durable memory and goal tracking, paged so no reply outgrows its frame. |
 | **Feed** | A scheduled digest of your own records: what changed in your goals, tracking and tagged memory. |
@@ -112,7 +112,7 @@ runs; it supplies the agent's identity and configuration.
 
 **Requirements:** Linux 5.11+ with unprivileged user namespaces and seccomp-BPF (or WSL2); Rust (the pinned 1.98.1 installs itself through `rust-toolchain.toml`; the minimum supported is 1.85); a C compiler; Python 3 for the examples; Node.js 22.12+ to build the app; root, for the reason [below](#running-without-root), or a [subordinate id range](#quickstart-without-root) for your user.
 
-Build, install the broker, the agent and the app's host, and create four system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, the egress authority's, which alone reads the credentials of the requests it makes, and the broker's own, which it runs as once it has started, and which owns what it keeps.
+Build, install the broker, the agent and the app's host, and create four system users nothing else runs as: the one the cells run as, the vault keeper's, which alone owns the vault and its key, the egress authority's, which alone reads the credentials of the requests it makes, and the broker's own, which it runs as once it has started, and which owns what it keeps. (An install with the agent's computer, which today only [Windows Setup](docs/windows.md) makes, adds a fifth, `hatchling-room`, which that computer runs as.)
 
 ```bash
 git clone https://github.com/undergroundrap/hatchling
@@ -326,7 +326,7 @@ exec hatchling broker
 
 An unprivileged broker additionally needs the directory and its `cgroup.procs` and `cgroup.subtree_control`, and the broker leaf, delegated to its user; start it from that leaf so the source and destination share a writable ancestor. See [the kernel's delegation rules](https://docs.kernel.org/admin-guide/cgroup-v2.html#delegation). Hatchling never provisions this itself.
 
-An abrupt kill or crash of the entire broker can leave cgroup directories and helper-backed cells until their helpers terminate. Whole-broker crash recovery is outside this work; [WO-012](docs/workorders/workorder-012-disposable-state-and-cleanup.md) covers the planned cleanup of filesystem staging and run directories.
+An abrupt kill or crash of the entire broker can leave cgroup directories and helper-backed cells until their helpers terminate. The filesystem staging and run directories it leaves are removed at the broker's next start, or by `hatchling-broker clean` ([WO-012](docs/workorders/workorder-012-disposable-state-and-cleanup.md); [what's disposable](docs/storage.md#disposable)).
 
 Unset `HATCHLING_CELL_CGROUP` uses the hard rlimits alone and logs one startup warning. `RLIMIT_NPROC` is per real host uid, so this fallback can share a process budget with other cells or host processes; it does not bound aggregate memory or CPU. The memory and CPU variables have no effect in this mode. With a cgroup, `pids.max` replaces the configured `RLIMIT_NPROC`; inherited host rlimits still apply. A configured directory that is missing, non-cgroup, unwritable, holds processes, lacks a required controller or lacks `cgroup.kill` makes startup fail closed.
 
@@ -349,7 +349,7 @@ From here: **[the local API](docs/local-api.md)** for every action and event, an
 
 ## Held to a high bar
 
-- Over 2,300 tests (1,983 Rust, 397 frontend), including real-kernel cell tests that fail rather than skip when isolation is unavailable (`HATCHLING_REQUIRE_CELL=1`).
+- Over 4,400 tests (3,964 Rust, 503 frontend, as the gate counted them on 2026-11-16), including real-kernel cell tests that fail rather than skip when isolation is unavailable (`HATCHLING_REQUIRE_CELL=1`).
 - Mutation testing with a kill floor of 1.0: every mutant of changed code is killed by a test or proven equivalent in writing.
 - `unsafe` lives in exactly one crate (`hatchling-sys`), each block justified; every other crate denies it.
 - Strict clippy: pedantic and nursery lints, with `unwrap`, `expect`, `panic`, indexing and `as` casts denied in production code. Plus `cargo deny`, a written review of every dependency ([docs/dependency-review.md](docs/dependency-review.md)), and CI on the pinned toolchain and the 1.85 MSRV.
@@ -359,7 +359,7 @@ From here: **[the local API](docs/local-api.md)** for every action and event, an
 
 PRs are welcome. Read **[CONTRIBUTING.md](CONTRIBUTING.md)** first: the bar is mutation evidence and a green gate, and it's written down so you can meet it. On your first PR, a bot asks you to sign the [CLA](CLA.md) with a one-line comment.
 
-Core work is planned as **work orders**, specs in **[docs/workorders/](docs/workorders/)** that say exactly what done means. Fourteen are queued, most of them security hardening from the pre-launch review. Pick one up, or open an issue to propose one. Frontend changes follow `frontend/STYLE_GUIDE.md`.
+Core work is planned as **work orders**, specs in **[docs/workorders/](docs/workorders/)** that say exactly what done means. The [queue](docs/workorders/README.md) says which are open. Pick one up, or open an issue to propose one. Frontend changes follow `frontend/STYLE_GUIDE.md`.
 
 **What's next:** each planned version is a [milestone](https://github.com/undergroundrap/hatchling/milestones), ordered by threat in [Order of work](docs/workorders/README.md#order-of-work); what changed is in the [changelog](CHANGELOG.md).
 

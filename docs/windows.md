@@ -44,10 +44,10 @@ There are two exceptions, each once, and each from Windows itself. If WSL isn't 
 
 | Item | What it does | What you'll type |
 |---|---|---|
-| **Hatchling** | Opens the app in your browser | Nothing, or your key's PIN if the vault is locked |
+| **Hatchling** | Opens the app in your browser | Nothing, or, if the vault is locked, your key's PIN or a code from your authenticator app |
 | **Hatchling Tools → Protect your vault** | Registers a security key, such as a YubiKey | Your key's PIN, then you touch it |
 | **Hatchling Tools → Make a backup** | Saves one sealed file with everything Hatchling knows | Your key's PIN, if you use one |
-| **Hatchling Tools → Unlock** | Opens a vault a security key protects, after a restart | Your key's PIN, then you touch it |
+| **Hatchling Tools → Unlock** | Opens a locked vault, after a restart | Your key's PIN, then you touch it; or a code from your [authenticator app](authenticator.md) |
 
 Windows search finds these by name, not by their folder: open the Start menu and type **Unlock**, say.
 

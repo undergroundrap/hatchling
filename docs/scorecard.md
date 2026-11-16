@@ -53,7 +53,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | Goals: add, edit, close | ⬜ | No progress log, briefings or subgoals |
 | Scheduled work, with your approval | ⬜ | No pause, edit or run now |
 | Feed: a daily post, with your prompt | ⬜ | From goals and memory |
-| Ideas: suggest and dismiss | ⬜ | Starting one only fills the chat box |
+| Ideas: suggest and dismiss | ⬜ | Starting one opens a conversation of its own, with the idea in the chat box; one whose run answered says so; a chat that ran out of steps can be kept as one |
 | Activity and Approvals | ⬜ | In the app only, no notifications |
 
 ## What it can do
@@ -61,7 +61,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | What | Status | Notes |
 |---|---|---|
 | Subagents | ⬜ | |
-| A computer of its own | ❌ | Next: 0.9. v1 has no network or installs, and workspace programs don't execute |
+| A computer of its own | ⬜ | Only where Windows Setup installed its image, on x86_64: commands, and reading, searching, writing and editing its files, which it keeps. No network or installs; a program it writes runs through `python3`, `node` or `sh` |
 | Read files you attach | ❌ | Next: 0.9 |
 | Give you files, in chat and the Library | ❌ | Next: 0.9 |
 | Documents: markdown and plain HTML | 🚧 | Builders aren't installed, and no file reaches you |

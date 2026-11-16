@@ -173,8 +173,10 @@ the agent says it did, and never what a request carried.
 `memory_propose`, `memory_write`, `schedule_read`, `schedule_write`,
 `schedule_propose`, `hook`, `idea_suggest`, `web_search`, `web_page`,
 `browser`, `message_read`, `message_send`, `subagent`, `skill`,
-`vault`, `artifact`, `space` or `network` (an egress request that
-isn't a model call). A use is `asked` when it was put to the owner
+`vault`, `artifact`, `space`, `network` (an egress request that
+isn't a model call) or `room` (a command in the agent's own computer,
+asked after or stopped, or its files read, searched, written or
+edited). A use is `asked` when it was put to the owner
 to approve or answer, `refused` for no grant, a limit or the owner's
 no, and `failed` when it failed. A session that used no tool and made
 no model call writes nothing.
