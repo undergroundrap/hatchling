@@ -48,7 +48,7 @@ use hatchling_core::room::{
     RUNNING_MAX, Say, Stream, Wrote, check_edit, check_page, check_search, check_write,
 };
 
-use crate::room_disk::{RoomDiskOp, RoomDiskStatus};
+use crate::room_disk::{InboxAnswer, InboxOp, RoomDiskOp, RoomDiskStatus};
 use crate::room_job::{
     Checked, RoomJob, RoomJobAnswer, RoomJobState, RoomJobStopped, RoomRun, not_started,
 };
@@ -101,8 +101,8 @@ const LEDGER_MAX: usize = 64;
 pub(crate) type JobReply = Result<RoomJobAnswer, String>;
 /// What a room disk operation comes to.
 pub(crate) type DiskReply = Result<Option<RoomDiskStatus>, String>;
-/// What putting a file in the room disk's inbox comes to: its name.
-pub(crate) type PutReply = Result<String, String>;
+/// What asking the room disk's inbox comes to.
+pub(crate) type InboxReply = Result<InboxAnswer, String>;
 /// What asking for a page of a file comes to.
 pub(crate) type PageReply = Result<Page, String>;
 
@@ -449,11 +449,10 @@ pub(crate) enum Message {
         op: RoomDiskOp,
         reply: Sender<DiskReply>,
     },
-    /// Put a file in the room disk's inbox, named for `stem`.
-    Put {
-        stem: String,
-        bytes: Vec<u8>,
-        reply: Sender<PutReply>,
+    /// Do this to the room disk's inbox.
+    Inbox {
+        op: InboxOp,
+        reply: Sender<InboxReply>,
     },
     /// End the session: the broker has gone.
     End { reason: &'static str },
@@ -740,13 +739,14 @@ fn held(reason: &str) -> String {
 ///
 /// `disk` does what may be done to the room disk while the session has it
 /// claimed: anything but closing or wiping it, which end the session.
-/// `put` puts a file in its inbox, under the same claim.
+/// `inbox` puts, lists or removes a file of its inbox, under the same
+/// claim.
 pub(crate) struct Kept<D, P> {
     seat: Seat,
     limits: Limits,
     ledger: Arc<Mutex<Ledger>>,
     disk: D,
-    put: P,
+    inbox: P,
     /// The jobs in hand: running, or ended with output still to fetch.
     flights: BTreeMap<JobId, Flight>,
     waiters: Vec<Waiter>,
@@ -778,20 +778,20 @@ pub(crate) struct Kept<D, P> {
     left: bool,
 }
 
-impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Kept<D, P> {
+impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D, P> {
     pub(crate) const fn new(
         seat: Seat,
         limits: Limits,
         ledger: Arc<Mutex<Ledger>>,
         disk: D,
-        put: P,
+        inbox: P,
     ) -> Self {
         Self {
             seat,
             limits,
             ledger,
             disk,
-            put,
+            inbox,
             flights: BTreeMap::new(),
             waiters: Vec::new(),
             readers: VecDeque::new(),
@@ -915,8 +915,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Kept<
                 Message::Disk { op, reply } => {
                     let _ = reply.send((self.disk)(op));
                 }
-                Message::Put { stem, bytes, reply } => {
-                    let _ = reply.send((self.put)(&stem, &bytes));
+                Message::Inbox { op, reply } => {
+                    let _ = reply.send((self.inbox)(&op));
                 }
                 Message::End { reason } => {
                     self.left = true;
@@ -1665,8 +1665,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Kept<
                 Message::Disk { op, reply } => {
                     let _ = reply.send((self.disk)(op));
                 }
-                Message::Put { stem, bytes, reply } => {
-                    let _ = reply.send((self.put)(&stem, &bytes));
+                Message::Inbox { op, reply } => {
+                    let _ = reply.send((self.inbox)(&op));
                 }
                 Message::End { .. } => {
                     self.left = true;
@@ -1721,7 +1721,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Kept<
                     | Message::Stop { .. }
                     | Message::Probe { .. }
                     | Message::Disk { .. }
-                    | Message::Put { .. }
+                    | Message::Inbox { .. }
                     | Message::End { .. } => {}
                 }
             }
@@ -1735,7 +1735,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Kept<
     }
 }
 
-impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&str, &[u8]) -> PutReply> Session for Kept<D, P> {
+impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Session for Kept<D, P> {
     fn begin(&mut self) -> Result<(), String> {
         self.intake()?;
         // Nothing is launched for callers that have all gone.
@@ -2106,23 +2106,22 @@ impl Sessions {
         self.ask_or(&message, || direct(op))
     }
 
-    /// Puts `bytes` in the room disk's inbox as a file named for `stem`:
-    /// through the live session, which holds the disk, or `direct`ly when
-    /// there is none. No session is started for it.
-    pub(crate) fn put(
+    /// Does `op` to the room disk's inbox: puts a file in it, lists it,
+    /// or takes a file out. Through the live session, which holds the
+    /// disk, or `direct`ly when there is none. No session is started for
+    /// it.
+    pub(crate) fn inbox(
         &self,
-        stem: &str,
-        bytes: &[u8],
-        direct: impl FnOnce() -> PutReply,
-    ) -> PutReply {
-        let message = |reply: Sender<PutReply>| -> Result<Message, String> {
-            Ok(Message::Put {
-                stem: stem.to_owned(),
-                bytes: bytes.to_vec(),
+        op: &InboxOp,
+        direct: impl FnOnce(&InboxOp) -> InboxReply,
+    ) -> InboxReply {
+        let message = |reply: Sender<InboxReply>| -> Result<Message, String> {
+            Ok(Message::Inbox {
+                op: op.clone(),
                 reply,
             })
         };
-        self.ask_or(&message, direct)
+        self.ask_or(&message, || direct(op))
     }
 
     /// Ends the session, waits until it is down, and lets no other start.

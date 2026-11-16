@@ -35,7 +35,7 @@ export const YOUR_SECURITY = [
     "",
     "The Broker is the watchman. An agent's cell has two lines out. One goes to the Broker, which checks each request against what's been granted. One goes to the Keeper, which does the same for vault requests, logs them, and refuses them all if the cell has no vault grant.",
     "",
-    "After a chat or scheduled run, the Broker writes which tools it used and how each ended, and Activity shows that as the run's trail. You can compare what the agent said it did with what it did. The trail names tools, never what they carried. A subagent's own tools aren't in it, and the trail is written as a run ends, so a crash of the Broker can lose it.",
+    "After a chat or scheduled run, the Broker writes which tools it used and how each ended, and Activity shows that as the run's trail. You can compare what the agent said it did with what it did. The trail names tools, never what they carried. One thing is named: a file you hand the agent is a line of its own, with the name its inbox gave it, its size and how it ended, never what it held or your name for it. A subagent's own tools aren't in it, and the trail is written as a run ends, so a crash of the Broker can lose it.",
     "",
     "### The cells",
     "",
@@ -91,6 +91,8 @@ export const YOUR_SECURITY = [
     "**Your typing under Take control.** What you type goes through the app to the site, and so does a one-time code a site asks you for. Your keys, PIN and saved passwords don't go through the app.",
     "",
     "**What the trail doesn't say.** It shows which tools a run used, not what it passed them.",
+    "",
+    "**A file you hand the agent.** It goes into the agent's own computer, which reads it and can change none of it, and nothing in it is ever run for you. Still, the agent reads it as it reads a page: a file someone sent you can steer it like a page can. If it holds a secret your vault keeps, Hatchling puts it all the same and says so, as it's your file; with a hosted model, what the agent reads of it goes to that company.",
     "",
     "Found something that isn't here? [Report it privately](https://github.com/undergroundrap/hatchling/blob/main/SECURITY.md).",
 ].join('\n');

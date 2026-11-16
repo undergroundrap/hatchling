@@ -417,6 +417,37 @@ pub enum SubagentEvent {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         memory_low: bool,
     },
+    /// A file the owner began sending into the Room's inbox (WO-041),
+    /// once it ended: the inbox's name for it, its size, and how it
+    /// ended. Never what it holds, the owner's name for it, or a path.
+    #[serde(rename = "file_in")]
+    FileIn {
+        /// Its name in the inbox: none when it wasn't put, or it isn't
+        /// known whether it was.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Its size.
+        bytes: u64,
+        /// How it ended.
+        ended: FileInEnded,
+    },
+}
+
+/// How a file sent into the Room's inbox ended.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FileInEnded {
+    /// It was put.
+    Placed,
+    /// The inbox refused it.
+    Refused,
+    /// It isn't known whether it was put: the spawner didn't answer.
+    Unknown,
+    /// It was let go before it was whole: a part out of step, an end
+    /// short of its size, its turn taken while it was idle, or its
+    /// connection closed. Nothing was put.
+    Abandoned,
 }
 
 /// A tool an agent session used, named by what it does: never by what it

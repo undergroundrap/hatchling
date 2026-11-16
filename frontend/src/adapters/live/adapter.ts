@@ -340,7 +340,9 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'browser_action':
             case 'browser_control':
             case 'browser_code':
-                // Build notices have no view yet; the surfaces took the rest.
+            case 'file_in':
+                // Build notices and files put in the agent's inbox have no
+                // view yet; the surfaces took the rest.
                 return undefined;
         }
     }

@@ -17,12 +17,16 @@
 // harness and one row per run: how it ended and how many files it changed.
 // The pinned program and the brief are recorded by hash, never shown.
 //
+// Files the owner put in the agent's inbox are a thread of their own (WO-041),
+// one row per file: the inbox's name for it, its size and how it ended. Never
+// what it held, nor the owner's name for it.
+//
 // Each agent run's trail is a thread of its own: the tools the broker served
 // it, each counted by how its uses ended, and its model calls. The broker
 // recorded them as it answered, so they say what the run really did, whatever
 // its answer says.
 import type { ActionIcon, ActivityLane, ActivityRow, ActivityThread, RunningActivityStep, Verdict } from '../../protocol/models.js';
-import type { ActivityEvent, ApiRequest, ChatMessage, ChildFailure, ChildVerdict, HarnessOutcome, ToolTally, ToolUse } from './protocol/generated.js';
+import type { ActivityEvent, ApiRequest, ChatMessage, ChildFailure, ChildVerdict, FileInEnded, HarnessOutcome, ToolTally, ToolUse } from './protocol/generated.js';
 import { between, clockTime, count, quoted } from './text.js';
 interface Ending {
     readonly status: Verdict;
@@ -93,6 +97,22 @@ interface Harnessed {
     readonly startedAt: string;
     lastAt: string;
     readonly harnesses: Map<string, Harness>;
+}
+/** One file sent into the agent's inbox, once it ended. */
+interface Crossing {
+    readonly id: string;
+    readonly at: string;
+    readonly name: string | null;
+    readonly bytes: number;
+    readonly ended: FileInEnded;
+}
+/** The files sent into the agent's inbox, one thread per run id. */
+interface Crossings {
+    readonly kind: 'files';
+    readonly id: string;
+    readonly startedAt: string;
+    lastAt: string;
+    readonly crossings: Crossing[];
 }
 /** One run's trail, as the broker served it. */
 interface Trail {
@@ -280,6 +300,18 @@ const HARNESS_OUTCOMES: Readonly<Record<HarnessOutcome, {
     timed_out: { status: 'failed', icon: 'clock', title: 'Ran out of time', said: 'ran out of time and was stopped' },
     refused: { status: 'failed', icon: 'warning', title: 'Refused before it started', said: 'was refused by Hatchling before it started' },
 };
+/** How each file sent into the agent's inbox ended, in the user's words. */
+const FILE_ENDINGS: Readonly<Record<FileInEnded, {
+    readonly status: Verdict;
+    readonly icon: ActionIcon;
+    readonly title: string;
+    readonly said: string;
+}>> = {
+    placed: { status: 'success', icon: 'file', title: 'Put a file in the agent’s inbox', said: 'The agent can read it there, and can change none of it.' },
+    refused: { status: 'failed', icon: 'warning', title: 'A file wasn’t put in the agent’s inbox', said: 'The inbox didn’t take it, and nothing was put. Hatchling said why when it was sent.' },
+    unknown: { status: 'interrupted', icon: 'warning', title: 'Not known whether a file was put', said: 'Hatchling sent it, but didn’t hear back. The inbox’s list says whether it is there.' },
+    abandoned: { status: 'interrupted', icon: 'warning', title: 'A file was let go before it was whole', said: 'It stopped part way: a part came out of order, its connection closed, or it waited too long. Nothing was put.' },
+};
 /** What each kind of API request did, in the user's words. */
 const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     hello: 'Connected',
@@ -314,6 +346,11 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     list_decisions: 'Read the approvals history',
     give_code: 'Gave a one-time code for the browser',
     decline_code: 'Declined to give a one-time code',
+    begin_file_in: 'Began sending a file to the agent',
+    file_in_part: 'Sent part of a file to the agent',
+    end_file_in: 'Finished sending a file to the agent',
+    list_inbox: 'Listed the agent’s inbox',
+    remove_inbox_file: 'Removed a file from the agent’s inbox',
 };
 const FAILURES: Readonly<Record<ChildFailure, string>> = {
     timeout: 'Ran out of time',
@@ -461,8 +498,44 @@ function projectHarness(harnessed: Harnessed): ActivityThread {
         pendingSteps: [],
     };
 }
+/** A file's size, in the user's words. */
+function size(bytes: number): string {
+    if (bytes < 1024)
+        return count(bytes, 'byte', 'bytes');
+    if (bytes < 1048576)
+        return `${Number((bytes / 1024).toFixed(1))} KB`;
+    return `${Number((bytes / 1048576).toFixed(1))} MB`;
+}
+function crossingRow(laneId: string, crossing: Crossing): ActivityRow {
+    const end = FILE_ENDINGS[crossing.ended];
+    const named = crossing.name === null ? `A file of ${size(crossing.bytes)}` : `${crossing.name}, ${size(crossing.bytes)}`;
+    const where = crossing.name === null ? '' : ` The agent reads it at /workspace/inbox/${crossing.name}.`;
+    return { id: crossing.id, workId: crossing.id, laneId, title: end.title, subtitle: named, icon: end.icon, report: `${named}. ${end.said}${where}`, startedAt: crossing.at, endedAt: crossing.at, durationMs: null, outputFailed: end.status === 'failed', status: end.status, phase: 'action' };
+}
+function projectCrossings(crossings: Crossings): ActivityThread {
+    const all = crossings.crossings;
+    const placed = all.filter(crossing => crossing.ended === 'placed').length;
+    const laneId = `${crossings.id}:files`;
+    const summary = `${count(all.length, 'file', 'files')} sent to the agent: ${placed} put in its inbox, ${all.length - placed} not.`;
+    return {
+        id: `${crossings.id}:files`,
+        name: 'Files for the agent',
+        subtitle: `${count(all.length, 'file', 'files')} · ${placed} put in its inbox`,
+        statusTitle: 'Files recorded',
+        state: 'completed',
+        verdict: null,
+        summary,
+        finishMessage: summary,
+        time: clockTime(crossings.lastAt),
+        startedAt: crossings.startedAt,
+        endedAt: null,
+        evidenceArtifactId: null,
+        lanes: [{ id: laneId, name: 'Into the agent’s inbox', parentId: null, rows: all.map(crossing => crossingRow(laneId, crossing)) }],
+        pendingSteps: [],
+    };
+}
 /** One thread, whichever kind it is. */
-function projectAny(thread: Run | Calls | Harnessed | Task | Trail): ActivityThread {
+function projectAny(thread: Run | Calls | Harnessed | Crossings | Task | Trail): ActivityThread {
     switch (thread.kind) {
         case 'task':
             return projectTask(thread);
@@ -474,12 +547,15 @@ function projectAny(thread: Run | Calls | Harnessed | Task | Trail): ActivityThr
             return projectCalls(thread);
         case 'harness':
             return projectHarness(thread);
+        case 'files':
+            return projectCrossings(thread);
     }
 }
 /** The activity threads, built from activity events in sequence order. */
 export class ActivityBook {
     readonly #runs = new Map<string, Run>();
     readonly #calls = new Map<string, Calls>();
+    readonly #crossings = new Map<string, Crossings>();
     readonly #harnessed = new Map<string, Harnessed>();
     readonly #tasks = new Map<string, Task>();
     readonly #trails = new Map<string, Trail>();
@@ -488,7 +564,7 @@ export class ActivityBook {
     /** The tasks another's run took into it: its answer is theirs, and they are no threads of their own. */
     readonly #joined = new Set<Task>();
     /** Every thread, in the order each first appeared. */
-    readonly #order: (Run | Calls | Harnessed | Task | Trail)[] = [];
+    readonly #order: (Run | Calls | Harnessed | Crossings | Task | Trail)[] = [];
     /**
      * Apply one event. A subagent's first ending is its ending: a later,
      * contradictory one is ignored. Events for a subagent whose spawn was not
@@ -508,6 +584,14 @@ export class ActivityBook {
             const harness = harnessed.harnesses.get(event.harness) ?? { name: event.harness, runs: [] };
             harnessed.harnesses.set(event.harness, harness);
             harness.runs.push({ id: event.event_id, at: event.ts, outcome: event.outcome, files: event.files_changed });
+            return;
+        }
+        if (event.event === 'file_in') {
+            const crossings = this.#crossings.get(event.run_id) ?? this.#begin<Crossings>(this.#crossings, { kind: 'files', id: event.run_id, startedAt: event.ts, lastAt: event.ts, crossings: [] });
+            if (crossings.crossings.some(crossing => crossing.id === event.event_id))
+                return;
+            crossings.lastAt = event.ts;
+            crossings.crossings.push({ id: event.event_id, at: event.ts, name: event.name ?? null, bytes: event.bytes, ended: event.ended });
             return;
         }
         if (event.event === 'api_call') {
@@ -584,7 +668,7 @@ export class ActivityBook {
         asked.lastAt = ts;
     }
     /** Records a new thread under its id, in arrival order. */
-    #begin<Thread extends Run | Calls | Harnessed | Task | Trail>(threads: Map<string, Thread>, thread: Thread): Thread {
+    #begin<Thread extends Run | Calls | Harnessed | Crossings | Task | Trail>(threads: Map<string, Thread>, thread: Thread): Thread {
         threads.set(thread.id, thread);
         this.#order.push(thread);
         return thread;

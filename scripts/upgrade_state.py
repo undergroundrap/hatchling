@@ -18,7 +18,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "examples"))
-from hello import receive, send  # noqa: E402
+from hello import handshake, receive, send  # noqa: E402
 
 # How long to wait for a broker that was just started to make its socket.
 START_WAIT_SECS = 60
@@ -49,11 +49,10 @@ def connect(path, wait=START_WAIT_SECS):
 
 def session(path):
     """A welcomed API connection, and the grants the welcome named (none
-    from a broker too old to say)."""
-    sock = connect(path)
-    send(sock, {"type": "hello", "schema_version": 4, "client": "upgrade_state.py", "token": None})
-    welcome = receive(sock)
-    if welcome.get("type") != "welcome":
+    from a broker too old to say). The release this upgrades from may speak
+    an older version of the API, which the handshake asks again in."""
+    sock, welcome = handshake(lambda: connect(path), "upgrade_state.py")
+    if sock is None:
         raise SystemExit(f"handshake failed: {welcome}")
     return sock, welcome.get("grants")
 

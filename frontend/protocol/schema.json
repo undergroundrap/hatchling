@@ -448,6 +448,38 @@
             "output_tokens"
           ],
           "type": "object"
+        },
+        {
+          "description": "A file the owner began sending into the Room's inbox (WO-041),\nonce it ended: the inbox's name for it, its size, and how it\nended. Never what it holds, the owner's name for it, or a path.",
+          "properties": {
+            "bytes": {
+              "description": "Its size.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ended": {
+              "$ref": "#/$defs/FileInEnded",
+              "description": "How it ended."
+            },
+            "event": {
+              "const": "file_in",
+              "type": "string"
+            },
+            "name": {
+              "description": "Its name in the inbox: none when it wasn't put, or it isn't\nknown whether it was.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "event",
+            "bytes",
+            "ended"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -771,6 +803,31 @@
         {
           "const": "decline_code",
           "description": "[`UiAction::DeclineCode`].",
+          "type": "string"
+        },
+        {
+          "const": "begin_file_in",
+          "description": "[`UiAction::BeginFileIn`].",
+          "type": "string"
+        },
+        {
+          "const": "file_in_part",
+          "description": "[`UiAction::FileInPart`].",
+          "type": "string"
+        },
+        {
+          "const": "end_file_in",
+          "description": "[`UiAction::EndFileIn`].",
+          "type": "string"
+        },
+        {
+          "const": "list_inbox",
+          "description": "[`UiAction::ListInbox`].",
+          "type": "string"
+        },
+        {
+          "const": "remove_inbox_file",
+          "description": "[`UiAction::RemoveInboxFile`].",
           "type": "string"
         }
       ]
@@ -3547,6 +3604,179 @@
         }
       ]
     },
+    "FileIn": {
+      "description": "A file the owner put in the Room's inbox, as the chat shows it.",
+      "properties": {
+        "bytes": {
+          "description": "Its size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "chat_id": {
+          "description": "The chat it was sent in.",
+          "type": "string"
+        },
+        "holds_secret": {
+          "description": "Whether it holds a secret the broker keeps: the owner is warned.\nIt was put all the same: it is the owner's.",
+          "type": "boolean"
+        },
+        "message_id": {
+          "description": "Its place in the chat.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The owner's name for it, as the app sent it, cut to\n[`FILE_IN_NAME_BYTES`]. Untrusted text: shown as text, never as a\npath or markup.",
+          "type": "string"
+        },
+        "placed_as": {
+          "description": "Its name in the inbox.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id",
+        "name",
+        "placed_as",
+        "bytes",
+        "holds_secret"
+      ],
+      "type": "object"
+    },
+    "FileInEnded": {
+      "description": "How a file sent into the Room's inbox ended.",
+      "oneOf": [
+        {
+          "const": "placed",
+          "description": "It was put.",
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "The inbox refused it.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "It isn't known whether it was put: the spawner didn't answer.",
+          "type": "string"
+        },
+        {
+          "const": "abandoned",
+          "description": "It was let go before it was whole: a part out of step, an end\nshort of its size, its turn taken while it was idle, or its\nconnection closed. Nothing was put.",
+          "type": "string"
+        }
+      ]
+    },
+    "FileInRefusal": {
+      "description": "Why a file wasn't taken in, or the inbox wasn't listed or changed.",
+      "oneOf": [
+        {
+          "description": "Larger than the inbox takes.",
+          "properties": {
+            "limit": {
+              "description": "The most it takes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "refusal": {
+              "const": "too_large",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal",
+            "limit"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Another file is on its way in: one at a time.",
+          "properties": {
+            "refusal": {
+              "const": "busy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The agent's computer isn't on: no Room disk is open.",
+          "properties": {
+            "refusal": {
+              "const": "no_room",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No file of that id is on its way in on this connection.",
+          "properties": {
+            "refusal": {
+              "const": "unknown_upload",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A part out of order, larger than a part, not base64, or past the\nsize first said; or an end before the whole file. Nothing is put,\nand the file is sent again from its beginning.",
+          "properties": {
+            "refusal": {
+              "const": "out_of_step",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The inbox refused it, in its own words.",
+          "properties": {
+            "refusal": {
+              "const": "refused",
+              "type": "string"
+            },
+            "said": {
+              "description": "Why, as the owner is told.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal",
+            "said"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It isn't known whether the file was put: the inbox's list says.\nIt isn't sent again.",
+          "properties": {
+            "refusal": {
+              "const": "unknown",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "FileRefusal": {
       "description": "Why a file was not saved.",
       "oneOf": [
@@ -4488,6 +4718,26 @@
           "type": "string"
         }
       ]
+    },
+    "InboxFile": {
+      "description": "A file in the Room's inbox, as the owner is shown it.",
+      "properties": {
+        "bytes": {
+          "description": "Its size.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Its name in the inbox, `NNNN-<stem>`: the agent reads it at\n`/workspace/inbox/<name>`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "bytes"
+      ],
+      "type": "object"
     },
     "InlineImage": {
       "description": "An image carried inline, so showing it fetches nothing.",
@@ -12427,6 +12677,115 @@
             "request_id"
           ],
           "type": "object"
+        },
+        {
+          "description": "Begin sending a file for the Room's inbox (v5): the owner's alone,\none file at a time. Its parts follow, then its end.",
+          "properties": {
+            "action": {
+              "const": "begin_file_in",
+              "type": "string"
+            },
+            "bytes": {
+              "description": "Its size: every part together is exactly this.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "chat_id": {
+              "description": "The chat it is sent in.",
+              "type": "string"
+            },
+            "name": {
+              "description": "The owner's name for it. Untrusted text, never used on disk.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "chat_id",
+            "name",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One part of the file being sent (v5), in order from 0, each at\nmost [`FILE_IN_PART_BYTES`].",
+          "properties": {
+            "action": {
+              "const": "file_in_part",
+              "type": "string"
+            },
+            "data": {
+              "description": "Its bytes, base64.",
+              "type": "string"
+            },
+            "seq": {
+              "description": "Its place: one past the last part's.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "upload_id": {
+              "description": "The file, as its beginning answered.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "upload_id",
+            "seq",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "End the file being sent (v5): put it in the inbox.",
+          "properties": {
+            "action": {
+              "const": "end_file_in",
+              "type": "string"
+            },
+            "upload_id": {
+              "description": "The file, as its beginning answered.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "upload_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List the files in the Room's inbox (v5): the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "list_inbox",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remove a file from the Room's inbox (v5): the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "remove_inbox_file",
+              "type": "string"
+            },
+            "name": {
+              "description": "Its name in the inbox.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "name"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -13103,6 +13462,136 @@
             "session_id"
           ],
           "type": "object"
+        },
+        {
+          "description": "A file may be sent: its parts follow (v5).",
+          "properties": {
+            "part_bytes": {
+              "description": "The most bytes a part carries.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "result": {
+              "const": "file_in_begun",
+              "type": "string"
+            },
+            "upload_id": {
+              "description": "The file's id, for its parts and its end.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "upload_id",
+            "part_bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A part of the file was taken (v5).",
+          "properties": {
+            "result": {
+              "const": "file_in_part_taken",
+              "type": "string"
+            },
+            "seq": {
+              "description": "The part.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "upload_id": {
+              "description": "The file.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "upload_id",
+            "seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file was put in the Room's inbox (v5).",
+          "properties": {
+            "file": {
+              "$ref": "#/$defs/FileIn",
+              "description": "How the chat shows it."
+            },
+            "result": {
+              "const": "file_in_placed",
+              "type": "string"
+            },
+            "upload_id": {
+              "description": "The file.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "upload_id",
+            "file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file wasn't taken in, or the inbox wasn't listed or changed\n(v5).",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/FileInRefusal",
+              "description": "Why."
+            },
+            "result": {
+              "const": "file_in_refused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The files in the Room's inbox, by number (v5).",
+          "properties": {
+            "files": {
+              "description": "Its files.",
+              "items": {
+                "$ref": "#/$defs/InboxFile"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "inbox",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "files"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file was taken out of the Room's inbox (v5).",
+          "properties": {
+            "name": {
+              "description": "Its name, as it was.",
+              "type": "string"
+            },
+            "result": {
+              "const": "inbox_file_removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "name"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -13386,6 +13875,20 @@
           "properties": {
             "kind": {
               "const": "artifact_listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/FileIn",
+          "description": "The owner put a file in the Room's inbox (v5).",
+          "properties": {
+            "kind": {
+              "const": "file_in",
               "type": "string"
             }
           },
@@ -14306,7 +14809,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 31,
-    "ui_schema_version": 4
+    "ui_schema_version": 5
   },
   "x-roots": {
     "ActivityEvent": {

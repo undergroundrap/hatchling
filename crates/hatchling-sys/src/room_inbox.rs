@@ -84,6 +84,29 @@ const NO_MORE_NUMBERS: &str = "the Room's inbox has given every number it has";
 /// fill the disk the inbox is on.
 const DISK_FULL: &str = "the Room's disk is full: the file wasn't put in its inbox";
 
+/// A name to remove that no put gives.
+const NOT_A_NAME: &str = "that isn't the name of a file in the Room's inbox";
+
+/// A name to remove that no file in the inbox has.
+const NO_SUCH_FILE: &str = "no file of that name is in the Room's inbox";
+
+/// Whether `said` is one of the inbox's own refusals ([`PutError::Refused`]),
+/// word for word: plain words for the owner, and nothing of the machine.
+#[must_use]
+pub fn is_refusal(said: &str) -> bool {
+    [
+        NOT_A_STEM,
+        TOO_LARGE,
+        NO_MORE_FILES,
+        NO_MORE_BYTES,
+        NO_MORE_NUMBERS,
+        DISK_FULL,
+        NOT_A_NAME,
+        NO_SUCH_FILE,
+    ]
+    .contains(&said)
+}
+
 /// Whether `stem` may end the name of a file in the inbox: one to
 /// [`STEM_BYTES`] bytes of ASCII letters, digits, `.`, `_` and `-`, not
 /// starting with a dot. It is never a path, a hidden name, `.` or `..`.
@@ -165,6 +188,91 @@ fn put_as(
     let name = format!("{number:04}-{stem}");
     write_new(&inbox, &name, bytes)?;
     Ok(name)
+}
+
+/// Whether `name` is one a file in the inbox is given: a number of four
+/// to nine digits, a hyphen, and a stem ([`is_stem`]).
+#[must_use]
+pub fn is_name(name: &str) -> bool {
+    number_of(name.as_bytes()).is_some()
+        && name.split_once('-').is_some_and(|(_, stem)| is_stem(stem))
+}
+
+/// A file in the inbox, as the owner is shown it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxFile {
+    /// Its name in the inbox.
+    pub name: String,
+    /// Its size.
+    pub bytes: u64,
+}
+
+/// The files in the inbox of the volume whose root is `volume`, by
+/// number: each regular file named as a put names one ([`is_name`]).
+///
+/// The caller holds the room disk's turn, as for [`put`].
+///
+/// # Errors
+///
+/// A volume or an inbox that isn't root's, and an inbox that can't be
+/// read.
+pub fn list(volume: BorrowedFd<'_>) -> Result<Vec<InboxFile>, Error> {
+    list_as(volume, 0)
+}
+
+/// [`list`], held to the volume and the inbox being `trusted`'s.
+fn list_as(volume: BorrowedFd<'_>, trusted: u32) -> Result<Vec<InboxFile>, Error> {
+    const OPERATION: &str = "list the room inbox";
+    let inbox = readable_inbox(volume, trusted)?;
+    let mut files = Vec::new();
+    for entry in rustix::fs::Dir::read_from(&inbox).map_err(failed(OPERATION))? {
+        let entry = entry.map_err(failed(OPERATION))?;
+        let Ok(name) = entry.file_name().to_str() else {
+            continue;
+        };
+        if !is_name(name) {
+            continue;
+        }
+        let stat = rustix::fs::statat(&inbox, name, AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(failed(OPERATION))?;
+        if FileType::from_raw_mode(stat.st_mode) == FileType::RegularFile {
+            files.push(InboxFile {
+                name: name.to_owned(),
+                bytes: u64::try_from(stat.st_size).unwrap_or(u64::MAX),
+            });
+        }
+    }
+    files.sort_by_key(|file| number_of(file.name.as_bytes()));
+    Ok(files)
+}
+
+/// Takes the file `name` out of the inbox of the volume whose root is
+/// `volume`. Its number is never given again.
+///
+/// The caller holds the room disk's turn, as for [`put`].
+///
+/// # Errors
+///
+/// [`PutError::Refused`]: a name a put doesn't give ([`is_name`]), or no
+/// file of that name in the inbox. [`PutError::Failed`]: a volume or an
+/// inbox that isn't root's, or a removal that failed.
+pub fn remove(volume: BorrowedFd<'_>, name: &str) -> Result<(), PutError> {
+    remove_as(volume, name, 0)
+}
+
+/// [`remove`], held to the volume and the inbox being `trusted`'s.
+fn remove_as(volume: BorrowedFd<'_>, name: &str, trusted: u32) -> Result<(), PutError> {
+    const OPERATION: &str = "remove a file from the room inbox";
+    if !is_name(name) {
+        return Err(PutError::Refused(NOT_A_NAME));
+    }
+    let inbox = readable_inbox(volume, trusted)?;
+    match rustix::fs::unlinkat(&inbox, name, AtFlags::empty()) {
+        Ok(()) => {}
+        Err(Errno::NOENT) => return Err(PutError::Refused(NO_SUCH_FILE)),
+        Err(errno) => return Err(failed(OPERATION)(errno).into()),
+    }
+    rustix::fs::fsync(&inbox).map_err(|errno| failed(OPERATION)(errno).into())
 }
 
 /// The inbox, opened to be read and written: under the volume's root by
@@ -795,5 +903,130 @@ mod tests {
         if crate::euid() != 0 {
             assert!(said(&refused.unwrap_err()).contains("controlled by root"));
         }
+    }
+
+    #[test]
+    fn the_inbox_knows_its_own_refusals_word_for_word() {
+        for said in [
+            NOT_A_STEM,
+            TOO_LARGE,
+            NO_MORE_FILES,
+            NO_MORE_BYTES,
+            NO_MORE_NUMBERS,
+        ] {
+            assert!(is_refusal(said), "{said}");
+        }
+        for said in [DISK_FULL, NOT_A_NAME, NO_SUCH_FILE] {
+            assert!(is_refusal(said), "{said}");
+        }
+        for said in [
+            "",
+            "open the room inbox: Permission denied",
+            "the Room's inbox is full: it holds 64 files and more",
+        ] {
+            assert!(!is_refusal(said), "{said}");
+        }
+    }
+
+    #[test]
+    fn a_name_is_a_number_a_hyphen_and_a_stem() {
+        for name in [
+            "0001-a",
+            "0001-report.pdf",
+            "123456789-a_b-c.txt",
+            "0042-0042-x",
+        ] {
+            assert!(is_name(name), "{name}");
+        }
+        for name in [
+            "",
+            "0001",
+            "0001-",
+            "001-a",
+            "1234567890-a",
+            "0001-.a",
+            "0001-a/b",
+            "a-0001",
+            "-0001-a",
+            "0001_a",
+            ".numbered",
+            "0001-a\0",
+            "0001-é",
+        ] {
+            assert!(!is_name(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn the_inbox_lists_its_files_by_number_and_nothing_else() {
+        let volume = Volume::new("list");
+        assert_eq!(list_as(volume.pinned.as_fd(), crate::euid()).unwrap(), []);
+        for stem in ["b", "a", "c"] {
+            volume.put(stem, stem.repeat(3).as_bytes()).unwrap();
+        }
+        // Ten numbers on: listed by number, not by name.
+        std::fs::write(volume.inbox().join("0010-z"), b"zz").unwrap();
+        // What a put never names isn't a file of the inbox's.
+        std::fs::write(volume.inbox().join("stray"), b"s").unwrap();
+        std::fs::create_dir(volume.inbox().join("0011-dir")).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", volume.inbox().join("0012-link")).unwrap();
+        let listed = list_as(volume.pinned.as_fd(), crate::euid()).unwrap();
+        let shown: Vec<(&str, u64)> = listed
+            .iter()
+            .map(|file| (file.name.as_str(), file.bytes))
+            .collect();
+        assert_eq!(
+            shown,
+            [("0001-b", 3), ("0002-a", 3), ("0003-c", 3), ("0010-z", 2)]
+        );
+    }
+
+    #[test]
+    fn a_file_is_removed_by_its_name_and_its_number_is_never_given_again() {
+        let volume = Volume::new("remove");
+        let first = volume.put("a", b"1").unwrap();
+        let second = volume.put("b", b"2").unwrap();
+        remove_as(volume.pinned.as_fd(), &second, crate::euid()).unwrap();
+        assert_eq!(volume.names(), std::slice::from_ref(&first));
+        assert_eq!(volume.put("c", b"3").unwrap(), "0003-c");
+        // Gone already, and a name no put gives: refused, and the inbox
+        // is as it was.
+        for (name, why) in [
+            (second.as_str(), NO_SUCH_FILE),
+            ("0001-a/../0001-a", NOT_A_NAME),
+            ("../inbox/0001-a", NOT_A_NAME),
+            (NUMBERED, NOT_A_NAME),
+            ("0001", NOT_A_NAME),
+        ] {
+            match remove_as(volume.pinned.as_fd(), name, crate::euid()) {
+                Err(PutError::Refused(said)) => assert_eq!(said, why, "{name}"),
+                other => unreachable!("{name}: not refused: {other:?}"),
+            }
+        }
+        assert_eq!(volume.names(), [first, "0003-c".to_owned()]);
+        assert!(volume.inbox().join(NUMBERED).exists());
+    }
+
+    #[test]
+    fn a_list_or_a_removal_needs_the_inbox_kept_from_others() {
+        let volume = Volume::new("others");
+        let name = volume.put("a", b"1").unwrap();
+        std::fs::set_permissions(volume.inbox(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        let listed = list_as(volume.pinned.as_fd(), crate::euid()).unwrap_err();
+        assert!(
+            said(&listed).contains("verify room inbox ownership"),
+            "{listed}"
+        );
+        match remove_as(volume.pinned.as_fd(), &name, crate::euid()) {
+            Err(PutError::Failed(error)) => {
+                assert!(
+                    said(&error).contains("verify room inbox ownership"),
+                    "{error}"
+                );
+            }
+            other => unreachable!("not refused: {other:?}"),
+        }
+        std::fs::set_permissions(volume.inbox(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(volume.names(), [name]);
     }
 }

@@ -34,7 +34,7 @@ ANSWERED = """([task, answer]) => {
 # or nothing if it closes the connection first.
 HELLO = """async ([url, token]) => await new Promise(resolve => {
     const socket = new WebSocket(url);
-    const hello = { type: 'hello', schema_version: 4, client: 'app-end-to-end' };
+    const hello = { type: 'hello', schema_version: 5, client: 'app-end-to-end' };
     if (token !== null) hello.token = token;
     socket.onopen = () => socket.send(JSON.stringify(hello));
     socket.onmessage = event => { resolve(JSON.parse(event.data).type); socket.close(); };

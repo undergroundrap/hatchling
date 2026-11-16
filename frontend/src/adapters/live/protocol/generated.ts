@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 4;
+export const UI_SCHEMA_VERSION = 5;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 31;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -275,6 +275,21 @@ export type ActivityEvent = {
      * Each tool it used, in the order first used.
      */
     readonly tools: readonly (ToolTally)[];
+} | {
+    /**
+     * Its size.
+     */
+    readonly bytes: number;
+    /**
+     * How it ended.
+     */
+    readonly ended: FileInEnded;
+    readonly event: 'file_in';
+    /**
+     * Its name in the inbox: none when it wasn't put, or it isn't
+     * known whether it was.
+     */
+    readonly name?: string | null;
 });
 /**
  * The state the activity feed shows for an event. `Interrupted` is a
@@ -330,7 +345,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1498,6 +1513,68 @@ export type FileContent = {
  */
 export type FileFormat = 'markdown' | 'text' | 'csv' | 'code' | 'html' | 'image' | 'pdf' | 'document' | 'spreadsheet';
 /**
+ * A file the owner put in the Room's inbox, as the chat shows it.
+ */
+export type FileIn = {
+    /**
+     * Its size.
+     */
+    readonly bytes: number;
+    /**
+     * The chat it was sent in.
+     */
+    readonly chat_id: string;
+    /**
+     * Whether it holds a secret the broker keeps: the owner is warned.
+     * It was put all the same: it is the owner's.
+     */
+    readonly holds_secret: boolean;
+    /**
+     * Its place in the chat.
+     */
+    readonly message_id: string;
+    /**
+     * The owner's name for it, as the app sent it, cut to
+     * [`FILE_IN_NAME_BYTES`]. Untrusted text: shown as text, never as a
+     * path or markup.
+     */
+    readonly name: string;
+    /**
+     * Its name in the inbox.
+     */
+    readonly placed_as: string;
+};
+/**
+ * How a file sent into the Room's inbox ended.
+ */
+export type FileInEnded = 'placed' | 'refused' | 'unknown' | 'abandoned';
+/**
+ * Why a file wasn't taken in, or the inbox wasn't listed or changed.
+ */
+export type FileInRefusal = {
+    /**
+     * The most it takes.
+     */
+    readonly limit: number;
+    readonly refusal: 'too_large';
+} | {
+    readonly refusal: 'busy';
+} | {
+    readonly refusal: 'no_room';
+} | {
+    readonly refusal: 'unknown_upload';
+} | {
+    readonly refusal: 'out_of_step';
+} | {
+    readonly refusal: 'refused';
+    /**
+     * Why, as the owner is told.
+     */
+    readonly said: string;
+} | {
+    readonly refusal: 'unknown';
+};
+/**
  * Why a file was not saved.
  */
 export type FileRefusal = {
@@ -1821,6 +1898,20 @@ export type IdeaSummary = {
  * The image types a surface shows inline.
  */
 export type ImageType = 'png' | 'jpeg' | 'webp' | 'gif';
+/**
+ * A file in the Room's inbox, as the owner is shown it.
+ */
+export type InboxFile = {
+    /**
+     * Its size.
+     */
+    readonly bytes: number;
+    /**
+     * Its name in the inbox, `NNNN-<stem>`: the agent reads it at
+     * `/workspace/inbox/<name>`.
+     */
+    readonly name: string;
+};
 /**
  * An image carried inline, so showing it fetches nothing.
  */
@@ -4946,6 +5037,48 @@ export type UiAction = {
      * The session.
      */
     readonly session_id: string;
+} | {
+    readonly action: 'begin_file_in';
+    /**
+     * Its size: every part together is exactly this.
+     */
+    readonly bytes: number;
+    /**
+     * The chat it is sent in.
+     */
+    readonly chat_id: string;
+    /**
+     * The owner's name for it. Untrusted text, never used on disk.
+     */
+    readonly name: string;
+} | {
+    readonly action: 'file_in_part';
+    /**
+     * Its bytes, base64.
+     */
+    readonly data: string;
+    /**
+     * Its place: one past the last part's.
+     */
+    readonly seq: number;
+    /**
+     * The file, as its beginning answered.
+     */
+    readonly upload_id: string;
+} | {
+    readonly action: 'end_file_in';
+    /**
+     * The file, as its beginning answered.
+     */
+    readonly upload_id: string;
+} | {
+    readonly action: 'list_inbox';
+} | {
+    readonly action: 'remove_inbox_file';
+    /**
+     * Its name in the inbox.
+     */
+    readonly name: string;
 };
 /**
  * What an action did.
@@ -5200,6 +5333,54 @@ export type UiActionResult = {
      * The session.
      */
     readonly session_id: string;
+} | {
+    /**
+     * The most bytes a part carries.
+     */
+    readonly part_bytes: number;
+    readonly result: 'file_in_begun';
+    /**
+     * The file's id, for its parts and its end.
+     */
+    readonly upload_id: string;
+} | {
+    readonly result: 'file_in_part_taken';
+    /**
+     * The part.
+     */
+    readonly seq: number;
+    /**
+     * The file.
+     */
+    readonly upload_id: string;
+} | {
+    /**
+     * How the chat shows it.
+     */
+    readonly file: FileIn;
+    readonly result: 'file_in_placed';
+    /**
+     * The file.
+     */
+    readonly upload_id: string;
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: FileInRefusal;
+    readonly result: 'file_in_refused';
+} | {
+    /**
+     * Its files.
+     */
+    readonly files: readonly (InboxFile)[];
+    readonly result: 'inbox';
+} | {
+    /**
+     * Its name, as it was.
+     */
+    readonly name: string;
+    readonly result: 'inbox_file_removed';
 };
 /**
  * One artifact as the UI lists it: every revision kept.
@@ -5317,6 +5498,8 @@ export type UiEventBody = {
     readonly kind: 'messages_joined';
 } | UiArtifact & {
     readonly kind: 'artifact_listed';
+} | FileIn & {
+    readonly kind: 'file_in';
 } | {
     /**
      * The artifact.

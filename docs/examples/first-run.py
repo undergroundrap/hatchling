@@ -13,7 +13,7 @@ import socket
 import sys
 import time
 
-from hello import receive, send
+from hello import handshake, receive, send
 
 TASK = "Introduce yourself in one sentence."
 
@@ -38,10 +38,9 @@ def connect(path, wait=START_WAIT_SECS):
 
 
 def main(path):
-    sock = connect(path)
-    send(sock, {"type": "hello", "schema_version": 4, "client": "first-run.py", "token": None})
-    if receive(sock).get("type") != "welcome":
-        print("handshake failed")
+    sock, welcome = handshake(lambda: connect(path), "first-run.py")
+    if sock is None:
+        print("handshake failed:", welcome)
         return 1
 
     # Saying something on the local chat also makes this connection the

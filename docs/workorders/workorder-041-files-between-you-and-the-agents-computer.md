@@ -47,7 +47,7 @@ Settled from an independent threat model of this work order and the code (2026-1
 - The Room sees the inbox read-only, `noexec`, at `/workspace/inbox`. The inbox directory is root's, `0755`, so the Room's user can read what is in it and change none of it.
 - The put holds the room disk's turn, as a disk operation does: through the Room's session when one is live, or directly when none is. A disk that isn't open refuses it.
 - **Bounds:** 8 MiB a file; the inbox holds 64 files and 256 MiB. A full inbox refuses a file; nothing is evicted. The owner removes files.
-- The model is told of a file by a line the broker writes, with its place, its size, and that what is in it is untrusted. The owner's original name is shown only in the app, as text.
+- The model is told of a file by a line the broker writes, with its place, its size, and that its name and what is in it are untrusted. The line is given in the next run's task alone, never kept as the owner's words. The owner's original name is shown only in the app, as text; the inbox's name is made of it in plain ASCII.
 - A file in that holds a secret the broker keeps gets a warning in the app, not a refusal: it is the owner's file.
 
 **A file out.**
@@ -71,7 +71,7 @@ Settled from an independent threat model of this work order and the code (2026-1
 **Slices:**
 
 1. The inbox put: the spawner and the trusted mount code, with the inbox's mode, proved as root.
-2. A file in from the app: the upload in parts, the stem, the line to the model, and Activity.
+2. A file in from the app: the upload in parts, the stem, the line to the model, and Activity. It lands in two pull requests: the broker's side and the local API first, then the app's own attach and inbox list.
 3. A file out to the Library: the supervisor's read, assembly, the checks, the sealed store, and the agent's tool.
 4. A file out in the app: the card, the Library, the download, the docs, and the evidence.
 
@@ -84,5 +84,6 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend and protocol gates, and the ins
 Each slice's record, as it lands:
 
 - Slice 1, the inbox put: [room-inbox-put](../evidence/room-inbox-put.md).
+- Slice 2, a file in through the local API: [room-file-in](../evidence/room-file-in.md).
 
 The whole is filled in at close.

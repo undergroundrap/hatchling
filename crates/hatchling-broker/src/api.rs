@@ -408,7 +408,8 @@ fn closed_to(socket: SessionSocket, action: &UiAction) -> bool {
 }
 
 /// The caller's requests after the handshake, on `socket`; `subscribe`
-/// starts the stream, once.
+/// starts the stream, once. A file the connection was sending in when it
+/// ended, however it ended, is kept as let go (WO-041).
 fn requests(
     stream: &UnixStream,
     ops: &Ops<'_>,
@@ -416,9 +417,34 @@ fn requests(
     caller: &Caller,
     socket: SessionSocket,
     writer: &Mutex<UnixStream>,
-    mut subscribe: impl FnMut(Option<u64>),
+    subscribe: impl FnMut(Option<u64>),
 ) -> Result<(), Error> {
     let mut replies = Replies::default();
+    let answered = answer(
+        stream,
+        ops,
+        audit,
+        caller,
+        (socket, writer),
+        subscribe,
+        &mut replies,
+    );
+    if let Some(left) = replies.abandon() {
+        audit.keep(left);
+    }
+    answered
+}
+
+/// [`requests`], with the connection's `replies`.
+fn answer<'a>(
+    stream: &UnixStream,
+    ops: &Ops<'a>,
+    audit: &mut Audit,
+    caller: &Caller,
+    (socket, writer): (SessionSocket, &Mutex<UnixStream>),
+    mut subscribe: impl FnMut(Option<u64>),
+    replies: &mut Replies<'a>,
+) -> Result<(), Error> {
     let mut subscribed = false;
     while let Some(frame) = next_frame(stream)? {
         match decode(&frame)? {
@@ -443,14 +469,33 @@ fn requests(
                     let reason = ActionRefusal::Unavailable;
                     (UiActionResult::Refused { reason }, ApiOutcome::Refused)
                 } else {
-                    ops.handle(caller, &action, &mut replies)
+                    ops.handle(caller, &action, replies)
                 };
-                audit.record(Some(caller), ApiRequest::of_action(&action), outcome);
+                audited(audit, caller, &action, outcome, replies);
                 send(writer, &UiResponse::ActionResult { request_id, result })?;
             }
         }
     }
     Ok(())
+}
+
+/// Keeps one action of `caller`'s in the audit trail, as the API answered
+/// it. A file in is kept once, by how it ended, and not by its parts
+/// (WO-041): a part the backend answered isn't a line of its own.
+fn audited(
+    audit: &mut Audit,
+    caller: &Caller,
+    action: &UiAction,
+    outcome: ApiOutcome,
+    replies: &mut Replies<'_>,
+) {
+    let part = matches!(action, UiAction::FileInPart { .. });
+    if !(part && outcome == ApiOutcome::Served) {
+        audit.record(Some(caller), ApiRequest::of_action(action), outcome);
+    }
+    if let Some(crossed) = replies.take_crossed() {
+        audit.keep(crossed);
+    }
 }
 
 /// Sends the stream's events after `after`, and each new one as it
@@ -615,7 +660,8 @@ mod tests {
                     | SubagentEvent::Killed { .. }
                     | SubagentEvent::Failed { .. }
                     | SubagentEvent::HarnessRun { .. }
-                    | SubagentEvent::RunSummary { .. } => None,
+                    | SubagentEvent::RunSummary { .. }
+                    | SubagentEvent::FileIn { .. } => None,
                 },
             )
             .collect()
@@ -1488,6 +1534,65 @@ mod tests {
             drop(client);
             assert!(worker.join().unwrap().is_ok());
         });
+    }
+
+    /// A file in is one line of Activity, by how it ended: its parts aren't
+    /// lines, but one refused before the backend saw it is.
+    #[test]
+    fn a_file_in_is_kept_once_by_how_it_ended_and_never_by_its_parts() {
+        let dir = scratch("file-in-audit");
+        let config = config_in(&dir);
+        let log = config.scheduler.activity_log();
+        let mut audit = Audit::new(log.clone(), String::from("api-files"));
+        let caller = Caller::new(String::from("uid 1000"), BTreeSet::new());
+        let mut replies = Replies::default();
+        let part = UiAction::FileInPart {
+            upload_id: String::from("file-1"),
+            seq: 0,
+            data: String::from("eA=="),
+        };
+        audited(&mut audit, &caller, &part, ApiOutcome::Served, &mut replies);
+        audited(
+            &mut audit,
+            &caller,
+            &part,
+            ApiOutcome::Refused,
+            &mut replies,
+        );
+        replies.cross(SubagentEvent::FileIn {
+            name: Some(String::from("0001-a")),
+            bytes: 1,
+            ended: hatchling_core::FileInEnded::Placed,
+        });
+        let end = UiAction::EndFileIn {
+            upload_id: String::from("file-1"),
+        };
+        audited(&mut audit, &caller, &end, ApiOutcome::Served, &mut replies);
+        audited(&mut audit, &caller, &end, ApiOutcome::Served, &mut replies);
+        let kept: Vec<SubagentEvent> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<ActivityEvent>(line).unwrap().kind)
+            .collect();
+        let call = |request, outcome| SubagentEvent::ApiCall {
+            caller: String::from("uid 1000"),
+            capabilities: Vec::new(),
+            request,
+            outcome,
+        };
+        assert_eq!(
+            kept,
+            [
+                call(ApiRequest::FileInPart, ApiOutcome::Refused),
+                call(ApiRequest::EndFileIn, ApiOutcome::Served),
+                SubagentEvent::FileIn {
+                    name: Some(String::from("0001-a")),
+                    bytes: 1,
+                    ended: hatchling_core::FileInEnded::Placed,
+                },
+                call(ApiRequest::EndFileIn, ApiOutcome::Served),
+            ]
+        );
     }
 
     #[test]

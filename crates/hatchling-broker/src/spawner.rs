@@ -64,7 +64,7 @@ use crate::room_session::{DiskReply, Kept, Ledger, Limits, Seat, Sessions};
 use crate::browser_session::BrowserSettings;
 use crate::cell::{CellConfig, CellLimits, Process, agent_identity};
 use crate::harness_tree::TreeOp;
-use crate::room_disk::RoomDisk;
+use crate::room_disk::{InboxAnswer, InboxOp, RoomDisk};
 use crate::run_launcher::{BROKER_PID_ENV, broker_pid, forget_spec, spec_args};
 use crate::vault_keyring::KeyringConfig;
 use crate::{Config, Error, RedactionConfig};
@@ -591,6 +591,10 @@ enum Request {
     /// Put the next `size` bytes, sent in frames, in the Room's inbox as a
     /// new file named for `stem` (WO-041).
     RoomInboxPut { stem: String, size: usize },
+    /// Say what files the Room's inbox holds (WO-041).
+    RoomInboxList,
+    /// Take the file `name` out of the Room's inbox (WO-041).
+    RoomInboxRemove { name: String },
 }
 
 /// What the spawner answers.
@@ -624,6 +628,10 @@ enum Reply {
     RoomChanged { changed: RoomChanged },
     /// A file was put in the Room's inbox, and this is its name.
     RoomPlaced { name: String },
+    /// The files the Room's inbox holds, by number.
+    RoomInbox {
+        files: Vec<crate::room_disk::InboxEntry>,
+    },
 }
 
 pub use crate::room_session::{Change as RoomChange, Changed as RoomChanged, Search as RoomSearch};
@@ -826,7 +834,8 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => {
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => {
                 return Err(String::from("the spawner answered out of step"));
             }
         };
@@ -903,7 +912,8 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -938,7 +948,8 @@ impl Spawner {
         match answer {
             Reply::RoomPlaced { name } => Ok(name),
             Reply::Refused { reason } => Err(reason),
-            Reply::Started { .. }
+            Reply::RoomInbox { .. }
+            | Reply::Started { .. }
             | Reply::Exited { .. }
             | Reply::Done
             | Reply::RoomDisk { .. }
@@ -948,6 +959,67 @@ impl Spawner {
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
         }
+    }
+
+    /// Has the spawner say what files the Room's inbox holds (WO-041), by
+    /// number.
+    ///
+    /// # Errors
+    ///
+    /// Why not: a disk that isn't open, an inbox that can't be read, or a
+    /// spawner that can't be reached.
+    pub fn room_inbox_list(&self) -> Result<Vec<crate::room_disk::InboxEntry>, String> {
+        match self.room_inbox_ask(&Request::RoomInboxList)? {
+            Reply::RoomInbox { files } => Ok(files),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Done
+            | Reply::RoomPlaced { .. }
+            | Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Has the spawner take the file `name` out of the Room's inbox
+    /// (WO-041).
+    ///
+    /// # Errors
+    ///
+    /// Why not: a name the inbox doesn't give, no such file, a disk that
+    /// isn't open, or a spawner that can't be reached.
+    pub fn room_inbox_remove(&self, name: &str) -> Result<(), String> {
+        let request = Request::RoomInboxRemove {
+            name: name.to_owned(),
+        };
+        match self.room_inbox_ask(&request)? {
+            Reply::Done => Ok(()),
+            Reply::Refused { reason } => Err(reason),
+            Reply::RoomInbox { .. }
+            | Reply::RoomPlaced { .. }
+            | Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Sends `request` about the Room's inbox, and takes its answer.
+    fn room_inbox_ask(&self, request: &Request) -> Result<Reply, String> {
+        let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| format!("cannot bound the spawner's answer: {error}"))?;
+        send(&stream, request).map_err(|error| error.to_string())?;
+        receive(&stream).map_err(|error| error.to_string())
     }
 
     /// Has the spawner do the room disk's `op` (0.9): its status, for a
@@ -977,7 +1049,8 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1003,7 +1076,8 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1098,7 +1172,8 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1140,7 +1215,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1178,7 +1254,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1219,7 +1296,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1243,7 +1321,8 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1282,7 +1361,8 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
-            | Reply::RoomPlaced { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 }
@@ -1328,7 +1408,8 @@ impl SpawnedProcess {
                     | Reply::RoomPage { .. }
                     | Reply::RoomFound { .. }
                     | Reply::RoomChanged { .. }
-                    | Reply::RoomPlaced { .. },
+                    | Reply::RoomPlaced { .. }
+                    | Reply::RoomInbox { .. },
                 ) => Err(String::from("the spawner answered out of step")),
                 Err(error) => Err(error.to_string()),
             };
@@ -1677,7 +1758,7 @@ fn hold_room_session(
         Limits::INSTALLED,
         ledger,
         |op| room_disk_done(policy, keeper, op, true),
-        |stem: &str, bytes: &[u8]| room_inbox_done(policy, keeper, stem, bytes, true),
+        |op: &InboxOp| room_inbox_done(policy, keeper, op, true),
     );
     let launched = room_launch(program, policy, keeper, Some(&mut kept));
     kept.finish(launched, |op| room_disk_done(policy, keeper, op, false));
@@ -1782,15 +1863,30 @@ fn serve_connection(
             told(stream, sessions.change(&change, stream), Reply::changed)
         }
         Request::RoomInboxPut { stem, size } => {
-            let put =
-                read_sized(stream, size, INBOX_FILE_BYTES, inbox_too_large).and_then(|bytes| {
-                    sessions.put(&stem, &bytes, || {
-                        room_inbox_done(policy, keeper, &stem, &bytes, false)
-                    })
-                });
-            told(stream, put, Reply::placed)
+            let put = read_sized(stream, size, INBOX_FILE_BYTES, inbox_too_large)
+                .map(|bytes| InboxOp::Put { stem, bytes });
+            inbox_told(stream, put, policy, keeper, sessions)
+        }
+        Request::RoomInboxList => inbox_told(stream, Ok(InboxOp::List), policy, keeper, sessions),
+        Request::RoomInboxRemove { name } => {
+            let remove = Ok(InboxOp::Remove { name });
+            inbox_told(stream, remove, policy, keeper, sessions)
         }
     }
+}
+
+/// Does `op` to the Room's inbox, through the live session or directly,
+/// and answers it on `stream`.
+fn inbox_told(
+    stream: &UnixStream,
+    op: Result<InboxOp, String>,
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+    sessions: &Sessions,
+) -> Result<(), Error> {
+    let done =
+        op.and_then(|op| sessions.inbox(&op, |op| room_inbox_done(policy, keeper, op, false)));
+    told(stream, done, Reply::inboxed)
 }
 
 impl Reply {
@@ -1814,9 +1910,14 @@ impl Reply {
         Self::RoomChanged { changed }
     }
 
-    /// The name a file put in the Room's inbox was given, as a reply.
-    const fn placed(name: String) -> Self {
-        Self::RoomPlaced { name }
+    /// What the Room's inbox did, as a reply: the name a file put in it
+    /// was given, the files it holds, or done.
+    fn inboxed(answer: InboxAnswer) -> Self {
+        match answer {
+            InboxAnswer::Placed(name) => Self::RoomPlaced { name },
+            InboxAnswer::Listed(files) => Self::RoomInbox { files },
+            InboxAnswer::Removed => Self::Done,
+        }
     }
 }
 
@@ -1996,22 +2097,21 @@ fn room_disk_done(
     }
 }
 
-/// Puts a file in the room disk's inbox (WO-041): the ordinary way, or,
+/// Does `op` to the room disk's inbox (WO-041): the ordinary way, or,
 /// `held`, for a Room session that holds the disk already.
 fn room_inbox_done(
     policy: &Policy,
     keeper: Option<&Keeper>,
-    stem: &str,
-    bytes: &[u8],
+    op: &InboxOp,
     held: bool,
-) -> Result<String, String> {
+) -> Result<InboxAnswer, String> {
     let (Some(room), Some(_)) = (&policy.room, keeper) else {
         return Err(String::from(crate::room_disk::NOT_HERE));
     };
     if held {
-        crate::room_disk::put_inbox_held(room, stem, bytes)
+        crate::room_disk::inbox_held(room, op)
     } else {
-        crate::room_disk::put_inbox(room, stem, bytes)
+        crate::room_disk::inbox(room, op)
     }
 }
 
@@ -2549,6 +2649,61 @@ pub(crate) mod tests {
             silent.join().unwrap(),
             (String::from("notes"), b"abc".to_vec())
         );
+    }
+
+    /// The inbox's list and a removal are asked as one request each, and
+    /// answered as the spawner answers: its files, done, or why not.
+    #[test]
+    fn the_inbox_is_listed_and_a_file_removed_as_the_spawner_answers() {
+        use crate::room_disk::InboxEntry;
+        let answering = |reply: Reply| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let served = std::thread::spawn(move || {
+                let stream = UnixStream::from(hatchling_sys::net::recv_fd(theirs.as_fd()).unwrap());
+                let request: Request =
+                    serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
+                send(&stream, &reply).unwrap();
+                format!("{request:?}")
+            });
+            (Spawner::over(ours), served)
+        };
+        let file = InboxEntry {
+            name: String::from("0001-a"),
+            bytes: 3,
+        };
+        let (spawner, asked) = answering(Reply::RoomInbox {
+            files: vec![file.clone()],
+        });
+        assert_eq!(spawner.room_inbox_list(), Ok(vec![file]));
+        // Each was asked: the spawner's end of the connection is let go
+        // first, so one never asked can't wait on it.
+        drop(spawner);
+        assert_eq!(asked.join().unwrap(), "RoomInboxList");
+        let (spawner, asked) = answering(Reply::Done);
+        assert_eq!(spawner.room_inbox_remove("0001-a"), Ok(()));
+        drop(spawner);
+        assert_eq!(
+            asked.join().unwrap(),
+            "RoomInboxRemove { name: \"0001-a\" }"
+        );
+        for reply in [
+            Reply::Refused {
+                reason: String::from("no file of that name"),
+            },
+            Reply::Done,
+        ] {
+            let (spawner, _asked) = answering(reply);
+            assert!(spawner.room_inbox_list().is_err());
+        }
+        for reply in [
+            Reply::Refused {
+                reason: String::from("no file of that name"),
+            },
+            Reply::RoomInbox { files: Vec::new() },
+        ] {
+            let (spawner, _asked) = answering(reply);
+            assert!(spawner.room_inbox_remove("0001-a").is_err());
+        }
     }
 
     /// The spawner writes an approved delivery into the workspace, as a

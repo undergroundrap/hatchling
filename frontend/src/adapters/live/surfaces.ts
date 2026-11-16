@@ -109,6 +109,7 @@ export class Surfaces {
             case 'confirmation_decided':
             case 'confirmation_closed':
             case 'attachment':
+            case 'file_in':
                 return undefined;
         }
     }

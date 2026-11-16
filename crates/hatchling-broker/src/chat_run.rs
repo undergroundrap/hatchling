@@ -475,6 +475,25 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         L: Launcher<Run = R>,
         D: Delivery,
     {
+        self.step_noted(next, &(), conversation, launcher, delivery, now)
+    }
+
+    /// [`Chat::step`], where a run that starts is given the broker's
+    /// `notes` before the owner's message (WO-041): in its task alone,
+    /// never as the owner's words.
+    pub fn step_noted<L, D>(
+        &mut self,
+        next: impl FnOnce() -> Option<(Message, u64)>,
+        notes: &dyn Notes,
+        conversation: u64,
+        launcher: &L,
+        delivery: &D,
+        now: Timestamp,
+    ) -> Step
+    where
+        L: Launcher<Run = R>,
+        D: Delivery,
+    {
         if conversation != self.conversation {
             self.conversation = conversation;
             self.kept = Conversation::default();
@@ -544,14 +563,38 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             tracing::info!(span = ?reached.span, "a message wasn't answered: a usage limit is reached");
             return answer_with(delivery, &reached.told());
         }
+        self.start(message, sent_in, notes, launcher, delivery, now)
+    }
+
+    /// Starts a run for the owner's `message`, sent in `sent_in`, given
+    /// `notes` before it.
+    fn start<L, D>(
+        &mut self,
+        message: Message,
+        sent_in: u64,
+        notes: &dyn Notes,
+        launcher: &L,
+        delivery: &D,
+        now: Timestamp,
+    ) -> Step
+    where
+        L: Launcher<Run = R>,
+        D: Delivery,
+    {
         let (history, earlier) = if sent_in == self.conversation {
             (self.history(), self.earlier())
         } else {
             (Vec::new(), Vec::new())
         };
+        let given = notes.take();
+        let task = if given.is_empty() {
+            message.text.clone()
+        } else {
+            format!("{}\n\n{}", crate::file_in::told(&given), message.text)
+        };
         let request = RunRequest {
             schedule_id: String::from(CHAT_LABEL),
-            task: message.text.clone(),
+            task,
             grants: self.grants.clone(),
             due: now,
             missed: false,
@@ -574,9 +617,40 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             }
             Err(reason) => {
                 tracing::warn!(reason = ?reason, "a chat run could not start");
+                notes.give_back(given);
                 answer_with(delivery, CHAT_FAILED)
             }
         }
+    }
+}
+
+/// The broker's own notes for the next run that answers the owner
+/// (WO-041), each by its key: taken as a run starts, and given back when
+/// it doesn't.
+pub trait Notes {
+    /// Takes every note, the oldest first.
+    fn take(&self) -> Vec<(String, String)>;
+    /// Gives back `notes`, taken for a run that didn't start.
+    fn give_back(&self, notes: Vec<(String, String)>);
+}
+
+/// No notes.
+impl Notes for () {
+    fn take(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    fn give_back(&self, _notes: Vec<(String, String)>) {}
+}
+
+/// The notes the local channel's hub keeps.
+impl Notes for LocalHub {
+    fn take(&self) -> Vec<(String, String)> {
+        self.take_notes()
+    }
+
+    fn give_back(&self, notes: Vec<(String, String)>) {
+        self.give_back_notes(notes);
     }
 }
 
@@ -676,8 +750,9 @@ where
     L: Launcher<Run = R>,
     D: Delivery,
 {
-    let step = chat.step(
+    let step = chat.step_noted(
         || hub.take_in_conversation(),
+        hub,
         hub.conversation(),
         launcher,
         delivery,
@@ -815,6 +890,103 @@ mod tests {
             Step::Started
         );
         chat.step(|| None, 0, launches, answers, now)
+    }
+
+    /// A run that starts is given the broker's notes before the owner's
+    /// words, in its task alone: what the owner said is kept as theirs.
+    /// A run that can't start gives the notes back, and they are given
+    /// once.
+    #[test]
+    fn a_run_is_given_the_brokers_notes_and_the_owners_words_stay_theirs() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        hub.note(String::from("0001-a"), String::from("[note a]"));
+        hub.note(String::from("0002-b"), String::from("[note b]"));
+        let launches = Launches::default();
+        launches.outcomes.borrow_mut().extend([
+            Err(String::from("no cell")),
+            Ok(answering("Read.")),
+            Ok(answering("Next.")),
+        ]);
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        let now = Timestamp::now();
+        let step = |chat: &mut Chat<Scripted>, text: Option<&str>| {
+            chat.step_noted(
+                || text.map(|text| (message(text), 0)),
+                &hub,
+                0,
+                &launches,
+                &answers,
+                now,
+            )
+        };
+        assert_ne!(step(&mut chat, Some("hi")), Step::Started);
+        assert_eq!(step(&mut chat, Some("Read them.")), Step::Started);
+        assert_eq!(step(&mut chat, None), Step::Answered);
+        assert!(
+            hub.take_notes().is_empty(),
+            "a note was kept after it was given"
+        );
+        assert_eq!(
+            exchange(&mut chat, "And then?", &launches, &answers),
+            Step::Answered
+        );
+        let tasks: Vec<String> = launches
+            .requests
+            .borrow()
+            .iter()
+            .map(|request| request.task.clone())
+            .collect();
+        assert_eq!(
+            tasks,
+            [
+                "[note a]\n[note b]\n\nhi",
+                "[note a]\n[note b]\n\nRead them.",
+                "And then?"
+            ]
+        );
+        assert_eq!(
+            histories(&launches).last(),
+            Some(&vec![(String::from("Read them."), String::from("Read."))])
+        );
+    }
+
+    /// The chat's own turn gives the run it starts the notes its hub
+    /// keeps.
+    #[test]
+    fn the_chats_own_turn_gives_a_run_the_hubs_notes() {
+        let dir = crate::suggestions::tests::scratch("chat-notes");
+        let config = crate::suggestions::tests::config(&dir, None);
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        hub.note(String::from("0001-a"), String::from("[note a]"));
+        let launches = Launches::default();
+        launches.outcomes.borrow_mut().push(Ok(answering("Read.")));
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        assert_eq!(
+            hub.inject(message("Read it.")),
+            hatchling_channel::IngressEvent::Queued
+        );
+        assert_eq!(
+            chat_turn(
+                &mut chat,
+                &config,
+                &hub,
+                &launches,
+                &answers,
+                Timestamp::now()
+            ),
+            Step::Started
+        );
+        assert_eq!(
+            launches
+                .requests
+                .borrow()
+                .first()
+                .map(|request| request.task.clone()),
+            Some(String::from("[note a]\n\nRead it."))
+        );
+        assert!(hub.take_notes().is_empty());
     }
 
     fn histories(launches: &Launches) -> Vec<Vec<(String, String)>> {
