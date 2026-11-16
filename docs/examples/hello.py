@@ -13,6 +13,9 @@ import sys
 
 GRANTS = [{"grant": "channel-send", "channel": "local"}]
 
+# The local API's version these examples speak first.
+SCHEMA_VERSION = 5
+
 
 def send(sock, value):
     """Writes one frame: a 4-byte big-endian length, then UTF-8 JSON."""
@@ -34,6 +37,26 @@ def receive(sock):
     return json.loads(exactly(length))
 
 
+def handshake(connect, client):
+    """A welcomed connection, from `connect` (which opens a new one), and
+    the welcome; or no connection, and the broker's answer. A broker of
+    another version says which it speaks, and is asked again in it: what
+    these examples ask for is the same in every version they meet."""
+    version = SCHEMA_VERSION
+    answer = None
+    for _ in range(2):
+        sock = connect()
+        send(sock, {"type": "hello", "schema_version": version, "client": client, "token": None})
+        answer = receive(sock)
+        if answer.get("type") == "welcome":
+            return sock, answer
+        sock.close()
+        if answer.get("type") != "incompatible" or answer.get("backend") == version:
+            break
+        version = answer.get("backend")
+    return None, answer
+
+
 def schedule(sock, request_id, op):
     """Sends one schedule action and waits for its result."""
     send(sock, {"type": "action", "request_id": request_id,
@@ -45,12 +68,13 @@ def schedule(sock, request_id, op):
 
 
 def main(path):
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(path)
+    def connect():
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(path)
+        return sock
 
-    send(sock, {"type": "hello", "schema_version": 5, "client": "hello.py", "token": None})
-    welcome = receive(sock)
-    if welcome.get("type") != "welcome":
+    sock, welcome = handshake(connect, "hello.py")
+    if sock is None:
         print("handshake failed:", json.dumps(welcome))
         return 1
     print("connected:", json.dumps(welcome))

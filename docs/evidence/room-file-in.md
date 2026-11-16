@@ -198,6 +198,19 @@ security matches `docs/your-security.md` word for word.
 - **A test's stand-in spawner waited forever on a mutant that never
   asked it**, so the mutant timed out where it should have failed. The
   test lets its end go first now, and the mutant is caught.
+- **CI's upgrade check found one more client that said 4.** It runs this
+  commit's `docs/examples/first-run.py` against the last release, a v4
+  broker, before the upgrade. The examples now share one handshake
+  (`hello.py`'s `handshake`): it says 5, and to a broker that says it
+  speaks another version, asks again in that one. What the examples ask
+  for is the same in both. That change came after the runs above, in its
+  own commit, and touches only `docs/examples/` and
+  `scripts/upgrade_state.py`: no code the runs tested. Its own check:
+  the scripts' tests that use the examples (`test_first_run.py`,
+  `test_hosted_model_smoke.py`, `test_get.py`,
+  `test_readme_quickstart.py`) pass, and the handshake against stand-in
+  brokers of v4, v5 and v9 is welcomed, and isn't asked again after a
+  refusal.
 - **A loop a mutant could make endless** (`shown_name` stepping back to a
   character's end) is gone: the name is cut by its characters as they
   are counted.

@@ -18,7 +18,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "docs", "examples"))
-from hello import receive, send  # noqa: E402
+from hello import handshake, receive, send  # noqa: E402
 
 # How long to wait for a broker that was just started to make its socket.
 START_WAIT_SECS = 60
@@ -47,28 +47,14 @@ def connect(path, wait=START_WAIT_SECS):
             time.sleep(0.2)
 
 
-# The local API's version this script speaks: the commit's. The release it
-# upgrades from may speak an older one, which it is told, and speaks then.
-SCHEMA_VERSION = 5
-
-
 def session(path):
     """A welcomed API connection, and the grants the welcome named (none
-    from a broker too old to say). A broker of another version says its
-    own, and is asked again in it: the schedule actions this script uses
-    are the same in every version it meets."""
-    version = SCHEMA_VERSION
-    for _ in range(2):
-        sock = connect(path)
-        send(sock, {"type": "hello", "schema_version": version, "client": "upgrade_state.py", "token": None})
-        welcome = receive(sock)
-        if welcome.get("type") == "welcome":
-            return sock, welcome.get("grants")
-        sock.close()
-        if welcome.get("type") != "incompatible" or welcome.get("backend") == version:
-            break
-        version = welcome.get("backend")
-    raise SystemExit(f"handshake failed: {welcome}")
+    from a broker too old to say). The release this upgrades from may speak
+    an older version of the API, which the handshake asks again in."""
+    sock, welcome = handshake(lambda: connect(path), "upgrade_state.py")
+    if sock is None:
+        raise SystemExit(f"handshake failed: {welcome}")
+    return sock, welcome.get("grants")
 
 
 def ask(sock, request_id, op):
