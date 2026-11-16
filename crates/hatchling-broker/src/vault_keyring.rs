@@ -3056,8 +3056,11 @@ pub(crate) mod tests {
             .backup_codes_left()
     }
 
-    fn today() -> String {
-        utc_date(now()).unwrap()
+    /// The day `key` was added, as its record keeps it: what a line about
+    /// it shows. Read from the record, not the clock again, so a test that
+    /// runs across midnight UTC reads the same day the key was stamped.
+    fn day_added(key: &KeyInfo) -> String {
+        key.added.and_then(utc_date).unwrap()
     }
 
     fn refused(result: &Result<KeyInfo, Error>, words: &str) -> bool {
@@ -3134,7 +3137,7 @@ pub(crate) mod tests {
             format!(
                 "  security key {}  (no label)  added {}  touch",
                 key.id,
-                today()
+                day_added(key)
             )
         }));
         assert_eq!(shown, expected.join("\n"));
@@ -3205,15 +3208,19 @@ pub(crate) mod tests {
                 ("", Some(2)),
             ],
         );
+        let before = now();
         let added = add_key(
             &config,
             &mut |prompt| Ok(Zeroizing::new(operator.answer(prompt))),
             &mut desk,
         )
         .unwrap();
-        assert_eq!(
-            (added.label.as_str(), added.added.and_then(utc_date)),
-            ("YubiKey 5C, desk", Some(today()))
+        let after = now();
+        assert_eq!(added.label, "YubiKey 5C, desk");
+        assert!(
+            added.added.is_some_and(|at| (before..=after).contains(&at)),
+            "stamped when it was added: {:?} not in {before}..={after}",
+            added.added
         );
         assert_eq!(keys_of(&config).last(), Some(&added));
         assert_eq!(
@@ -3674,7 +3681,8 @@ pub(crate) mod tests {
     #[test]
     fn the_command_runs_the_key_actions_through_its_devices() {
         let (_scratch, vault, config, _, mut desk) = desk_vault("command-keys", 3);
-        let first = keys_of(&config).first().unwrap().id.clone();
+        let first_key = keys_of(&config).first().unwrap().clone();
+        let first = &first_key.id;
         let run = |action: &str, steps: &[(&str, Option<usize>)], desk: &mut Desk| {
             let mut operator = Operator::new(desk, steps);
             let mut out = Vec::new();
@@ -3713,7 +3721,7 @@ pub(crate) mod tests {
             named,
             format!(
                 "vault-keyring: named the security key {first}  primary  added {}  touch\n",
-                today()
+                day_added(&first_key)
             )
         );
         let removed = run(
@@ -3726,7 +3734,7 @@ pub(crate) mod tests {
             removed,
             format!(
                 "vault-keyring: removed the security key {first}  primary  added {}  touch\n",
-                today()
+                day_added(&first_key)
             )
         );
         let usage = run("bogus", &[], &mut desk);
