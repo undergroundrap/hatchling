@@ -1,6 +1,7 @@
 // An action's first step, in the controller's isolated world: the element
 // the last snapshot kept at `index`, scrolled into view, then one step:
-// "box" (its centre, for a click through the browser's input), "focus",
+// "box" (its centre, for a click through the browser's input, only when a
+// click there lands on it or a label of it), "focus",
 // "choose" (the option of a list whose text is `option`), or, for what the
 // broker fills, "username", "password" or "code": focus, only if it's that
 // kind of field.
@@ -15,7 +16,23 @@
     if (box.width === 0 || box.height === 0) {
       return { outcome: "not_possible" };
     }
-    return { outcome: "ok", x: box.left + box.width / 2, y: box.top + box.height / 2 };
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    // A click through the browser's input goes to whatever is on top at
+    // that point: it's made only when that's the element, inside it, or
+    // one of its labels. Anything over it (a banner, a frame, a layer the
+    // page put there) would take the click, so none is made.
+    const hit = document.elementFromPoint(x, y);
+    const labels = element.labels ? Array.from(element.labels) : [];
+    const lands =
+      hit !== null &&
+      (element === hit ||
+        element.contains(hit) ||
+        labels.some((label) => label === hit || label.contains(hit)));
+    if (!lands) {
+      return { outcome: "not_possible" };
+    }
+    return { outcome: "ok", x, y };
   }
   const kind = element.tagName === "INPUT" ? (element.getAttribute("type") || "text").toLowerCase() : "";
   const fits =

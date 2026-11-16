@@ -1748,6 +1748,98 @@ fn the_owners_approval_in_the_app_builds_exactly_what_was_proposed() {
     );
 }
 
+/// An approval builds the request whose hash its record holds, or nothing:
+/// the run checks it against what the idea pins, though an activation id
+/// is kept only for the same request. Here the ledger is given a record of
+/// another hash under the idea's own activation, which no proposal makes:
+/// approved, it builds nothing, and the idea still waits.
+#[test]
+fn an_approval_builds_only_the_request_whose_hash_it_holds() {
+    let world = World::new("approved-hash");
+    let (idea, _) = saved(world.capture("Short zine", None));
+    let proposal = proposed(&world.propose(&idea, "page", PAGE_BUILDER, "a zine")).unwrap();
+    let other = "0".repeat(64);
+    assert_ne!(proposal.request_hash, other);
+    // The broker-side check, either way.
+    assert_eq!(
+        hatchling_broker::activation::confirm_approved(
+            &world.config,
+            key(),
+            &proposal.activation,
+            &other,
+            NOW
+        ),
+        Err(ConfirmError::NoProposal)
+    );
+    assert!(
+        hatchling_broker::activation::confirm_approved(
+            &world.config,
+            key(),
+            &proposal.activation,
+            &proposal.request_hash,
+            NOW
+        )
+        .is_ok()
+    );
+    // And through the worker: approved, the record of another hash builds
+    // nothing.
+    let board = approval_board::board(&world.config);
+    let requested = board
+        .approvals()
+        .propose(
+            hatchling_broker::approvals::Proposal {
+                run: approval_board::Approved::Activation(approval_board::ActivationRun {
+                    activation: proposal.activation,
+                    idea: idea.clone(),
+                    request_hash: other.clone(),
+                }),
+                action: serde_json::json!({ "op": "artifact.activate", "request_hash": other }),
+                fingerprint: serde_json::json!({ "op": "artifact.activate", "request_hash": other }),
+                task: String::from("t-approved-hash"),
+                decide_secs: 60,
+                session: false,
+                always: false,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(
+        board.decide(
+            &requested.id,
+            requested.revision,
+            &requested.digest,
+            Decision::Approve,
+            NOW
+        ),
+        Ok(State::Approved)
+    );
+    let told = approval_board::run_approved(
+        &board,
+        &requested.id,
+        &world.config,
+        key(),
+        &world.skills,
+        None,
+        NOW,
+    );
+    assert_eq!(
+        told,
+        format!(
+            "Approved: build idea {idea}. It was not built: the idea no longer pins that request."
+        )
+    );
+    assert_eq!(
+        board.approvals().get(&requested.id).map(|r| r.state),
+        Some(State::Failed)
+    );
+    assert!(
+        world
+            .summary()
+            .is_some_and(|summary| summary.state == IdeaState::AwaitingConfirmation),
+        "nothing was built"
+    );
+}
+
 /// A chat run can't say an idea is the owner's words, so one it rewrites
 /// no longer says so either: the owner never sees text a run wrote under a
 /// label saying they said it. The agent's own session keeps the label.
