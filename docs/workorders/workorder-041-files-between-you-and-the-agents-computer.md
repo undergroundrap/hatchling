@@ -81,4 +81,8 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend and protocol gates, and the ins
 
 ## Evidence
 
-Filled in at close.
+Each slice's record, as it lands:
+
+- Slice 1, the inbox put: [room-inbox-put](../evidence/room-inbox-put.md).
+
+The whole is filled in at close.
