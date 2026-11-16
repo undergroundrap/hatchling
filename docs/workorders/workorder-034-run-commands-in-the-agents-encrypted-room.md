@@ -39,7 +39,7 @@ Each item is ticked only where the evidence below proves it.
   - PID and mount namespaces (#403);
   - hand-breaks recorded in #395, #400, #402, #404–#407, #411–#414, #416–#418 and #425.
   - **Not proven:** no test asserts the network and IPC namespaces in a live Room; its having no network is proven through the syscall profile alone.
-- [ ] **Real capacity reservation, existing workspace bytes preserved, closed-disk growth with interruption recovery, and a visible refusal at the free-space boundary.** **Not built.** The disk is a fixed-size sparse file; nothing reserves it or grows it. Workspace bytes are preserved through layout preparation (#405) and rekey (a canary test in `room_disk.rs`). The only free-space refusal is at creation.
+- **Moved to [WO-040](workorder-040-room-disk-capacity.md)** (the maintainer's decision, 2026-11-16): ~~Real capacity reservation, existing workspace bytes preserved, closed-disk growth with interruption recovery, and a visible refusal at the free-space boundary.~~ It was never built. The disk is a fixed-size sparse file; nothing reserves it or grows it. Workspace bytes are preserved through layout preparation (#405) and rekey (a canary test in `room_disk.rs`). The only free-space refusal is at creation.
 - [ ] **Session expiry, visible failure receipts for interrupted work, and jobs drained before lock, wipe or rekey.** Partly proven:
   - expiry after an hour and after fifteen idle minutes (`room_session` tests; the installed deadline modes);
   - the session ended before a close or wipe (`closing_or_wiping_the_disk_ends_the_session_first`, and the installed test);
@@ -71,4 +71,4 @@ As [TEMPLATE.md](TEMPLATE.md), plus the root pass and the release workflow's Roo
 
 ## Evidence
 
-Each pull request carries its own; the records are in [docs/evidence/](../evidence/): `wo-034-room-session.md`, `room-run-jobs.md`, `room-file-page.md`, `room-search-wire.md`, `room-write-wire.md`, `room-filter-*.md`, `room-image-proof-proc.md`, `room-ls-long.md`, `room-disk-*.md`, `room-job-path.md` and `room-crate.md`. The work order closes when the four unticked items are proven or, with the maintainer's decision, moved to a work order of their own.
+Each pull request carries its own; the records are in [docs/evidence/](../evidence/): `wo-034-room-session.md`, `room-run-jobs.md`, `room-file-page.md`, `room-search-wire.md`, `room-write-wire.md`, `room-filter-*.md`, `room-image-proof-proc.md`, `room-ls-long.md`, `room-disk-*.md`, `room-job-path.md` and `room-crate.md`. The work order closes when the four unticked items are proven. The fifth, capacity and growth, moved to WO-040.
