@@ -2,7 +2,7 @@
 
 **Status:** IN-PROGRESS
 **Area:** `packaging/`, `scripts/install.sh`, `crates/hatchling-broker` (configuration, a `doctor` command), `.github/workflows/`, `README.md`, `docs/`
-**Issue:** none yet
+**Issue:** [#482](https://github.com/undergroundrap/hatchling/issues/482)
 **Trust boundary:** yes (the broker's configuration, and what runs as root at install)
 
 ## Problem
@@ -62,13 +62,19 @@ The post-0.5.0 audit's adoption lane rated this its one critical finding (ADO-01
 
 ## Acceptance criteria
 
-- [ ] On a fresh Ubuntu 24.04, `curl` of `install.sh` and one `sudo sh install.sh` give a running broker and host that survive a reboot. The app answers at the address the script printed.
-- [ ] Every file `install.sh` installs is checked against the release's `SHA256SUMS` first, and a file that differs stops it before anything is installed.
-- [ ] The broker's whole configuration is `/etc/hatchling/hatchling.env`: no shell, no `id -u`.
-- [ ] `hatchling-broker doctor` names each missing requirement and how to fix it, and exits non-zero when one is missing.
-- [ ] A hosted model's key is put in the vault from a hidden prompt, and no plaintext copy is ever written (checked with a file-open trace).
-- [ ] CI installs from the commit's own build, restarts the service, and gets an answer, on every pull request that touches packaging or the broker's configuration.
-- [ ] The README's first screen says what Hatchling is and how to try it in three commands.
+Reconciled against what shipped on 2026-11-16, after the work had gone out in 0.6.0 to 0.8.0 without this work order being closed. Each item is ticked only where the evidence proves it.
+
+- [ ] **On a fresh Ubuntu 24.04, one command gives a running broker and host that survive a reboot, and the app answers at the address printed.** Partly proven. CI's `service` job (every pull request, Ubuntu 24.04) installs this commit's build, laid out as a release, with `sh get-hatchling.sh --from-url file://...`, checks the printed address answers, gets an answer from the agent, restarts `hatchling.service` and gets one again. **Not proven:** a reboot (only a service restart is tested). The shipped command is `curl` of `get-hatchling.sh`, run as the user, not `sudo sh install.sh` as first written.
+- [x] **Every file is checked against the release's `SHA256SUMS` first, and one that differs stops it before anything is installed.** `scripts/test_get.py` (`test_a_file_that_differs_stops_it_before_anything_is_installed`, `test_a_file_not_in_sha256sums_stops_it`, the installer tarball's refusals), in the `service` job on every pull request; #351 broke each defence by hand. Not done from the scope: verifying the release's attestation (`get.sh` prints the `gh attestation verify` command); a local build with no `SHA256SUMS` isn't checked.
+- [ ] **The broker's whole configuration is `/etc/hatchling/hatchling.env`: no shell, no `id -u`.** Mostly proven: the service reads it with `EnvironmentFile`, the file is plain `KEY=value`, `HATCHLING_AGENT_UID` takes a name (#280), and operator commands read it and refuse it when anyone but root can write it (#290, a CI step). **Not yet:** `HATCHLING_CELL_CGROUP` is set in the service's drop-in, not the file; `HATCHLING_OWNER_UID` doesn't take a name.
+- [ ] **`hatchling-broker doctor` names each missing requirement and how to fix it, and exits non-zero when one is missing.** Partly proven: exit 1 and a fix for each problem (#287, mutation 105 caught, 0 missed); CI checks it clean, then names a stopped model, and names AppArmor's refusal in the `rootless` job. **Not yet:** the kernel version, seccomp, Landlock, the system users, and directories' owners and modes, which the scope listed ([WO-037](workorder-037-say-when-a-protection-is-off.md) and [WO-038](workorder-038-know-what-is-installed.md) take the last).
+- [ ] **A hosted model's key goes into the vault from a hidden prompt, and no plaintext copy is ever written (checked with a file-open trace).** Partly proven: `secret add` reads with echo off or from a pipe and seals at once (#289); CI pipes a key through the installer, checks the vault holds it, and finds its text nowhere under `/etc/hatchling` or `/var/lib/hatchling`. **Not proven:** no file-open trace was made.
+- [x] **CI installs from the commit's own build, restarts the service and gets an answer, on every pull request that touches packaging or the broker's configuration.** The `service` job, on every pull request; the `upgrade` job also upgrades from the last release and checks nothing kept is lost (#310, #336).
+- [x] **The README's first screen says what Hatchling is and how to try it in three commands.** README.md's opening and its "Try it" line (#298).
+
+## What shipped
+
+#281 (this work order), #282 (packaging, `install.sh`, the `service` job), #287 (`doctor`), #289 (`secret add`), #290 (operator commands take the service's settings), and without naming it: #279 (the app in releases), #280 (user names), #298 (the README), #310 and #336 (the upgrade job), #319, #340, #348, #351 (`get-hatchling.sh`), #352 (a hosted model at install), #353 (the app's host as a confined system service), #397, #423 (installs with no cgroup controllers), #439 (updating); Windows Setup in #367–#371 and #435.
 
 ## Gates
 
