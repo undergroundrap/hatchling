@@ -392,7 +392,16 @@ impl<'a> Ops<'a> {
                 },
             },
             Owned::Suggestions(op) => UiActionResult::Suggestions {
-                outcome: crate::suggestions::handle(self.config, op),
+                outcome: match op {
+                    // What is offered to keep is the chat's: the hub has it.
+                    SuggestionOp::Keep { run } => {
+                        crate::suggestions::keep(self.config, self.hub, run)
+                    }
+                    op @ (SuggestionOp::List
+                    | SuggestionOp::Start { .. }
+                    | SuggestionOp::Dismiss { .. }
+                    | SuggestionOp::Restore { .. }) => crate::suggestions::handle(self.config, op),
+                },
             },
             Owned::Feed => UiActionResult::Feed {
                 posts: if self.config.scheduler.enabled() {
@@ -745,6 +754,7 @@ impl<'a> Ops<'a> {
                         message_id: message_id.clone(),
                         author: ChatAuthor::User,
                         run: None,
+                        out_of_steps: false,
                         text: text.to_owned(),
                     }),
                 );
@@ -811,6 +821,7 @@ impl Ops<'_> {
                 message_id,
                 author: ChatAuthor::System,
                 run: None,
+                out_of_steps: false,
                 text: String::from(NEW_CONVERSATION),
             }),
         );
@@ -887,6 +898,7 @@ pub fn chat_sink(bus: Arc<Bus>) -> hatchling_channel::Sink {
                 },
                 text: reply.text.clone(),
                 run: origin.run.clone(),
+                out_of_steps: origin.out_of_steps,
             }),
         );
         bus.push(
@@ -3362,6 +3374,94 @@ mod tests {
         drop(replies);
         delivery.deliver_verbatim("local", "after").unwrap();
         assert_eq!(chats(&bus).len(), 3);
+    }
+
+    /// v30: an answer said to have run out of steps reaches the app so,
+    /// with its run; any other answer, and Hatchling's own notice, don't.
+    #[test]
+    fn an_answer_that_ran_out_of_steps_reaches_the_app_so() {
+        use hatchling_scheduler::Delivery as _;
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        hub.set_fallback(chat_sink(Arc::clone(&bus)));
+        let delivery = crate::schedule_ops::HubDelivery::new(Some(&hub));
+        assert_eq!(
+            delivery.deliver_answer("local", "this far", Some("run-1"), true),
+            Ok(true)
+        );
+        assert_eq!(
+            delivery.deliver_answer("local", "done", Some("run-2"), false),
+            Ok(true)
+        );
+        delivery
+            .deliver_notice("local", "Hatchling's word")
+            .unwrap();
+        let said: Vec<(Option<String>, bool)> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event: UiEvent| {
+                if let UiEventBody::ChatMessage(chat) = event.body {
+                    Some((chat.run, chat.out_of_steps))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (Some(String::from("run-1")), true),
+                (Some(String::from("run-2")), false),
+                (None, false),
+            ]
+        );
+    }
+
+    /// v30: the owner keeps an unfinished ask through the API, from what
+    /// the local channel's hub offers. With no hub nothing is kept, and a
+    /// caller who isn't the owner can't keep one.
+    #[test]
+    fn the_owner_keeps_an_unfinished_ask_through_the_api() {
+        use hatchling_core::ui::SuggestionResult;
+        let dir = scratch("api-keep");
+        let mut config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        config.goals.grants = Vec::new();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        let owner = caller(&[local_send()]);
+        let keep = UiAction::ManageSuggestions {
+            op: SuggestionOp::Keep {
+                run: String::from("run-1"),
+            },
+        };
+        hub.offer(String::from("run-1"), String::from("make the tools"), 0);
+        let outcome = |ops: &Ops<'_>, who: &Caller| {
+            let mut replies = Replies::default();
+            ops.handle(who, &keep, &mut replies)
+        };
+        let alone = Ops::new(&config, &key, &skills, None, Arc::clone(&bus));
+        assert_eq!(
+            outcome(&alone, &owner).0,
+            UiActionResult::Suggestions {
+                outcome: SuggestionResult::NotFound
+            }
+        );
+        let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
+        let other = caller(&[ScheduleGrant::ChannelSend {
+            channel: String::from("elsewhere"),
+        }]);
+        assert_eq!(outcome(&ops, &other).1, ApiOutcome::Refused);
+        assert_eq!(hub.offered("run-1").as_deref(), Some("make the tools"));
+        let (result, served) = outcome(&ops, &owner);
+        assert_eq!(served, ApiOutcome::Served);
+        assert!(
+            matches!(&result, UiActionResult::Suggestions { outcome: SuggestionResult::Changed { suggestion } }
+                if suggestion.summary == "make the tools" && suggestion.run == "run-1"),
+            "{result:?}"
+        );
+        assert_eq!(hub.offered("run-1"), None, "kept once");
     }
 
     #[test]

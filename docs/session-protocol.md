@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v29 (current). This doc is the human-readable reference
+**Status:** v30 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -585,6 +585,34 @@ names an idea as it starts a conversation and reads a kept idea's state.
   status: the broker uses it only to leave an idea `started`.
 - `Start`, `Dismiss` and `Restore` act on an answered idea as on any
   other. The agent has no op that marks an idea answered.
+
+## v30 — Keep an unfinished chat for later
+
+No session op changes. The version is raised for the owner's app,
+which reads a chat answer's ending and keeps an ask for later.
+
+- **`ChatMessage`** (the app's protocol) gains `out_of_steps`, written
+  only when true: the run that wrote the answer ran out of steps as it
+  answered, by its agent's exit status (`ANSWERED_OUT_OF_STEPS`, v29).
+  Said only of an answer in the owner's own chat; a scheduled run's
+  answer never says it.
+- When such an answer was shown to the owner, in the conversation still
+  open, the broker **offers** what they said in that exchange, trimmed
+  and at most 400 bytes, for them to keep. The offer is held in memory
+  alone, by the local channel's hub, for the conversation open: a new
+  conversation, or a broker restart, withdraws it. At most eight are
+  held, the oldest going first.
+- **`SuggestionOp::Keep { run }`** keeps the offer for `run` as a card
+  on the Ideas page, and withdraws it. Owner-only, as every
+  `manage_suggestions` op is. `not_found` when nothing is offered for
+  that run.
+- The card is the owner's own words and the broker's: its title and
+  why are the broker's fixed text, what it would do is what the owner
+  asked, and its source is **`SuggestionSource::Chat`**. No model
+  writes it, and the agent has no op that keeps one. It waits as any
+  card does and goes stale after fourteen days; it has no goal to
+  lose. The cap on waiting ideas is the agent's: what the owner keeps
+  isn't refused for it, and the page still holds at most 100.
 
 ## Device handshake
 

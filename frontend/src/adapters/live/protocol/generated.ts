@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 4;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 29;
+export const SESSION_PROTOCOL_VERSION = 30;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -960,6 +960,13 @@ export type ChatMessage = {
      * Stable across replays.
      */
     readonly message_id: string;
+    /**
+     * Whether the run that wrote it ran out of steps as it answered,
+     * by its agent's own exit status: what the owner asked may be
+     * unfinished, and they may keep it for later
+     * ([`SuggestionOp::Keep`]). Said only of an answer in their chat.
+     */
+    readonly out_of_steps?: boolean;
     /**
      * The run that wrote it, by its cell id, when an agent run did: the
      * broker's own word, which the activity record's run summary names
@@ -4572,6 +4579,12 @@ export type SuggestionOp = {
      */
     readonly id: string;
     readonly op: 'restore';
+} | {
+    readonly op: 'keep';
+    /**
+     * The run, by its cell id, as its answer named it.
+     */
+    readonly run: string;
 };
 /**
  * The result of a [`SuggestionOp`].
@@ -4609,6 +4622,8 @@ export type SuggestionSource = {
      * The goal's title then.
      */
     readonly title: string;
+} | {
+    readonly kind: 'chat';
 };
 /**
  * Where a suggestion on the Ideas page stands.

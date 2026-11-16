@@ -610,6 +610,7 @@ impl Board {
             message_id,
             author: ChatAuthor::System,
             run: None,
+            out_of_steps: false,
             text: text.to_owned(),
         }));
         if !told {

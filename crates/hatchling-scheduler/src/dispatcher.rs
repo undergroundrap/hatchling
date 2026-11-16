@@ -354,13 +354,20 @@ pub trait Delivery {
 
     /// Delivers a run's answer `text` on `channel`, as
     /// [`deliver_verbatim`](Self::deliver_verbatim) does, saying it came
-    /// from the run in cell `run`, when it ran in one.
+    /// from the run in cell `run`, when it ran in one, and whether that
+    /// run ran out of steps as it answered.
     ///
     /// # Errors
     ///
     /// As [`deliver`](Self::deliver).
-    fn deliver_answer(&self, channel: &str, text: &str, run: Option<&str>) -> Result<bool, String> {
-        let _ = run;
+    fn deliver_answer(
+        &self,
+        channel: &str,
+        text: &str,
+        run: Option<&str>,
+        out_of_steps: bool,
+    ) -> Result<bool, String> {
+        let _ = (run, out_of_steps);
         self.deliver_verbatim(channel, text)
     }
 
@@ -1105,11 +1112,15 @@ fn deliver_with_retry<D: Delivery>(
     text: &str,
     run: Option<&str>,
 ) -> Result<(), String> {
-    match delivery.deliver_answer(channel, text, run) {
+    // Only a chat's answer is said to have run out of steps: what a
+    // scheduled run was asked is the schedule's, kept already.
+    match delivery.deliver_answer(channel, text, run, false) {
         Ok(_) => Ok(()),
         Err(first) => {
             tracing::warn!(channel, error = %first, "scheduled delivery failed; retrying once");
-            delivery.deliver_answer(channel, text, run).map(|_| ())
+            delivery
+                .deliver_answer(channel, text, run, false)
+                .map(|_| ())
         }
     }
 }
@@ -1261,11 +1272,11 @@ mod tests {
         assert_eq!(Quiet.cell_id(), None);
         assert_eq!(Quiet.ending(), None);
         assert_eq!(
-            Plain.deliver_answer("local", "hi", Some("run-1")),
+            Plain.deliver_answer("local", "hi", Some("run-1"), true),
             Ok(false)
         );
         assert_eq!(
-            Closed.deliver_answer("local", "hi", None),
+            Closed.deliver_answer("local", "hi", None, false),
             Err(String::from("closed"))
         );
         assert_eq!(Plain.deliver_notice("local", "hi"), Ok(()));
@@ -1840,7 +1851,12 @@ mod tests {
                 _channel: &str,
                 _text: &str,
                 run: Option<&str>,
+                out_of_steps: bool,
             ) -> Result<bool, String> {
+                assert!(
+                    !out_of_steps,
+                    "a scheduled run's answer isn't said to be unfinished"
+                );
                 let mut seen = self.0.borrow_mut();
                 seen.push(run.map(str::to_owned));
                 if seen.len() == 1 {
