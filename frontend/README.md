@@ -60,4 +60,3 @@ Press **Ctrl/Cmd + Shift + D** for the scripted scenario chooser. The **Loading 
 For backend wiring, start with **AGENTS.md**. For UI context, read **STYLE_GUIDE.md**, **docs/UI-CHECKLIST.md** and **docs/DESIGN-SYSTEM.md**. `ProtocolAdapter` remains the frozen seam. The optional `chatSession` and `taskApprovals` UI capabilities require integration review and authoritative live receipts; it is not a change to that frozen protocol. The live adapter is in `src/adapters/live/`, chosen in `src/main.ts` when the host served the page with a UI token. Changes to the frozen interface require review before implementation.
 
 The optional CLI/MCP developer companion is disabled by default and needs explicit tab enablement. It is not production authorization, remote browser streaming, or a hosted agent runtime.
-
