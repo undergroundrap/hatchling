@@ -22,7 +22,7 @@ is typed (`EchoOff`); its test opens a pseudo-terminal (`pty`, a
 dev-dependency only). `hatchling-vault` uses `process` (the owner
 checks' uid) and `fs`, for the keyring's edit lock: a no-follow open and
 `flock` (WO-011). `hatchling-fido2` uses `event` and `fs`: `poll` and
-`flock` on a key's `hidraw` node. `hatchling-browser`, the browser cell's controller, uses `pipe` (the DevTools pipe it hands Chromium), `fs` (made non-blocking) and `event` (polled with a deadline, so no wait on the browser is unbounded).
+`flock` on a key's `hidraw` node. `hatchling-browser`, the browser cell's controller, uses `pipe` (the DevTools pipe it hands Chromium), `fs` (made non-blocking) and `event` (polled with a deadline, so no wait on the browser is unbounded). `hatchling-room`, the supervisor inside the Room, uses `process` (a job's process group killed, its first process watched through a pidfd), `fs` and `event` (the spawner's socket and every job's pipes and processes polled at once).
 
 ## hatchling-core
 

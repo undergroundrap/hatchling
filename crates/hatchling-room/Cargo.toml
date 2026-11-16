@@ -1,0 +1,40 @@
+[package]
+name = "hatchling-room"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+authors.workspace = true
+repository.workspace = true
+description = "The supervisor that runs inside Hatchling's Room, the agent's computer."
+
+[lints]
+workspace = true
+
+# The supervisor is built static for the Room's image, and its proof runs
+# that build under the Room's filter: neither is part of a plain build or
+# test of the workspace.
+[features]
+room-supervisor = []
+
+[[bin]]
+name = "hatchling-room"
+path = "src/bin/hatchling-room.rs"
+required-features = ["room-supervisor"]
+
+[[test]]
+name = "room_supervisor"
+harness = false
+required-features = ["room-supervisor"]
+
+[dependencies]
+# The Room's wire, and its framing.
+hatchling-core.workspace = true
+# The connection the spawner leaves it; and, for the proof that runs it
+# under the Room's filter, fork and the filter.
+hatchling-sys.workspace = true
+# A job's process group killed, its first process watched through a pidfd;
+# the spawner's socket, the jobs' pipes and processes polled at once.
+rustix = { version = "0.38", features = ["event", "fs", "process"] }
+serde_json = "1"

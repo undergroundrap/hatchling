@@ -70,8 +70,12 @@ pub const CELL_CRATE: &str = "hatchling-agent";
 /// browser (WO-029).
 pub const BROWSER_CRATE: &str = "hatchling-browser";
 
+/// The crate the Room runs: the supervisor that runs the agent's
+/// commands in its computer (WO-034).
+pub const ROOM_CRATE: &str = "hatchling-room";
+
 /// Every crate that runs inside a cell, each held to the cell side.
-pub const CELL_CRATES: [&str; 2] = [CELL_CRATE, BROWSER_CRATE];
+pub const CELL_CRATES: [&str; 3] = [CELL_CRATE, BROWSER_CRATE, ROOM_CRATE];
 
 /// Crates that hold keys, the network or the cell machinery. The cell
 /// crate must never depend on one, directly or through another crate.
@@ -673,6 +677,23 @@ mod tests {
         add_crate(&root, CELL_CRATE, "hatchling-vault = \"1\"\n", "", "");
         let found = messages(&check_cell_side(&root).unwrap());
         assert_eq!(found.len(), 2, "{found:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_rooms_supervisor_is_held_to_the_cell_side_too() {
+        let root = synthetic_root("cell-side-room");
+        add_crate(&root, ROOM_CRATE, "middle = \"1\"\n", "", "");
+        add_crate(&root, "middle", "hatchling-vault = \"1\"\n", "", "");
+        add_crate(&root, CELL_CRATE, "hatchling-core = \"1\"\n", "", "");
+        add_crate(&root, BROWSER_CRATE, "hatchling-core = \"1\"\n", "", "");
+        let found = messages(&check_cell_side(&root).unwrap());
+        assert_eq!(
+            found,
+            [String::from(
+                "`hatchling-room` depends on `hatchling-vault`, which holds keys, the network or the cell machinery: hatchling-room -> middle -> hatchling-vault"
+            )]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -49,6 +49,7 @@ on:
       - scripts/room-image*
       - scripts/room-installer-proof.sh
       - crates/hatchling-browser/**
+      - crates/hatchling-room/**
       - crates/hatchling-core/**
       - crates/hatchling-sys/**
       - .cargo/config.toml
