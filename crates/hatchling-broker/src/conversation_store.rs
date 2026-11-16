@@ -338,6 +338,7 @@ pub fn show(bus: &Bus, resumed: &Resumed) {
                     message_id,
                     author,
                     run: None,
+                    out_of_steps: false,
                     text: text.to_owned(),
                 }),
             );

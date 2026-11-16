@@ -662,6 +662,44 @@ test('chat: typed events become messages; replays replace, never duplicate; ever
     assert.equal(first.messages[1].text, 'On it. I will ask four helpers.', 'an earlier snapshot keeps what it said');
     assert.deepEqual(new LiveAdapter(new FakeTransport()).getSnapshot().chats.map(item => [item.id, 'updatedAt' in item]), [['main', false]]);
 });
+test('an answer that ran out of steps offers to keep what was asked; the owner\'s press keeps it as their own card', async () => {
+    const { transport, adapter } = connected();
+    const last = action => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === action).at(-1);
+    const keeps = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_suggestions' && frame.action.op.op === 'keep').length;
+    replay(transport, [
+        sampleEvent(1, 1, { kind: 'chat_message', chat_id: 'local', message_id: 'm-1', author: 'user', text: 'Make the tools.' }),
+        sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'm-2', author: 'agent', text: 'This far.', run: 'run-a', out_of_steps: true }),
+        sampleEvent(3, 3, { kind: 'chat_message', chat_id: 'local', message_id: 'm-3', author: 'agent', text: 'Done.', run: 'run-b' }),
+        sampleEvent(4, 4, { kind: 'chat_message', chat_id: 'side-1', message_id: 'm-4', author: 'agent', text: 'Elsewhere.', run: 'run-c', out_of_steps: true }),
+        sampleEvent(5, 5, { kind: 'chat_message', chat_id: 'local', message_id: 'm-5', author: 'agent', text: 'No run named.', out_of_steps: true }),
+    ]);
+    const messages = () => adapter.getSnapshot().messages;
+    assert.deepEqual(messages().map(item => item.id), ['m-1', 'm-2', 'm-2:keep', 'm-3', 'm-4', 'm-5'], 'only an answer in the owner\'s chat that names its run');
+    const offer = messages()[2];
+    assert.deepEqual(offer, { ...offer, id: 'm-2:keep', chatId: 'main', source: null, reaction: null, kind: 'choice', role: 'agent', text: 'The agent ran out of steps before it finished. Keep what you asked for later, on your Ideas page?', options: ['Keep for later'], selected: null });
+    // Any other choice, or an offer that isn't one, keeps nothing and asks the broker nothing.
+    for (const [id, option] of [['m-2:keep', 'Something else'], ['m-3:keep', 'Keep for later'], ['m-2', 'Keep for later']])
+        assert.match((await adapter.execute({ type: 'message.choose', id, option })).message, /cannot do this from the app yet/, id);
+    assert.equal(keeps(), 0);
+    // The broker no longer offers it: nothing is marked kept.
+    let choosing = adapter.execute({ type: 'message.choose', id: 'm-2:keep', option: 'Keep for later' });
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'manage_suggestions', op: { op: 'keep', run: 'run-a' } });
+    answer(transport, transport.last().request_id, { result: 'suggestions', outcome: { result: 'not_found' } });
+    assert.match((await choosing).message, /can’t be kept now/);
+    assert.equal(messages()[2].selected, null);
+    // It keeps it: the page is read again, and the offer shows the choice made.
+    choosing = adapter.execute({ type: 'message.choose', id: 'm-2:keep', option: 'Keep for later' });
+    await flush();
+    const card = { suggestion_id: 'idea-k', title: 'Pick up where a chat stopped', summary: 'Make the tools.', why: 'You kept it for later.', area: 'productivity', suggested_at: '2026-11-04T13:30:00Z', state: 'suggested', source: { kind: 'chat' }, run: 'run-a' };
+    answer(transport, transport.last().request_id, { result: 'suggestions', outcome: { result: 'changed', suggestion: card } });
+    await flush();
+    answer(transport, last('manage_suggestions').request_id, { result: 'suggestions', outcome: { result: 'listed', suggestions: [card] } });
+    assert.deepEqual(await choosing, { ok: true, message: 'Kept on your Ideas page. Start it from there when you’re ready.' });
+    assert.equal(keeps(), 2);
+    assert.equal(messages()[2].selected, 'Keep for later');
+    assert.deepEqual(adapter.getSnapshot().ideas.map(idea => [idea.id, idea.title]), [['idea-k', 'Pick up where a chat stopped']]);
+});
 test('an answer from a run is followed by what the run used, opening its record; until the record comes, the answer stands alone', () => {
     const { transport, adapter } = connected();
     const summary = (seq, cell, chat, tools) => sampleEvent(seq, seq, { kind: 'activity', state: 'success', event: { event: 'run_summary', event_id: `s-${seq}:summary`, run_id: `s-${seq}`, ts: sampleTime(seq), cell_id: cell, chat, tools, model_calls: 2, model_calls_refused: 0, peak_input_tokens: 5000, output_tokens: 40, context_window: 16384 } });

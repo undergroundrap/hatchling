@@ -37,6 +37,19 @@ pub const MAX_QUEUED_MESSAGES: usize = 64;
 /// frame, so a queued message always fits the reply that delivers it.
 pub const MAX_INGRESS_TEXT_BYTES: usize = 16 * 1024;
 
+/// How many runs' unfinished asks are offered to keep at once: past it,
+/// the oldest offer goes.
+pub const MAX_OFFERS: usize = 8;
+
+/// What the owner asked in a chat run whose answer ran out of steps,
+/// offered for them to keep for later.
+struct Offer {
+    /// The run, by its cell id.
+    run: String,
+    /// What they asked, as it would be kept.
+    words: String,
+}
+
 /// What the ingress tells its client, one frame per event.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event")]
@@ -70,6 +83,9 @@ struct HubState {
     conversation: u64,
     /// What the owner started the conversation for, when they said.
     started_for: Option<String>,
+    /// What the owner may keep for later from the conversation open now,
+    /// the oldest first.
+    offers: VecDeque<Offer>,
     sink: Option<(SinkId, Sink)>,
     /// Where a reply goes while no client is attached: the broker's own
     /// record of the chat, which a client reads when it connects.
@@ -183,6 +199,7 @@ impl LocalHub {
         let mut state = self.state();
         state.conversation = state.conversation.wrapping_add(1);
         state.started_for = None;
+        state.offers.clear();
     }
 
     /// Starts a new conversation the owner started for `what`, which is
@@ -192,6 +209,40 @@ impl LocalHub {
         let mut state = self.state();
         state.conversation = state.conversation.wrapping_add(1);
         state.started_for = Some(what);
+        state.offers.clear();
+    }
+
+    /// Offers the owner to keep for later what they asked in the run
+    /// `run`, `words`, whose answer ran out of steps in the conversation
+    /// numbered `conversation`. Held in memory alone, while that
+    /// conversation is open: a new one, or a restart, withdraws it. One
+    /// for a conversation no longer open isn't held, and past
+    /// [`MAX_OFFERS`] the oldest goes.
+    pub fn offer(&self, run: String, words: String, conversation: u64) {
+        let mut state = self.state();
+        if state.conversation != conversation {
+            return;
+        }
+        state.offers.retain(|offer| offer.run != run);
+        if state.offers.len() >= MAX_OFFERS {
+            state.offers.pop_front();
+        }
+        state.offers.push_back(Offer { run, words });
+    }
+
+    /// What the owner asked in the run `run`, if it is offered to keep.
+    #[must_use]
+    pub fn offered(&self, run: &str) -> Option<String> {
+        self.state()
+            .offers
+            .iter()
+            .find(|offer| offer.run == run)
+            .map(|offer| offer.words.clone())
+    }
+
+    /// Withdraws the offer for the run `run`: what it held was kept.
+    pub fn withdraw(&self, run: &str) {
+        self.state().offers.retain(|offer| offer.run != run);
     }
 
     /// What the conversation numbered `conversation` was started for:
@@ -385,6 +436,41 @@ mod tests {
         assert_eq!(hub.started_for(2), None);
     }
 
+    /// What the owner may keep for later is offered while its
+    /// conversation is open: one for another conversation isn't, a run
+    /// offered again holds its newest words once, a kept one is
+    /// withdrawn alone, past [`MAX_OFFERS`] the oldest goes, and a new
+    /// conversation withdraws them all, however it starts.
+    #[test]
+    fn an_unfinished_ask_is_offered_while_its_conversation_is_open() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        let words = |n: usize| format!("ask {n}");
+        hub.offer(String::from("run-a"), words(1), 0);
+        assert_eq!(hub.offered("run-a"), Some(words(1)));
+        assert_eq!(hub.offered("run-b"), None);
+        hub.offer(String::from("run-b"), words(2), 1);
+        assert_eq!(hub.offered("run-b"), None, "not the conversation open");
+        hub.offer(String::from("run-a"), words(3), 0);
+        assert_eq!(hub.offered("run-a"), Some(words(3)));
+        hub.offer(String::from("run-c"), words(4), 0);
+        hub.withdraw("run-a");
+        assert_eq!(hub.offered("run-a"), None);
+        assert_eq!(hub.offered("run-c"), Some(words(4)), "only that one");
+        for n in 0..MAX_OFFERS {
+            hub.offer(format!("run-{n}"), words(n), 0);
+        }
+        assert_eq!(hub.offered("run-c"), None, "the oldest went");
+        assert_eq!(hub.offered("run-0"), Some(words(0)));
+        let newest = format!("run-{}", MAX_OFFERS - 1);
+        assert_eq!(hub.offered(&newest), Some(words(MAX_OFFERS - 1)));
+        hub.new_conversation();
+        assert_eq!(hub.offered("run-0"), None, "a new conversation");
+        hub.offer(String::from("run-d"), words(5), 1);
+        assert_eq!(hub.offered("run-d"), Some(words(5)));
+        hub.new_conversation_for(String::from("idea-1"));
+        assert_eq!(hub.offered("run-d"), None, "one for an idea too");
+    }
+
     fn msg(text: &str) -> Message {
         Message {
             sender: SenderId(String::from("someone")),
@@ -416,6 +502,7 @@ mod tests {
         let origin = crate::gate::Origin {
             run: Some(String::from("run-1")),
             notice: true,
+            out_of_steps: true,
         };
         hub.deliver_from(&msg("from a run"), "s", origin.clone())
             .unwrap();

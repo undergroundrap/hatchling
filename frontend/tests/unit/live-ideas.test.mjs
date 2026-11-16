@@ -160,6 +160,19 @@ test('a run that suggested an idea reads the page again, in a chat or not; a bur
     assert.equal(client.sent.length, 3);
     assert.deepEqual(live.ideas(), []);
 });
+test('the owner keeps what they asked in a chat that ran out of steps: a card in their own words', async () => {
+    const card = kept('idea-k', 'productivity', { title: 'Pick up where a chat stopped', summary: 'Make the tools.', source: { kind: 'chat' }, run: 'run-1' });
+    assert.equal(ideaOf(card).signal, 'You kept this from a chat that ran out of steps. These are your own words: nothing runs unless you start it.');
+    assert.doesNotMatch(ideaOf(card).signal, /From your goal|its words/);
+    const changed = suggestion => answered({ result: 'changed', suggestion });
+    const { client, live } = surface([changed(card), listed([card]), answered({ result: 'not_found' }), answered({ result: 'off' }), { kind: 'unknown', detail: 'No answer came.' }]);
+    assert.deepEqual(await live.keep('run-1'), { ok: true, message: 'Kept on your Ideas page. Start it from there when you’re ready.' });
+    assert.deepEqual(client.sent[0], { action: 'manage_suggestions', op: { op: 'keep', run: 'run-1' } });
+    assert.deepEqual(live.ideas().map(idea => [idea.id, idea.title, idea.summary]), [['idea-k', 'Pick up where a chat stopped', 'Make the tools.']], 'the page is read again');
+    assert.deepEqual(await live.keep('run-1'), { ok: false, message: 'It can’t be kept now: a new conversation started, or Hatchling restarted, since that run. Send it again to keep it.' });
+    assert.match((await live.keep('run-1')).message, /keeps no Ideas page here/);
+    assert.deepEqual(await live.keep('run-1'), { ok: false, message: 'No answer came.' });
+});
 test('a read that fails says why, and a later one recovers', async () => {
     const { live } = surface([
         { kind: 'unsent', detail: 'Not connected.' },

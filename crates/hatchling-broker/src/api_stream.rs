@@ -227,6 +227,7 @@ mod tests {
             message_id: String::from("m"),
             author: ChatAuthor::Agent,
             run: None,
+            out_of_steps: false,
             text: text.to_owned(),
         })
     }

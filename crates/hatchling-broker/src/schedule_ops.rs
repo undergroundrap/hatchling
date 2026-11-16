@@ -1418,10 +1418,17 @@ impl Delivery for HubDelivery<'_> {
         self.deliver_as(channel, text, hatchling_channel::Origin::default())
     }
 
-    fn deliver_answer(&self, channel: &str, text: &str, run: Option<&str>) -> Result<bool, String> {
+    fn deliver_answer(
+        &self,
+        channel: &str,
+        text: &str,
+        run: Option<&str>,
+        out_of_steps: bool,
+    ) -> Result<bool, String> {
         let origin = hatchling_channel::Origin {
             run: run.map(str::to_owned),
             notice: false,
+            out_of_steps,
         };
         self.deliver_as(channel, text, origin)
     }
@@ -1430,6 +1437,7 @@ impl Delivery for HubDelivery<'_> {
         let origin = hatchling_channel::Origin {
             run: None,
             notice: true,
+            out_of_steps: false,
         };
         self.deliver_as(channel, text, origin).map(|_| ())
     }

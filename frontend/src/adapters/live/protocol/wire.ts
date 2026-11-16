@@ -996,6 +996,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "message_id": {
                 "type": "string"
             },
+            "out_of_steps": {
+                "type": "boolean"
+            },
             "run": {
                 "type": [
                     "string",
@@ -3818,6 +3821,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "id"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "op": {
+                        "const": "keep",
+                        "type": "string"
+                    },
+                    "run": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "run"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -3915,6 +3934,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "kind",
                     "id",
                     "title"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "kind": {
+                        "const": "chat",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind"
                 ],
                 "type": "object"
             }

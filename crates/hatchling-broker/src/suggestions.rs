@@ -28,6 +28,11 @@
 //! way to retire, set aside or remove a suggestion. The owner brings a
 //! stale one back; one whose goal is closed stays as it is.
 //!
+//! The owner may keep for later what they asked in a chat whose run ran
+//! out of steps ([`keep`]): a card in their own words, offered by the
+//! hub while that conversation is open and kept only by their press.
+//! No model writes it, and the agent has no op that keeps one.
+//!
 //! A suggestion the owner started is answered when the run in the
 //! conversation they started for it answers them, with steps to spare
 //! ([`conversation_answered`]). Which conversation that is, the owner's
@@ -222,10 +227,10 @@ fn retire(
         .filter(|kept| kept.state == SuggestionState::Suggested)
     {
         let gone = open.is_some_and(|open| {
-            kept.source.as_ref().is_some_and(|source| {
-                let SuggestionSource::Goal { id, .. } = source;
-                !open.contains(id)
-            })
+            kept.source
+                .as_ref()
+                .and_then(goal_id)
+                .is_some_and(|id| !open.contains(id))
         });
         let stale = kept
             .suggested_at
@@ -495,6 +500,8 @@ pub(crate) fn handle_at(
         SuggestionOp::Start { id } => (id, SuggestionState::Started),
         SuggestionOp::Dismiss { id } => (id, SuggestionState::Dismissed),
         SuggestionOp::Restore { id } => (id, SuggestionState::Suggested),
+        // What a chat offers to keep is the hub's: kept through `keep`.
+        SuggestionOp::Keep { .. } => return SuggestionResult::NotFound,
     };
     let Some(kept) = page.iter_mut().find(|kept| &kept.suggestion_id == id) else {
         return SuggestionResult::NotFound;
@@ -573,14 +580,124 @@ pub(crate) fn conversation_answered(
     }
 }
 
+/// What a card kept from a chat is called, in the broker's words: what it
+/// would do is the owner's own.
+pub const KEPT_TITLE: &str = "Pick up where a chat stopped";
+
+/// Why a card kept from a chat is on the page, in the broker's words.
+pub const KEPT_WHY: &str = "You asked for this in a chat, and its run ran out of steps before it finished. You kept it for later.";
+
+/// What ends words cut short to fit a card.
+const ELLIPSIS: &str = "\u{2026}";
+
+/// What the owner said, as a card kept from a chat holds it: trimmed, and
+/// at most [`MAX_TEXT_BYTES`], cut short at a character with an
+/// ellipsis.
+#[must_use]
+pub fn kept_words(said: &str) -> String {
+    let said = said.trim();
+    if said.len() <= MAX_TEXT_BYTES {
+        return said.to_owned();
+    }
+    // The last character boundary that leaves room for the ellipsis.
+    let room = MAX_TEXT_BYTES - ELLIPSIS.len();
+    let end = (0..=room)
+        .rev()
+        .find(|&end| said.is_char_boundary(end))
+        .unwrap_or_default();
+    format!(
+        "{}{ELLIPSIS}",
+        said.get(..end).unwrap_or_default().trim_end()
+    )
+}
+
+/// Keeps for later what the owner asked in the chat run `run`, whose
+/// answer ran out of steps: a card in their own words, waiting on the
+/// page. Only what `hub` offers, in the conversation open now: nothing
+/// after a new conversation or a restart. The offer goes once the card
+/// is kept. The cap on waiting ideas is the agent's: what the owner
+/// keeps isn't refused for it.
+pub(crate) fn keep(
+    config: &Config,
+    hub: Option<&hatchling_channel::LocalHub>,
+    run: &str,
+) -> SuggestionResult {
+    keep_at(config, hub, run, hatchling_scheduler::Timestamp::now())
+}
+
+/// [`keep`] at `now`.
+fn keep_at(
+    config: &Config,
+    hub: Option<&hatchling_channel::LocalHub>,
+    run: &str,
+    now: hatchling_scheduler::Timestamp,
+) -> SuggestionResult {
+    if !config.scheduler.enabled() {
+        return SuggestionResult::Off;
+    }
+    let Some(hub) = hub else {
+        return SuggestionResult::NotFound;
+    };
+    let Some(words) = hub.offered(run).filter(|words| !words.is_empty()) else {
+        return SuggestionResult::NotFound;
+    };
+    let path = config.scheduler.ideas_log();
+    let _held = WRITES.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut page = match read(&path) {
+        Ok(page) => page,
+        Err(error) => {
+            tracing::warn!(%error, "the Ideas page couldn't be read");
+            return SuggestionResult::Failed;
+        }
+    };
+    let Ok(suggestion_id) = crate::approval::random_hex(ID_PREFIX) else {
+        tracing::error!("suggestion id entropy unavailable");
+        return SuggestionResult::Failed;
+    };
+    let suggestion = Suggestion {
+        suggestion_id,
+        title: String::from(KEPT_TITLE),
+        summary: words,
+        why: String::from(KEPT_WHY),
+        area: hatchling_core::SuggestionArea::Productivity,
+        suggested_at: now.to_string(),
+        state: SuggestionState::Suggested,
+        needs: Vec::new(),
+        source: Some(SuggestionSource::Chat),
+        run: run.to_owned(),
+    };
+    page.insert(0, suggestion.clone());
+    trim(&mut page);
+    match write(&path, &page) {
+        Ok(()) => {
+            hub.withdraw(run);
+            tracing::info!("the owner kept an unfinished chat for later");
+            SuggestionResult::Changed { suggestion }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the Ideas page couldn't be written");
+            SuggestionResult::Failed
+        }
+    }
+}
+
+/// The goal `source` names, if it is one: what the owner kept from a
+/// chat is theirs, with no goal to lose.
+fn goal_id(source: &SuggestionSource) -> Option<&str> {
+    match source {
+        SuggestionSource::Goal { id, .. } => Some(id),
+        SuggestionSource::Chat => None,
+    }
+}
+
 /// Whether `kept`'s source is still gone, with the owner's open goals
 /// as `open`: it is unless its goal is among them. A suggestion with no
 /// source has none to be gone.
 fn still_gone(kept: &Suggestion, open: Option<&BTreeSet<String>>) -> bool {
-    kept.source.as_ref().is_some_and(|source| {
-        let SuggestionSource::Goal { id, .. } = source;
-        !open.is_some_and(|open| open.contains(id))
-    })
+    kept.source
+        .as_ref()
+        .and_then(goal_id)
+        .is_some_and(|id| !open.is_some_and(|open| open.contains(id)))
 }
 
 /// The page at `path`: none when there's no file yet, or it's empty.
@@ -1048,6 +1165,233 @@ pub(crate) mod tests {
         std::fs::write(&path, kept).unwrap();
         assert!(conversation_answered(&chat, &hub, 2));
         assert_eq!(state(&plan), Some(SuggestionState::Answered));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the owner said, as a kept card holds it: trimmed, whole when
+    /// it fits, and cut short at a character, with an ellipsis, when it
+    /// doesn't, with no space before the ellipsis.
+    #[test]
+    fn what_was_said_is_kept_trimmed_and_within_the_bound() {
+        assert_eq!(kept_words("  make the tools \n"), "make the tools");
+        let fits = "x".repeat(MAX_TEXT_BYTES);
+        assert_eq!(kept_words(&fits), fits);
+        let cut = kept_words(&"x".repeat(MAX_TEXT_BYTES + 1));
+        let room = MAX_TEXT_BYTES - ELLIPSIS.len();
+        assert_eq!(cut, format!("{}{ELLIPSIS}", "x".repeat(room)));
+        assert_eq!(cut.len(), MAX_TEXT_BYTES);
+        // A character isn't split: each \u{e9} is two bytes.
+        let cut = kept_words(&"\u{e9}".repeat(MAX_TEXT_BYTES));
+        assert!(cut.len() <= MAX_TEXT_BYTES, "{}", cut.len());
+        assert_eq!(
+            cut.strip_suffix(ELLIPSIS).map(|kept| kept.chars().count()),
+            Some(room / 2)
+        );
+        let spaced = format!("{} {}", "y".repeat(room - 1), "z".repeat(40));
+        assert_eq!(
+            kept_words(&spaced),
+            format!("{}{ELLIPSIS}", "y".repeat(room - 1))
+        );
+    }
+
+    /// v30: the owner keeps what they asked in a chat that ran out of
+    /// steps: a card in their own words, with the broker's title and
+    /// why, from that chat, waiting at the top of the page, and the
+    /// offer is gone. Nothing is kept that isn't offered, or that is
+    /// empty, or with no chat or scheduled work off. The card has no
+    /// goal to lose.
+    #[test]
+    fn the_owner_keeps_an_unfinished_ask_as_a_card_of_their_own_words() {
+        let dir = scratch("keep");
+        let chat = config(&dir, Some("local"));
+        let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let now = hatchling_scheduler::Timestamp::now();
+        // A card a run suggested is on the page already.
+        let _ = waiting(&dir, "A run plan");
+        hub.offer(
+            String::from("run-1"),
+            String::from("make three tools and run them"),
+            0,
+        );
+        hub.offer(String::from("run-2"), String::new(), 0);
+        assert_eq!(
+            keep_at(&chat, None, "run-1", now),
+            SuggestionResult::NotFound,
+            "no chat"
+        );
+        assert_eq!(
+            keep_at(&chat, Some(&hub), "run-9", now),
+            SuggestionResult::NotFound,
+            "not offered"
+        );
+        assert_eq!(
+            keep_at(&chat, Some(&hub), "run-2", now),
+            SuggestionResult::NotFound,
+            "nothing to keep"
+        );
+        let mut off = config(&dir, Some("local"));
+        off.scheduler.root = std::path::PathBuf::new();
+        assert_eq!(
+            keep_at(&off, Some(&hub), "run-1", now),
+            SuggestionResult::Off
+        );
+        assert_eq!(
+            hub.offered("run-1").as_deref(),
+            Some("make three tools and run them"),
+            "still offered"
+        );
+        let kept = kept_card(keep_at(&chat, Some(&hub), "run-1", now)).unwrap();
+        assert_eq!(
+            (
+                kept.title.as_str(),
+                kept.summary.as_str(),
+                kept.why.as_str()
+            ),
+            (KEPT_TITLE, "make three tools and run them", KEPT_WHY)
+        );
+        assert_eq!(
+            (
+                kept.area,
+                kept.state,
+                kept.source.clone(),
+                kept.run.as_str()
+            ),
+            (
+                SuggestionArea::Productivity,
+                SuggestionState::Suggested,
+                Some(SuggestionSource::Chat),
+                "run-1"
+            )
+        );
+        assert!(kept.needs.is_empty());
+        assert_eq!(kept.suggested_at, now.to_string());
+        assert!(
+            kept.suggestion_id.starts_with(ID_PREFIX),
+            "{}",
+            kept.suggestion_id
+        );
+        let page = listed(&chat);
+        assert_eq!(page.first(), Some(&kept), "at the top, as kept");
+        assert_eq!(page.len(), 2);
+        assert_eq!(hub.offered("run-1"), None, "kept once");
+        assert_eq!(
+            keep_at(&chat, Some(&hub), "run-1", now),
+            SuggestionResult::NotFound
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The card a keep kept; none when it kept nothing.
+    fn kept_card(result: SuggestionResult) -> Option<Suggestion> {
+        match result {
+            SuggestionResult::Changed { suggestion } => Some(suggestion),
+            SuggestionResult::Listed { .. }
+            | SuggestionResult::NotFound
+            | SuggestionResult::Off
+            | SuggestionResult::Failed => None,
+        }
+    }
+
+    /// v30: a card the owner kept from a chat has no goal to lose: with
+    /// no goal open, a goal's card loses its source and this one waits
+    /// still. And the page's own handling has no chat to keep from.
+    #[test]
+    fn a_kept_card_has_no_goal_to_lose() {
+        let dir = scratch("keep-goal");
+        let chat = config(&dir, Some("local"));
+        let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let now = hatchling_scheduler::Timestamp::now();
+        let goal_card = waiting(&dir, "A run plan");
+        hub.offer(String::from("run-1"), String::from("make the tools"), 0);
+        let kept = kept_card(keep_at(&chat, Some(&hub), "run-1", now)).unwrap();
+        let state = |page: &SuggestionResult, id: &str| match page {
+            SuggestionResult::Listed { suggestions } => suggestions
+                .iter()
+                .find(|card| card.suggestion_id == id)
+                .map(|card| card.state),
+            SuggestionResult::Changed { .. }
+            | SuggestionResult::NotFound
+            | SuggestionResult::Off
+            | SuggestionResult::Failed => None,
+        };
+        let none_open = handle_at(&chat, &SuggestionOp::List, now, &|| Some(ids(&[])));
+        assert_eq!(
+            state(&none_open, &goal_card),
+            Some(SuggestionState::SourceGone)
+        );
+        assert_eq!(
+            state(&none_open, &kept.suggestion_id),
+            Some(SuggestionState::Suggested)
+        );
+        // The page's own handling has no chat to keep from.
+        assert_eq!(
+            handle(
+                &chat,
+                &SuggestionOp::Keep {
+                    run: String::from("run-1")
+                }
+            ),
+            SuggestionResult::NotFound
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the owner keeps isn't held to the agent's cap on waiting
+    /// ideas, and the page still keeps no more than its bound. A page
+    /// that can't be read, or written, keeps nothing, and the offer
+    /// stays.
+    #[test]
+    fn a_kept_card_is_not_capped_and_the_page_stays_bounded() {
+        let dir = scratch("keep-full");
+        let chat = config(&dir, Some("local"));
+        let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let now = hatchling_scheduler::Timestamp::now();
+        let path = chat.scheduler.ideas_log();
+        let full: Vec<Suggestion> = (0..MAX_KEPT)
+            .map(|n| Suggestion {
+                suggestion_id: format!("idea-{n}"),
+                title: format!("Idea {n}"),
+                summary: String::from("A week of short runs."),
+                why: String::from("You set a goal to run 5k."),
+                area: SuggestionArea::Health,
+                suggested_at: now.to_string(),
+                state: SuggestionState::Suggested,
+                needs: Vec::new(),
+                source: None,
+                run: String::from("run-0"),
+            })
+            .collect();
+        write(&path, &full).unwrap();
+        hub.offer(String::from("run-1"), String::from("keep me"), 0);
+        let kept = kept_card(keep_at(&chat, Some(&hub), "run-1", now)).unwrap();
+        let page = listed(&chat);
+        assert_eq!(page.len(), MAX_KEPT);
+        assert_eq!(page.first(), Some(&kept));
+        assert!(
+            page.iter()
+                .filter(|card| card.state == SuggestionState::Suggested)
+                .count()
+                > MAX_WAITING,
+            "not held to the agent's cap"
+        );
+        hub.offer(String::from("run-2"), String::from("keep me too"), 0);
+        std::fs::write(&path, "not a page").unwrap();
+        assert_eq!(
+            keep_at(&chat, Some(&hub), "run-2", now),
+            SuggestionResult::Failed
+        );
+        assert_eq!(
+            hub.offered("run-2").as_deref(),
+            Some("keep me too"),
+            "the offer stays"
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir_all(crate::kept_log::next_path(&path)).unwrap();
+        assert_eq!(
+            keep_at(&chat, Some(&hub), "run-2", now),
+            SuggestionResult::Failed
+        );
+        assert_eq!(hub.offered("run-2").as_deref(), Some("keep me too"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

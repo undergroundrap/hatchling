@@ -371,6 +371,12 @@ pub struct ChatMessage {
     /// too. Never read from the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    /// Whether the run that wrote it ran out of steps as it answered,
+    /// by its agent's own exit status: what the owner asked may be
+    /// unfinished, and they may keep it for later
+    /// ([`SuggestionOp::Keep`]). Said only of an answer in their chat.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub out_of_steps: bool,
 }
 
 /// Who wrote a chat message.
@@ -545,6 +551,10 @@ pub enum SuggestionSource {
         /// The goal's title then.
         title: String,
     },
+    /// The owner kept it for later, from a chat whose run ran out of
+    /// steps ([`SuggestionOp::Keep`]): what it would do is their own
+    /// words, and its run is that chat's.
+    Chat,
 }
 
 /// A suggestion on the owner's Ideas page: the agent's words, all but
@@ -602,6 +612,14 @@ pub enum SuggestionOp {
     Restore {
         /// It, as listed.
         id: String,
+    },
+    /// Keep for later what the owner asked in the chat run `run`, whose
+    /// answer ran out of steps: a card in their own words, waiting on
+    /// the page. Only what the broker offered, in the conversation open
+    /// now.
+    Keep {
+        /// The run, by its cell id, as its answer named it.
+        run: String,
     },
 }
 
@@ -2213,6 +2231,7 @@ mod tests {
                     message_id: String::from("m1"),
                     author: ChatAuthor::Agent,
                     run: None,
+                    out_of_steps: false,
                     text: String::from("<b>hi</b>"),
                 }),
             ),
@@ -3216,6 +3235,36 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<SuggestionState>("\"retired\"").is_err());
-        assert_eq!(PROTOCOL_VERSION, 29);
+        assert_eq!(PROTOCOL_VERSION, 30);
+    }
+
+    /// v30: a chat answer says when its run ran out of steps, and is
+    /// written as before when it didn't; the owner's keep, and the
+    /// source of a card they kept, have their wire forms.
+    #[test]
+    fn keeping_an_unfinished_chat_has_its_wire_forms() {
+        let answer = |out_of_steps| ChatMessage {
+            chat_id: String::from("local"),
+            message_id: String::from("m1"),
+            author: ChatAuthor::Agent,
+            text: String::from("this far"),
+            run: Some(String::from("run-1")),
+            out_of_steps,
+        };
+        pinned(
+            &answer(false),
+            &json!({"chat_id": "local", "message_id": "m1", "author": "agent", "text": "this far", "run": "run-1"}),
+        );
+        pinned(
+            &answer(true),
+            &json!({"chat_id": "local", "message_id": "m1", "author": "agent", "text": "this far", "run": "run-1", "out_of_steps": true}),
+        );
+        pinned(
+            &SuggestionOp::Keep {
+                run: String::from("run-1"),
+            },
+            &json!({"op": "keep", "run": "run-1"}),
+        );
+        pinned(&SuggestionSource::Chat, &json!({"kind": "chat"}));
     }
 }

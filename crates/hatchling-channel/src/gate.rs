@@ -248,6 +248,9 @@ pub struct Origin {
     /// Whether it's the deliverer's own notice, in its own words, rather
     /// than what a run wrote.
     pub notice: bool,
+    /// Whether the run that wrote it ran out of steps as it answered, as
+    /// its deliverer says.
+    pub out_of_steps: bool,
 }
 
 impl Cleared {

@@ -2323,6 +2323,10 @@
           "description": "Stable across replays.",
           "type": "string"
         },
+        "out_of_steps": {
+          "description": "Whether the run that wrote it ran out of steps as it answered,\nby its agent's own exit status: what the owner asked may be\nunfinished, and they may keep it for later\n([`SuggestionOp::Keep`]). Said only of an answer in their chat.",
+          "type": "boolean"
+        },
         "run": {
           "description": "The run that wrote it, by its cell id, when an agent run did: the\nbroker's own word, which the activity record's run summary names\ntoo. Never read from the text.",
           "type": [
@@ -11352,6 +11356,24 @@
             "id"
           ],
           "type": "object"
+        },
+        {
+          "description": "Keep for later what the owner asked in the chat run `run`, whose\nanswer ran out of steps: a card in their own words, waiting on\nthe page. Only what the broker offered, in the conversation open\nnow.",
+          "properties": {
+            "op": {
+              "const": "keep",
+              "type": "string"
+            },
+            "run": {
+              "description": "The run, by its cell id, as its answer named it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "run"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -11461,6 +11483,19 @@
             "kind",
             "id",
             "title"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owner kept it for later, from a chat whose run ran out of\nsteps ([`SuggestionOp::Keep`]): what it would do is their own\nwords, and its run is that chat's.",
+          "properties": {
+            "kind": {
+              "const": "chat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
           ],
           "type": "object"
         }
@@ -14263,7 +14298,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 29,
+    "session_protocol": 30,
     "ui_schema_version": 4
   },
   "x-roots": {

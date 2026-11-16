@@ -7,7 +7,8 @@
 // is kept with why: those are the broker's findings, shown in the app's words,
 // among the ideas set aside, where Restore is. One whose conversation was
 // answered stays among those started, and says so: the broker knows an answer
-// was shown, not that the idea was carried out. "Suggest ideas" is a one-off run for the page, a few
+// was shown, not that the idea was carried out. The owner may keep what they
+// asked in a chat that ran out of steps: that card is their own words. "Suggest ideas" is a one-off run for the page, a few
 // seconds out: it may reach the model, read their goals and recall their
 // memory, and suggest; nothing else.
 import type { CommandResult, IconName, Idea, IdeaDomain } from '../../protocol/models.js';
@@ -30,6 +31,9 @@ const OFF = 'Hatchling keeps no Ideas page here: scheduled work is off.';
 const FAILED = 'Hatchling couldn’t read or change the Ideas page. `hatchling-broker doctor`, run as root, checks the install.';
 const GONE = 'This idea is gone.';
 const STILL_GONE = 'Its goal is still closed, so it stays here.';
+const KEPT = 'Kept on your Ideas page. Start it from there when you’re ready.';
+const NOT_KEPT = 'It can’t be kept now: a new conversation started, or Hatchling restarted, since that run. Send it again to keep it.';
+const KEPT_SIGNAL = 'You kept this from a chat that ran out of steps. These are your own words: nothing runs unless you start it.';
 /** Each state the broker keeps an idea in, as the page shows it: one the broker retired is among those set aside. */
 const STATES: Readonly<Record<Suggestion['state'], Idea['state']>> = { suggested: 'suggested', started: 'activated', answered: 'activated', dismissed: 'dismissed', stale: 'dismissed', source_gone: 'dismissed' };
 /** What the broker found of an idea, said under it: why it left For you without the owner setting it aside, or that its conversation was answered. */
@@ -62,7 +66,7 @@ export type IdeaAction = 'start' | 'dismiss' | 'restore';
 export function ideaOf(suggestion: Suggestion): Idea {
     const area = AREAS[suggestion.area];
     // Where it came from is the broker's finding, said before the note that the rest is the agent's.
-    const from = suggestion.source ? `From your goal “${suggestion.source.title}”. ` : '';
+    const from = suggestion.source?.kind === 'goal' ? `From your goal “${suggestion.source.title}”. ` : '';
     return {
         id: suggestion.suggestion_id,
         section: area.domain,
@@ -71,7 +75,7 @@ export function ideaOf(suggestion: Suggestion): Idea {
         domain: area.domain,
         icon: area.icon,
         rationale: suggestion.why,
-        signal: `${from}${SIGNAL}`,
+        signal: suggestion.source?.kind === 'chat' ? KEPT_SIGNAL : `${from}${SIGNAL}`,
         items: [],
         state: STATES[suggestion.state],
         outcome: FOUND[suggestion.state] ?? '',
@@ -157,6 +161,16 @@ export class LiveIdeas implements IdeasPort {
             return { ok: false, message: STILL_GONE };
         const done: Readonly<Record<IdeaAction, string>> = { start: 'It’s in your chat box: read it, change it, and send it when you’re ready.', dismiss: 'Set aside.', restore: 'It’s back in For you.' };
         return { ok: true, message: done[action] };
+    }
+    /** Keep for later what the owner asked in the chat run `run`, which ran out of steps: a card in their own words. */
+    async keep(run: string): Promise<CommandResult> {
+        const outcome = await this.#ask({ op: 'keep', run });
+        if (typeof outcome === 'string')
+            return { ok: false, message: outcome };
+        if (outcome.result !== 'changed')
+            return { ok: false, message: outcome.result === 'not_found' ? NOT_KEPT : this.#says(outcome) };
+        await this.refresh();
+        return { ok: true, message: KEPT };
     }
     async suggestNow(): Promise<CommandResult> {
         const tz = this.#zone();

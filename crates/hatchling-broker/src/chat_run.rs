@@ -300,7 +300,16 @@ pub struct Chat<R, K = ()> {
     /// so with steps to spare, until it is taken
     /// ([`Chat::take_answered`]).
     answered: Option<u64>,
+    /// What the owner asked in the last run whose answer they were
+    /// shown and which ran out of steps, until it is taken
+    /// ([`Chat::take_offer`]).
+    offer: Option<Offer>,
 }
+
+/// What the owner may keep for later from a run that ran out of steps:
+/// the run, by its cell id, what they said in the exchange, and the
+/// conversation it was said in.
+pub type Offer = (String, String, u64);
 
 impl<R: Run> Chat<R> {
     /// A chat whose runs hold `grants`, keeping the conversation in memory
@@ -339,6 +348,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             usage: None,
             waiting: None,
             answered: None,
+            offer: None,
         }
     }
 
@@ -348,6 +358,24 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// undone, and neither is one the owner wasn't shown.
     pub const fn take_answered(&mut self) -> Option<u64> {
         self.answered.take()
+    }
+
+    /// Notes how a run that answered the owner, shown to them in the
+    /// conversation `sent_in` while it was open, ended: with steps to
+    /// spare that conversation was answered; out of steps, what they
+    /// said, `user`, is offered to keep, from the run in `cell`.
+    fn ended(&mut self, spent: bool, cell: Option<String>, user: &str, sent_in: u64) {
+        self.answered = (!spent).then_some(sent_in);
+        self.offer = cell
+            .filter(|_| spent)
+            .map(|run| (run, user.to_owned(), sent_in));
+    }
+
+    /// What the owner asked in a run whose answer they were shown, in
+    /// the conversation open then, and which ran out of steps as it
+    /// answered, since this was last asked.
+    pub const fn take_offer(&mut self) -> Option<Offer> {
+        self.offer.take()
     }
 
     /// The chat, naming `model` when it tells the person a run failed.
@@ -476,15 +504,15 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                     return answer_with(delivery, &told);
                 }
             };
-            return match delivery.deliver_answer(&ChannelId::local().0, &answer, cell.as_deref()) {
+            let spent = !had_steps_to_spare(ending);
+            let local = ChannelId::local().0;
+            return match delivery.deliver_answer(&local, &answer, cell.as_deref(), spent) {
                 Ok(shown) => {
                     if shown && sent_in == self.conversation {
-                        self.answered = had_steps_to_spare(ending).then_some(sent_in);
+                        self.ended(spent, cell, &user, sent_in);
                         let compacted = self.keep(user, answer);
                         if let Some(notice) = self.told.notice(compacted) {
-                            if let Err(error) =
-                                delivery.deliver_notice(&ChannelId::local().0, notice)
-                            {
+                            if let Err(error) = delivery.deliver_notice(&local, notice) {
                                 tracing::warn!(error = ?error, "a compaction notice was not delivered");
                             }
                         }
@@ -646,6 +674,10 @@ where
     if let Some(conversation) = chat.take_answered() {
         crate::suggestions::conversation_answered(config, hub, conversation);
     }
+    // What the owner asked may be unfinished: theirs to keep for later.
+    if let Some((run, said, conversation)) = chat.take_offer() {
+        hub.offer(run, crate::suggestions::kept_words(&said), conversation);
+    }
     step
 }
 
@@ -706,6 +738,9 @@ mod tests {
         runs: RefCell<Vec<Option<String>>>,
         /// The texts delivered as Hatchling's own notices.
         notices: RefCell<Vec<String>>,
+        /// Whether each answer was said to have run out of steps, in
+        /// order.
+        spent: RefCell<Vec<bool>>,
     }
 
     impl Delivery for Answers {
@@ -718,8 +753,10 @@ mod tests {
             channel: &str,
             text: &str,
             run: Option<&str>,
+            out_of_steps: bool,
         ) -> Result<bool, String> {
             self.runs.borrow_mut().push(run.map(str::to_owned));
+            self.spent.borrow_mut().push(out_of_steps);
             self.deliver_verbatim(channel, text)
         }
 
@@ -1283,6 +1320,182 @@ mod tests {
         hub.new_conversation();
         ask(answered_as(None));
         assert_eq!(state(&trip), Some(SuggestionState::Started));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run in the cell named that ends at once, with `outcome`, as
+    /// `ending` says.
+    #[derive(Debug)]
+    struct Spent {
+        outcome: Result<String, String>,
+        ending: Option<hatchling_scheduler::Ending>,
+        cell: &'static str,
+    }
+
+    impl Run for Spent {
+        fn poll(&mut self) -> Option<Result<String, String>> {
+            Some(self.outcome.clone())
+        }
+
+        fn ending(&self) -> Option<hatchling_scheduler::Ending> {
+            self.ending
+        }
+
+        fn cell_id(&self) -> Option<String> {
+            Some(self.cell.to_owned())
+        }
+    }
+
+    /// Launches each [`Spent`] run in turn.
+    struct SpentRuns(RefCell<Vec<Spent>>);
+
+    impl Launcher for SpentRuns {
+        type Run = Spent;
+
+        fn launch(&self, _: RunRequest) -> Result<Spent, String> {
+            let mut runs = self.0.borrow_mut();
+            if runs.is_empty() {
+                Err(String::new())
+            } else {
+                Ok(runs.remove(0))
+            }
+        }
+    }
+
+    /// The ending of a run whose agent answered as its steps ran out.
+    fn ran_out() -> hatchling_scheduler::Ending {
+        hatchling_scheduler::Ending::Exited(
+            hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS.into(),
+        )
+    }
+
+    /// A run in `cell` that answered, ending as `ending` says.
+    fn spent(ending: Option<hatchling_scheduler::Ending>, cell: &'static str) -> Spent {
+        Spent {
+            outcome: Ok(String::from("this far")),
+            ending,
+            cell,
+        }
+    }
+
+    /// v30: an answer shown to the owner that ran out of steps is said
+    /// so as it is delivered, and offers what they said in it, with its
+    /// run and conversation, once. An answer with steps to spare is said
+    /// not to have, and offers nothing; nor does a failed run, an answer
+    /// not shown, one that reached no one, or one in a conversation the
+    /// owner has left.
+    #[test]
+    fn an_answer_that_ran_out_of_steps_offers_what_was_asked() {
+        let now = Timestamp::now();
+        let ask =
+            |chat: &mut Chat<Spent>, run: Spent, answers: &Answers, sent_in: u64, open: u64| {
+                let launches = SpentRuns(RefCell::new(vec![run]));
+                assert_eq!(
+                    chat.step(
+                        || Some((message("make the tools"), sent_in)),
+                        sent_in,
+                        &launches,
+                        answers,
+                        now
+                    ),
+                    Step::Started
+                );
+                chat.step(|| None, open, &launches, answers, now)
+            };
+        let shown = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        assert_eq!(chat.take_offer(), None, "nothing offered yet");
+        assert_eq!(
+            ask(&mut chat, spent(Some(ran_out()), "run-1"), &shown, 2, 2),
+            Step::Answered
+        );
+        assert_eq!(
+            chat.take_offer(),
+            Some((String::from("run-1"), String::from("make the tools"), 2))
+        );
+        assert_eq!(chat.take_offer(), None, "offered once");
+        assert_eq!(chat.take_answered(), None, "no answer with steps to spare");
+        // With steps to spare there is nothing unfinished to keep.
+        assert_eq!(
+            ask(&mut chat, spent(None, "run-2"), &shown, 2, 2),
+            Step::Answered
+        );
+        assert_eq!(chat.take_offer(), None);
+        assert_eq!(chat.take_answered(), Some(2));
+        // A run that failed answered nothing.
+        let failed = Spent {
+            outcome: Err(String::from("the run exited 1")),
+            ending: Some(ran_out()),
+            cell: "run-3",
+        };
+        assert_eq!(ask(&mut chat, failed, &shown, 2, 2), Step::Answered);
+        assert_eq!(chat.take_offer(), None);
+        // Nor did one whose answer the owner wasn't shown,
+        let replaced = Answers::default();
+        replaced.replace.set(true);
+        assert_eq!(
+            ask(&mut chat, spent(Some(ran_out()), "run-4"), &replaced, 2, 2),
+            Step::Answered
+        );
+        assert_eq!(chat.take_offer(), None);
+        // or one that reached no one,
+        let refusing = Answers {
+            refuse: true,
+            ..Answers::default()
+        };
+        assert_eq!(
+            ask(&mut chat, spent(Some(ran_out()), "run-5"), &refusing, 2, 2),
+            Step::Undelivered
+        );
+        assert_eq!(chat.take_offer(), None);
+        // or one that answered after the owner started another.
+        assert_eq!(
+            ask(&mut chat, spent(Some(ran_out()), "run-6"), &shown, 2, 3),
+            Step::Answered
+        );
+        assert_eq!(chat.take_offer(), None);
+        // Each answer was said to have run out of steps, or not, as it ended.
+        assert_eq!(*shown.spent.borrow(), [true, false, true]);
+        assert_eq!(*replaced.spent.borrow(), [true]);
+    }
+
+    /// v30: the chat's own turn hands the hub what the owner asked in a
+    /// run that ran out of steps, as a kept card would hold it; a run
+    /// with steps to spare offers nothing.
+    #[test]
+    fn the_chats_turn_offers_an_unfinished_ask_to_keep() {
+        let dir = crate::suggestions::tests::scratch("chat-offer");
+        let config = crate::suggestions::tests::config(&dir, None);
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let answers = Answers::default();
+        let now = Timestamp::now();
+        let mut chat = Chat::new(vec![send_local()]);
+        let long = format!(
+            "  {}  ",
+            "x".repeat(crate::suggestions::MAX_TEXT_BYTES + 50)
+        );
+        let mut turn = |run: Spent, said: &str| {
+            let launches = SpentRuns(RefCell::new(vec![run]));
+            assert_eq!(
+                hub.inject(message(said)),
+                hatchling_channel::IngressEvent::Queued
+            );
+            assert_eq!(
+                chat_turn(&mut chat, &config, &hub, &launches, &answers, now),
+                Step::Started
+            );
+            assert_eq!(
+                chat_turn(&mut chat, &config, &hub, &launches, &answers, now),
+                Step::Answered
+            );
+        };
+        turn(spent(Some(ran_out()), "run-7"), &long);
+        turn(spent(None, "run-8"), "all done");
+        assert_eq!(
+            hub.offered("run-7"),
+            Some(crate::suggestions::kept_words(&long))
+        );
+        assert_eq!(hub.offered("run-8"), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

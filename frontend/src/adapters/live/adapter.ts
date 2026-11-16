@@ -12,7 +12,7 @@ import type { AppState, Command, CommandResult, DeepReadonly, ProtocolAdapter, S
 import { keepPreferences, rememberedPreferences } from './preferences.js';
 import { ActivityBook } from './activity.js';
 import { LiveApprovals } from './approvals.js';
-import { ChatBook, wireChat } from './chat.js';
+import { ChatBook, KEEP, wireChat } from './chat.js';
 import { LiveClient, askTheHost } from './client.js';
 import type { UiTransport } from './client.js';
 import type { ActionRefusal, UiEvent } from './protocol/generated.js';
@@ -209,6 +209,8 @@ export class LiveAdapter implements ProtocolAdapter {
                 const state = this.#feed.current();
                 return this.#feed.save(command.text, state.kind === 'read' && state.setup !== null ? state.setup.time : DIGEST_TIME);
             }
+            case 'message.choose':
+                return this.#choose(command.id, command.option);
             case 'idea.activate':
                 return this.#ideas.act(command.id, 'start');
             case 'idea.dismiss':
@@ -239,6 +241,22 @@ export class LiveAdapter implements ProtocolAdapter {
     dispose(): void {
         this.#client.dispose();
         this.#listeners.clear();
+    }
+    /**
+     * The owner chose what the chat offered. The one offer is to keep what they
+     * asked in a run that ran out of steps, as a card in their own words: the
+     * broker keeps it only if it still offers it.
+     */
+    async #choose(id: string, option: string): Promise<CommandResult> {
+        const run = this.#chats.keepable(id);
+        if (run === undefined || option !== KEEP)
+            return { ok: false, message: NOT_YET };
+        const kept = await this.#ideas.keep(run);
+        if (kept.ok) {
+            this.#chats.kept(run);
+            this.#publish();
+        }
+        return kept;
     }
     /** Start a new conversation: the agent is given nothing said before it. The broker's notice shows where. With `idea`, the broker knows which idea the conversation is for. */
     async #newConversation(chatId: string, idea?: string): Promise<CommandResult> {
