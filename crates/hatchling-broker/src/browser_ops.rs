@@ -2826,7 +2826,7 @@ mod tests {
         let board = crate::approval_board::board(&config);
         let approve = |answer: &BrowserResult| {
             let BrowserResult::Waiting { request, .. } = answer else {
-                unreachable!("answered otherwise: {answer:?}");
+                unreachable!("answered otherwise, not waiting for the owner");
             };
             let asked = board.approvals().get(request).unwrap();
             board
@@ -2883,7 +2883,7 @@ mod tests {
             &send,
         ));
         let made = handle_browser_op(&config, &keys, &mut web, &mut browser, &send);
-        assert!(matches!(made, BrowserResult::Page { .. }), "{made:?}");
+        assert!(matches!(made, BrowserResult::Page { .. }), "the act wasn't made");
         assert_eq!(acts(&fake), 1);
         // A page that can't be looked at again isn't acted on, though the
         // browser goes on.
