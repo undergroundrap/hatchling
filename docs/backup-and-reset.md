@@ -23,7 +23,7 @@ One sealed file lands in `/var/lib/hatchling-backups`, and the newest five are k
 sudo hatchling-broker backup /media/usb/hatchling.backup
 ```
 
-**The file opens with what opens your vault today:** a security key and its PIN, or a backup code. At the key file tier, it opens on this machine, as the key file isn't in it. To move to another machine, protect the vault with a security key or make backup codes first: `sudo hatchling-broker vault-keyring backup-codes`.
+**The file opens with what opens your vault today:** a security key and its PIN, a code from your [authenticator app](authenticator.md), or a backup code. At the key file tier, it opens on this machine, as the key file isn't in it. To move to another machine, protect the vault with a security key or make backup codes first: `sudo hatchling-broker vault-keyring backup-codes`.
 
 Nothing inside can be read or changed without that, so a copy on a USB drive is safe to keep.
 
@@ -49,7 +49,7 @@ Each level asks you to confirm, and takes a backup first:
 
 | Command | Clears | Keeps |
 | --- | --- | --- |
-| `reset conversation` | The conversation | Everything else |
+| `reset conversation` | The conversation; the agent's computer's room disk is closed, and keeps its files | Everything else |
 | `reset agent` | The conversation, memory, goals, schedules and what it made, its room disk included | Your API keys, sign-ins, security keys and backup codes |
 | `reset everything` | All of that, your API keys and sign-ins, and the keyring | Your settings. Security keys aren't changed |
 

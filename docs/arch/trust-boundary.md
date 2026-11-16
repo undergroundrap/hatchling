@@ -142,8 +142,8 @@ socket crosses exec.
 After the fixed readiness frame, the private spawner channel asks the
 supervisor one thing at a time, in typed frames whose unknown fields never
 decode: to start a job, to stop one, to hand over a kept piece of what
-an ended job wrote, to hand back a page of a file, or to search its
-files. Each answer must
+an ended job wrote, to hand back a page of a file, to search its
+files, or to write a file or edit one. Each answer must
 echo its ask's nonce. The one thing the supervisor says unasked is that a
 job it was given has ended.
 
@@ -334,7 +334,7 @@ the day it becomes the record of what ran with nobody watching.
 A session ends:
 
 - after one hour, whatever it is doing;
-- after fifteen minutes with no job, page or search in hand;
+- after fifteen minutes with no job, page, search, write or edit in hand;
 - when a job that was stopped hasn't ended five seconds later;
 - when the supervisor isn't ready within 30 seconds, doesn't answer an
   ask within ten, closes, says something that can't be read, answers
@@ -376,11 +376,12 @@ retains the claim while changing the vault, in addition to its existing
 service-stop prerequisite. If the configured parent does not exist,
 Room creation is unavailable; trusted installation must not create that
 missing parent concurrently with an operator key change.
-Background jobs, their receipts and fuller output remain separate work.
+Jobs, the names they are asked after by, and their fuller output are
+described above.
 Each launch mounts a fresh scratch tmpfs with `size=536870912`. At
 that filesystem limit, a job writing to scratch sees `ENOSPC` from the
 write. If the program reports the failure via its exit status and
-standard error, the foreground result carries both within its output cap.
+standard error, the job's result carries both within its output cap.
 
 The spawner's room-disk open and status checks pin the workspace mount
 and match its kernel mount record to the expected LUKS2 mapping. They

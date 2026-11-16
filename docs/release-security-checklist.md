@@ -101,8 +101,14 @@ Check each `%` field, the shorthand `%name` too, for a value a cell or a client 
 - **What a cell inherits:** only stdio, plus its connection or relay where it has one, and its vault channel (`HATCHLING_VAULT_FD`) when its session holds vault grants or its browser fills sign-ins. `schedule_run.rs` checks a run's open fds and stdin; the isolation layer closes every other descriptor at exec.
 - **What a cell sees:** no new mount or environment variable that names a host path or a secret. A harness manifest's `env` values are the operator's, as its binary is, and reach the CLI's cell as written ([Harness manifests](harness-manifests.md)).
 
+- **The Room's surface,** the agent's own computer: its own syscall profile (in `seccomp.rs`), what it mounts (`room_mounts`), how its image is admitted (`room_image.rs`, `scripts/room-image.sh`), how the spawner launches and keeps it (`room_launch.rs`, `room_session`), the supervisor inside it, and what the agent may ask of it (`room_ops`). Anything added to what it can do, mount or reach has a reason in the change, and still reaches neither the network nor the owner's files.
+
 ```bash
 git diff vPREVIOUS..HEAD -- crates/hatchling-sys/src/seccomp.rs crates/hatchling-isolation crates/hatchling-broker/src/cell.rs
+git diff vPREVIOUS..HEAD -- crates/hatchling-sys/src/room_mounts.rs crates/hatchling-sys/src/room_mounts crates/hatchling-sys/src/room_image.rs \
+  crates/hatchling-broker/src/room_launch.rs crates/hatchling-broker/src/room_session.rs crates/hatchling-broker/src/room_session \
+  crates/hatchling-broker/src/room_ops.rs crates/hatchling-broker/src/room_ops crates/hatchling-room crates/hatchling-browser/src/bin \
+  scripts/room-image.sh
 ```
 
 ## 7. Egress has one way out

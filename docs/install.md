@@ -138,7 +138,9 @@ To use a hosted model instead, with a far larger window, run `sudo hatchling-bro
 | The configuration, the whole of it | `/etc/hatchling/hatchling.env`: every setting is in `hatchling-broker --help` |
 | The broker's service, run as root, dropping to `hatchling-broker` once started | `hatchling.service` |
 | The app's host, a system service run as you, confined by systemd (no privileges, the system read-only) | `hatchling-host@<you>.service` |
-| Four system users: the cells', the broker's, the vault keeper's, the egress authority's | `/etc/sysusers.d/hatchling.conf` |
+| Five system users: the cells', the broker's, the vault keeper's, the egress authority's, and the Room's (the agent's computer runs as it) | `/etc/sysusers.d/hatchling.conf` |
+| `cryptsetup-bin`, with `apt-get`, when `cryptsetup` isn't there: the agent's computer keeps its files on an encrypted disk. Without it the agent's computer is off and the rest works | the system's packages |
+| The agent's computer's image and the record that admits it, from a Windows Setup bundle only | `/usr/local/share/hatchling/room/`, `/etc/hatchling/room-image.admission` |
 | Its state: the vault, schedules, sockets | `/var/lib/hatchling` ([what's kept](storage.md)) |
 
 With systemd 254 or later, the broker gets a cgroup of its own to give each cell, so each cell's processes, memory and CPU are bounded as a whole.

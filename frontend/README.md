@@ -1,6 +1,6 @@
 # Hatchling Frontend
 
-Revision **v10 + UI touch-up + reliability UX + approvals/mascot + shared loading, style guide and consistent popup menus**, package **1.12.0**. A frontend-only personal-agent workspace with strict TypeScript, native ES modules, original icon motion, and entirely synthetic local fixtures. No live backend is implemented. Screens, consent flows and browser frames are demonstrations, not connected account activity.
+Revision **v10 + UI touch-up + reliability UX + approvals/mascot + shared loading, style guide and consistent popup menus**, package **1.12.0**. A frontend-only personal-agent workspace with strict TypeScript, native ES modules, original icon motion, and entirely synthetic local fixtures. Served by `hatchling-host` with a UI token, it is the live app: the adapter in `src/adapters/live/` drives a real broker over its local API ([docs/local-api.md](../docs/local-api.md)). Opened any other way it runs on synthetic local fixtures: a demonstration, not connected account activity.
 
 Start every UI change with **[STYLE_GUIDE.md](STYLE_GUIDE.md)** and **[docs/UI-CHECKLIST.md](docs/UI-CHECKLIST.md)**. The latest iteration brings every action popup into the existing More-menu style and fixes navigation in script-enabled sandboxed previews. The preceding iteration added reusable text/media skeletons, real image loading/error/retry handling, explicit content-loading previews and a token/style guard; **[docs/DESIGN-SYSTEM.md](docs/DESIGN-SYSTEM.md)** describes its scope.
 
@@ -21,10 +21,6 @@ npm run dev
 ```
 
 Requires Node.js 22.12 or newer. Open `http://localhost:5173`. The development watcher rebuilds TypeScript and copies styles/assets; refresh after editing. `npm run build` also produces `dist/hatchling-standalone.html`, an offline preview that needs no installation. `npm run preview` serves `dist/` on port 4173. No runtime npm packages or font files are shipped. The single npm development dependency is the pinned TypeScript compiler.
-
-### Included handoff preview
-
-This handoff intentionally includes `preview/Hatchling-clickaround-preview.html` plus two verification screenshots. The preview is generated output for click-through/reference; edit the TypeScript source and rebuild rather than editing the preview directly.
 
 ### Opening the preview
 
@@ -61,12 +57,6 @@ Press **Ctrl/Cmd + Shift + D** for the scripted scenario chooser. The **Loading 
 
 ## Agent handoff
 
-For backend wiring, start with **AGENTS.md**. For UI context, read **STYLE_GUIDE.md**, **docs/UI-CHECKLIST.md** and **docs/DESIGN-SYSTEM.md**. `ProtocolAdapter` remains the frozen seam. The optional `chatSession` and `taskApprovals` UI capabilities require integration review and authoritative live receipts; it is not a change to that frozen protocol. There is no live implementation. Changes to the interface require review before implementation; selecting a future live adapter also requires the one approved composition-root change in `src/main.ts`.
+For backend wiring, start with **AGENTS.md**. For UI context, read **STYLE_GUIDE.md**, **docs/UI-CHECKLIST.md** and **docs/DESIGN-SYSTEM.md**. `ProtocolAdapter` remains the frozen seam. The optional `chatSession` and `taskApprovals` UI capabilities require integration review and authoritative live receipts; it is not a change to that frozen protocol. The live adapter is in `src/adapters/live/`, chosen in `src/main.ts` when the host served the page with a UI token. Changes to the frozen interface require review before implementation.
 
 The optional CLI/MCP developer companion is disabled by default and needs explicit tab enablement. It is not production authorization, remote browser streaming, or a hosted agent runtime.
-
-## Validation limitation for this delivery
-
-During the preceding touch-up delivery, a genuinely fresh `npm ci` was attempted after removing `node_modules`; registry access failed (`EAI_AGAIN`), and the offline cache was empty. The checked-in lockfile is pinned and includes the registry-published TypeScript integrity hash. Executed checks used the already-installed matching TypeScript 5.8.3 compiler. The present style-guide/loading pass repeated `npm ci` with a short timeout; registry DNS again failed (`EAI_AGAIN`). Checks used the matching installed compiler. This is **not** a clean-install pass. Managed Chromium rejects URL navigation with `ERR_BLOCKED_BY_ADMINISTRATOR`; browser policy was not modified. The loading suite uses the compiled standalone document, with test-only seams for pending image sources and generation promises. Image success/failure also exercises actual data-image browser events. Product/reliability/approval suites use the standalone document. HTTP assets are also checked separately; this does not certify deployment-origin behavior. Remote CI was not run.
-
-The included `.github/workflows/ci.yml` is a standalone-repository template. Once this directory sits under a parent repository, GitHub does not discover that nested workflow automatically: the integration owner must move/adapt it under the repository's root `.github/workflows/`, using working-directory `frontend` and `frontend/package-lock.json` for npm caching. Remote CI remains that owner's task.
