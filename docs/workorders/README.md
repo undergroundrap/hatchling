@@ -26,7 +26,8 @@ The goal is a runtime a security team can approve, for one person or a whole com
 3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs) and WO-016 (`cargo install hatchling-runtime`, which also holds the crates.io names with real releases). Then seeing it work: WO-021 (the UI drives a real broker), and WO-022 (an operator API, held apart from the user's, with the command center's first screen). These come before the rest of the local-attacker work: approvals delivered to the user, and per-site prompts for the agent's web access, both need the UI.
 4. **Then what a security review asks for next:** WO-024 (a second, independent guard on every delete and signal, after WO-012's test machine was wiped by a mutant); WO-014 (running without root) and WO-017 (privilege-separating the trusted side, so a bug in the broker can't reach your keys), designed together since they share the spawner; WO-025 (a scheduled run that a crash or a failed write loses or repeats, and a result dropped while reported as parked); WO-013 (the release process: signed and reproducible binaries, an SBOM, publishing from CI); and WO-015 (root cell tests in CI).
 5. **What runs in a cell, by the operator's choice:** WO-018 (a coding CLI added by a manifest, OpenCode first) and WO-019 (tools approved, pinned and listed). Hatchling bundles neither: it makes adding one safe. These can start once the hostile-cell work is done.
-6. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
+6. **0.9, its own computer** ([milestone](https://github.com/undergroundrap/hatchling/milestones)): WO-034 (the Room) and WO-035 (the agent's tools in it), then step 4, then WO-036 (approvals bound to grant keys), WO-037 (say when a protection is off) and WO-038 (know what is installed). WO-039 (the spawner in a crate of its own) follows step 4.
+7. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
 
 ## Queue
 
@@ -67,6 +68,12 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [031](workorder-031-cell-bound-credentials-skip-the-broker.md) | Cell-bound credentials skip the broker: a cell's vault secrets and browser sign-ins go from the keeper to the cell | yes | DONE |
 | [032](workorder-032-ideas-and-builds-from-the-chat.md) | Ideas and builds from the chat: the agent proposes, the owner decides | yes | DONE |
 | [033](workorder-033-install-it-and-leave-it-on.md) | Install it and leave it on: one command, a service that survives a reboot | yes | IN-PROGRESS |
+| [034](workorder-034-run-commands-in-the-agents-encrypted-room.md) | Run commands in the agent's encrypted room | yes | IN-PROGRESS |
+| [035](workorder-035-the-agents-tools-in-its-own-computer.md) | The agent's tools in its own computer: run, read, search, write and edit from a chat | yes | DONE |
+| [036](workorder-036-approvals-bound-to-grant-keys.md) | Approvals bound to grant keys: a tool and its target, scoped and revocable | yes | QUEUED |
+| [037](workorder-037-say-when-a-protection-is-off.md) | Say when a protection is off: doctor and Your security name what's missing | yes | QUEUED |
+| [038](workorder-038-know-what-is-installed.md) | Know what is installed: a version command, store modes checked, the Room's image on Linux | yes | QUEUED |
+| [039](workorder-039-the-spawner-in-a-crate-of-its-own.md) | The spawner in a crate of its own, design first | yes | QUEUED |
 
 ## Candidates
 
