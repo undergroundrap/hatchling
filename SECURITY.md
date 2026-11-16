@@ -45,9 +45,9 @@ The full model is in [docs/arch/trust-boundary.md](docs/arch/trust-boundary.md).
 
 ### Malicious skills and cell code
 
-A skill, a harness CLI or generated code is fully attacker-controlled. It's a vulnerability if such code can:
+A skill, a harness CLI, generated code, or a command the agent runs in its own computer (the Room) is fully attacker-controlled. It's a vulnerability if such code can:
 
-- leave its cell: read or write host files outside the view it was granted, see other processes, gain a capability, or run a syscall the cell's seccomp filter should block;
+- leave its cell or the Room: read or write host files outside the view it was granted, see other processes, gain a capability, run a syscall the cell's or the Room's seccomp filter should block, or change the Room's image or reach its disk other than through its workspace;
 - reach the network other than through the egress proxy, or reach a destination its grants don't allow;
 - act with grants it wasn't given, or with another cell's or schedule's grants;
 - affect the broker beyond its own requests: crash it, stall it for other callers, or corrupt its state.

@@ -58,11 +58,12 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 | **Skills** | Signed, verified skill packages, each run in a dedicated cell scoped to its declared capabilities. None ship yet. |
 | **Artifacts and research** | Documents and pages made by signed builder skills, inspected at the boundary. Not yet delivered to you as files, and deep research has no way to start it from the app. |
 | **Spaces** | Shared, persistent scopes with members and devices, in the broker. Nothing in the app uses them yet. |
+| **Its own computer** | In a chat, the agent runs commands, and reads, searches, writes and edits files, in a computer of its own, the Room: a verified read-only image in a cell of its own, with its own syscall filter, no network, and its files kept between commands and chats on an encrypted disk. A command isn't put to you first: nothing in the Room reaches your machine or the network. Each is bounded in time and output, counted in Activity, and what it prints reaches the model marked untrusted. Only where Windows Setup installed its image, on x86_64: **[the trust boundary](docs/arch/trust-boundary.md)**. |
 | **Browser** | A real headless Chromium the agent drives, in a cell of its own, that reaches only the sites you approve, through the broker. You watch it in the app, and can stop it, or take it over and hand it back. Off until you set it up. |
 | **Local API** | A Unix-socket JSON API with a generated JSON Schema, for your own clients and integrations: **[docs/local-api.md](docs/local-api.md)**. |
 | **App** | A TypeScript UI, served on loopback by `hatchling-host`: chat with the agent and follow its status. Opened on its own, it runs a scripted preview. |
 
-**On a default install** you get chat, memory, goals, scheduled work, the feed, ideas and subagents, with your approvals. The web, search, the browser, skills, builders and coding harnesses are built and need setting up. Hatchling can't yet read files you attach, give you files to download, or use accounts such as email: [the scorecard](docs/scorecard.md) says what's been proven on a fresh install.
+**On a default install** you get chat, memory, goals, scheduled work, the feed, ideas and subagents, with your approvals, and, where Windows Setup installed its image, the agent's own computer. The web, search, the browser, skills, builders and coding harnesses are built and need setting up. Hatchling can't yet read files you attach, give you files to download, or use accounts such as email: [the scorecard](docs/scorecard.md) says what's been proven on a fresh install.
 
 **Platforms:** Linux (kernel 5.11+, unprivileged user namespaces). On Windows, use WSL2 — you get the Hyper-V boundary underneath the cells. macOS: the isolation layer is a platform-neutral trait, but there is no macOS backend yet.
 
@@ -90,10 +91,13 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
      every reply    │ empty network · read-only view             │
      passes the     │                                            │
      output gate    │ agent loop · skills · harness CLIs         │
+                    │                                            │
+                    │ the Room: its own computer, a cell with    │
+                    │ its files on an encrypted disk             │
                     └────────────────────────────────────────────┘
 ```
 
-The **broker** is the trusted side, with the vault, the proxy, the schedules and the API, and it never executes untrusted code. Everything the model drives runs in a **cell**. Run as root, the trusted side is four processes, each under its own user, so a bug in a busy part of the broker can't reach your keys ([WO-017](docs/workorders/workorder-017-privilege-separate-the-trusted-side.md)): the vault keeper (`hatchling-keeper`) holds the master key; the egress authority (`hatchling-egress`) alone reads the credentials of the requests it makes; the spawner, root, starts every cell and holds each one to its own policy; and the broker itself drops to `hatchling-broker` once its start is done. Without root they're processes of your user. Either way the broker then confines its own file access with Landlock, so a compromised broker can't read the rest of your files. Where each piece lives: **[module map](docs/arch/module-map.md)** · **[protocol](docs/arch/protocol.md)** · **[session protocol](docs/session-protocol.md)**.
+The **broker** is the trusted side, with the vault, the proxy, the schedules and the API, and it never executes untrusted code. Everything the model drives runs in a **cell**, the agent's own computer, the **Room**, among them: a cell the spawner starts from a verified image, which keeps the agent's files on an encrypted disk and is reached only through the broker. Run as root, the trusted side is four processes, each under its own user, so a bug in a busy part of the broker can't reach your keys ([WO-017](docs/workorders/workorder-017-privilege-separate-the-trusted-side.md)): the vault keeper (`hatchling-keeper`) holds the master key; the egress authority (`hatchling-egress`) alone reads the credentials of the requests it makes; the spawner, root, starts every cell and holds each one to its own policy; and the broker itself drops to `hatchling-broker` once its start is done. Without root they're processes of your user. Either way the broker then confines its own file access with Landlock, so a compromised broker can't read the rest of your files. Where each piece lives: **[module map](docs/arch/module-map.md)** · **[protocol](docs/arch/protocol.md)** · **[session protocol](docs/session-protocol.md)**.
 
 ## Quickstart
 
