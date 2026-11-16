@@ -525,16 +525,22 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
     let inbox = mount.join("inbox");
     let workspace = mount.join("workspace");
     let attachment = workspace.join("inbox");
-    for directory in [&inbox, &workspace, &attachment] {
+    // The inbox is root's, and the Room's user may read it (WO-041).
+    for (directory, mode) in [(&inbox, 0o755), (&workspace, 0o700), (&attachment, 0o700)] {
         let meta = std::fs::symlink_metadata(directory)?;
         assert!(meta.is_dir(), "room layout lacks {}", directory.display());
-        assert_eq!((meta.uid(), meta.mode() & 0o777), (0, 0o700));
+        assert_eq!((meta.uid(), meta.mode() & 0o777), (0, mode));
     }
 
     let canary = workspace.join("canary");
     std::fs::write(&canary, b"existing work")?;
+    // An inbox made before the Room read it is made readable as it opens.
+    std::fs::set_permissions(&inbox, std::fs::Permissions::from_mode(0o700))?;
     run(RoomDiskOp::Open)?;
     assert_eq!(std::fs::read(&canary)?, b"existing work");
+    assert_eq!(std::fs::metadata(&inbox)?.mode() & 0o777, 0o755);
+
+    check_inbox_put(&spawner.0, &place)?;
 
     let outside = place.dir.join("outside");
     std::fs::create_dir(&outside)?;
@@ -547,6 +553,15 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
     assert!(hatchling_sys::is_mount_point(&mount)?);
     assert_eq!(std::fs::read_link(&attachment)?, outside);
     assert_eq!(std::fs::read(&outside_canary)?, b"outside");
+    // A file is put only through the volume's own inbox: never through
+    // the name in the workspace, whatever the Room has made of it.
+    let name = spawner.0.room_inbox_put("beside", b"through the volume")?;
+    assert_eq!(std::fs::read(inbox.join(&name))?, b"through the volume");
+    assert_eq!(
+        std::fs::read_dir(&outside)?.count(),
+        1,
+        "put through the link"
+    );
     std::fs::remove_file(&attachment)?;
     run(RoomDiskOp::Open)?;
     assert!(std::fs::symlink_metadata(&attachment)?.is_dir());
@@ -572,6 +587,144 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
         RoomDiskState::Closed
     );
     assert_eq!(std::fs::read(&outside_canary)?, b"outside");
+    // A disk that isn't open takes no file.
+    let refused = spawner.0.room_inbox_put("closed", b"x").unwrap_err();
+    assert!(refused.contains("isn't mapped"), "{refused}");
+    Ok(())
+}
+
+/// A file put in the inbox, with no Room to hold the disk, is root's,
+/// read-only, numbered, whole, and in the inbox alone. A link planted
+/// where it is written is taken away, not written through.
+fn check_inbox_put(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    let inbox = place.disk.mount_point().join("inbox");
+    let first = spawner.room_inbox_put("notes.txt", b"from the owner")?;
+    assert_eq!(first, "0001-notes.txt");
+    let put = inbox.join(&first);
+    let meta = std::fs::symlink_metadata(&put)?;
+    assert!(meta.is_file());
+    assert_eq!(
+        (meta.uid(), meta.gid(), meta.mode() & 0o7777),
+        (0, 0, 0o444)
+    );
+    assert_eq!(std::fs::read(&put)?, b"from the owner");
+
+    // A link planted where the inbox keeps its numbers isn't written
+    // through: root refuses the put, and spends no number.
+    let outside = place.dir.join("planted-target");
+    std::fs::write(&outside, b"untouched")?;
+    let planted = inbox.join(".numbered.new");
+    std::os::unix::fs::symlink(&outside, &planted)?;
+    assert!(spawner.room_inbox_put("notes.txt", b"planted").is_err());
+    assert_eq!(std::fs::read(&outside)?, b"untouched");
+    std::fs::remove_file(&planted)?;
+    let second = spawner.room_inbox_put("notes.txt", b"second")?;
+    assert_eq!(second, "0002-notes.txt");
+    assert_eq!(std::fs::read(inbox.join(&second))?, b"second");
+    // The number kept is root's, and a number is never given twice.
+    let numbered = std::fs::symlink_metadata(inbox.join(".numbered"))?;
+    assert_eq!((numbered.uid(), numbered.is_file()), (0, true));
+    std::fs::remove_file(inbox.join(&second))?;
+    let third = spawner.room_inbox_put("notes.txt", b"third")?;
+    assert_eq!(third, "0003-notes.txt");
+    let mut names: Vec<String> = std::fs::read_dir(&inbox)?
+        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<_, std::io::Error>>()?;
+    names.sort();
+    assert_eq!(
+        names,
+        [".numbered", &first, &third],
+        "the put left something behind"
+    );
+
+    for stem in ["../escape", ".hidden", "a/b"] {
+        let refused = put_refused(spawner, stem)?;
+        assert!(refused.contains("isn't a name"), "{refused}");
+    }
+    assert!(!place.disk.mount_point().join("escape").exists());
+
+    // A put takes the disk's claim, as an operation does: none is put
+    // while another process holds it.
+    let parent = place
+        .disk
+        .dir()
+        .parent()
+        .ok_or("the room directory has no parent")?;
+    let claim = hatchling_sys::claim_dir(parent).ok_or("the disk's claim was taken")?;
+    let refused = put_refused(spawner, "claimed");
+    drop(claim);
+    let refused = refused?;
+    assert!(refused.contains("in use by another process"), "{refused}");
+
+    // An inbox that isn't root's is refused, and nothing is put in it.
+    std::os::unix::fs::chown(&inbox, Some(65_534), None)?;
+    let refused = put_refused(spawner, "theirs");
+    std::os::unix::fs::chown(&inbox, Some(0), None)?;
+    let refused = refused?;
+    assert!(refused.contains("verify room inbox ownership"), "{refused}");
+
+    // A mount over the inbox isn't crossed into.
+    let mounted = Command::new("mount")
+        .args(["-t", "tmpfs", "-o", "size=1m,mode=0755", "tmpfs"])
+        .arg(&inbox)
+        .status()?;
+    assert!(mounted.success(), "the test's tmpfs wasn't mounted");
+    let refused = put_refused(spawner, "crossed");
+    let crossed = std::fs::read_dir(&inbox)?.count();
+    let unmounted = Command::new("umount").arg(&inbox).status()?;
+    assert!(unmounted.success(), "the test's tmpfs wasn't unmounted");
+    let refused = refused?;
+    assert!(refused.contains("open the room inbox"), "{refused}");
+    assert_eq!(crossed, 0, "a put crossed into a mount over the inbox");
+    let names = std::fs::read_dir(&inbox)?.count();
+    assert_eq!(names, 3, "the inbox under the mount changed");
+    Ok(())
+}
+
+/// Why a put of a file for `stem` was refused: it must be.
+fn put_refused(spawner: &Spawner, stem: &str) -> Result<String, Failed> {
+    Ok(spawner
+        .room_inbox_put(stem, b"x")
+        .err()
+        .ok_or_else(|| format!("a file for {stem:?} was put"))?)
+}
+
+/// A file put in the inbox while a Room holds the disk is put by its
+/// session, and the Room's user reads it at `/workspace/inbox`, but can
+/// change none of it: not write, remove, rename or chmod it, nor put a
+/// file beside it, as a job or through the supervisor. The Room goes on.
+fn check_room_inbox(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    use hatchling_broker::spawner::RoomChange;
+    let name = spawner.room_inbox_put("held.txt", b"from the owner")?;
+    let inside = format!("/workspace/inbox/{name}");
+    let held = foreground(spawner, &["held", &inside])?;
+    let (_, said, _) = kept(spawner, &held, Stream::Stderr)?;
+    assert_eq!(exit_code(&held)?, 0, "{}", String::from_utf8_lossy(&said));
+    assert_eq!(kept(spawner, &held, Stream::Stdout)?.1, b"from the owner");
+    assert_eq!(spawner.room_page(&inside, 1, 1)?.bytes, b"from the owner");
+    let planted = RoomChange::Write {
+        path: String::from("/workspace/inbox/planted"),
+        bytes: b"x".to_vec(),
+        replace: false,
+    };
+    assert!(
+        spawner.room_change(&planted).is_err(),
+        "the Room wrote in its inbox"
+    );
+    let over = RoomChange::Write {
+        path: inside,
+        bytes: b"x".to_vec(),
+        replace: true,
+    };
+    assert!(
+        spawner.room_change(&over).is_err(),
+        "the Room replaced a put file"
+    );
+    let put = place.disk.mount_point().join("inbox").join(&name);
+    assert_eq!(std::fs::read(&put)?, b"from the owner");
+    assert!(!place.disk.mount_point().join("inbox/planted").exists());
+    let same = foreground(spawner, &["kept"])?;
+    assert_eq!(exit_code(&same)?, 0, "a put ended the Room");
     Ok(())
 }
 
@@ -1219,7 +1372,7 @@ fn check_installed_room_mount(
         "{refused}"
     );
     assert_eq!(mapper_names()?, before, "refusal left an image mapper");
-    std::fs::set_permissions(inbox, std::fs::Permissions::from_mode(0o700))?;
+    std::fs::set_permissions(inbox, std::fs::Permissions::from_mode(0o755))?;
     check_room_cgroup(&place, &spawner.0, parent.path())?;
     assert_eq!(mapper_names()?, before, "success left an image mapper");
     assert_eq!(std::fs::read(&canary)?, b"kept in the encrypted room");
@@ -1372,6 +1525,7 @@ fn check_room_foreground(
     check_room_pages(spawner)?;
     check_room_search(spawner)?;
     check_room_change(spawner)?;
+    check_room_inbox(spawner, place)?;
 
     // Closing the disk ends the Room first: nothing of it is left, and
     // the next job starts another, with scratch of its own. A page starts

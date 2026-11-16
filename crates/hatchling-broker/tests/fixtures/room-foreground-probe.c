@@ -114,6 +114,33 @@ static int input(void)
     }
 }
 
+/* A file put in the inbox: the job reads it, and can change none of it.
+ * It can't write it, remove it, rename it or change its mode, nor make a
+ * file beside it. The read-only mount and root's modes each refuse the
+ * same changes; the modes are proved alone by the inbox's own tests.
+ * What it read is written back. */
+static int held(const char *path)
+{
+    char bytes[4096];
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return 30;
+    ssize_t count = read(fd, bytes, sizeof(bytes));
+    if (close(fd) < 0 || count < 0)
+        return 31;
+    if (open(path, O_WRONLY) != -1)
+        return 32;
+    if (unlink(path) != -1)
+        return 33;
+    if (rename(path, "/workspace/inbox/renamed") != -1)
+        return 34;
+    if (chmod(path, 0777) != -1)
+        return 35;
+    if (!store("/workspace/inbox/planted", "x"))
+        return 37;
+    return send_bytes(STDOUT_FILENO, bytes, (size_t)count) ? 4 : 0;
+}
+
 /* The size of a file, in decimal. */
 static int size_of(const char *path)
 {
@@ -131,6 +158,8 @@ int main(int argc, char **argv)
         return seed(argv[2]);
     if (argc == 3 && !strcmp(argv[1], "size"))
         return size_of(argv[2]);
+    if (argc == 3 && !strcmp(argv[1], "held"))
+        return held(argv[2]);
     if (argc != 2)
         return 13;
     if (!strcmp(argv[1], "resume"))

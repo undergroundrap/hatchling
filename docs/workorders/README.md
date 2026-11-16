@@ -75,7 +75,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [038](workorder-038-know-what-is-installed.md) | Know what is installed: a version command, store modes checked, the Room's image on Linux | yes | QUEUED |
 | [039](workorder-039-the-spawner-in-a-crate-of-its-own.md) | The spawner in a crate of its own, design first | yes | QUEUED |
 | [040](workorder-040-room-disk-capacity.md) | The room disk's capacity, reserved and grown | yes | QUEUED |
-| [041](workorder-041-files-between-you-and-the-agents-computer.md) | Files between you and the agent's computer: attach one in, hand one out | yes | QUEUED |
+| [041](workorder-041-files-between-you-and-the-agents-computer.md) | Files between you and the agent's computer: attach one in, hand one out | yes | IN-PROGRESS |
 | [042](workorder-042-keep-the-docs-and-the-queue-honest-in-ci.md) | Keep the docs and the queue honest in CI |  | DONE |
 
 ## Candidates
