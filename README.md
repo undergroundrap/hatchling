@@ -353,7 +353,7 @@ From here: **[the local API](docs/local-api.md)** for every action and event, an
 
 ## Held to a high bar
 
-- Over 4,400 tests (3,964 Rust, 503 frontend, as the gate counted them on 2026-11-16), including real-kernel cell tests that fail rather than skip when isolation is unavailable (`HATCHLING_REQUIRE_CELL=1`).
+- Thousands of tests, in Rust and in the app, including real-kernel cell tests that fail rather than skip when isolation is unavailable (`HATCHLING_REQUIRE_CELL=1`).
 - Mutation testing with a kill floor of 1.0: every mutant of changed code is killed by a test or proven equivalent in writing.
 - `unsafe` lives in exactly one crate (`hatchling-sys`), each block justified; every other crate denies it.
 - Strict clippy: pedantic and nursery lints, with `unwrap`, `expect`, `panic`, indexing and `as` casts denied in production code. Plus `cargo deny`, a written review of every dependency ([docs/dependency-review.md](docs/dependency-review.md)), and CI on the pinned toolchain and the 1.85 MSRV.

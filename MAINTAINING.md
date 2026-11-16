@@ -50,7 +50,12 @@ expectations. Labels describe the work; several may apply together.
    `CLOSED` status and a matching queue row. A dropped WO keeps its reason.
 
 Close a milestone when all of its included work is complete and its
-release is out. A completed
+release is out.
+
+CI holds the queue to this: `hatchling-dev audit` checks the queue against
+the work orders' files, and the `tracking` workflow checks each work
+order's issue and milestone, and that a pull request changing `crates/`
+names its issue or is labelled `trivial` (WO-042). A completed
 security subset alone does not finish a release's other commitments.
 
 ## Review and merge

@@ -2,7 +2,7 @@
 
 **Status:** DONE
 **Area:** `crates/hatchling-core` (the search and fetch ops, `ui`), `crates/hatchling-broker` (a search provider at egress, site grants, the approvals board), `crates/hatchling-egress` (per-origin grants), `crates/hatchling-agent` (the tools), `frontend/` (the site prompt)
-**Issue:** none yet
+**Issue:** none
 **Trust boundary:** yes
 
 ## Problem

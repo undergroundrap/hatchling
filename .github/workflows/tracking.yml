@@ -1,0 +1,52 @@
+name: tracking
+
+# What only GitHub knows, held to the repository (WO-042): each work
+# order's tracking issue is open or closed as the work order is, and on a
+# milestone while it's open; a pull request that changes crates/ names the
+# issue it closes or is part of, or is labelled `trivial`. What the
+# repository says of itself (versions, the queue) is `hatchling-dev audit`,
+# in the gate.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+  push:
+    branches: [main]
+  schedule:
+    # Issues close and move without a push: look once a day too.
+    - cron: "23 6 * * *"
+
+# Read-only: it reads the repository, its issues and its pull requests.
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  tracking:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: The tracking script's own tests
+        run: python3 -m unittest discover -s scripts -p 'test_tracking.py' -v
+
+      - name: Work orders and their issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # On a pull request, an issue it closes counts as closed: the pull
+        # request that closes a work order can't close its issue first.
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            python3 scripts/tracking.py issues "$GITHUB_EVENT_PATH"
+          else
+            python3 scripts/tracking.py issues
+          fi
+
+      - name: The pull request names what it belongs to
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/tracking.py pr "$GITHUB_EVENT_PATH"

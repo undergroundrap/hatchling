@@ -2,7 +2,7 @@
 
 **Status:** DONE (2026-10-22)
 **Area:** `crates/hatchling-browser` (new: the controller that runs in the cell), `crates/hatchling-broker` (the browser session, the proxy, site grants, the UI stream), `crates/hatchling-isolation` (the browser cell's profile), `crates/hatchling-agent` (the tools), `crates/hatchling-core` (the ops; `ui` already has the browser surfaces), `frontend/` (the live browser view)
-**Issue:** none yet
+**Issue:** none
 **Trust boundary:** yes
 
 ## Problem
