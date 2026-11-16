@@ -10,6 +10,8 @@ import { trailLine } from './activity.js';
 export type Attachment = Extract<UiEventBody, {
     readonly kind: 'attachment';
 }>;
+import type { FileIn } from './inbox.js';
+import { SECRET_SUFFIX, isInboxName, sizeWords } from '../../session/inbox.js';
 import { clockTime, inertLinks } from './text.js';
 /** The main chat's id: always present, whatever the history holds. */
 export const MAIN_CHAT = 'main';
@@ -40,6 +42,8 @@ export const KEEP_ASK = 'The agent ran out of steps before it finished. Keep wha
 export const KEEP = 'Keep for later';
 /** How the offer to keep is named, after the answer it is under. */
 const KEEP_SUFFIX = ':keep';
+/** What the owner is told of a file given that holds a secret Hatchling keeps. */
+export const HOLDS_SECRET = 'This file holds a secret Hatchling keeps, or it couldn’t be checked. Hatchling reads what’s in it, and with a hosted model, so does the model’s provider. Removing it from the agent’s inbox stops later reads; it can’t undo one already made.';
 /** A run's record, as the line under the answer it wrote. */
 interface Trail {
     readonly threadId: string;
@@ -85,6 +89,22 @@ export class ChatBook {
     attach(entry: Attachment, at: string): void {
         this.#updated.set(appChat(entry.chat_id), at);
         this.#messages.set(entry.message_id, { id: entry.message_id, chatId: appChat(entry.chat_id), time: clockTime(at), source: null, reaction: null, kind: 'attachment', role: entry.author === 'user' ? 'user' : 'agent', text: entry.text, artifactId: entry.artifact_id });
+    }
+    /**
+     * A file the owner gave the agent, as the broker put it (WO-041): a notice
+     * in the app's words, by the inbox's name for it, which is plain ASCII.
+     * The owner's own name for it is never in the text: the chat shows it
+     * beside the notice, inert. One holding a secret Hatchling keeps, or that
+     * couldn't be checked, is followed by a warning.
+     */
+    fileIn(entry: FileIn, at: string): void {
+        const chatId = appChat(entry.chat_id);
+        const time = clockTime(at);
+        this.#updated.set(chatId, at);
+        const where = isInboxName(entry.placed_as) ? ` It was put in its inbox as ${entry.placed_as}, ${sizeWords(entry.bytes)}.` : '';
+        this.#messages.set(entry.message_id, { id: entry.message_id, chatId, time, source: null, reaction: null, kind: 'notice', role: 'agent', text: `You gave Hatchling a file.${where}`, evidenceId: null });
+        if (entry.holds_secret)
+            this.#messages.set(`${entry.message_id}${SECRET_SUFFIX}`, { id: `${entry.message_id}${SECRET_SUFFIX}`, chatId, time, source: null, reaction: null, kind: 'error', role: 'agent', text: HOLDS_SECRET, evidenceId: null });
     }
     /** Whether a chat exists, so an action never targets one that does not. */
     has(chatId: string): boolean {

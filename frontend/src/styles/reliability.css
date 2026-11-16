@@ -45,6 +45,8 @@
 .outbox-notice > span, .composer-hint > span, .file-import-status > span:not(.status-glyph) { min-width: 0; flex: 1; overflow-wrap: anywhere; }
 .outbox-notice > svg, .composer-hint > svg { flex-shrink: 0; }
 .outbox-notice .button, .composer-hint .button, .file-import-status .button { flex: 0 0 auto; font-size: inherit; padding: 4px 6px; min-height: 30px; }
+.file-import-status > .given-file-count { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+.given-file-detail, .given-file-inbox-name { overflow-wrap: anywhere; }
 .file-import-status { background: var(--surface); border-radius: 12px; }
 .file-import-status.failed { color: var(--danger); }
 .file-import-status .icon-button { flex-shrink: 0; width: 28px; height: 28px; }

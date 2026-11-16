@@ -12,6 +12,7 @@ import { browserMessageCard } from '../browser/session.js';
 import { messageActions, nativeAttachment } from './message-actions.js';
 import { floatingAgent } from '../context/presence.js';
 import { bindIconMotion } from '../../components/motion.js';
+import { fileSendRows, giveFile, givenFileDetail, offersFiles } from './file-in.js';
 import type { AppContext } from '../../app/context.js';
 import type { ArtifactFormat, DeepReadonly, Message } from '../../protocol/models.js';
 import { h } from '../../components/dom.js';
@@ -110,7 +111,7 @@ function renderMessage(ctx: AppContext, message: DeepReadonly<Message>): HTMLEle
     else {
         const evidenceId = message.evidenceId;
         const name = message.kind === 'device' ? 'device' : message.kind === 'error' ? 'warning' : 'run';
-        root.append(h('div', { class: `stream-event ${message.kind}` }, icon(name, 16), h('div', {}, h('p', {}, message.text), evidenceId ? button('View evidence', () => ctx.openThread(evidenceId), { variant: 'link' }) : null)));
+        root.append(h('div', { class: `stream-event ${message.kind}` }, icon(name, 16), h('div', {}, h('p', {}, message.text), givenFileDetail(ctx, message), evidenceId ? button('View evidence', () => ctx.openThread(evidenceId), { variant: 'link' }) : null)));
     }
     if (message.reaction) {
         const reaction = button(message.reaction, () => { void ctx.run({ type: 'message.react', id: message.id, reaction: '' }, true); }, { className: 'reaction-chip' });
@@ -184,13 +185,12 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
             void send();
         }
     });
-    const attach = menu('Add attachments or voice', [
+    // Live, a file goes to the agent's own computer, in the main chat alone.
+    const attach = ctx.state.mode === 'live' ? iconButton('plus', 'Give Hatchling a file', () => giveFile(ctx), 'give-file-button') : menu('Add attachments or voice', [
         { label: 'Add a photo', icon: 'image', action: () => chooseFile(ctx, true) },
         { label: 'Attach a file', icon: 'paperclip', action: () => chooseFile(ctx, false) },
-        ...(ctx.state.mode === 'live' ? [] : [
-            { label: 'Voice note preview', icon: 'audio' as const, action: () => openVoice(ctx, 'note') },
-            { label: 'Live voice call preview', icon: 'phone' as const, action: () => openVoice(ctx, 'call') },
-        ]),
+        { label: 'Voice note preview', icon: 'audio', action: () => openVoice(ctx, 'note') },
+        { label: 'Live voice call preview', icon: 'phone', action: () => openVoice(ctx, 'call') },
     ]);
     const summary = attach.querySelector('summary');
     summary?.replaceChildren(icon('plus', 22));
@@ -204,8 +204,8 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         sendButton.title = ctx.delivery.blockedReason(ctx.ui.chatId) || (ctx.delivery.connection.kind !== 'ready' ? 'Queue message until the connection returns' : 'Send message');
         microphone.hidden = false;
     };
-    // A real install can't take a file yet, so it doesn't offer to.
-    form.append(...(ctx.state.mode === 'live' ? [] : [attach]), input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton);
+    // A real install takes a file in the chats that take one, and has no voice yet.
+    form.append(...(offersFiles(ctx) ? [attach] : []), input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton);
     updateComposer();
     requestAnimationFrame(() => {
         if (input.isConnected && input.value) {
@@ -229,6 +229,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         const failed = item.phase === 'failed';
         area.append(h('div', { class: `file-import-status ${failed ? 'failed' : ''}`, role: 'status' }, h('span', { class: failed ? 'status-glyph' : 'status-glyph is-spinning' }, icon(failed ? 'warning' : 'refresh', 14)), h('span', {}, failed ? `${item.file.name}: ${item.error}` : `Preparing ${item.file.name}…`), failed ? button('Retry file', () => { void importLocalFile(ctx, item.id); }, { variant: 'link', id: `retry-import-${item.id}` }) : null, iconButton('close', `Remove ${item.file.name}`, () => { ctx.ui.fileImports.delete(item.id); ctx.render(); })));
     }
+    area.append(...fileSendRows(ctx));
     if (ctx.state.turn !== 'idle') {
         // Live, the broker says what the run is doing: the chat says that, and how long it has been.
         const running = ctx.state.mode === 'live' && ctx.state.turn === 'working' ? ctx.state.threads.find((thread) => thread.state === 'running' && thread.chatId === ctx.ui.chatId) : undefined;
