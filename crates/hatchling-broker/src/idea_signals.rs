@@ -143,6 +143,7 @@ mod tests {
             needs: Vec::new(),
             source,
             run: String::from("run-1"),
+            run_said: None,
         }
     }
 

@@ -31,7 +31,12 @@
 //! The owner may keep for later what they asked in a chat whose run ran
 //! out of steps ([`keep`]): a card in their own words, offered by the
 //! hub while that conversation is open and kept only by their press.
-//! No model writes it, and the agent has no op that keeps one.
+//! No model writes it, and the agent has no op that keeps one. The card
+//! also holds the run's own last answer, where it said it stopped, as
+//! the agent wrote it (`run_said`): a claim the broker keeps apart from
+//! the owner's words and never checks. Nothing gives it to a run: a run
+//! started from the card is given the owner's words alone, and finds
+//! for itself where things stand.
 //!
 //! A suggestion the owner started is answered when the run in the
 //! conversation they started for it answers them, with steps to spare
@@ -446,6 +451,7 @@ fn suggest_from(config: &Config, ground: &Ground<'_>, op: &SuggestOp) -> Suggest
         needs: needs.clone(),
         source: Some(source),
         run: ground.run.to_owned(),
+        run_said: None,
     };
     page.insert(0, suggested.clone());
     trim(&mut page);
@@ -531,7 +537,7 @@ pub(crate) fn handle_at(
         // is still gone: it is answered as it stands.
         if kept.state == SuggestionState::SourceGone && still_gone(kept, open().as_ref()) {
             return SuggestionResult::Changed {
-                suggestion: kept.clone(),
+                suggestion: Box::new(kept.clone()),
             };
         }
         kept.suggested_at = now.to_string();
@@ -541,7 +547,9 @@ pub(crate) fn handle_at(
     match write(&path, &page) {
         Ok(()) => {
             crate::idea_signals::record(&path, &suggestion, event, now);
-            SuggestionResult::Changed { suggestion }
+            SuggestionResult::Changed {
+                suggestion: Box::new(suggestion),
+            }
         }
         Err(error) => {
             tracing::warn!(%error, "the Ideas page couldn't be written");
@@ -668,7 +676,7 @@ fn keep_at(
     let Some(hub) = hub else {
         return SuggestionResult::NotFound;
     };
-    let Some(words) = hub.offered(run).filter(|words| !words.is_empty()) else {
+    let Some((words, run_said)) = hub.offer_of(run).filter(|(words, _)| !words.is_empty()) else {
         return SuggestionResult::NotFound;
     };
     let path = config.scheduler.ideas_log();
@@ -695,6 +703,7 @@ fn keep_at(
         needs: Vec::new(),
         source: Some(SuggestionSource::Chat),
         run: run.to_owned(),
+        run_said: Some(run_said).filter(|said| !said.is_empty()),
     };
     page.insert(0, suggestion.clone());
     trim(&mut page);
@@ -703,7 +712,9 @@ fn keep_at(
             hub.withdraw(run);
             crate::idea_signals::record(&path, &suggestion, Event::Kept, now);
             tracing::info!("the owner kept an unfinished chat for later");
-            SuggestionResult::Changed { suggestion }
+            SuggestionResult::Changed {
+                suggestion: Box::new(suggestion),
+            }
         }
         Err(error) => {
             tracing::warn!(%error, "the Ideas page couldn't be written");
@@ -1230,7 +1241,8 @@ pub(crate) mod tests {
     /// why, from that chat, waiting at the top of the page, and the
     /// offer is gone. Nothing is kept that isn't offered, or that is
     /// empty, or with no chat or scheduled work off. The card has no
-    /// goal to lose.
+    /// goal to lose. It holds (v31) where the run said it stopped, apart
+    /// from the owner's words; a run that said nothing leaves none.
     #[test]
     fn the_owner_keeps_an_unfinished_ask_as_a_card_of_their_own_words() {
         let dir = scratch("keep");
@@ -1242,9 +1254,10 @@ pub(crate) mod tests {
         hub.offer(
             String::from("run-1"),
             String::from("make three tools and run them"),
+            String::from("Two tools made; the third is left."),
             0,
         );
-        hub.offer(String::from("run-2"), String::new(), 0);
+        hub.offer(String::from("run-2"), String::new(), String::new(), 0);
         assert_eq!(
             keep_at(&chat, None, "run-1", now),
             SuggestionResult::NotFound,
@@ -1295,6 +1308,10 @@ pub(crate) mod tests {
             )
         );
         assert!(kept.needs.is_empty());
+        assert_eq!(
+            kept.run_said.as_deref(),
+            Some("Two tools made; the third is left.")
+        );
         assert_eq!(kept.suggested_at, now.to_string());
         assert!(
             kept.suggestion_id.starts_with(ID_PREFIX),
@@ -1309,13 +1326,22 @@ pub(crate) mod tests {
             keep_at(&chat, Some(&hub), "run-1", now),
             SuggestionResult::NotFound
         );
+        // A run that said nothing as it stopped leaves no line for it.
+        hub.offer(
+            String::from("run-3"),
+            String::from("go on"),
+            String::new(),
+            0,
+        );
+        let quiet = kept_card(keep_at(&chat, Some(&hub), "run-3", now)).unwrap();
+        assert_eq!((quiet.summary.as_str(), quiet.run_said), ("go on", None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The card a keep kept; none when it kept nothing.
     fn kept_card(result: SuggestionResult) -> Option<Suggestion> {
         match result {
-            SuggestionResult::Changed { suggestion } => Some(suggestion),
+            SuggestionResult::Changed { suggestion } => Some(*suggestion),
             SuggestionResult::Listed { .. }
             | SuggestionResult::NotFound
             | SuggestionResult::Off
@@ -1333,7 +1359,12 @@ pub(crate) mod tests {
         let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
         let now = hatchling_scheduler::Timestamp::now();
         let goal_card = waiting(&dir, "A run plan");
-        hub.offer(String::from("run-1"), String::from("make the tools"), 0);
+        hub.offer(
+            String::from("run-1"),
+            String::from("make the tools"),
+            String::new(),
+            0,
+        );
         let kept = kept_card(keep_at(&chat, Some(&hub), "run-1", now)).unwrap();
         let state = |page: &SuggestionResult, id: &str| match page {
             SuggestionResult::Listed { suggestions } => suggestions
@@ -1390,10 +1421,16 @@ pub(crate) mod tests {
                 needs: Vec::new(),
                 source: None,
                 run: String::from("run-0"),
+                run_said: None,
             })
             .collect();
         write(&path, &full).unwrap();
-        hub.offer(String::from("run-1"), String::from("keep me"), 0);
+        hub.offer(
+            String::from("run-1"),
+            String::from("keep me"),
+            String::new(),
+            0,
+        );
         let kept = kept_card(keep_at(&chat, Some(&hub), "run-1", now)).unwrap();
         let page = listed(&chat);
         assert_eq!(page.len(), MAX_KEPT);
@@ -1405,7 +1442,12 @@ pub(crate) mod tests {
                 > MAX_WAITING,
             "not held to the agent's cap"
         );
-        hub.offer(String::from("run-2"), String::from("keep me too"), 0);
+        hub.offer(
+            String::from("run-2"),
+            String::from("keep me too"),
+            String::new(),
+            0,
+        );
         std::fs::write(&path, "not a page").unwrap();
         assert_eq!(
             keep_at(&chat, Some(&hub), "run-2", now),
@@ -2437,7 +2479,12 @@ pub(crate) mod tests {
         let _ = handle_at(&chat, &SuggestionOp::List, at(STALE_SECS + 2), &|| {
             Some(ids(&[]))
         });
-        hub.offer(String::from("run-9"), String::from("finish the list"), 0);
+        hub.offer(
+            String::from("run-9"),
+            String::from("finish the list"),
+            String::new(),
+            0,
+        );
         let _ = keep_at(&chat, Some(&hub), "run-9", at(STALE_SECS + 3));
         let _ = act(
             SuggestionOp::Start { id: id(KEPT_TITLE) },

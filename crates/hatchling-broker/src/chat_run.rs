@@ -306,10 +306,18 @@ pub struct Chat<R, K = ()> {
     offer: Option<Offer>,
 }
 
-/// What the owner may keep for later from a run that ran out of steps:
-/// the run, by its cell id, what they said in the exchange, and the
-/// conversation it was said in.
-pub type Offer = (String, String, u64);
+/// What the owner may keep for later from a run that ran out of steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Offer {
+    /// The run, by its cell id.
+    pub run: String,
+    /// What the owner said in the exchange.
+    pub said: String,
+    /// The run's answer: where it said it stopped, in its own words.
+    pub answer: String,
+    /// The conversation it was said in.
+    pub conversation: u64,
+}
 
 impl<R: Run> Chat<R> {
     /// A chat whose runs hold `grants`, keeping the conversation in memory
@@ -363,12 +371,16 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// Notes how a run that answered the owner, shown to them in the
     /// conversation `sent_in` while it was open, ended: with steps to
     /// spare that conversation was answered; out of steps, what they
-    /// said, `user`, is offered to keep, from the run in `cell`.
-    fn ended(&mut self, spent: bool, cell: Option<String>, user: &str, sent_in: u64) {
+    /// said, `user`, is offered to keep, from the run in `cell`, with its
+    /// `answer`.
+    fn ended(&mut self, spent: bool, cell: Option<String>, user: &str, answer: &str, sent_in: u64) {
         self.answered = (!spent).then_some(sent_in);
-        self.offer = cell
-            .filter(|_| spent)
-            .map(|run| (run, user.to_owned(), sent_in));
+        self.offer = cell.filter(|_| spent).map(|run| Offer {
+            run,
+            said: user.to_owned(),
+            answer: answer.to_owned(),
+            conversation: sent_in,
+        });
     }
 
     /// What the owner asked in a run whose answer they were shown, in
@@ -509,7 +521,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             return match delivery.deliver_answer(&local, &answer, cell.as_deref(), spent) {
                 Ok(shown) => {
                     if shown && sent_in == self.conversation {
-                        self.ended(spent, cell, &user, sent_in);
+                        self.ended(spent, cell, &user, &answer, sent_in);
                         let compacted = self.keep(user, answer);
                         if let Some(notice) = self.told.notice(compacted) {
                             if let Err(error) = delivery.deliver_notice(&local, notice) {
@@ -674,9 +686,15 @@ where
     if let Some(conversation) = chat.take_answered() {
         crate::suggestions::conversation_answered(config, hub, conversation);
     }
-    // What the owner asked may be unfinished: theirs to keep for later.
-    if let Some((run, said, conversation)) = chat.take_offer() {
-        hub.offer(run, crate::suggestions::kept_words(&said), conversation);
+    // What the owner asked may be unfinished: theirs to keep for later,
+    // with where the run said it stopped.
+    if let Some(offer) = chat.take_offer() {
+        hub.offer(
+            offer.run,
+            crate::suggestions::kept_words(&offer.said),
+            crate::suggestions::kept_words(&offer.answer),
+            offer.conversation,
+        );
     }
     step
 }
@@ -1411,7 +1429,12 @@ mod tests {
         );
         assert_eq!(
             chat.take_offer(),
-            Some((String::from("run-1"), String::from("make the tools"), 2))
+            Some(Offer {
+                run: String::from("run-1"),
+                said: String::from("make the tools"),
+                answer: String::from("this far"),
+                conversation: 2,
+            })
         );
         assert_eq!(chat.take_offer(), None, "offered once");
         assert_eq!(chat.take_answered(), None, "no answer with steps to spare");
@@ -1460,8 +1483,9 @@ mod tests {
     }
 
     /// v30: the chat's own turn hands the hub what the owner asked in a
-    /// run that ran out of steps, as a kept card would hold it; a run
-    /// with steps to spare offers nothing.
+    /// run that ran out of steps, as a kept card would hold it, and (v31)
+    /// the run's answer, held the same way; a run with steps to spare
+    /// offers nothing.
     #[test]
     fn the_chats_turn_offers_an_unfinished_ask_to_keep() {
         let dir = crate::suggestions::tests::scratch("chat-offer");
@@ -1489,11 +1513,20 @@ mod tests {
                 Step::Answered
             );
         };
-        turn(spent(Some(ran_out()), "run-7"), &long);
+        let answer = format!("  {}  ", "y".repeat(crate::suggestions::MAX_TEXT_BYTES + 9));
+        let long_answer = Spent {
+            outcome: Ok(answer.clone()),
+            ending: Some(ran_out()),
+            cell: "run-7",
+        };
+        turn(long_answer, &long);
         turn(spent(None, "run-8"), "all done");
         assert_eq!(
-            hub.offered("run-7"),
-            Some(crate::suggestions::kept_words(&long))
+            hub.offer_of("run-7"),
+            Some((
+                crate::suggestions::kept_words(&long),
+                crate::suggestions::kept_words(&answer)
+            ))
         );
         assert_eq!(hub.offered("run-8"), None);
         let _ = std::fs::remove_dir_all(&dir);

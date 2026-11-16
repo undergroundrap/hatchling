@@ -34,6 +34,10 @@ const STILL_GONE = 'Its goal is still closed, so it stays here.';
 const KEPT = 'Kept on your Ideas page. Start it from there when you’re ready.';
 const NOT_KEPT = 'It can’t be kept now: a new conversation started, or Hatchling restarted, since that run. Send it again to keep it.';
 const KEPT_SIGNAL = 'You kept this from a chat that ran out of steps. These are your own words: nothing runs unless you start it.';
+/** A kept card's note, with where its run said it stopped when it said: the agent's words, labelled as its own and unchecked. */
+function keptSignal(runSaid: string | null | undefined): string {
+    return runSaid ? `${KEPT_SIGNAL} Where the run said it stopped: “${runSaid}” Those are the agent’s words, not checked, and a run you start from this card isn’t given them.` : KEPT_SIGNAL;
+}
 /** Each state the broker keeps an idea in, as the page shows it: one the broker retired is among those set aside. */
 const STATES: Readonly<Record<Suggestion['state'], Idea['state']>> = { suggested: 'suggested', started: 'activated', answered: 'activated', dismissed: 'dismissed', stale: 'dismissed', source_gone: 'dismissed' };
 /** What the broker found of an idea, said under it: why it left For you without the owner setting it aside, or that its conversation was answered. */
@@ -75,7 +79,7 @@ export function ideaOf(suggestion: Suggestion): Idea {
         domain: area.domain,
         icon: area.icon,
         rationale: suggestion.why,
-        signal: suggestion.source?.kind === 'chat' ? KEPT_SIGNAL : `${from}${SIGNAL}`,
+        signal: suggestion.source?.kind === 'chat' ? keptSignal(suggestion.run_said) : `${from}${SIGNAL}`,
         items: [],
         state: STATES[suggestion.state],
         outcome: FOUND[suggestion.state] ?? '',

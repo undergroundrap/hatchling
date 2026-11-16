@@ -11185,6 +11185,13 @@
           "description": "The run that suggested it, as the owner's Activity names it:\nempty for one kept before runs were.",
           "type": "string"
         },
+        "run_said": {
+          "description": "v31: where the run said it stopped, of a card the owner kept from\na chat ([`SuggestionSource::Chat`]): the last answer of the run\nthat ran out of steps, as the agent wrote it, trimmed. The agent's\nclaim, never checked, and never given to a run started from the\ncard. None for any other card.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "source": {
           "anyOf": [
             {
@@ -11410,7 +11417,7 @@
             },
             "suggestion": {
               "$ref": "#/$defs/Suggestion",
-              "description": "It."
+              "description": "It, boxed (v31): a card is many times the size of any other\nanswer here. Written as the card itself."
             }
           },
           "required": [
@@ -14298,7 +14305,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 30,
+    "session_protocol": 31,
     "ui_schema_version": 4
   },
   "x-roots": {

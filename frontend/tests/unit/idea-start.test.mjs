@@ -2,7 +2,8 @@
 // conversation of its own it is given there.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { freshConversation, ideaChat, startIdea } from '../../dist/app/features/ideas/start.js';
+import { freshConversation, ideaChat, ideaText, startIdea } from '../../dist/app/features/ideas/start.js';
+import { ideaOf } from '../../dist/app/adapters/live/ideas.js';
 const chat = (id, channelId = null, archived = false) => ({ id, channelId, archived });
 test('an idea goes in the open chat, or the owner\'s own when that is a connected app\'s; never an archived one', () => {
     const chats = [chat('main'), chat('side'), chat('signal-1', 'signal'), chat('old', null, true)];
@@ -28,6 +29,12 @@ test('a started idea is given a conversation of its own, and the owner is told w
     assert.equal(await freshConversation(undefined, 'main', 'idea-3'), null);
     assert.equal(await freshConversation(port({ ok: false, message: 'never asked' }), null, 'idea-3'), null);
     assert.equal(asked.length, 2);
+});
+test('an idea puts its title and what it would do in the chat box; never where a kept chat\'s run said it stopped', () => {
+    const card = { suggestion_id: 'idea-k', title: 'Pick up where a chat stopped', summary: 'Make the tools.', why: 'You kept it.', area: 'productivity', suggested_at: '2026-11-16T08:30:00Z', state: 'suggested', source: { kind: 'chat' }, run: 'run-1', run_said: 'All three tools are done.' };
+    const idea = ideaOf(card);
+    assert.match(idea.signal, /All three tools are done/, 'the card shows it');
+    assert.equal(ideaText(idea), 'Pick up where a chat stopped: Make the tools.', 'the chat box never gets it');
 });
 test('starting an idea starts its conversation first, then puts its text in the chat box; nothing is sent', async () => {
     const app = (answer, chats = [chat('main'), chat('signal-1', 'signal')], chatId = 'signal-1') => {

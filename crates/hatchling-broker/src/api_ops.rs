@@ -3436,7 +3436,12 @@ mod tests {
                 run: String::from("run-1"),
             },
         };
-        hub.offer(String::from("run-1"), String::from("make the tools"), 0);
+        hub.offer(
+            String::from("run-1"),
+            String::from("make the tools"),
+            String::new(),
+            0,
+        );
         let outcome = |ops: &Ops<'_>, who: &Caller| {
             let mut replies = Replies::default();
             ops.handle(who, &keep, &mut replies)
