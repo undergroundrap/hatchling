@@ -26,7 +26,7 @@ The goal is a runtime a security team can approve, for one person or a whole com
 3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs) and WO-016 (`cargo install hatchling-runtime`, which also holds the crates.io names with real releases). Then seeing it work: WO-021 (the UI drives a real broker), and WO-022 (an operator API, held apart from the user's, with the command center's first screen). These come before the rest of the local-attacker work: approvals delivered to the user, and per-site prompts for the agent's web access, both need the UI.
 4. **Then what a security review asks for next:** WO-024 (a second, independent guard on every delete and signal, after WO-012's test machine was wiped by a mutant); WO-014 (running without root) and WO-017 (privilege-separating the trusted side, so a bug in the broker can't reach your keys), designed together since they share the spawner; WO-025 (a scheduled run that a crash or a failed write loses or repeats, and a result dropped while reported as parked); WO-013 (the release process: signed and reproducible binaries, an SBOM, publishing from CI); and WO-015 (root cell tests in CI).
 5. **What runs in a cell, by the operator's choice:** WO-018 (a coding CLI added by a manifest, OpenCode first) and WO-019 (tools approved, pinned and listed). Hatchling bundles neither: it makes adding one safe. These can start once the hostile-cell work is done.
-6. **0.9, its own computer** ([milestone](https://github.com/undergroundrap/hatchling/milestones)): WO-034 (the Room) and WO-035 (the agent's tools in it), then WO-042 (keep the docs and the queue honest in CI), then step 4, WO-041 (files between you and the agent's computer), then WO-036 (approvals bound to grant keys), WO-037 (say when a protection is off) and WO-038 (know what is installed). WO-039 (the spawner in a crate of its own) follows step 4, and WO-040 (the room disk's capacity) is open alongside.
+6. **0.9, its own computer** ([milestone](https://github.com/undergroundrap/hatchling/milestones)): WO-034 (the Room) and WO-035 (the agent's tools in it), then WO-042 (keep the docs and the queue honest in CI), then step 4, WO-041 (files between you and the agent's computer), and WO-043 (folders, and the chat's files), then WO-036 (approvals bound to grant keys), WO-037 (say when a protection is off) and WO-038 (know what is installed). WO-039 (the spawner in a crate of its own) follows step 4, and WO-040 (the room disk's capacity) is open alongside.
 7. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
 
 ## Queue
@@ -77,6 +77,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [040](workorder-040-room-disk-capacity.md) | The room disk's capacity, reserved and grown | yes | QUEUED |
 | [041](workorder-041-files-between-you-and-the-agents-computer.md) | Files between you and the agent's computer: attach one in, hand one out | yes | CLOSED |
 | [042](workorder-042-keep-the-docs-and-the-queue-honest-in-ci.md) | Keep the docs and the queue honest in CI |  | DONE |
+| [043](workorder-043-folders-and-the-chats-files.md) | Folders, and the chat's files: give a project back, keep it in the chat, take what you need | yes | QUEUED |
 
 ## Candidates
 
