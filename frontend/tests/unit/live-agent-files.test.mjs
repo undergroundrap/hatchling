@@ -425,3 +425,87 @@ test('a message that showed a file removed says so, even when the list can\'t be
     assert.equal(files.current().kind, 'failed');
     assert.equal(files.offered('file-a').removed, true);
 });
+test('every file downloads as one .zip, each checked as a download is, and saved once', async () => {
+    const { ALL_NAME } = await import('../../dist/app/adapters/live/agent-files.js');
+    const a = bytesOf(PART_BYTES + 5);
+    const b = bytesOf(7);
+    const { files, saved, transport } = library(keeping([{ file: wire(a, { name: 'a.bin' }), bytes: a }, { file: wire(b, { id: 'f2', name: 'a.bin', kept_at: '2026-11-17T01:00:00Z' }), bytes: b }]));
+    await settle();
+    const going = files.downloadAll();
+    assert.deepEqual([files.downloadingAll(), files.downloading('f1'), files.downloading('f9')], [{ done: 0, total: 2 }, true, true]);
+    assert.deepEqual(await files.download('f1'), { ok: false, message: 'Another file is downloading. Try again when it’s done.' });
+    assert.deepEqual(await files.downloadAll(), { ok: false, message: 'A download is under way. Try again when it’s done.' });
+    const result = await going;
+    assert.equal(result.ok, true);
+    assert.match(result.message, /^Gave your browser hatchling-library\.zip, 2 files, .*\. 2 of them can run something when opened, as Settings says of each: open them only if you trust what the agent made\.$/u);
+    assert.equal(files.downloadingAll(), null);
+    assert.deepEqual(saved.map(([, name]) => name), [ALL_NAME]);
+    assert.deepEqual(transport.actions('begin_file_out').map(action => action.id), ['f1', 'f2']);
+    // The .zip holds each file whole, by its name.
+    const zip = Buffer.from(saved[0][0]);
+    assert.equal(zip.readUInt32LE(zip.length - 22), 0x06054b50);
+    assert.equal(zip.readUInt16LE(zip.length - 12), 2);
+    assert.ok(zip.includes(Buffer.from(a)) && zip.includes(Buffer.from(b)));
+    // Two of one name are told apart, and each keeps when it was kept.
+    assert.ok(zip.includes(Buffer.from('a.bin')) && zip.includes(Buffer.from('a-2.bin')));
+    const { dosTime } = await import('../../dist/app/adapters/live/zip.js');
+    const [time, date] = dosTime('2026-11-17T01:00:00Z');
+    const second = zip.indexOf(Buffer.from('a-2.bin')) - 30;
+    assert.deepEqual([zip.readUInt16LE(second + 10), zip.readUInt16LE(second + 12)], [time, date]);
+    // Files that only show themselves say only that the agent made them.
+    const plain = library(keeping([{ file: wire(b, { name: 'b.txt' }), bytes: b }, { file: wire(b, { id: 'f2', name: 'c.txt' }), bytes: b }]));
+    await settle();
+    assert.match((await plain.files.downloadAll()).message, /The agent made them: open them only if you trust them\.$/u);
+});
+test('every file\'s download counts each file done, so the owner sees it go', async () => {
+    const a = bytesOf(3);
+    const counts = [];
+    const transport = new FakeTransport();
+    transport.respond = keeping([{ file: wire(a), bytes: a }, { file: wire(a, { id: 'f2', name: 'b.txt' }), bytes: a }]);
+    const client = new LiveClient(transport, 'test-ui', () => undefined);
+    let files;
+    let serial = 0;
+    files = new LiveAgentFiles(client, () => counts.push(files?.downloadingAll() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => sha(bytes), wait: 1000 });
+    client.connect();
+    transport.open();
+    transport.deliver(SAMPLE_WELCOME);
+    await settle();
+    counts.length = 0;
+    await files.downloadAll();
+    const seen = counts.filter(count => count !== null).map(count => `${count.done}/${count.total}`);
+    assert.deepEqual([...new Set(seen)], ['0/2', '1/2', '2/2']);
+    assert.equal(counts.at(-1), null);
+});
+test('a download that throws saves nothing and says so', async () => {
+    const a = bytesOf(3);
+    const throwing = () => { throw new Error('out of memory'); };
+    const one = library(keeping([{ file: wire(a), bytes: a }, { file: wire(a, { id: 'f2', name: 'b.txt' }), bytes: a }]), { save: throwing });
+    await settle();
+    assert.deepEqual(await one.files.download('f1'), { ok: false, message: 'The file couldn’t be downloaded. Nothing was saved. Try again.' });
+    assert.deepEqual(await one.files.downloadAll(), { ok: false, message: 'The files couldn’t be put together, perhaps for want of memory. Nothing was saved. Download them one at a time.' });
+    assert.deepEqual([one.files.downloading('f1'), one.files.downloadingAll()], [false, null]);
+});
+test('a download of every file that fails anywhere saves nothing, and says which', async () => {
+    const a = bytesOf(3);
+    const b = bytesOf(4);
+    const { files, saved } = library(keeping([{ file: wire(a), bytes: a }, { file: wire(b, { id: 'f2', name: 'b.txt', sha256: sha(bytesOf(5)) }), bytes: b }]));
+    await settle();
+    assert.deepEqual(await files.downloadAll(), { ok: false, message: 'b.txt: The file didn’t arrive whole. Nothing was saved. Try again.' });
+    assert.deepEqual(saved, []);
+    // Nothing listed, nothing read yet, or no hash to check with: nothing asked.
+    const empty = library(keeping([]));
+    await settle();
+    assert.deepEqual(await empty.files.downloadAll(), { ok: false, message: 'Hatchling’s Library holds no files to download.' });
+    const unread = new LiveAgentFiles(new LiveClient(new FakeTransport(), 'test-ui', () => undefined), () => undefined, () => 'request-1', { save: () => assert.fail('saved'), digest: async () => '' });
+    assert.deepEqual(await unread.downloadAll(), { ok: false, message: 'Hatchling’s Library hasn’t been read yet. Refresh it, then try again.' });
+    const blind = library(keeping([{ file: wire(a), bytes: a }]), { digest: null });
+    await settle();
+    assert.match((await blind.files.downloadAll()).message, /^This page can’t check a file’s hash/u);
+    assert.deepEqual(blind.transport.actions('begin_file_out'), []);
+    // While one file downloads, every file waits.
+    const busy = library(keeping([{ file: wire(a), bytes: a }]));
+    await settle();
+    const one = busy.files.download('f1');
+    assert.deepEqual(await busy.files.downloadAll(), { ok: false, message: 'A download is under way. Try again when it’s done.' });
+    await one;
+});

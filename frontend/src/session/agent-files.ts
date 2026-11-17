@@ -49,10 +49,17 @@ export interface AgentFilesPort {
     refresh(): Promise<void>;
     /** The file the chat's message `messageId` said the agent gave. */
     offered(messageId: string): OfferedFile | undefined;
-    /** Whether the file `id` is being downloaded now. */
+    /** Whether the file `id` is being downloaded now, alone or with every other. */
     downloading(id: string): boolean;
+    /** How far every file's download, as one .zip, has got; none when none is under way. */
+    downloadingAll(): {
+        readonly done: number;
+        readonly total: number;
+    } | null;
     /** Reads the file `id` out of the Library, checks it, and saves it. */
     download(id: string): Promise<CommandResult>;
+    /** Reads every file out of the Library, checks each, and saves them as one .zip. */
+    downloadAll(): Promise<CommandResult>;
     /** Removes the file `id` from the Library. */
     remove(id: string): Promise<CommandResult>;
 }
