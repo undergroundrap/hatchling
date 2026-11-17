@@ -94,5 +94,6 @@ Each slice's record, as it lands:
 - Slice 3, the Library's store: [library-store](../evidence/library-store.md).
 - Slice 3, the hand-over: [hand-over](../evidence/hand-over.md).
 - Slice 4, the Library on the local API: [library-api](../evidence/library-api.md).
+- Slice 4, the Library in the app and kept by the install: [library-app](../evidence/library-app.md).
 
 The whole is filled in at close.
