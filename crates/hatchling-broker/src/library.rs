@@ -16,9 +16,15 @@
 //!   and a file found to hold a secret turns handing files over off for
 //!   it. Both are kept here, sealed, so a restart keeps them, and only the
 //!   owner's new conversation clears them.
+//! - **A hand-over is spent before its file is checked** ([`Library::spend`]):
+//!   each check is a guess at a secret, so every one is counted, sealed,
+//!   whatever comes of it, and one the Library has no room for is refused
+//!   first. A hand-over belongs to the conversation it began in, by a
+//!   number the Library gives each: one begun before the owner's new
+//!   conversation is neither counted, kept nor turns giving off there.
 //! - **A crash leaves nothing half done.** Before a file is written, or
-//!   removed, what is about to happen is written (`pending`), and the
-//!   count with it, so a crash never gives a hand-over back. Every
+//!   removed, what is about to happen is written (`pending`), so a crash
+//!   never gives a hand-over back. Every
 //!   operation first finishes or undoes what a crash left: a keep whose
 //!   file the index names is done, any other is undone; a removal is
 //!   always finished.
@@ -119,6 +125,8 @@ pub enum Refused {
     Full,
     /// The file is longer than the Library keeps.
     TooLarge,
+    /// The owner started a new conversation since the hand-over began.
+    Stale,
 }
 
 impl Refused {
@@ -136,6 +144,9 @@ impl Refused {
                 "the Library is full (64 files, or 256 MiB in all): the owner removes files from it"
             }
             Self::TooLarge => "the file is larger than 8 MiB, the most a file handed over may be",
+            Self::Stale => {
+                "the owner started a new conversation since this reply began: nothing from it is given"
+            }
         }
     }
 }
@@ -158,13 +169,18 @@ enum Op {
 }
 
 /// The Library's state: what is about to be done, and the open
-/// conversation's count and off.
+/// conversation's number, count and off.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
     pending: Option<Pending>,
     handed: u32,
     off: bool,
+    /// The open conversation, by a number the Library gives it: each new
+    /// conversation is the next. A state kept before it had one reads as
+    /// the first.
+    #[serde(default)]
+    conversation: u64,
 }
 
 /// How many chunks a file of `bytes` is kept in.
@@ -334,8 +350,8 @@ impl<'k> Library<'k> {
     }
 
     /// Why a file of `bytes` wouldn't be kept now, if it wouldn't: what is
-    /// asked before a file is read out of the Room. [`Self::keep`] asks
-    /// again.
+    /// asked before a file is read out of the Room. [`Self::spend`] asks
+    /// again, with its length.
     ///
     /// # Errors
     ///
@@ -361,21 +377,87 @@ impl<'k> Library<'k> {
         }
     }
 
-    /// Keeps `bytes` as the file `name`, at `now`: the file as the index
-    /// says it, or why it wasn't kept. Its hash is of these bytes.
+    /// The open conversation's number: a hand-over is held to it from
+    /// before its file is read until it is kept.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn conversation(&self) -> Result<u64, String> {
+        self.opened(|_, state| Ok(state.conversation))
+    }
+
+    /// Spends one of `conversation`'s hand-overs on a file of `bytes`, sealed,
+    /// before the file is checked for secrets: each check is a guess at a
+    /// secret, and every one is counted, whatever comes of it. Refused, and
+    /// nothing spent, when the file wouldn't be kept, or the conversation
+    /// is no longer the open one.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read or written.
+    pub fn spend(&self, bytes: u64, conversation: u64) -> Result<Result<(), Refused>, String> {
+        self.opened(|vault, mut state| {
+            if state.conversation != conversation {
+                return Ok(Err(Refused::Stale));
+            }
+            if let Some(refused) = Self::refusal(&Self::index(vault)?, &state, bytes) {
+                return Ok(Err(refused));
+            }
+            state.handed = state.handed.saturating_add(1);
+            Self::write(vault, STATE, &state)?;
+            Ok(Ok(()))
+        })
+    }
+
+    /// Keeps `bytes` as the file `name`, at `now`, spending one of the open
+    /// conversation's hand-overs: the file as the index says it, or why it
+    /// wasn't kept. Its hash is of these bytes. For tests: a hand-over is
+    /// spent before its file is checked, and kept with [`Self::keep_spent`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::keep_spent`].
+    #[cfg(test)]
+    pub(crate) fn keep(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        now: &str,
+    ) -> Result<Result<KeptFile, Refused>, String> {
+        self.keeping(name, bytes, now, None)
+    }
+
+    /// Keeps `bytes` as the file `name`, at `now`, a hand-over of
+    /// `conversation` already spent: refused when the conversation is no
+    /// longer the open one, giving was turned off since, or the Library
+    /// has no room.
     ///
     /// # Errors
     ///
     /// When `name` isn't one the Library keeps a file by, or the Library
     /// can't be read or written before the file is in its index. A keep
-    /// that fails part way is undone by the next operation, and still
-    /// counts as handed over; one whose file is in the index is kept,
+    /// that fails part way is undone by the next operation, and its
+    /// hand-over stays spent; one whose file is in the index is kept,
     /// whatever fails after.
-    pub fn keep(
+    pub fn keep_spent(
         &self,
         name: &str,
         bytes: &[u8],
         now: &str,
+        conversation: u64,
+    ) -> Result<Result<KeptFile, Refused>, String> {
+        self.keeping(name, bytes, now, Some(conversation))
+    }
+
+    /// [`Self::keep`], spending a hand-over, or, with the `spent`
+    /// conversation, [`Self::keep_spent`].
+    fn keeping(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        now: &str,
+        spent: Option<u64>,
     ) -> Result<Result<KeptFile, Refused>, String> {
         if !is_name(name) {
             return Err(format!(
@@ -387,7 +469,15 @@ impl<'k> Library<'k> {
             .map_err(|error| format!("the Library can't name a file: {error}"))?;
         self.opened(|vault, mut state| {
             let mut index = Self::index(vault)?;
-            if let Some(refused) = Self::refusal(&index, &state, length) {
+            if spent.is_some_and(|conversation| conversation != state.conversation) {
+                return Ok(Err(Refused::Stale));
+            }
+            // A hand-over already spent is held to every bound but the count.
+            let counted = State {
+                handed: if spent.is_some() { 0 } else { state.handed },
+                ..state.clone()
+            };
+            if let Some(refused) = Self::refusal(&index, &counted, length) {
                 return Ok(Err(refused));
             }
             let chunks = chunks_of(length);
@@ -396,7 +486,9 @@ impl<'k> Library<'k> {
                 id: id.clone(),
                 chunks,
             });
-            state.handed = state.handed.saturating_add(1);
+            if spent.is_none() {
+                state.handed = state.handed.saturating_add(1);
+            }
             Self::write(vault, STATE, &state)?;
             for (chunk, piece) in (0_u64..).zip(bytes.chunks(CHUNK_BYTES)) {
                 Self::put(vault, &chunk_name(&id, chunk), piece.to_vec())?;
@@ -427,16 +519,27 @@ impl<'k> Library<'k> {
         })
     }
 
-    /// Turns handing files over off for the open conversation.
+    /// Turns handing files over off for `conversation`: nothing, when the
+    /// owner has started a new one since, which an old run's file doesn't
+    /// turn off.
     ///
     /// # Errors
     ///
     /// When the Library can't be read or written.
-    pub fn turn_off(&self) -> Result<(), String> {
+    pub fn turn_off_in(&self, conversation: u64) -> Result<(), String> {
         self.opened(|vault, mut state| {
+            if state.conversation != conversation {
+                return Ok(());
+            }
             state.off = true;
             Self::write(vault, STATE, &state)
         })
+    }
+
+    /// Turns handing files over off for the open conversation.
+    #[cfg(test)]
+    pub(crate) fn turn_off(&self) -> Result<(), String> {
+        self.turn_off_in(self.conversation()?)
     }
 
     /// The owner started a new conversation: its count starts again, and
@@ -449,6 +552,7 @@ impl<'k> Library<'k> {
         self.opened(|vault, mut state| {
             state.handed = 0;
             state.off = false;
+            state.conversation = state.conversation.wrapping_add(1);
             Self::write(vault, STATE, &state)
         })
     }
@@ -520,6 +624,26 @@ impl<'k> Library<'k> {
             }
             Ok(ReadOut::Whole(bytes))
         })
+    }
+
+    /// Writes an index of files of `lengths`, by its own word: none of
+    /// their bytes are kept. For a Library near its bounds.
+    #[cfg(test)]
+    pub(crate) fn pretend_held(&self, lengths: &[u64]) {
+        let vault = self.vault().unwrap_or_else(|error| unreachable!("{error}"));
+        let index: Vec<KeptFile> = lengths
+            .iter()
+            .enumerate()
+            .map(|(at, &bytes)| KeptFile {
+                id: format!("{at:064x}"),
+                name: format!("held-{at}.bin"),
+                bytes,
+                sha256: String::new(),
+                chunks: chunks_of(bytes),
+                kept_at: String::from("2026-11-17T00:00:00Z"),
+            })
+            .collect();
+        Self::write(&vault, INDEX, &index).unwrap_or_else(|error| unreachable!("{error}"));
     }
 
     /// Puts junk of the same length in place of the first chunk of the

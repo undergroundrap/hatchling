@@ -13,6 +13,10 @@
 //! - **The Room's copy, read once.** The spawner reads the file out whole
 //!   ([`crate::room_ops::Rooms::take`]); that one buffer is checked and
 //!   kept, and nothing reads the Room again for it.
+//! - **Spent, then checked.** One of the conversation's hand-overs is spent
+//!   on the file, sealed, before it is checked: every check is a guess at a
+//!   secret, and is counted, whatever comes of it. A file the Library has
+//!   no room for is refused, unchecked.
 //! - **Checked, the file and its name.** Each for the secrets a gate scans
 //!   for and for the keeper's whole set. A secret found withholds the file,
 //!   says so to the agent and the owner without naming it, and turns
@@ -243,6 +247,16 @@ impl<'k> Handing<'k> {
         let Some(cell) = self.cell else {
             return unread(NOT_THE_CHAT);
         };
+        // The conversation this hand-over belongs to, read before the run is
+        // known to be in it: a new one started after can't be counted or
+        // filled by this run.
+        let conversation = match library.conversation() {
+            Ok(conversation) => conversation,
+            Err(error) => {
+                tracing::warn!(%error, "the Library couldn't be read for a file out");
+                return unread(NOT_KEPT);
+            }
+        };
         match self.open_now(cell) {
             None => return unread(NOT_THE_CHAT),
             Some(false) => return unread(STALE),
@@ -266,6 +280,18 @@ impl<'k> Handing<'k> {
         };
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         tracing::info!(bytes = size, "a file crossed out of the Room");
+        // Each check is a guess at a secret: one is spent before it is made,
+        // and a file the Library couldn't keep is never checked.
+        match library.spend(size, conversation) {
+            Ok(Ok(())) => {}
+            Ok(Err(refused)) => {
+                return self.ended(None, size, FileOutEnded::Refused, refused.words());
+            }
+            Err(error) => {
+                tracing::warn!(%error, "the Library couldn't count a file out");
+                return self.ended(None, size, FileOutEnded::Refused, NOT_KEPT);
+            }
+        }
         let name_held = self.checks.holds(name.as_bytes());
         let file_held = self.checks.holds(&bytes);
         let held = either(name_held.clone(), file_held);
@@ -277,14 +303,14 @@ impl<'k> Handing<'k> {
             return self.ended(shown, size, FileOutEnded::Refused, STALE);
         }
         match held {
-            Ok(true) => return self.withheld(&library, shown, size),
+            Ok(true) => return self.withheld(&library, conversation, shown, size),
             Err(error) => {
                 tracing::warn!(%error, "a file out couldn't be checked");
                 return self.ended(None, size, FileOutEnded::Unchecked, UNCHECKED);
             }
             Ok(false) => {}
         }
-        match library.keep(&name, &bytes, &Timestamp::now().to_string()) {
+        match library.keep_spent(&name, &bytes, &Timestamp::now().to_string(), conversation) {
             Ok(Ok(kept)) => self.offered(kept),
             Ok(Err(refused)) => self.refused_kept(&name, size, refused),
             Err(error) => {
@@ -297,8 +323,14 @@ impl<'k> Handing<'k> {
     /// The file held a secret: nothing is kept, handing files over is off
     /// for the conversation, and the owner is told, by `shown` unless the
     /// name held it.
-    fn withheld(&self, library: &Library<'_>, shown: Option<&str>, size: u64) -> RoomResult {
-        if let Err(error) = library.turn_off() {
+    fn withheld(
+        &self,
+        library: &Library<'_>,
+        conversation: u64,
+        shown: Option<&str>,
+        size: u64,
+    ) -> RoomResult {
+        if let Err(error) = library.turn_off_in(conversation) {
             tracing::error!(%error, "handing files over couldn't be turned off after a secret was found");
         }
         self.tell(|message_id| {
