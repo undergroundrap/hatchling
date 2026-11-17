@@ -861,6 +861,26 @@
           "const": "remove_inbox_file",
           "description": "[`UiAction::RemoveInboxFile`].",
           "type": "string"
+        },
+        {
+          "const": "list_library",
+          "description": "[`UiAction::ListLibrary`].",
+          "type": "string"
+        },
+        {
+          "const": "begin_file_out",
+          "description": "[`UiAction::BeginFileOut`].",
+          "type": "string"
+        },
+        {
+          "const": "file_out_part",
+          "description": "[`UiAction::FileOutPart`].",
+          "type": "string"
+        },
+        {
+          "const": "remove_library_file",
+          "description": "[`UiAction::RemoveLibraryFile`].",
+          "type": "string"
         }
       ]
     },
@@ -3857,6 +3877,76 @@
         }
       ]
     },
+    "FileOutRefusal": {
+      "description": "Why a file wasn't read out of the Library for the owner (v7).",
+      "oneOf": [
+        {
+          "description": "The Library has no file of that id: it was removed.",
+          "properties": {
+            "refusal": {
+              "const": "gone",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The Library's copy doesn't read back to its hash: nothing of it is\ngiven. Removing it is the fix.",
+          "properties": {
+            "refusal": {
+              "const": "damaged",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Other downloads are under way: one at a time a connection, and few\nat once. Try again shortly.",
+          "properties": {
+            "refusal": {
+              "const": "busy",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No file of that id is being downloaded on this connection: it was\nnever begun, its last part was read, it went idle, its connection\nbegan another, or its file was removed.",
+          "properties": {
+            "refusal": {
+              "const": "unknown_download",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A part asked out of order. The download is let go, and begun again.",
+          "properties": {
+            "refusal": {
+              "const": "out_of_step",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "FileRefusal": {
       "description": "Why a file was not saved.",
       "oneOf": [
@@ -5097,6 +5187,10 @@
           "description": "The broker's id for it.",
           "type": "string"
         },
+        "kept_at": {
+          "description": "When it was kept, as RFC 3339 (v7).",
+          "type": "string"
+        },
         "name": {
           "description": "The broker's name for it: plain ASCII, made from the file's own.",
           "type": "string"
@@ -5110,7 +5204,63 @@
         "id",
         "name",
         "bytes",
-        "sha256"
+        "sha256",
+        "kept_at"
+      ],
+      "type": "object"
+    },
+    "LibraryStanding": {
+      "description": "The Library's use against its bounds, and the open conversation's\nstanding (v7).",
+      "properties": {
+        "byte_limit": {
+          "description": "The most bytes it keeps.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "bytes": {
+          "description": "Their bytes together.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "file_limit": {
+          "description": "The most it keeps.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "The files it keeps.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "given": {
+          "description": "The files the agent has given in the open conversation.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "given_limit": {
+          "description": "The most it gives in one conversation.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "off": {
+          "description": "Whether giving files is off for the open conversation: one held a\nsecret. A new conversation turns it back on.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "files",
+        "file_limit",
+        "bytes",
+        "byte_limit",
+        "given",
+        "given_limit",
+        "off"
       ],
       "type": "object"
     },
@@ -12987,6 +13137,80 @@
             "name"
           ],
           "type": "object"
+        },
+        {
+          "description": "List the Library, the files the agent gave the owner (v7): the\nowner's alone.",
+          "properties": {
+            "action": {
+              "const": "list_library",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Begin reading a file out of the Library (v7): the owner's alone,\none at a time a connection. Its parts are asked in order.",
+          "properties": {
+            "action": {
+              "const": "begin_file_out",
+              "type": "string"
+            },
+            "id": {
+              "description": "The Library's id for it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Read one part of the file being read out (v7), in order from 0,\neach at most [`FILE_IN_PART_BYTES`].",
+          "properties": {
+            "action": {
+              "const": "file_out_part",
+              "type": "string"
+            },
+            "download_id": {
+              "description": "The download, as its beginning answered.",
+              "type": "string"
+            },
+            "seq": {
+              "description": "Its place.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "action",
+            "download_id",
+            "seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remove a file from the Library (v7): the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "remove_library_file",
+              "type": "string"
+            },
+            "id": {
+              "description": "The Library's id for it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "id"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -13793,6 +14017,128 @@
             "name"
           ],
           "type": "object"
+        },
+        {
+          "description": "The Library's files, newest first, and its standing (v7).",
+          "properties": {
+            "files": {
+              "description": "Its files.",
+              "items": {
+                "$ref": "#/$defs/LibraryFile"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "library",
+              "type": "string"
+            },
+            "standing": {
+              "$ref": "#/$defs/LibraryStanding",
+              "description": "Its use, and the open conversation's."
+            }
+          },
+          "required": [
+            "result",
+            "files",
+            "standing"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file is ready to be read out of the Library (v7), read back\nwhole and to its hash.",
+          "properties": {
+            "download_id": {
+              "description": "The download: its parts are asked by it.",
+              "type": "string"
+            },
+            "file": {
+              "$ref": "#/$defs/LibraryFile",
+              "description": "The file."
+            },
+            "parts": {
+              "description": "How many parts it is, each [`FILE_IN_PART_BYTES`] but the last.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "result": {
+              "const": "file_out_begun",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "download_id",
+            "file",
+            "parts"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One part of the file being read out (v7).",
+          "properties": {
+            "data": {
+              "description": "Its bytes, base64.",
+              "type": "string"
+            },
+            "download_id": {
+              "description": "The download.",
+              "type": "string"
+            },
+            "result": {
+              "const": "file_out_part_read",
+              "type": "string"
+            },
+            "seq": {
+              "description": "The part.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "result",
+            "download_id",
+            "seq",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file wasn't read out (v7).",
+          "properties": {
+            "reason": {
+              "$ref": "#/$defs/FileOutRefusal",
+              "description": "Why."
+            },
+            "result": {
+              "const": "file_out_refused",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file was removed from the Library (v7).",
+          "properties": {
+            "id": {
+              "description": "The Library's id for it, as it was.",
+              "type": "string"
+            },
+            "result": {
+              "const": "library_file_removed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "id"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -14118,6 +14464,19 @@
           "properties": {
             "kind": {
               "const": "file_withheld",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The Library changed: a file was removed. Its list is read again\n(v7).",
+          "properties": {
+            "kind": {
+              "const": "library_changed",
               "type": "string"
             }
           },
@@ -15038,7 +15397,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 32,
-    "ui_schema_version": 6
+    "ui_schema_version": 7
   },
   "x-roots": {
     "ActivityEvent": {

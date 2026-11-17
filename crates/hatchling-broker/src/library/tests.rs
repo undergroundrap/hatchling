@@ -137,6 +137,7 @@ fn a_file_is_kept_in_chunks_and_read_back_whole() {
         .collect();
     assert_eq!(listed, ids, "the files aren't listed in the order kept");
     assert_eq!(library.fetch(&"0".repeat(64)).unwrap(), None);
+    assert_eq!(library.read_out(&"0".repeat(64)), Ok(ReadOut::Gone));
     // The same bytes kept twice are two files, by two ids.
     let again = keep(&library, "file-1.bin", &bytes_of(1, 1));
     assert!(!ids.contains(&again.id));
@@ -291,6 +292,8 @@ fn a_file_whose_chunks_dont_add_up_reads_as_damaged() {
     let damaged = |library: &Library<'_>, id: &str| {
         let said = library.fetch(id).unwrap_err();
         assert!(said.contains("is damaged"), "{said}");
+        // Read out for the owner, it is damaged, not gone.
+        assert_eq!(library.read_out(id), Ok(ReadOut::Damaged));
     };
     let vault = || library.vault().unwrap();
     // A chunk of another file, of the same length, in its place.

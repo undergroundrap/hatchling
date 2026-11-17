@@ -76,6 +76,11 @@ pub mod feed_run;
 mod file_in;
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "the API's actions and its connections share a file on its way out"
+)]
+mod file_out;
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "a session's Room and its tests reach what a file out says and checks"
 )]
 mod hand_over;

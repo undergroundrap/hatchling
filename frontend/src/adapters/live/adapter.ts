@@ -349,6 +349,8 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'file_withheld':
                 this.#chats.fileWithheld(body, event.ts);
                 return undefined;
+            case 'library_changed':
+                return undefined;
             case 'artifact':
             case 'agent_status':
             case 'artifact_listed':

@@ -115,6 +115,11 @@ export class LiveChatSession implements ChatSessionPort {
             case 'file_in_refused':
             case 'inbox':
             case 'inbox_file_removed':
+            case 'library':
+            case 'file_out_begun':
+            case 'file_out_part_read':
+            case 'file_out_refused':
+            case 'library_file_removed':
                 return UNCONFIRMED;
         }
     }

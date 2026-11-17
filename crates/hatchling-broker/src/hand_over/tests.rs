@@ -216,6 +216,7 @@ fn a_file_is_kept_offered_and_kept_in_activity() {
             name: String::from("report.pdf"),
             bytes: 10,
             sha256: file.sha256.clone(),
+            kept_at: file.kept_at.clone(),
         }
     );
     assert_eq!(
@@ -450,6 +451,33 @@ fn a_name_is_the_files_own_made_plain_and_never_a_device() {
         assert_eq!(name_of(path), Err(RESERVED), "{path:?}");
     }
     assert_eq!(name_of("notes."), Err(TRAILING_DOT));
+    // A file Windows acts on when its folder is only shown: never given.
+    for path in [
+        "desktop.ini",
+        "out/Desktop.INI",
+        "share.url",
+        "a.SCF",
+        "x.lnk",
+        "y.library-ms",
+        "z.search-ms",
+        "q.searchConnector-ms",
+        "t.theme",
+        "t.themepack",
+        "a.website",
+        "a.PIF",
+        "a.deskthemepack",
+    ] {
+        assert_eq!(name_of(path), Err(REACHES_OUT), "{path:?}");
+    }
+    for path in [
+        "desktop.ini.txt",
+        "url",
+        "notes.url.txt",
+        "lnk.pdf",
+        "my-desktop.ini",
+    ] {
+        assert!(name_of(path).is_ok(), "{path:?}");
+    }
     assert_eq!(name_of("notes. "), Ok(String::from("notes._")));
     for path in ["report.pdf", "a b c", "", "x\u{0}y"] {
         assert!(crate::library::is_name(&name_of(path).unwrap()), "{path:?}");

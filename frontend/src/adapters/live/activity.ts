@@ -379,6 +379,10 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     end_file_in: 'Finished sending a file to the agent',
     list_inbox: 'Listed the agent’s inbox',
     remove_inbox_file: 'Removed a file from the agent’s inbox',
+    list_library: 'Listed the Library',
+    begin_file_out: 'Began downloading a file from the Library',
+    file_out_part: 'Downloaded part of a file from the Library',
+    remove_library_file: 'Removed a file from the Library',
 };
 const FAILURES: Readonly<Record<ChildFailure, string>> = {
     timeout: 'Ran out of time',

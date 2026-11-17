@@ -629,6 +629,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "remove_inbox_file",
                 "type": "string"
+            },
+            {
+                "const": "list_library",
+                "type": "string"
+            },
+            {
+                "const": "begin_file_out",
+                "type": "string"
+            },
+            {
+                "const": "file_out_part",
+                "type": "string"
+            },
+            {
+                "const": "remove_library_file",
+                "type": "string"
             }
         ]
     },
@@ -1705,6 +1721,70 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "FileOutRefusal": {
+        "oneOf": [
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "gone",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "damaged",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "busy",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "unknown_download",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "out_of_step",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            }
+        ]
+    },
     "FileRefusal": {
         "oneOf": [
             {
@@ -2321,6 +2401,9 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "id": {
                 "type": "string"
             },
+            "kept_at": {
+                "type": "string"
+            },
             "name": {
                 "type": "string"
             },
@@ -2332,7 +2415,49 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "id",
             "name",
             "bytes",
-            "sha256"
+            "sha256",
+            "kept_at"
+        ],
+        "type": "object"
+    },
+    "LibraryStanding": {
+        "properties": {
+            "byte_limit": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "file_limit": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "files": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "given": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "given_limit": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "off": {
+                "type": "boolean"
+            }
+        },
+        "required": [
+            "files",
+            "file_limit",
+            "bytes",
+            "byte_limit",
+            "given",
+            "given_limit",
+            "off"
         ],
         "type": "object"
     },
@@ -5109,6 +5234,71 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "name"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "list_library",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "begin_file_out",
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "file_out_part",
+                        "type": "string"
+                    },
+                    "download_id": {
+                        "type": "string"
+                    },
+                    "seq": {
+                        "minimum": 0,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "action",
+                    "download_id",
+                    "seq"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "remove_library_file",
+                        "type": "string"
+                    },
+                    "id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "id"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -5815,6 +6005,111 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "name"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "files": {
+                        "items": {
+                            "$ref": "#/$defs/LibraryFile"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "library",
+                        "type": "string"
+                    },
+                    "standing": {
+                        "$ref": "#/$defs/LibraryStanding"
+                    }
+                },
+                "required": [
+                    "result",
+                    "files",
+                    "standing"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "download_id": {
+                        "type": "string"
+                    },
+                    "file": {
+                        "$ref": "#/$defs/LibraryFile"
+                    },
+                    "parts": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "result": {
+                        "const": "file_out_begun",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "download_id",
+                    "file",
+                    "parts"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "data": {
+                        "type": "string"
+                    },
+                    "download_id": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "file_out_part_read",
+                        "type": "string"
+                    },
+                    "seq": {
+                        "minimum": 0,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "result",
+                    "download_id",
+                    "seq",
+                    "data"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "reason": {
+                        "$ref": "#/$defs/FileOutRefusal"
+                    },
+                    "result": {
+                        "const": "file_out_refused",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "reason"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "library_file_removed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "id"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -6098,6 +6393,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "properties": {
                     "kind": {
                         "const": "file_withheld",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "kind": {
+                        "const": "library_changed",
                         "type": "string"
                     }
                 },

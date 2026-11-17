@@ -92,6 +92,51 @@ pub struct LibraryFile {
     pub bytes: u64,
     /// Its SHA-256, in lowercase hex.
     pub sha256: String,
+    /// When it was kept, as RFC 3339 (v7).
+    pub kept_at: String,
+}
+
+/// The Library's use against its bounds, and the open conversation's
+/// standing (v7).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct LibraryStanding {
+    /// The files it keeps.
+    pub files: u32,
+    /// The most it keeps.
+    pub file_limit: u32,
+    /// Their bytes together.
+    pub bytes: u64,
+    /// The most bytes it keeps.
+    pub byte_limit: u64,
+    /// The files the agent has given in the open conversation.
+    pub given: u32,
+    /// The most it gives in one conversation.
+    pub given_limit: u32,
+    /// Whether giving files is off for the open conversation: one held a
+    /// secret. A new conversation turns it back on.
+    pub off: bool,
+}
+
+/// Why a file wasn't read out of the Library for the owner (v7).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "refusal", rename_all = "snake_case")]
+pub enum FileOutRefusal {
+    /// The Library has no file of that id: it was removed.
+    Gone,
+    /// The Library's copy doesn't read back to its hash: nothing of it is
+    /// given. Removing it is the fix.
+    Damaged,
+    /// Other downloads are under way: one at a time a connection, and few
+    /// at once. Try again shortly.
+    Busy,
+    /// No file of that id is being downloaded on this connection: it was
+    /// never begun, its last part was read, it went idle, its connection
+    /// began another, or its file was removed.
+    UnknownDownload,
+    /// A part asked out of order. The download is let go, and begun again.
+    OutOfStep,
 }
 
 /// The agent handed the owner a file (v6): it is kept in the Library.

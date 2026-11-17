@@ -465,7 +465,7 @@ test('files the agent gave are a thread of their own: a row per file by the brok
 });
 test('a file the agent gave, or that was withheld, is the app\'s own notice by the broker\'s name, shown only when it is one', () => {
     const { transport, adapter } = connected();
-    const file = (fields) => ({ id: 'f1', name: 'report.pdf', bytes: 2048, sha256: 'ab', ...fields });
+    const file = (fields) => ({ id: 'f1', name: 'report.pdf', bytes: 2048, sha256: 'ab', kept_at: '2026-11-17T00:00:00Z', ...fields });
     replay(transport, [
         sampleEvent(1, 1, { kind: 'file_offered', chat_id: 'local', message_id: 'file-a', file: file({}) }),
         sampleEvent(2, 2, { kind: 'file_offered', chat_id: 'local', message_id: 'file-b', file: file({ name: '../‮exe.txt <b>' }) }),
