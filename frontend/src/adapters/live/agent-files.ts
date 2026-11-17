@@ -8,9 +8,10 @@ import type { LiveClient } from './client.js';
 import type { ActionRefusal, FileOutRefusal, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
 import type { CommandResult } from '../../protocol/models.js';
 import type { AgentFile, AgentFilesPort, AgentFilesState, OfferedFile } from '../../session/agent-files.js';
-import { isGivenName } from '../../session/agent-files.js';
+import { isGivenName, runs } from '../../session/agent-files.js';
 import { sizeWords } from '../../session/inbox.js';
 import { within } from './inbox.js';
+import { zipStored } from './zip.js';
 /** The stream's word that the agent gave a file. */
 export type FileOffered = Extract<UiEventBody, {
     kind: 'file_offered';
@@ -21,11 +22,16 @@ export const FILE_OUT_BYTES = 8 * 1024 * 1024;
 export const PART_BYTES = 32 * 1024;
 /** How long each step is waited for. */
 const STEP_WAIT_MS = 60000;
+/** The name every file at once is saved by. */
+export const ALL_NAME = 'hatchling-library.zip';
+/** What `#downloading` holds while every file is downloading at once. */
+const ALL = '*';
 /** How long a saved file's address lives: long enough for the browser to take it. */
 const SAVE_URL_MS = 60000;
 const NOTHING_SAVED = 'Nothing was saved.';
 const UNEXPECTED = `Hatchling answered with something else. ${NOTHING_SAVED}`;
 const NOT_WHOLE = `The file didn’t arrive whole. ${NOTHING_SAVED} Try again.`;
+const NO_DIGEST = `This page can’t check a file’s hash, so it can’t download one. ${NOTHING_SAVED} Open Hatchling at its own address.`;
 /** Saves `bytes` as a file named `name`. */
 export type Saver = (bytes: Uint8Array, name: string) => void;
 /** The SHA-256 of `bytes`, in lowercase hex. */
@@ -113,6 +119,11 @@ export class LiveAgentFiles implements AgentFilesPort {
     #state: AgentFilesState = { kind: 'unread' };
     readonly #offered = new Map<string, Offered>();
     readonly #downloading = new Set<string>();
+    /** How far every file's download has got, while it runs. */
+    #progress: {
+        readonly done: number;
+        readonly total: number;
+    } | null = null;
     #ready = false;
     /** Reads begun, the last whose answer was taken, and the last whose list was. */
     #reads = 0;
@@ -159,7 +170,13 @@ export class LiveAgentFiles implements AgentFilesPort {
         return { ...shown, removed: file.removed || gone };
     }
     downloading(id: string): boolean {
-        return this.#downloading.has(id);
+        return this.#downloading.has(id) || this.#downloading.has(ALL);
+    }
+    downloadingAll(): {
+        readonly done: number;
+        readonly total: number;
+    } | null {
+        return this.#progress;
     }
     async refresh(): Promise<void> {
         const read = ++this.#reads;
@@ -192,15 +209,70 @@ export class LiveAgentFiles implements AgentFilesPort {
             return { ok: false, message: 'It is already downloading.' };
         if (this.#downloading.size > 0)
             return { ok: false, message: 'Another file is downloading. Try again when it’s done.' };
+        const digest = this.#digest;
+        if (digest === null)
+            return { ok: false, message: NO_DIGEST };
         this.#downloading.add(id);
         this.#changed();
-        try {
-            return await this.#download(id);
-        }
-        finally {
-            this.#downloading.delete(id);
+        // Whatever throws on the way, nothing was saved, and the owner is told.
+        const result = await this.#saveOne(id, digest).catch((): CommandResult => ({ ok: false, message: `The file couldn’t be downloaded. ${NOTHING_SAVED} Try again.` }));
+        this.#downloading.delete(id);
+        this.#changed();
+        return result;
+    }
+    /** Reads the file `id`, checked, and gives the browser it to save. */
+    async #saveOne(id: string, digest: Digest): Promise<CommandResult> {
+        const read = await this.#read(id, digest);
+        if (!('bytes' in read))
+            return read;
+        this.#save(read.bytes, read.name);
+        return { ok: true, message: `Gave your browser ${read.name}, ${sizeWords(read.bytes.length)}, to save. The agent made it: open it only if you trust it.` };
+    }
+    /**
+     * Downloads every file the Library was last listed with, as one .zip:
+     * each read out and checked against its hash as a download is, one at
+     * a time, then saved once. Any that fails saves nothing.
+     */
+    async downloadAll(): Promise<CommandResult> {
+        if (this.#downloading.size > 0)
+            return { ok: false, message: 'A download is under way. Try again when it’s done.' };
+        const digest = this.#digest;
+        if (digest === null)
+            return { ok: false, message: NO_DIGEST };
+        const state = this.#state;
+        if (state.kind !== 'read')
+            return { ok: false, message: 'Hatchling’s Library hasn’t been read yet. Refresh it, then try again.' };
+        if (state.files.length === 0)
+            return { ok: false, message: 'Hatchling’s Library holds no files to download.' };
+        const files = state.files;
+        this.#downloading.add(ALL);
+        this.#progress = { done: 0, total: files.length };
+        this.#changed();
+        // Whatever throws on the way, nothing was saved, and the owner is told.
+        const result = await this.#saveAll(files, digest).catch((): CommandResult => ({ ok: false, message: `The files couldn’t be put together, perhaps for want of memory. ${NOTHING_SAVED} Download them one at a time.` }));
+        this.#downloading.delete(ALL);
+        this.#progress = null;
+        this.#changed();
+        return result;
+    }
+    /** Reads each of `files`, checked, one at a time, and gives the browser them as one .zip. */
+    async #saveAll(files: readonly AgentFile[], digest: Digest): Promise<CommandResult> {
+        const entries = [];
+        for (const file of files) {
+            const read = await this.#read(file.id, digest);
+            if (!('bytes' in read))
+                return { ok: false, message: `${file.name}: ${read.message}` };
+            entries.push({ name: read.name, bytes: read.bytes, at: file.keptAt });
+            this.#progress = { done: entries.length, total: files.length };
             this.#changed();
         }
+        const zip = zipStored(entries);
+        this.#save(zip, ALL_NAME);
+        const running = entries.filter(entry => runs(entry.name) !== null).length;
+        const caution = running === 0
+            ? 'The agent made them: open them only if you trust them.'
+            : `${running} of them can run something when opened, as Settings says of each: open them only if you trust what the agent made.`;
+        return { ok: true, message: `Gave your browser ${ALL_NAME}, ${entries.length} files, ${sizeWords(zip.length)}, to save. ${caution}` };
     }
     /** The hash this app was told for the file `id`, by its list or a message. */
     #known(id: string): string | undefined {
@@ -208,10 +280,15 @@ export class LiveAgentFiles implements AgentFilesPort {
         const listed = state.kind === 'read' ? state.files.find(file => file.id === id) : undefined;
         return listed?.sha256 ?? [...this.#offered.values()].find(file => file.id === id)?.sha256;
     }
-    async #download(id: string): Promise<CommandResult> {
-        const digest = this.#digest;
-        if (digest === null)
-            return { ok: false, message: `This page can’t check a file’s hash, so it can’t download one. ${NOTHING_SAVED} Open Hatchling at its own address.` };
+    /**
+     * Reads the file `id` out of the Library: its name and bytes, held to
+     * every bound the broker said and checked against its hash; or how it
+     * ended without them.
+     */
+    async #read(id: string, digest: Digest): Promise<{
+        readonly name: string;
+        readonly bytes: Uint8Array;
+    } | CommandResult> {
         const begun = await this.#step({ action: 'begin_file_out', id });
         if (typeof begun === 'string')
             return { ok: false, message: begun };
@@ -241,8 +318,7 @@ export class LiveAgentFiles implements AgentFilesPort {
         }
         if (at !== file.bytes || await digest(bytes) !== file.sha256)
             return { ok: false, message: NOT_WHOLE };
-        this.#save(bytes, file.name);
-        return { ok: true, message: `Gave your browser ${file.name}, ${sizeWords(file.bytes)}, to save. The agent made it: open it only if you trust it.` };
+        return { name: file.name, bytes };
     }
     /** Asks `action`: its answer, or what to say when there was none. */
     async #step(action: UiAction): Promise<UiActionResult | string> {

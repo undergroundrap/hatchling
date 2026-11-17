@@ -48,7 +48,9 @@ function stand(overrides = {}) {
         refresh: () => { asked.push(['refresh']); return Promise.resolve(); },
         offered: id => id === 'file-a' ? { ...FILE, removed: false } : undefined,
         downloading: () => false,
+        downloadingAll: () => null,
         download: id => { asked.push(['download', id]); return Promise.resolve({ ok: true, message: 'Saved report.pdf, 2 KB.' }); },
+        downloadAll: () => { asked.push(['download all']); return Promise.resolve({ ok: true, message: 'Gave your browser hatchling-library.zip, 2 files, 4 KB, to save.' }); },
         remove: id => { asked.push(['remove', id]); return Promise.resolve({ ok: true, message: 'Removed from Hatchling’s Library.' }); },
         ...overrides,
     };
@@ -138,4 +140,23 @@ test('Settings says the Library as read: not yet, why not, or nothing on an inst
     assert.match(shown({ kind: 'failed', detail: 'Hatchling couldn’t read its Library.' }), /Hatchling couldn’t read its Library\./u);
     assert.match(shown({ kind: 'read', files: [FILE], standing: STANDING }, { downloading: () => true }), /Downloading…/u);
     assert.deepEqual(liveAgentFiles(context(undefined), () => undefined), []);
+});
+test('Settings offers every file as one .zip only where there is more than one', async () => {
+    const two = { kind: 'read', files: [FILE, { ...FILE, id: 'f2', name: 'b.txt' }], standing: STANDING };
+    const port = stand({ current: () => two });
+    const ctx = context(port);
+    const [section] = liveAgentFiles(ctx, () => undefined);
+    buttonNamed(section, 'Download all as one .zip').fire('click');
+    await flush();
+    assert.deepEqual(port.asked, [['download all']]);
+    assert.deepEqual(ctx.shown.toasts, [['Gave your browser hatchling-library.zip, 2 files, 4 KB, to save.', false]]);
+    const busy = liveAgentFiles(context(stand({ current: () => two, downloadingAll: () => ({ done: 1, total: 2 }) })), () => undefined)[0];
+    assert.equal(buttonNamed(busy, 'Download all as one .zip'), undefined);
+    assert.match(text(busy), /Downloading all: 1 of 2 files…/u);
+    assert.equal(buttonNamed(liveAgentFiles(context(stand()), () => undefined)[0], 'Download all as one .zip'), undefined, 'offered for one file');
+    const failing = stand({ current: () => two, downloadAll: () => Promise.resolve({ ok: false, message: 'b.txt: The file didn’t arrive whole.' }) });
+    const failed = context(failing);
+    buttonNamed(liveAgentFiles(failed, () => undefined)[0], 'Download all as one .zip').fire('click');
+    await flush();
+    assert.deepEqual(failed.shown.toasts, [['b.txt: The file didn’t arrive whole.', true]]);
 });

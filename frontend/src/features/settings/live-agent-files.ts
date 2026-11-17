@@ -61,6 +61,12 @@ export function liveAgentFiles(ctx: AppContext, refresh: () => void): HTMLElemen
             group.append(h('p', { class: 'data-description' }, 'Nothing yet. Files the agent gives you in the main chat show here.'));
         for (const file of files)
             group.append(fileRow(ctx, port, file, refresh));
+        // Many files are one save, as one .zip, each checked as a download is.
+        const progress = port.downloadingAll();
+        if (progress !== null)
+            notes.push(h('p', { class: 'data-description', role: 'status' }, `Downloading all: ${progress.done} of ${progress.total} files…`));
+        else if (files.length > 1)
+            notes.push(h('p', { class: 'data-description' }, button('Download all as one .zip', () => { void port.downloadAll().then(result => ctx.toast(result.message, !result.ok)); }, { variant: 'ghost' })));
     }
     const reread = button('Refresh', () => { void port.refresh().then(refresh); }, { variant: 'link' });
     return [h('section', { class: 'given-files-section' }, h('h3', { class: 'settings-section-title' }, 'Files the agent gave you'), ...notes, group, h('p', { class: 'settings-note' }, 'These are the copies Hatchling made from the agent’s computer and checked for the secrets it keeps. A download is always this copy, checked against its SHA-256 and saved as a file, never opened. ', reread))];
