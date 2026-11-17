@@ -187,7 +187,7 @@ install -D -m 644 "$PACKAGING/sysusers.d/hatchling.conf" /etc/sysusers.d/hatchli
 systemd-sysusers /etc/sysusers.d/hatchling.conf
 install -D -m 644 "$PACKAGING/tmpfiles.d/hatchling.conf" /etc/tmpfiles.d/hatchling.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/hatchling.conf
-for dir in sock vault schedules conversation goals memory; do
+for dir in sock vault schedules conversation library goals memory; do
   [ -d "/var/lib/hatchling/$dir" ] || mkdir -m 700 "/var/lib/hatchling/$dir"
 done
 
@@ -197,7 +197,7 @@ ENV=/etc/hatchling/hatchling.env
 # empty was turned off, and stays off). A store added this way comes with
 # the grants its packaged configuration gives it, the chat's among them;
 # one already configured is left as it is. The file is backed up first.
-KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR HATCHLING_GOALS_DIR HATCHLING_MEMORY_DIR"
+KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR HATCHLING_LIBRARY_DIR HATCHLING_GOALS_DIR HATCHLING_MEMORY_DIR"
 keep_up() {
   added= grants=
   for key in $KEPT_BY_DEFAULT; do

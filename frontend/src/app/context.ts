@@ -1,6 +1,7 @@
 import type { ContentLoading } from './content-loading.js';
 import type { CodePort } from '../session/codes.js';
 import type { InboxPort } from '../session/inbox.js';
+import type { AgentFilesPort } from '../session/agent-files.js';
 import type { AttentionPort } from '../session/attention.js';
 import type { ConversationPort } from '../session/conversations.js';
 import type { UsagePort } from '../session/usage.js';
@@ -67,6 +68,8 @@ export interface AppContext {
     readonly codes: CodePort | undefined;
     /** Files the owner gives the agent (WO-041): live installs alone. */
     readonly inbox: InboxPort | undefined;
+    /** Files the agent gave the owner, in Hatchling's Library: live installs only. */
+    readonly agentFiles: AgentFilesPort | undefined;
     /** Where a new conversation is started, when the app is connected to Hatchling (WO-026). */
     readonly conversations: ConversationPort | undefined;
     /** The model usage the broker counted, when the app is connected to Hatchling. */
