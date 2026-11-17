@@ -42,7 +42,20 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend and protocol gates, and the ins
 
 ## Design
 
-To be settled from an independent threat model of this work order and the code, before any of it is built, as WO-041's was, and agreed with the maintainer.
+From an independent threat model of this work order and the code (2026-11-17), agreed with the maintainer before any of it is built.
+
+- **First, [#504](https://github.com/undergroundrap/hatchling/issues/504):** a hand-over the Library can't keep is refused before its file is checked, and a checked file spends the conversation's count, sealed, whatever comes of it. Without that, a larger item would make the count's guard easier to get round.
+- **The agent's tool** is a new `give_folder`, apart from `give_file`, so the model and Activity say plainly that a folder crossed.
+- **Reading a folder:** the supervisor gains a listing of one directory, by the same rules as reading a file (beneath the workspace, no links, no other mounts), bounded, keeping no state; the broker walks the tree with it and reads each file as one file is read now. What a listing says a thing is, is never trusted on its own.
+- **What is left out, and said:** links, devices, pipes, other mounts (the inbox among them). **What refuses the folder:** a secret anywhere, a bound passed, a file changing while it is read, two names that differ only in case, a name Windows keeps for a device or acts on when its folder is shown, at any depth, and a name that isn't plain ASCII.
+- **Names inside a folder** are any printable ASCII but Windows' forbidden characters (`< > : " / \ | ? *`), with spaces inside allowed and no leading or trailing space or trailing dot. Files whose names start with a dot (`.gitignore`, `.github/`) come back.
+- **The check:** every file and every path is checked for the secrets the broker keeps before anything is kept. One found withholds the whole folder, names nothing, and turns giving off for the conversation.
+- **The Library** keeps a folder as one item: its files' bytes, and a sealed list of them (each path, size and SHA-256). Each file is read back to its own hash. Each item remembers the conversation and the reply it came from, sealed and set by the broker.
+- **The chat** draws a given item's card from the Library, after a restart too, within the exchanges the conversation keeps; older items are listed under the conversation. A removed item says so.
+- **Choosing:** one item, a reply's items, or any the owner picks, downloaded as one `.zip` made in the app from checked files. The app checks every path itself before it writes one, so no path can leave the folder it is unpacked into.
+- **Limits to start from, measured before they are fixed:** a folder 32 MiB, 512 files and 16 levels deep; a conversation 16 hand-overs and 128 MiB read out; the Library 64 items, 256 MiB and 4,096 files. The vault's log of each chunk is quietened for the Library.
+
+**Slices:** 0, #504; 1, the Room's listing; 2, the Library's items, groups, limits and log; 3, the folder hand-over and `give_folder`; 4, the local API; 5, the chat's cards across a restart; 6, groups and choosing in the app; 7, docs and the acceptance.
 
 ## Evidence
 
