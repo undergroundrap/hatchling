@@ -1,6 +1,6 @@
 # WO-041: Files between you and the agent's computer
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-core` (the app's protocol, the Room's wire), `crates/hatchling-broker` (a file's way into and out of the Room, the Library), `crates/hatchling-room` (the supervisor's file answers), `crates/hatchling-agent` (a tool to hand a file over), `frontend/` (attaching a file, the Library, downloading), `docs/`
 **Issue:** [#486](https://github.com/undergroundrap/hatchling/issues/486)
 **Trust boundary:** yes (files crossing into and out of a cell)
@@ -24,14 +24,14 @@ The agent has a computer of its own with files in it, and nothing moves a file b
 
 ## Acceptance criteria
 
-- [ ] A file the owner attaches is in the agent's workspace, by a name the broker chose, and the agent reads it with its tools; one past the size bound is refused before anything is written.
-- [ ] No name, link or path a file brings can put it anywhere but the inbox; each is a test.
-- [ ] A file the agent hands over reaches the owner's chat and Library, labelled as the agent's, byte for byte; a link, a device or a file past the bound is refused.
-- [ ] A file holding a secret the broker keeps isn't handed over, and the agent and the owner are told why.
-- [ ] The app offers a file the agent made only as a download, with its name and size, never inline.
-- [ ] Each crossing is in Activity: which way, the name, the size, and how it ended.
-- [ ] A real install moves a file each way with a real model.
-- [ ] Each guard is hand-broken and its test fails for the right reason.
+- [x] A file the owner attaches is in the agent's workspace, by a name the broker chose, and the agent reads it with its tools; one past the size bound is refused before anything is written. ([room-file-in](../evidence/room-file-in.md), [room-file-in-app](../evidence/room-file-in-app.md); on a real install, `0001-notes-for-agent.txt` and `0002-field-notes.txt`, each read in the Room: [files-acceptance](../evidence/files-acceptance.md).)
+- [x] No name, link or path a file brings can put it anywhere but the inbox; each is a test. ([room-inbox-put](../evidence/room-inbox-put.md), proved as root; the stem's tests in [room-file-in](../evidence/room-file-in.md).)
+- [x] A file the agent hands over reaches the owner's chat and Library, labelled as the agent's, byte for byte; a link, a device or a file past the bound is refused. ([room-take-wire](../evidence/room-take-wire.md), [hand-over](../evidence/hand-over.md); byte for byte by SHA-256 on a real install: [files-acceptance](../evidence/files-acceptance.md).)
+- [x] A file holding a secret the broker keeps isn't handed over, and the agent and the owner are told why. ([hand-over](../evidence/hand-over.md), against a real vault, with giving turned off for the conversation.)
+- [x] The app offers a file the agent made only as a download, with its name and size, never inline. ([library-app](../evidence/library-app.md); the card and the download on a real install: [files-acceptance](../evidence/files-acceptance.md).)
+- [x] Each crossing is in Activity: which way, the name, the size, and how it ended. ([room-file-in](../evidence/room-file-in.md), [hand-over](../evidence/hand-over.md); the lines on a real install: [files-acceptance](../evidence/files-acceptance.md).)
+- [x] A real install moves a file each way with a real model. (`qwen3.5:9b` read a file given it and gave one back, saved byte for byte: [files-acceptance](../evidence/files-acceptance.md).)
+- [x] Each guard is hand-broken and its test fails for the right reason. (Every slice's record lists its breaks, none surviving: [room-inbox-put](../evidence/room-inbox-put.md), [room-file-in](../evidence/room-file-in.md), [room-file-in-app](../evidence/room-file-in-app.md), [room-take-wire](../evidence/room-take-wire.md), [library-store](../evidence/library-store.md), [hand-over](../evidence/hand-over.md), [library-api](../evidence/library-api.md), [library-app](../evidence/library-app.md).)
 
 ## Design
 
@@ -95,5 +95,4 @@ Each slice's record, as it lands:
 - Slice 3, the hand-over: [hand-over](../evidence/hand-over.md).
 - Slice 4, the Library on the local API: [library-api](../evidence/library-api.md).
 - Slice 4, the Library in the app and kept by the install: [library-app](../evidence/library-app.md).
-
-The whole is filled in at close.
+- The whole, on a real install with a real model: [files-acceptance](../evidence/files-acceptance.md).
