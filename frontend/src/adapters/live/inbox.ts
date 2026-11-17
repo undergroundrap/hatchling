@@ -73,7 +73,7 @@ export function base64(bytes: Uint8Array): string {
     return btoa(text);
 }
 /** `reply`, or `late` when it takes longer than `ms`. */
-function within(reply: Promise<Reply>, ms: number): Promise<Reply | 'late'> {
+export function within(reply: Promise<Reply>, ms: number): Promise<Reply | 'late'> {
     return new Promise(resolve => {
         const timer = setTimeout(() => resolve('late'), ms);
         void reply.then(answer => {

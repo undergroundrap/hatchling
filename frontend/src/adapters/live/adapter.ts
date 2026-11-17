@@ -25,6 +25,7 @@ import type { UsagePort } from '../../session/usage.js';
 import type { SetupPort } from '../../session/setup.js';
 import type { ModelPort } from '../../session/model.js';
 import type { InboxPort } from '../../session/inbox.js';
+import type { AgentFilesPort } from '../../session/agent-files.js';
 import type { GoalsPort } from '../../session/goals.js';
 import type { FeedPort } from '../../session/feed.js';
 import type { IdeasPort } from '../../session/ideas.js';
@@ -34,6 +35,7 @@ import { LiveUsage } from './usage.js';
 import { LiveSetup } from './setup.js';
 import { LiveModel } from './model.js';
 import { LiveInbox } from './inbox.js';
+import { LiveAgentFiles } from './agent-files.js';
 import { LiveGoals } from './goals.js';
 import { LiveFeed } from './feed.js';
 import { LiveIdeas } from './ideas.js';
@@ -90,6 +92,8 @@ export class LiveAdapter implements ProtocolAdapter {
     /** Files the owner gives the agent: straight to the broker in parts, never as a Command (WO-041). */
     readonly inbox: InboxPort;
     readonly #inbox: LiveInbox;
+    readonly agentFiles: AgentFilesPort;
+    readonly #agentFiles: LiveAgentFiles;
     readonly #listeners = new Set<() => void>();
     #settings: Settings = { ...SETTINGS, ...rememberedPreferences() };
     #clock = '';
@@ -124,6 +128,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#inbox = new LiveInbox(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.inbox = this.#inbox;
+        this.#agentFiles = new LiveAgentFiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.agentFiles = this.#agentFiles;
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
         // Registered first, so the snapshot is current before any view hears of a change.
@@ -345,11 +351,13 @@ export class LiveAdapter implements ProtocolAdapter {
                 return undefined;
             case 'file_offered':
                 this.#chats.fileOffered(body, event.ts);
+                this.#agentFiles.observe(body);
                 return undefined;
             case 'file_withheld':
                 this.#chats.fileWithheld(body, event.ts);
                 return undefined;
             case 'library_changed':
+                void this.#agentFiles.refresh();
                 return undefined;
             case 'artifact':
             case 'agent_status':

@@ -62,7 +62,7 @@ Settled from an independent threat model of this work order and the code (2026-1
 - **Bounds:** 8 MiB a file; the Library holds 64 files and 256 MiB; 16 hand-overs a conversation. A full Library refuses; nothing is evicted. The Library keeps a file until the owner removes it or Hatchling is reset (`reset agent` or `reset everything`).
 - **The Library** is a sealed store of its own (`HATCHLING_LIBRARY_DIR`), the eighth the keeper hands the broker, the most one handoff carries. A file is kept as sealed chunks with an index holding its hash, and read back only whole and only to that hash. What is about to be kept or removed is written first, so a crash is finished or undone by the next operation, and never gives a hand-over back.
 - Only a chat with the owner there hands a file over: the tool isn't offered to a run with nobody there, and the broker refuses it from any session but the chat's own run.
-- The agent's tool is offered only where the operator gave the broker a Library (`HATCHLING_LIBRARY_DIR`, the `files` tool group), and the broker refuses it anywhere else: the packaged install sets it only with the app's download and removal (slice 4), so until then a Library nothing can empty can't be filled.
+- The agent's tool is offered only where the operator gave the broker a Library (`HATCHLING_LIBRARY_DIR`, the `files` tool group), and the broker refuses it anywhere else. The packaged install sets it in the same change as the app's download and removal (slice 4), so a packaged Library is never one nothing can empty.
 
 **What it doesn't stop**, said in [your security](../your-security.md) when it ships:
 
@@ -94,5 +94,6 @@ Each slice's record, as it lands:
 - Slice 3, the Library's store: [library-store](../evidence/library-store.md).
 - Slice 3, the hand-over: [hand-over](../evidence/hand-over.md).
 - Slice 4, the Library on the local API: [library-api](../evidence/library-api.md).
+- Slice 4, the Library in the app and kept by the install: [library-app](../evidence/library-app.md).
 
 The whole is filled in at close.

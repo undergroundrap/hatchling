@@ -88,7 +88,7 @@ New radius defaults: `--radius-xs/sm/md/lg/xl` = 6/10/14/18/24px; `--radius-pill
 
 At the current desktop touch-up baseline, reading width uses `--chat-width` (712 × spacing scale), assistant bubbles 556 × scale, user bubbles 482 × scale, compact cards 296 × scale. The touch-up rail is 64 × scale, context panel 334 × scale; sidebar width is also user-resizable. These are maxima in available space, not fixed widths that may overflow.
 
-Long file names truncate in lists but remain available on open; permission scopes, errors and important instructions wrap. Never clip consent text just to match a card height.
+Long file names truncate in lists but remain available on open; permission scopes, errors and important instructions wrap. A file the agent gave you is the exception: its name is shown whole and wraps, never truncated, since the extension at its end says what opening it does. Never clip consent text just to match a card height.
 
 ## 5. Controls, icons and layers
 

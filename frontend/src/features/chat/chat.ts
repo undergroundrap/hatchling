@@ -13,6 +13,7 @@ import { messageActions, nativeAttachment } from './message-actions.js';
 import { floatingAgent } from '../context/presence.js';
 import { bindIconMotion } from '../../components/motion.js';
 import { fileSendRows, giveFile, givenFileDetail, offersFiles } from './file-in.js';
+import { offeredFileDetail } from './file-out.js';
 import type { AppContext } from '../../app/context.js';
 import type { ArtifactFormat, DeepReadonly, Message } from '../../protocol/models.js';
 import { h } from '../../components/dom.js';
@@ -111,7 +112,7 @@ function renderMessage(ctx: AppContext, message: DeepReadonly<Message>): HTMLEle
     else {
         const evidenceId = message.evidenceId;
         const name = message.kind === 'device' ? 'device' : message.kind === 'error' ? 'warning' : 'run';
-        root.append(h('div', { class: `stream-event ${message.kind}` }, icon(name, 16), h('div', {}, h('p', {}, message.text), givenFileDetail(ctx, message), evidenceId ? button('View evidence', () => ctx.openThread(evidenceId), { variant: 'link' }) : null)));
+        root.append(h('div', { class: `stream-event ${message.kind}` }, icon(name, 16), h('div', {}, h('p', {}, message.text), givenFileDetail(ctx, message), offeredFileDetail(ctx, message), evidenceId ? button('View evidence', () => ctx.openThread(evidenceId), { variant: 'link' }) : null)));
     }
     if (message.reaction) {
         const reaction = button(message.reaction, () => { void ctx.run({ type: 'message.react', id: message.id, reaction: '' }, true); }, { className: 'reaction-chip' });
