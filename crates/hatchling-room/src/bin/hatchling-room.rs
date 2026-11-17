@@ -12,7 +12,9 @@
 //! It also hands back a page of a file ([`page`]): it reads the file
 //! itself, as the Room's user, and no job is started for it. And it
 //! hands back the lines that match a pattern ([`search`]): the Room's
-//! search program looks, and is over before the answer is given.
+//! search program looks, and is over before the answer is given. And it
+//! hands back a piece of a file in the workspace, for the file to be handed
+//! to the owner ([`take`]), read beneath the workspace, through no link.
 //!
 //! One thread does all of it, waiting on the spawner's socket, every
 //! running job's pipes and every job's first process at once, so no job
@@ -41,7 +43,7 @@ use hatchling_core::framing::{read_frame_or_eof, write_frame};
 use hatchling_core::room::{
     Ask, Captured, End, Ended, Found, JOB_PATH, JobId, NoPage, NoSearch, NotStarted, PAGE_BYTES,
     PAGE_SCAN_BYTES, PIECE_BYTES, Page, RUNNING_MAX, SEARCH_MILLIS, SESSION_DIR, SPILL_BYTES, Say,
-    Stream, spill_path,
+    Stream, WORKSPACE, spill_path,
 };
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::fs::{Mode, OFlags};
@@ -54,6 +56,12 @@ use rustix::process::{Pid, PidfdFlags, Signal, kill_process_group, pidfd_open};
 )]
 #[path = "hatchling-room/search.rs"]
 mod search;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the supervisor is one program: what its parts share is the crate's"
+)]
+#[path = "hatchling-room/take.rs"]
+mod take;
 #[allow(
     clippy::redundant_pub_crate,
     reason = "the supervisor is one program: what its parts share is the crate's"
@@ -100,21 +108,29 @@ struct Place {
     scratch: PathBuf,
     /// The program a search is run with.
     search: PathBuf,
+    /// The directory that is the Room's workspace, which a file is handed
+    /// over from.
+    workspace: PathBuf,
 }
 
 impl Place {
-    /// The Room's own: under its session directory.
+    /// The Room's own: under its session directory, and its workspace.
     fn room() -> Self {
-        Self::under(Path::new(SESSION_DIR))
+        Self {
+            workspace: PathBuf::from(WORKSPACE),
+            ..Self::under(Path::new(SESSION_DIR))
+        }
     }
 
-    /// Under the session directory `session`.
+    /// Under the session directory `session`, with a workspace of its own
+    /// in it.
     fn under(session: &Path) -> Self {
         Self {
             jobs: session.join("jobs"),
             home: session.join("home"),
             scratch: session.to_path_buf(),
             search: PathBuf::from(search::SEARCH_PROGRAM),
+            workspace: session.join("workspace"),
         }
     }
 
@@ -670,6 +686,10 @@ impl Room<'_> {
             } => match write::edited_bytes(Path::new(&path), &old, &new, all) {
                 Ok(edited) => Say::Edited { nonce, edited },
                 Err(why) => Say::NoEdit { nonce, why },
+            },
+            Ask::Take { nonce, path, at } => match take::took(&self.place.workspace, &path, at) {
+                Ok(took) => Say::Took { nonce, took },
+                Err(why) => Say::NoTake { nonce, why },
             },
         }
     }

@@ -22,7 +22,9 @@
 //! in its turn. It is no job: nothing is kept of it, and asking again
 //! reads the file again. Like a job, it starts a session when there is
 //! none. So is a search of the Room's files: asked in its turn, kept
-//! nowhere, and looked for again when asked again.
+//! nowhere, and looked for again when asked again. And so is a piece of a
+//! file to be handed over: each piece is asked in its turn, and the
+//! spawner's connection puts them together.
 //!
 //! A session ends at its time limit, when it has been idle, when a job in
 //! it doesn't end after it was stopped, when its supervisor says what it
@@ -44,8 +46,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hatchling_core::room::{
-    Ask, Captured, Edited, End, Ended, Found, JobId, NoEdit, NoPage, NoSearch, NoWrite, Page,
-    RUNNING_MAX, Say, Stream, Wrote, check_edit, check_page, check_search, check_write,
+    Ask, Captured, Edited, End, Ended, Found, JobId, NoEdit, NoPage, NoSearch, NoTake, NoWrite,
+    Page, RUNNING_MAX, Say, Stream, Took, Wrote, check_edit, check_page, check_search, check_take,
+    check_write,
 };
 
 use crate::room_disk::{InboxAnswer, InboxOp, RoomDiskOp, RoomDiskStatus};
@@ -76,6 +79,7 @@ const BAD_PAGE: &str = "the Room supervisor sent a page of a file that can't be 
 const BAD_FOUND: &str = "the Room supervisor sent what a search found that can't be it";
 const BAD_WROTE: &str = "the Room supervisor said it wrote a file in a way it can't have";
 const BAD_EDITED: &str = "the Room supervisor said it made an edit in a way it can't have";
+const BAD_TOOK: &str = "the Room supervisor sent a piece of a file that can't be the one asked for";
 /// Said after why a session ended, to whoever asked for a change the
 /// supervisor had been given and hadn't answered.
 const UNHEARD: &str =
@@ -108,6 +112,9 @@ pub(crate) type PageReply = Result<Page, String>;
 
 /// What a search of the Room's files comes to.
 pub(crate) type SearchReply = Result<Found, String>;
+
+/// What asking for a piece of a file to hand over comes to.
+pub(crate) type TakeReply = Result<Took, String>;
 
 /// What one search of the Room's files asks for, as its caller gave it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -265,6 +272,24 @@ fn no_search(why: NoSearch) -> String {
             "the search wasn't run: the pattern or the glob isn't one, or that path can't be read"
         }
         NoSearch::Failed => "the Room couldn't run the search",
+    })
+}
+
+/// Why the supervisor handed back no piece of a file, in words for
+/// whoever asked.
+fn no_take(why: NoTake) -> String {
+    String::from(match why {
+        NoTake::NoSuchFile => "the Room has no such file",
+        NoTake::Denied => "the Room's user may not read that file",
+        NoTake::NotAFile => "that is a directory or a special file, not a file",
+        NoTake::Link => {
+            "that path has a link in it, and no link is followed: hand over the file itself"
+        }
+        NoTake::Outside => {
+            "that path leads out of the workspace, or onto another file system: only a file in the workspace is handed over"
+        }
+        NoTake::Changed => "the file changed while it was read: hand it over once it is done",
+        NoTake::Failed => "the Room couldn't read that file",
     })
 }
 
@@ -442,6 +467,14 @@ pub(crate) enum Message {
         requester: UnixStream,
         reply: Sender<ChangeReply>,
     },
+    /// Hand back a piece of a file in the workspace, from byte `at`, for
+    /// the connection at `requester`.
+    Take {
+        path: String,
+        at: u64,
+        requester: UnixStream,
+        reply: Sender<TakeReply>,
+    },
     /// Say whether the installed Room works.
     Probe { reply: Sender<Result<(), String>> },
     /// Do this to the room disk.
@@ -569,6 +602,8 @@ enum Asking {
     Search,
     /// The change the first connection waiting for one wants.
     Change,
+    /// The piece of a file the first connection waiting for one wants.
+    Take,
 }
 
 /// A job's end as the supervisor said it, while its kept output is
@@ -632,6 +667,14 @@ struct Changer {
     reply: Sender<ChangeReply>,
 }
 
+/// A connection waiting for a piece of a file to hand over.
+struct Taker {
+    path: String,
+    at: u64,
+    requester: UnixStream,
+    reply: Sender<TakeReply>,
+}
+
 /// An answer kept until the Room is down.
 enum Owed {
     /// How a job came out, or why it isn't known.
@@ -642,6 +685,8 @@ enum Owed {
     Search(Sender<SearchReply>, String),
     /// Why no change is known to have been made.
     Change(Sender<ChangeReply>, String),
+    /// Why there is no piece of a file.
+    Take(Sender<TakeReply>, String),
 }
 
 impl Owed {
@@ -660,6 +705,9 @@ impl Owed {
             Self::Change(reply, reason) => {
                 let _ = reply.send(Err(reason));
             }
+            Self::Take(reply, reason) => {
+                let _ = reply.send(Err(reason));
+            }
         }
     }
 
@@ -676,6 +724,9 @@ impl Owed {
                 let _ = reply.send(Err(reason.to_owned()));
             }
             Self::Change(reply, _) => {
+                let _ = reply.send(Err(reason.to_owned()));
+            }
+            Self::Take(reply, _) => {
                 let _ = reply.send(Err(reason.to_owned()));
             }
         }
@@ -763,6 +814,12 @@ pub(crate) struct Kept<D, P> {
     /// Who is told of the change the supervisor has been asked for, and
     /// what its answer must agree with.
     changing: Option<(Sender<ChangeReply>, Expect)>,
+    /// The connections waiting for a piece of a file that hasn't been
+    /// asked for.
+    takers: VecDeque<Taker>,
+    /// Who is told of the piece the supervisor has been asked for, and the
+    /// byte it was asked from.
+    taking: Option<(Sender<TakeReply>, u64)>,
     /// What is still to be asked of the supervisor.
     asks: VecDeque<Asking>,
     /// What it has been asked and hasn't answered: its nonce, and when.
@@ -800,6 +857,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             seeking: None,
             changers: VecDeque::new(),
             changing: None,
+            takers: VecDeque::new(),
+            taking: None,
             asks: VecDeque::new(),
             asked: None,
             probes: Vec::new(),
@@ -809,13 +868,14 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
         }
     }
 
-    /// Whether anything waits for a Room: a job, a page, a search or a
-    /// change.
+    /// Whether anything waits for a Room: a job, a page, a search, a
+    /// change or a piece of a file.
     fn wanted(&self) -> bool {
         !self.flights.is_empty()
             || !self.readers.is_empty()
             || !self.seekers.is_empty()
             || !self.changers.is_empty()
+            || !self.takers.is_empty()
     }
 
     /// How a job that is over came out.
@@ -831,6 +891,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             || !self.readers.is_empty()
             || !self.seekers.is_empty()
             || !self.changers.is_empty()
+            || !self.takers.is_empty()
             || self.asked.is_some()
     }
 
@@ -903,6 +964,20 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                         reply,
                     });
                     self.asks.push_back(Asking::Change);
+                }
+                Message::Take {
+                    path,
+                    at,
+                    requester,
+                    reply,
+                } => {
+                    self.takers.push_back(Taker {
+                        path,
+                        at,
+                        requester,
+                        reply,
+                    });
+                    self.asks.push_back(Asking::Take);
                 }
                 Message::Probe { reply } => self.probes.push(reply),
                 Message::Disk {
@@ -1102,6 +1177,18 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
         }
     }
 
+    /// Lets go of every caller waiting for a piece of a file that has
+    /// gone: nothing is read for nobody.
+    fn untaken(&mut self) {
+        let (staying, gone): (VecDeque<Taker>, VecDeque<Taker>) = std::mem::take(&mut self.takers)
+            .into_iter()
+            .partition(|taker| quiet(&taker.requester));
+        self.takers = staying;
+        for taker in gone {
+            let _ = taker.reply.send(Err(String::from(REQUESTER_GONE)));
+        }
+    }
+
     /// Sends the supervisor the next thing to ask, when it isn't still
     /// answering the last. One ask is with the supervisor at a time, so
     /// its socket has room for a whole one: a supervisor that can't take
@@ -1166,33 +1253,16 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                     })
                 }
                 // And no file is changed for one.
-                Asking::Change => {
-                    self.unchanged();
-                    self.changers.pop_front().map(|changer| {
-                        self.changing = Some((changer.reply, changer.change.expect()));
-                        match changer.change {
-                            Change::Write {
-                                path,
-                                bytes,
-                                replace,
-                            } => Ask::Write {
-                                nonce: nonce.clone(),
-                                path,
-                                bytes,
-                                replace,
-                            },
-                            Change::Edit {
-                                path,
-                                old,
-                                new,
-                                all,
-                            } => Ask::Edit {
-                                nonce: nonce.clone(),
-                                path,
-                                old,
-                                new,
-                                all,
-                            },
+                Asking::Change => self.change_ask(&nonce),
+                // Nor is any of a file read for one.
+                Asking::Take => {
+                    self.untaken();
+                    self.takers.pop_front().map(|taker| {
+                        self.taking = Some((taker.reply, taker.at));
+                        Ask::Take {
+                            nonce: nonce.clone(),
+                            path: taker.path,
+                            at: taker.at,
                         }
                     })
                 }
@@ -1210,6 +1280,39 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             }
         }
         Ok(())
+    }
+
+    /// The ask for the change the first connection still waiting for one
+    /// wants, with `nonce`: none when no caller is still there.
+    fn change_ask(&mut self, nonce: &str) -> Option<Ask> {
+        self.unchanged();
+        let changer = self.changers.pop_front()?;
+        self.changing = Some((changer.reply, changer.change.expect()));
+        let nonce = nonce.to_owned();
+        Some(match changer.change {
+            Change::Write {
+                path,
+                bytes,
+                replace,
+            } => Ask::Write {
+                nonce,
+                path,
+                bytes,
+                replace,
+            },
+            Change::Edit {
+                path,
+                old,
+                new,
+                all,
+            } => Ask::Edit {
+                nonce,
+                path,
+                old,
+                new,
+                all,
+            },
+        })
     }
 
     /// Does what is due at `now`: a job at its limit is stopped, and a
@@ -1438,8 +1541,27 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                 Ok(())
             }
             (Asking::Change, said) => self.changed(said),
+            (Asking::Take, Say::Took { took, .. }) => self.took(Ok(took)),
+            (Asking::Take, Say::NoTake { why, .. }) => self.took(Err(why)),
             _ => Err(String::from(OUT_OF_TURN)),
         }
+    }
+
+    /// Takes the supervisor's answer to the piece of a file it was asked
+    /// for, holds it to where it was asked from, and tells whoever waits.
+    /// A piece that can't be the one asked for ends the session, and
+    /// whoever waits is told why once the Room is down.
+    fn took(&mut self, said: Result<Took, NoTake>) -> Result<(), String> {
+        let Some(&(_, at)) = self.taking.as_ref() else {
+            return Err(String::from(OUT_OF_TURN));
+        };
+        if said.as_ref().is_ok_and(|took| took.check(at).is_err()) {
+            return Err(String::from(BAD_TOOK));
+        }
+        if let Some((reply, _)) = self.taking.take() {
+            let _ = reply.send(said.map_err(no_take));
+        }
+        Ok(())
     }
 
     /// Takes the supervisor's answer to the change it was asked for,
@@ -1652,6 +1774,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                 Message::Change { reply, .. } => {
                     let _ = reply.send(Err(held(reason)));
                 }
+                Message::Take { reply, .. } => {
+                    let _ = reply.send(Err(held(reason)));
+                }
                 Message::Probe { reply } => {
                     let _ = reply.send(Err(held(reason)));
                 }
@@ -1703,6 +1828,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             for changer in self.changers.drain(..) {
                 let _ = changer.reply.send(Err(reason.clone()));
             }
+            for taker in self.takers.drain(..) {
+                let _ = taker.reply.send(Err(reason.clone()));
+            }
             while let Ok(message) = self.seat.inbox.try_recv() {
                 match message {
                     Message::Run { reply, .. } => {
@@ -1715,6 +1843,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Change { reply, .. } => {
+                        let _ = reply.send(Err(reason.clone()));
+                    }
+                    Message::Take { reply, .. } => {
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Job { .. }
@@ -1744,6 +1875,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Sessio
         self.unread();
         self.unsought();
         self.unchanged();
+        self.untaken();
         if asked && !self.wanted() {
             return Err(String::from(REQUESTER_GONE));
         }
@@ -1791,6 +1923,12 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Sessio
         }
         for changer in self.changers.drain(..) {
             self.owed.push(Owed::Change(changer.reply, reason.clone()));
+        }
+        // Nor is a piece of a file that wasn't handed back.
+        let untaken = self.takers.drain(..).map(|taker| taker.reply);
+        let taking = self.taking.take().map(|(reply, _)| reply);
+        for reply in taking.into_iter().chain(untaken) {
+            self.owed.push(Owed::Take(reply, reason.clone()));
         }
     }
 
@@ -1993,6 +2131,22 @@ impl Sessions {
         let message = |reply: Sender<ChangeReply>| -> Result<Message, String> {
             Ok(Message::Change {
                 change: change.clone(),
+                requester: requester.try_clone().map_err(|error| error.to_string())?,
+                reply,
+            })
+        };
+        self.ask_or_start(&message, || None)
+    }
+
+    /// Hands back a piece of the file at `path` in the kept Room's
+    /// workspace, from byte `at`, for the connection at `requester`. A
+    /// session is started when there is none.
+    pub(crate) fn take(&self, path: &str, at: u64, requester: &UnixStream) -> TakeReply {
+        check_take(path, at)?;
+        let message = |reply: Sender<TakeReply>| -> Result<Message, String> {
+            Ok(Message::Take {
+                path: path.to_owned(),
+                at,
                 requester: requester.try_clone().map_err(|error| error.to_string())?,
                 reply,
             })

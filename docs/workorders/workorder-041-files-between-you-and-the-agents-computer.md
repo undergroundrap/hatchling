@@ -54,7 +54,7 @@ Settled from an independent threat model of this work order and the code (2026-1
 **A file out.**
 
 - The agent names a file in `/workspace`. The supervisor reads it as the Room's user, beneath `/workspace`, with no links, and only a regular file. It reads in pieces, each no more than a frame. A file that changes size or identity while it is read is refused.
-- The broker puts the pieces together, hashes them, checks them, and keeps that copy in a sealed store of its own, the Library. A download is always that copy, never a fresh read of the Room.
+- The spawner puts the pieces together, as root, holds them to the inode, length and change time the supervisor said staying the same, to the bound and to a deadline, and hands the broker the file. The broker hashes it, checks it, and keeps that copy in a sealed store of its own, the Library. A download is always that copy, never a fresh read of the Room.
 - **The check** is the output gate's held secrets and the keeper's whole set. A hit withholds the file, tells the agent and the owner why without naming the secret, and turns file out off for that chat: a file is large enough to test many guesses at once.
 - **The name** is the broker's: the basename through the same allowlist, refusing Windows' reserved names and a trailing dot. The app shows the whole name, flags an extension that runs, and says the file is the agent's.
 - **The app** downloads it as `application/octet-stream`, whatever its extension, and never previews or renders it.
@@ -73,7 +73,7 @@ Settled from an independent threat model of this work order and the code (2026-1
 
 1. The inbox put: the spawner and the trusted mount code, with the inbox's mode, proved as root.
 2. A file in from the app: the upload in parts, the stem, the line to the model, and Activity. It lands in two pull requests: the broker's side and the local API first, then the app's own attach and inbox list.
-3. A file out to the Library: the supervisor's read, assembly, the checks, the sealed store, and the agent's tool.
+3. A file out to the Library: the supervisor's read, assembly, the checks, the sealed store, and the agent's tool. It lands in two pull requests: the Room's side first (the supervisor's read, and the spawner putting the pieces together), then the broker's store, the checks and the agent's tool.
 4. A file out in the app: the card, the Library, the download, the docs, and the evidence.
 
 ## Gates
@@ -87,5 +87,6 @@ Each slice's record, as it lands:
 - Slice 1, the inbox put: [room-inbox-put](../evidence/room-inbox-put.md).
 - Slice 2, a file in through the local API: [room-file-in](../evidence/room-file-in.md).
 - Slice 2, a file in from the app: [room-file-in-app](../evidence/room-file-in-app.md).
+- Slice 3, a file read out of the Room: [room-take-wire](../evidence/room-take-wire.md).
 
 The whole is filled in at close.

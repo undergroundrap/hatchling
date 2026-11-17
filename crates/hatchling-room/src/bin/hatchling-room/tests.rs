@@ -8,7 +8,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hatchling_core::framing::read_frame;
-use hatchling_core::room::{Edited, JOBS_DIR, NoEdit, NoWrite, Wrote};
+use hatchling_core::room::{Edited, JOBS_DIR, NoEdit, NoTake, NoWrite, TAKE_BYTES, Took, Wrote};
 
 use super::*;
 
@@ -153,6 +153,24 @@ impl Bench {
         assert!(matches!(said, Say::NoPage { .. }), "{said:?}");
         let Say::NoPage { why, .. } = said else {
             return Err(NoPage::Failed);
+        };
+        Err(why)
+    }
+
+    /// A piece of the file at the Room's `path` from byte `at`, or why
+    /// none: the bench's workspace is `workspace` in its directory.
+    fn take(&mut self, path: &str, at: u64) -> std::result::Result<Took, NoTake> {
+        let ask = Ask::Take {
+            nonce: self.nonce(),
+            path: path.to_owned(),
+            at,
+        };
+        let said = self.ask(&ask);
+        if let Say::Took { took, .. } = said {
+            return Ok(took);
+        }
+        let Say::NoTake { why, .. } = said else {
+            unreachable!("{said:?} isn't what a take is answered with");
         };
         Err(why)
     }
@@ -1172,4 +1190,337 @@ fn the_supervisor_hands_back_a_page_of_a_file_and_says_why_not() {
     assert_eq!(bench.page(&notes, 1, 1).unwrap().bytes, b"one\n");
     assert!(matches!(bench.stop("sleeper"), Say::Stopping { .. }));
     bench.ended("sleeper");
+}
+
+/// A bench with a workspace of its own, made, and the Room's path for
+/// `name` in it.
+fn workspace(bench: &Bench) -> PathBuf {
+    let workspace = bench.dir.join("workspace");
+    std::fs::create_dir_all(&workspace).unwrap();
+    workspace
+}
+
+/// The Room's path for `name` in the workspace.
+fn in_room(name: &str) -> String {
+    format!("{WORKSPACE}/{name}")
+}
+
+#[test]
+fn a_file_is_handed_back_whole_piece_by_piece() {
+    let mut bench = Bench::new("take");
+    let workspace = workspace(&bench);
+    let whole: Vec<u8> = (0..2 * TAKE_BYTES + 5)
+        .map(|at| u8::try_from(at % 251).unwrap())
+        .collect();
+    std::fs::create_dir(workspace.join("out")).unwrap();
+    std::fs::write(workspace.join("out/made.bin"), &whole).unwrap();
+    let path = in_room("out/made.bin");
+    let size = u64::try_from(whole.len()).unwrap();
+    let mut taken = Vec::new();
+    let mut first: Option<Took> = None;
+    while u64::try_from(taken.len()).unwrap() < size {
+        let at = u64::try_from(taken.len()).unwrap();
+        let took = bench.take(&path, at).unwrap();
+        assert!(took.check(at).is_ok());
+        assert_eq!(took.size, size);
+        if let Some(first) = &first {
+            assert_eq!((took.ino, took.changed), (first.ino, first.changed));
+        }
+        taken.extend_from_slice(&took.bytes);
+        first.get_or_insert(took);
+    }
+    assert_eq!(taken, whole);
+    let lengths: Vec<usize> = [0, TAKE_BYTES, 2 * TAKE_BYTES]
+        .map(|at| {
+            bench
+                .take(&path, u64::try_from(at).unwrap())
+                .unwrap()
+                .bytes
+                .len()
+        })
+        .to_vec();
+    assert_eq!(lengths, [TAKE_BYTES, TAKE_BYTES, 5]);
+    // An empty file is one piece of nothing, and a path inside the
+    // workspace that steps back into it is still beneath it.
+    std::fs::write(workspace.join("empty"), b"").unwrap();
+    let empty = bench.take(&in_room("empty"), 0).unwrap();
+    assert_eq!((empty.bytes.len(), empty.size), (0, 0));
+    assert!(empty.check(0).is_ok());
+    let round = bench.take(&in_room("out/../empty"), 0).unwrap();
+    assert_eq!(round.ino, empty.ino);
+    // A piece from past where the file ends: it is shorter than it was.
+    assert_eq!(bench.take(&path, size + 1), Err(NoTake::Changed));
+    // Taking starts no job, and is still answered while one runs.
+    bench.shell("sleeper", "sleep 30");
+    assert_eq!(bench.take(&path, 0).unwrap().bytes.len(), TAKE_BYTES);
+    assert!(matches!(bench.stop("sleeper"), Say::Stopping { .. }));
+    bench.ended("sleeper");
+}
+
+#[test]
+fn nothing_is_handed_back_through_a_link_or_from_outside_the_workspace() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let mut bench = Bench::new("take-refused");
+    let workspace = workspace(&bench);
+    std::fs::write(bench.dir.join("outside.txt"), b"not the workspace's\n").unwrap();
+    std::fs::write(workspace.join("notes.txt"), b"notes\n").unwrap();
+    std::fs::create_dir(workspace.join("dir")).unwrap();
+    // What isn't there, and what is in the way of it.
+    assert_eq!(bench.take(&in_room("none.txt"), 0), Err(NoTake::NoSuchFile));
+    assert_eq!(
+        bench.take(&in_room("notes.txt/under"), 0),
+        Err(NoTake::NoSuchFile)
+    );
+    // What isn't a file: a directory, and a pipe nobody writes to, which
+    // is not waited for.
+    assert_eq!(bench.take(&in_room("dir"), 0), Err(NoTake::NotAFile));
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        workspace.join("pipe"),
+        rustix::fs::FileType::Fifo,
+        Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    assert_eq!(bench.take(&in_room("pipe"), 0), Err(NoTake::NotAFile));
+    // A link is never followed: not the last step, not one before it,
+    // not one to a file inside the workspace, not one to itself.
+    let link =
+        |name: &str, to: &Path| std::os::unix::fs::symlink(to, workspace.join(name)).unwrap();
+    link("to-outside", &bench.dir.join("outside.txt"));
+    link("to-notes", &workspace.join("notes.txt"));
+    link("to-dir", &workspace.join("dir"));
+    link("loop", &workspace.join("loop"));
+    std::fs::write(workspace.join("dir/inner.txt"), b"inner\n").unwrap();
+    for linked in ["to-outside", "to-notes", "to-dir/inner.txt", "loop"] {
+        assert_eq!(
+            bench.take(&in_room(linked), 0),
+            Err(NoTake::Link),
+            "{linked}"
+        );
+    }
+    // Nothing out of the workspace: not by stepping back past it, and not
+    // by a path that isn't under it at all.
+    for outside in [
+        in_room("../outside.txt"),
+        in_room("dir/../../outside.txt"),
+        String::from("/session/jobs/a.stdout"),
+        String::from("/workspaces/notes.txt"),
+        String::from(WORKSPACE),
+    ] {
+        assert_eq!(bench.take(&outside, 0), Err(NoTake::Outside), "{outside}");
+    }
+    // A file its user may not read, where there is such a thing: root
+    // reads what it likes.
+    let closed = workspace.join("closed.txt");
+    std::fs::write(&closed, b"kept\n").unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if rustix::process::geteuid().is_root() {
+        assert!(bench.take(&in_room("closed.txt"), 0).is_ok());
+    } else {
+        assert_eq!(bench.take(&in_room("closed.txt"), 0), Err(NoTake::Denied));
+    }
+    // A workspace that isn't there: nothing is opened.
+    std::fs::remove_dir_all(&workspace).unwrap();
+    assert_eq!(bench.take(&in_room("notes.txt"), 0), Err(NoTake::Failed));
+    // None of it ended the supervisor.
+    assert_eq!(
+        bench
+            .page(&bench.dir.join("outside.txt"), 1, 1)
+            .unwrap()
+            .bytes,
+        b"not the workspace's\n"
+    );
+}
+
+#[test]
+fn why_a_file_is_not_opened_is_said_from_the_kernels_word() {
+    for (errno, why) in [
+        (Errno::NOENT, NoTake::NoSuchFile),
+        (Errno::NOTDIR, NoTake::NoSuchFile),
+        (Errno::ACCESS, NoTake::Denied),
+        (Errno::PERM, NoTake::Denied),
+        (Errno::LOOP, NoTake::Link),
+        (Errno::XDEV, NoTake::Outside),
+        (Errno::NXIO, NoTake::NotAFile),
+        (Errno::OPNOTSUPP, NoTake::NotAFile),
+        (Errno::IO, NoTake::Failed),
+        (Errno::NOMEM, NoTake::Failed),
+    ] {
+        assert_eq!(take::not_opened(errno), why, "{errno:?}");
+    }
+}
+
+/// A file as a stand-in: what it is said to be at its first look and at
+/// every one after, its bytes, the most one read gives, and what reads say
+/// in place of bytes before they give any.
+struct Stood {
+    seen: [take::Seen; 2],
+    looked: std::cell::Cell<usize>,
+    /// From which look on a look fails.
+    blind_from: Option<usize>,
+    bytes: Vec<u8>,
+    most: usize,
+    errors: std::cell::RefCell<Vec<io::ErrorKind>>,
+    read: std::cell::Cell<usize>,
+}
+
+impl Stood {
+    /// A file of `bytes`, said to be as long as they are, read whole.
+    fn of(bytes: Vec<u8>) -> Self {
+        let seen = take::Seen {
+            file: true,
+            size: u64::try_from(bytes.len()).unwrap(),
+            ino: 5,
+            changed: 6,
+        };
+        Self {
+            seen: [seen; 2],
+            looked: std::cell::Cell::new(0),
+            blind_from: None,
+            bytes,
+            most: usize::MAX,
+            errors: std::cell::RefCell::new(Vec::new()),
+            read: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl take::Readable for Stood {
+    fn seen(&self) -> io::Result<take::Seen> {
+        let look = self.looked.get();
+        self.looked.set(look + 1);
+        if self.blind_from.is_some_and(|from| look >= from) {
+            return Err(io::Error::other("the file went"));
+        }
+        Ok(*self.seen.get(look.min(1)).unwrap())
+    }
+
+    fn read_from(&self, bytes: &mut [u8], at: u64) -> io::Result<usize> {
+        self.read.set(self.read.get() + 1);
+        if let Some(kind) = self.errors.borrow_mut().pop() {
+            return Err(io::Error::from(kind));
+        }
+        let from = usize::try_from(at).unwrap().min(self.bytes.len());
+        let count = (self.bytes.len() - from).min(bytes.len()).min(self.most);
+        bytes
+            .get_mut(..count)
+            .unwrap()
+            .copy_from_slice(self.bytes.get(from..from + count).unwrap());
+        Ok(count)
+    }
+}
+
+/// The bytes 0 to `len`, each its place mod 251.
+fn counted(len: usize) -> Vec<u8> {
+    (0..len).map(|at| u8::try_from(at % 251).unwrap()).collect()
+}
+
+#[test]
+fn a_piece_is_read_whole_from_where_it_was_asked_however_its_reads_come() {
+    let len = 2 * TAKE_BYTES + 9;
+    let whole = counted(len);
+    let mut stood = Stood::of(whole.clone());
+    // Reads that give a few bytes at a time, and one interrupted.
+    stood.most = 7;
+    stood.errors = std::cell::RefCell::new(vec![io::ErrorKind::Interrupted]);
+    let first = take::piece(&stood, 0).unwrap();
+    assert_eq!(first.bytes, whole.get(..TAKE_BYTES).unwrap());
+    assert_eq!(
+        (first.size, first.ino, first.changed),
+        (u64::try_from(len).unwrap(), 5, 6)
+    );
+    assert_eq!(stood.read.get(), TAKE_BYTES.div_ceil(7) + 1);
+    let at = u64::try_from(2 * TAKE_BYTES).unwrap();
+    let last = take::piece(&Stood::of(whole.clone()), at).unwrap();
+    assert_eq!(last.bytes, whole.get(2 * TAKE_BYTES..).unwrap());
+    assert!(last.check(at).is_ok());
+    // From the very end: nothing, and the file isn't read.
+    let end = Stood::of(whole.clone());
+    let none = take::piece(&end, u64::try_from(len).unwrap()).unwrap();
+    assert!(none.bytes.is_empty());
+    assert_eq!(end.read.get(), 0);
+    // From past it: the file is shorter than it was.
+    let past = u64::try_from(len + 1).unwrap();
+    assert_eq!(take::piece(&Stood::of(whole), past), Err(NoTake::Changed));
+}
+
+#[test]
+fn a_piece_of_a_file_that_changed_or_isnt_one_is_not_handed_back() {
+    // Not a file: nothing of it is read.
+    let mut other = Stood::of(counted(9));
+    other.seen = other.seen.map(|seen| take::Seen {
+        file: false,
+        ..seen
+    });
+    assert_eq!(take::piece(&other, 0), Err(NoTake::NotAFile));
+    assert_eq!(other.read.get(), 0);
+    // Another file, another length, or a change, after the piece is read.
+    let changes: [fn(&mut take::Seen); 3] = [
+        |seen| seen.ino += 1,
+        |seen| seen.size += 1,
+        |seen| seen.changed += 1,
+    ];
+    for change in changes {
+        let mut stood = Stood::of(counted(9));
+        if let Some(after) = stood.seen.get_mut(1) {
+            change(after);
+        }
+        assert_eq!(take::piece(&stood, 0), Err(NoTake::Changed));
+    }
+    // Shorter than it was said to be while it was read.
+    let mut short = Stood::of(counted(9));
+    short.bytes.truncate(4);
+    assert_eq!(take::piece(&short, 0), Err(NoTake::Changed));
+    // A read that fails, and a look that does, before or after.
+    let failing = Stood::of(counted(9));
+    failing
+        .errors
+        .borrow_mut()
+        .push(io::ErrorKind::PermissionDenied);
+    assert_eq!(take::piece(&failing, 0), Err(NoTake::Failed));
+    for from in [0, 1] {
+        let mut blind = Stood::of(counted(9));
+        blind.blind_from = Some(from);
+        assert_eq!(
+            take::piece(&blind, 0),
+            Err(NoTake::Failed),
+            "from look {from}"
+        );
+    }
+}
+
+/// A real file says which file it is, as it is: its change time, a
+/// plausible time, moves when the file is written where it lies at the
+/// same length, and its inode when another file is put in its place.
+#[test]
+fn a_real_file_says_when_it_changed_and_which_file_it_is() {
+    use std::io::{Seek as _, SeekFrom};
+
+    let mut bench = Bench::new("take-identity");
+    let workspace = workspace(&bench);
+    let path = workspace.join("made.txt");
+    std::fs::write(&path, b"first words\n").unwrap();
+    let first = bench.take(&in_room("made.txt"), 0).unwrap();
+    // After 2017, and before 2100, in nanoseconds since the epoch.
+    assert!((1_500_000_000_000_000_000..4_102_444_800_000_000_000).contains(&first.changed));
+    std::thread::sleep(Duration::from_millis(50));
+    let mut file = OpenOptions::new().write(true).open(&path).unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    file.write_all(b"other words\n").unwrap();
+    drop(file);
+    let rewritten = bench.take(&in_room("made.txt"), 0).unwrap();
+    assert_eq!(rewritten.bytes, b"other words\n");
+    assert_eq!((rewritten.size, rewritten.ino), (first.size, first.ino));
+    assert!(
+        rewritten.changed > first.changed,
+        "a write left its change time"
+    );
+    let beside = workspace.join("beside.txt");
+    std::fs::write(&beside, b"third words\n").unwrap();
+    std::fs::rename(&beside, &path).unwrap();
+    let replaced = bench.take(&in_room("made.txt"), 0).unwrap();
+    assert_eq!(replaced.size, first.size);
+    assert_ne!(replaced.ino, first.ino, "another file has the same inode");
 }

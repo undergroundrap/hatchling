@@ -2,7 +2,7 @@ use std::os::fd::OwnedFd;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as Atomic};
 
 use hatchling_core::framing::{read_frame, write_frame};
-use hatchling_core::room::{NotStarted, PAGE_BYTES};
+use hatchling_core::room::{NotStarted, PAGE_BYTES, TAKE_BYTES};
 
 use super::*;
 use crate::room_job::tests::{job, run as a_run};
@@ -2038,6 +2038,27 @@ pub(crate) fn stood_changed(generation: usize, change: &Change) -> Changed {
     }
 }
 
+/// The file a stand-in session hands over at `path`: 10000 bytes for
+/// each byte of its path, each the stand-in's number.
+pub(crate) fn stood_file(generation: usize, path: &str) -> Vec<u8> {
+    vec![u8::try_from(generation).unwrap(); path.len() * 10_000]
+}
+
+/// The piece of [`stood_file`] a stand-in session hands back from `at`.
+/// Its inode is 1, but for `/workspace/changing`, whose inode is where
+/// the piece starts.
+pub(crate) fn stood_took(generation: usize, path: &str, at: u64) -> Took {
+    let file = stood_file(generation, path);
+    let from = usize::try_from(at).unwrap().min(file.len());
+    let to = from.saturating_add(TAKE_BYTES).min(file.len());
+    Took {
+        bytes: file.get(from..to).unwrap().to_vec(),
+        size: u64::try_from(file.len()).unwrap(),
+        ino: if path == "/workspace/changing" { at } else { 1 },
+        changed: 0,
+    }
+}
+
 /// A stand-in for the thread that holds a session: it answers with its
 /// own number, and ends when told to or on the jobs that say so.
 fn stand_in(generation: usize, seat: &Seat) {
@@ -2085,6 +2106,14 @@ fn stand_in(generation: usize, seat: &Seat) {
                     return;
                 }
                 let _ = reply.send(Ok(stood_changed(generation, &change)));
+            }
+            Message::Take {
+                path, at, reply, ..
+            } => {
+                if path == "/workspace/vanish" {
+                    return;
+                }
+                let _ = reply.send(Ok(stood_took(generation, &path, at)));
             }
             Message::Probe { reply } => {
                 let _ = reply.send(Ok(()));
@@ -2236,6 +2265,7 @@ fn output_is_read_once_a_job_is_over() {
                     Message::Page { .. }
                     | Message::Search { .. }
                     | Message::Change { .. }
+                    | Message::Take { .. }
                     | Message::Probe { .. }
                     | Message::Disk { .. }
                     | Message::Inbox { .. }
@@ -3201,7 +3231,8 @@ fn change_asked(room: &UnixStream) -> (String, Change) {
         | Ask::Stop { .. }
         | Ask::Piece { .. }
         | Ask::Page { .. }
-        | Ask::Search { .. }) => unreachable!("asked {ask:?}, not for a change"),
+        | Ask::Search { .. }
+        | Ask::Take { .. }) => unreachable!("asked {ask:?}, not for a change"),
     }
 }
 
@@ -3691,6 +3722,365 @@ fn a_change_starts_a_session_and_the_next_uses_it() {
     // up on.
     assert_eq!(
         change(&sessions, &write_of("/vanish", b"x", false)),
+        Err(String::from(UNSETTLED))
+    );
+    let tried = started.load(Atomic::SeqCst);
+    assert!((2..=ATTEMPTS).contains(&tried), "started {tried} sessions");
+}
+
+/// Asks the session for a piece of the file at `path` from byte `at`: the
+/// broker's end of the connection it is asked on, and where its answer
+/// comes.
+fn ask_take(door: &Door, path: &str, at: u64) -> (UnixStream, Receiver<TakeReply>) {
+    let (broker, requester) = UnixStream::pair().unwrap();
+    let (reply, answer) = mpsc::channel();
+    let sent = door.send(Message::Take {
+        path: path.to_owned(),
+        at,
+        requester,
+        reply,
+    });
+    assert!(sent.is_ok(), "the session had ended");
+    (broker, answer)
+}
+
+/// Takes the ask for a piece of a file as the supervisor hears it: its
+/// nonce, and what it asks for.
+fn take_asked(room: &UnixStream) -> (String, (String, u64)) {
+    let ask = hears(room);
+    let Ask::Take { nonce, path, at } = ask else {
+        unreachable!("asked {ask:?}, not for a piece of a file");
+    };
+    (nonce, (path, at))
+}
+
+/// A piece of a file of `size` bytes: `len` of them.
+fn took_of(len: usize, size: u64) -> Took {
+    Took {
+        bytes: vec![7; len],
+        size,
+        ino: 3,
+        changed: 4,
+    }
+}
+
+/// A piece of a file is asked of the supervisor in its turn, as it was
+/// asked for, one thing at a time, and its answer goes to whoever asked.
+/// That nothing is at a path is no fault of the session's. Nothing of a
+/// file is kept.
+#[test]
+fn a_piece_of_a_file_is_asked_of_the_supervisor_in_its_turn_and_handed_back() {
+    let (rig, mut kept) = new_rig(limits());
+    let whole = u64::try_from(TAKE_BYTES).unwrap();
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        // Asked for before the supervisor is ready, it waits, as a job
+        // does.
+        let (_first_broker, first) = ask_take(&rig.door, "/workspace/out.bin", whole);
+        let (_job_broker, ran) = ask_run(&rig.door, "between");
+        let (_second_broker, second) = ask_take(&rig.door, "/workspace/none", 0);
+        assert!(unasked(&rig.room, SHORT), "asked before it was ready");
+        say_ready(&rig.room);
+        let (nonce, asked) = take_asked(&rig.room);
+        assert_eq!(asked, (String::from("/workspace/out.bin"), whole));
+        assert!(unasked(&rig.room, SHORT), "asked two things at once");
+        assert!(unanswered(&first));
+        // The last piece of a file, short of a whole one where it ends.
+        let said = Say::Took {
+            nonce,
+            took: took_of(5, whole + 5),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&first), Ok(took_of(5, whole + 5)));
+        starts(&rig.room, "between");
+        let (nonce, asked) = take_asked(&rig.room);
+        assert_eq!(asked, (String::from("/workspace/none"), 0));
+        let said = Say::NoTake {
+            nonce,
+            why: NoTake::NoSuchFile,
+        };
+        says(&rig.room, &said);
+        assert_eq!(
+            wait(&second),
+            Err(String::from("the Room has no such file"))
+        );
+        ends(&rig.room, "between", Ended::Exited(0), b"");
+        assert_eq!(outcome(&answered(&ran).1).0, Ended::Exited(0));
+        // A whole piece of a file that goes on is one.
+        let (_third_broker, third) = ask_take(&rig.door, "/workspace/long", 0);
+        let (nonce, _) = take_asked(&rig.room);
+        let said = Say::Took {
+            nonce,
+            took: took_of(TAKE_BYTES, 3 * whole),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&third), Ok(took_of(TAKE_BYTES, 3 * whole)));
+        assert!(
+            !held.is_finished(),
+            "the session ended over a piece of a file"
+        );
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+    assert_eq!(
+        opened(&rig.ledger).over.len(),
+        1,
+        "a piece of a file was kept as a job"
+    );
+}
+
+/// How a piece of a file asked for from `at` comes out when the session
+/// that was asked for it ends on what `script` has its supervisor do with
+/// the ask's nonce: nothing is heard until the Room is down, and then why
+/// it ended.
+fn taken_by(at: u64, script: impl FnOnce(&UnixStream, String)) -> TakeReply {
+    let (rig, mut kept) = new_rig(limits());
+    let (_broker, answer) = ask_take(&rig.door, "/workspace/a", at);
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (nonce, _) = take_asked(&rig.room);
+        script(&rig.room, nonce);
+        seen_out(held, &rig.room);
+    });
+    assert!(
+        answer.try_recv().is_err(),
+        "answered before the Room was down"
+    );
+    kept.finish(Ok(()), |_| unreachable!());
+    wait(&answer)
+}
+
+/// A piece that can't be the one asked for, an answer to something else,
+/// and anything but a piece in answer to the ask for one end the session,
+/// and whoever asked hears why.
+#[test]
+fn a_piece_that_cannot_be_the_one_asked_for_ends_the_session() {
+    let whole = u64::try_from(TAKE_BYTES).unwrap();
+    for (at, bad) in [
+        (0, took_of(TAKE_BYTES + 1, u64::MAX)),
+        (0, took_of(4, 3)),
+        (whole, took_of(1, whole)),
+        (0, took_of(TAKE_BYTES - 1, whole)),
+        (whole, took_of(2, whole + 3)),
+    ] {
+        let taken = taken_by(at, |room, nonce| {
+            says(room, &Say::Took { nonce, took: bad });
+        });
+        assert_eq!(taken, Err(String::from(BAD_TOOK)), "from {at}");
+    }
+    let taken = taken_by(0, |room, _| {
+        let said = Say::Took {
+            nonce: "0".repeat(64),
+            took: Took::default(),
+        };
+        says(room, &said);
+    });
+    assert_eq!(taken, Err(String::from(OUT_OF_TURN)));
+    let taken = taken_by(0, |room, nonce| says(room, &Say::Started { nonce }));
+    assert_eq!(taken, Err(String::from(OUT_OF_TURN)));
+    let taken = taken_by(0, |room, nonce| {
+        let said = Say::Page {
+            nonce,
+            page: Page::default(),
+        };
+        says(room, &said);
+    });
+    assert_eq!(taken, Err(String::from(OUT_OF_TURN)));
+    let taken = taken_by(0, |room, _| gone(room));
+    assert_eq!(taken, Err(String::from(CLOSED)));
+    // A piece in answer to anything else is out of turn too.
+    let wrong: [fn(String) -> Say; 2] = [
+        |nonce| Say::Took {
+            nonce,
+            took: Took::default(),
+        },
+        |nonce| Say::NoTake {
+            nonce,
+            why: NoTake::Failed,
+        },
+    ];
+    for said in wrong {
+        let ended = ended_by(true, |far| {
+            say_ready(far.room());
+            let asked = hears(far.room());
+            says(far.room(), &said(asked.nonce().to_owned()));
+        });
+        assert_eq!(ended, OUT_OF_TURN);
+    }
+}
+
+/// When a session ends, a piece of a file it was asked for and one still
+/// waiting are answered once the Room is down, with why it ended.
+#[test]
+fn a_piece_not_handed_back_is_answered_once_the_room_is_down() {
+    let (rig, mut kept) = new_rig(limits());
+    let (_asked_broker, asked) = ask_take(&rig.door, "/workspace/a", 0);
+    let (_waiting_broker, waiting) = ask_take(&rig.door, "/workspace/b", 0);
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| kept.hold(&rig.supervisor, rig.launcher.as_fd()));
+        say_ready(&rig.room);
+        let (_nonce, of) = take_asked(&rig.room);
+        assert_eq!(of.0, "/workspace/a");
+        assert!(rig.door.send(Message::End { reason: "gone" }).is_ok());
+        held.join().unwrap();
+    });
+    assert!(asked.try_recv().is_err() && waiting.try_recv().is_err());
+    assert_eq!(kept.owed.len(), 2);
+    assert!(kept.takers.is_empty() && kept.taking.is_none());
+    kept.finish(Ok(()), |_| unreachable!());
+    assert_eq!(wait(&asked), Err(String::from("gone")));
+    assert_eq!(wait(&waiting), Err(String::from("gone")));
+}
+
+/// Before anything is launched: a piece of a file whose caller has gone
+/// launches nothing, and a piece to ask for is something in hand. A
+/// launch that fails tells whoever still waits why.
+#[test]
+fn nothing_is_launched_for_a_taker_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    assert!(!kept.busy() && !kept.wanted());
+    let (_broker, answer) = ask_take(&rig.door, "/workspace/a", 0);
+    assert_eq!(kept.begin(), Ok(()));
+    assert!(kept.busy(), "a piece to ask for is something in hand");
+    assert!(kept.wanted(), "a piece to ask for wants a Room");
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&answer), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_take(&rig.door, "/workspace/unwanted", 0);
+    let (_staying, stayed) = ask_take(&rig.door, "/workspace/wanted", 0);
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Ok(()), "one caller is still there");
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+    let left: Vec<&str> = kept
+        .takers
+        .iter()
+        .map(|taker| taker.path.as_str())
+        .collect();
+    assert_eq!(left, ["/workspace/wanted"]);
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&stayed), Err(String::from("no launch")));
+
+    let (rig, mut kept) = new_rig(limits());
+    let (broker, answer) = ask_take(&rig.door, "/workspace/unwanted", 0);
+    gone(&broker);
+    drop(broker);
+    assert_eq!(kept.begin(), Err(String::from(REQUESTER_GONE)));
+    assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+
+    // One asked for after a launch failed, before the session let go,
+    // hears why too.
+    let (rig, kept) = new_rig(limits());
+    let (_late_broker, late) = ask_take(&rig.door, "/workspace/late", 0);
+    kept.finish(Err(String::from("no launch")), |_| unreachable!());
+    assert_eq!(wait(&late), Err(String::from("no launch")));
+}
+
+/// A caller that goes while its piece waits its turn isn't read for: the
+/// supervisor is asked only for the piece the one still there wants.
+#[test]
+fn nothing_is_taken_for_a_caller_that_has_gone() {
+    let (rig, mut kept) = new_rig(limits());
+    std::thread::scope(|scope| {
+        let _closed = ClosedAtEnd(rig.room.try_clone().unwrap());
+        let held = scope.spawn(|| {
+            kept.keep(&rig.supervisor, rig.launcher.as_fd())
+                .unwrap_err()
+        });
+        let (broker, answer) = ask_take(&rig.door, "/workspace/unwanted", 0);
+        let (_staying, stayed) = ask_take(&rig.door, "/workspace/wanted", 0);
+        gone(&broker);
+        drop(broker);
+        say_ready(&rig.room);
+        let (nonce, asked) = take_asked(&rig.room);
+        assert_eq!(asked, (String::from("/workspace/wanted"), 0));
+        assert_eq!(wait(&answer), Err(String::from(REQUESTER_GONE)));
+        let said = Say::Took {
+            nonce,
+            took: took_of(2, 2),
+        };
+        says(&rig.room, &said);
+        assert_eq!(wait(&stayed), Ok(took_of(2, 2)));
+        assert!(unasked(&rig.room, SHORT), "asked for a piece nobody wants");
+        assert!(rig.door.send(Message::End { reason: "done" }).is_ok());
+        assert_eq!(held.join().unwrap(), "done");
+    });
+}
+
+/// A piece of a file asked of a session that is still being cleared is
+/// refused with why, as everything else is.
+#[test]
+fn a_piece_asked_of_a_held_session_is_refused_with_why() {
+    let (rig, mut kept) = new_rig(limits());
+    let (_broker, answer) = ask_take(&rig.door, "/workspace/a", 0);
+    kept.wait_held("still mapped");
+    assert_eq!(wait(&answer), Err(held("still mapped")));
+}
+
+#[test]
+fn every_reason_no_piece_was_handed_back_has_its_words() {
+    let words = [
+        NoTake::NoSuchFile,
+        NoTake::Denied,
+        NoTake::NotAFile,
+        NoTake::Link,
+        NoTake::Outside,
+        NoTake::Changed,
+        NoTake::Failed,
+    ]
+    .map(no_take);
+    let mut distinct = words.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), words.len());
+    assert!(no_take(NoTake::NoSuchFile).contains("no such file"));
+    assert!(no_take(NoTake::Denied).contains("may not read"));
+    assert!(no_take(NoTake::NotAFile).contains("directory"));
+    assert!(no_take(NoTake::Link).contains("no link is followed"));
+    assert!(no_take(NoTake::Outside).contains("out of the workspace"));
+    assert!(no_take(NoTake::Changed).contains("changed while it was read"));
+    assert!(no_take(NoTake::Failed).contains("couldn't read"));
+}
+
+/// A piece of a file starts a session when there is none, as a job does,
+/// and is asked of the one there is. One that may not be asked for starts
+/// none.
+#[test]
+fn a_take_starts_a_session_and_the_next_uses_it() {
+    let take = |sessions: &Sessions, path: &str, at: u64| {
+        let (_broker, requester) = UnixStream::pair().unwrap();
+        sessions.take(path, at, &requester)
+    };
+    let (sessions, started, ended) = stand_ins();
+    assert_eq!(
+        take(&sessions, "/workspace/a", 0),
+        Ok(stood_took(1, "/workspace/a", 0))
+    );
+    assert_eq!(
+        take(&sessions, "/workspace/a", 9),
+        Ok(stood_took(1, "/workspace/a", 9))
+    );
+    assert_eq!(run(&sessions, "j"), Ok(stood_in(1, "j")));
+    assert_eq!(started.load(Atomic::SeqCst), 1);
+    assert_eq!(ended.load(Atomic::SeqCst), 0);
+
+    let (sessions, started, _ended) = stand_ins();
+    let said = take(&sessions, "/etc/passwd", 0).unwrap_err();
+    assert!(said.contains("from the workspace"), "{said}");
+    let said = take(&sessions, "/workspace/a", u64::MAX).unwrap_err();
+    assert!(said.contains("8 MiB"), "{said}");
+    assert_eq!(started.load(Atomic::SeqCst), 0, "a session was started");
+    // A session that keeps ending before it answers is given up on.
+    assert_eq!(
+        take(&sessions, "/workspace/vanish", 0),
         Err(String::from(UNSETTLED))
     );
     let tried = started.load(Atomic::SeqCst);

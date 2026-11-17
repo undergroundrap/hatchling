@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitCode, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
 use hatchling_isolation::{
@@ -595,6 +595,9 @@ enum Request {
     RoomInboxList,
     /// Take the file `name` out of the Room's inbox (WO-041).
     RoomInboxRemove { name: String },
+    /// Hand back the whole of the file at `path` in the Room's workspace,
+    /// for it to be handed to the owner (WO-041).
+    RoomTake { path: String },
 }
 
 /// What the spawner answers.
@@ -632,9 +635,13 @@ enum Reply {
     RoomInbox {
         files: Vec<crate::room_disk::InboxEntry>,
     },
+    /// The file asked for was read whole: its `size` bytes follow, in
+    /// frames.
+    RoomTook { size: usize },
 }
 
 pub use crate::room_session::{Change as RoomChange, Changed as RoomChanged, Search as RoomSearch};
+use hatchling_core::room::Took;
 pub use hatchling_core::room::{Edited, Found, Page, Wrote};
 
 pub use crate::room_job::{
@@ -834,6 +841,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => {
                 return Err(String::from("the spawner answered out of step"));
@@ -912,6 +920,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -957,7 +966,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -981,7 +991,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1008,7 +1019,8 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
-            | Reply::RoomChanged { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1049,6 +1061,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1076,6 +1089,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1172,6 +1186,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1215,6 +1230,7 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1254,6 +1270,49 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomInbox { .. }
+            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Hands back the whole of the file at `path` in the installed Room's
+    /// workspace, for it to be handed to the owner (WO-041). The Room is
+    /// started for it when it isn't running. The file is read by the
+    /// Room's supervisor, as the Room's user, beneath the workspace and
+    /// through no link, a piece at a time. The spawner holds it to the
+    /// inode, length and change time the supervisor said of it staying the
+    /// same from its first piece to its last, to
+    /// [`TAKE_FILE_BYTES`](hatchling_core::room::TAKE_FILE_BYTES), and to
+    /// being read within two minutes.
+    ///
+    /// # Errors
+    ///
+    /// When the file may not be asked for; when it isn't a file the Room
+    /// hands over, is past the bound, or changed while it was read; and as
+    /// a job's are, when the Room can't be started or asked.
+    pub fn room_take(&self, path: &str) -> Result<Vec<u8>, String> {
+        hatchling_core::room::check_take(path, 0)?;
+        let connection = self.connect().map_err(|error| error.to_string())?;
+        connection
+            .set_read_timeout(Some(TAKE_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        let request = Request::RoomTake {
+            path: path.to_owned(),
+        };
+        send(&connection, &request).map_err(|error| error.to_string())?;
+        match receive(&connection).map_err(|error| error.to_string())? {
+            Reply::RoomTook { size } => read_sized(&connection, size, TAKE_MOST, take_too_large),
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1296,6 +1355,7 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1321,6 +1381,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1361,6 +1422,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1408,6 +1470,7 @@ impl SpawnedProcess {
                     | Reply::RoomPage { .. }
                     | Reply::RoomFound { .. }
                     | Reply::RoomChanged { .. }
+                    | Reply::RoomTook { .. }
                     | Reply::RoomPlaced { .. }
                     | Reply::RoomInbox { .. },
                 ) => Err(String::from("the spawner answered out of step")),
@@ -1872,7 +1935,94 @@ fn serve_connection(
             let remove = Ok(InboxOp::Remove { name });
             inbox_told(stream, remove, policy, keeper, sessions)
         }
+        Request::RoomTake { path } => took_told(stream, &path, sessions),
     }
+}
+
+/// The most a file handed over may be, as a length in memory:
+/// [`TAKE_FILE_BYTES`](hatchling_core::room::TAKE_FILE_BYTES).
+const TAKE_MOST: usize = 8 * 1024 * 1024;
+
+/// Why a file isn't handed over for its size.
+fn take_too_large() -> String {
+    String::from("the file is larger than 8 MiB, the most a file handed over may be")
+}
+
+/// Why a file isn't handed over that changed while it was read.
+const TAKE_CHANGED: &str = "the file changed while it was read: hand it over once it is done";
+
+/// How long a file may take to be read out of the Room whole, the Room's
+/// start among it.
+const TAKE_TIME: Duration = Duration::from_secs(120);
+
+/// How long the broker waits for a file to hand over: past the time it may
+/// take, and one piece's own wait.
+const TAKE_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Why a file isn't handed over that took too long to read.
+const TAKE_LATE: &str = "the file took longer than two minutes to read out of the Room: hand it over again, or a smaller one";
+
+/// The whole of a file in the Room, its pieces asked for one at a time
+/// with `piece`, each from where the last one ended. It must be no longer
+/// than [`TAKE_FILE_BYTES`](hatchling_core::room::TAKE_FILE_BYTES), and the same file, of the same length, from
+/// its first piece to its last.
+///
+/// `piece` is the session's: each piece it hands back has been held to
+/// where it was asked from. The length is held here all the same. Before
+/// each piece after the first, `late` says whether the file has taken too
+/// long: a supervisor that answers each piece just in time can't hold a
+/// caller for the length of every piece's own wait.
+fn assembled(
+    mut piece: impl FnMut(u64) -> Result<Took, String>,
+    mut late: impl FnMut() -> bool,
+) -> Result<Vec<u8>, String> {
+    let first = piece(0)?;
+    let size = usize::try_from(first.size).unwrap_or(usize::MAX);
+    if size > TAKE_MOST {
+        return Err(take_too_large());
+    }
+    let same = (first.size, first.ino, first.changed);
+    let mut bytes = Vec::with_capacity(size);
+    bytes.extend_from_slice(&first.bytes);
+    while bytes.len() < size {
+        if late() {
+            return Err(String::from(TAKE_LATE));
+        }
+        let next = piece(u64::try_from(bytes.len()).unwrap_or(u64::MAX))?;
+        if (next.size, next.ino, next.changed) != same {
+            return Err(String::from(TAKE_CHANGED));
+        }
+        if next.bytes.is_empty() {
+            return Err(String::from("the Room handed back no more of the file"));
+        }
+        bytes.extend_from_slice(&next.bytes);
+    }
+    if bytes.len() != size {
+        return Err(String::from(
+            "the Room handed back more of the file than it holds",
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Answers a request for the file at `path` in the Room, put together
+/// from the pieces the session hands back: its length, then its bytes in
+/// frames, or why there is none.
+fn took_told(stream: &UnixStream, path: &str, sessions: &Sessions) -> Result<(), Error> {
+    let until = Instant::now() + TAKE_TIME;
+    let taken = assembled(
+        |at| sessions.take(path, at, stream),
+        || until.checked_duration_since(Instant::now()).is_none(),
+    );
+    let bytes = match taken {
+        Ok(bytes) => bytes,
+        Err(reason) => return send(stream, &Reply::Refused { reason }),
+    };
+    send(stream, &Reply::RoomTook { size: bytes.len() })?;
+    for chunk in bytes.chunks(DELIVERY_CHUNK) {
+        write_frame(stream, chunk).map_err(gone)?;
+    }
+    Ok(())
 }
 
 /// Does `op` to the Room's inbox, through the live session or directly,
@@ -2502,7 +2652,6 @@ fn supervise(
 )]
 pub(crate) mod tests {
     use std::io::Read as _;
-    use std::time::Instant;
 
     use super::*;
 
@@ -4816,5 +4965,320 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         assert_eq!(format!("{:?}", spawner_main()), failure);
         assert_eq!(format!("{:?}", refuse_to_run("why")), failure);
         assert!(spawner().is_none());
+    }
+
+    /// A file to hand over reaches the spawner's one session a piece at a
+    /// time, starts it when there is none, and comes back whole. One that
+    /// changes while it is read isn't handed back; one that may not be
+    /// asked for is refused by the spawner, and starts nothing.
+    #[test]
+    fn a_file_is_taken_whole_through_the_session() {
+        use crate::room_job::tests::run;
+        use crate::room_session::tests::{stand_ins, stood_file, stood_in};
+        let (sessions, started, _ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let asked = spawner.connect().unwrap();
+        let invalid = Request::RoomTake {
+            path: String::from("/etc/passwd"),
+        };
+        send(&asked, &invalid).unwrap();
+        assert!(matches!(
+            receive(&asked).unwrap(),
+            Reply::Refused { reason } if reason.contains("from the workspace")
+        ));
+        assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
+        // Many pieces, and a last one short of a whole one.
+        let whole = stood_file(1, "/workspace/out.bin");
+        assert!(whole.len() > 3 * hatchling_core::room::TAKE_BYTES);
+        assert_eq!(spawner.room_take("/workspace/out.bin"), Ok(whole));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        // A job is run in the session a take started, and a file taken in
+        // it after.
+        assert_eq!(spawner.room_run(&run("j", &["true"])), Ok(stood_in(1, "j")));
+        let changed = spawner.room_take("/workspace/changing").unwrap_err();
+        assert_eq!(changed, TAKE_CHANGED);
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        drop((asked, spawner));
+        served.join().unwrap();
+    }
+
+    /// A file that may not be asked for is refused by whoever asks, before
+    /// the spawner is asked anything.
+    #[test]
+    fn a_file_that_may_not_be_taken_never_reaches_the_spawner() {
+        let (alone, closed) = UnixStream::pair().unwrap();
+        closed.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(closed);
+        let nobody = Spawner::over(alone);
+        for (path, why) in [
+            ("/etc/passwd", "from the workspace"),
+            ("workspace/a", "absolute"),
+            ("/workspace/", "a directory"),
+        ] {
+            let refused = nobody.room_take(path).unwrap_err();
+            assert!(refused.contains(why), "{path}: {refused}");
+        }
+        let unasked = nobody.room_take("/workspace/a").unwrap_err();
+        assert!(!unasked.contains("workspace"), "{unasked}");
+    }
+
+    /// What the spawner says of a file is held by the broker to what it
+    /// asked: the bytes of the length it was told, never past the bound,
+    /// and nothing that answers something else.
+    #[test]
+    fn a_file_taken_is_read_as_the_spawner_says_it_within_the_bound() {
+        let answering = |reply: Reply, frames: Vec<Vec<u8>>| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let answered = std::thread::spawn(move || {
+                let stream = UnixStream::from(hatchling_sys::net::recv_fd(theirs.as_fd()).unwrap());
+                let request: Request =
+                    serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
+                let Request::RoomTake { path } = request else {
+                    unreachable!("asked {request:?}");
+                };
+                send(&stream, &reply).unwrap();
+                for frame in frames {
+                    write_frame(&stream, &frame).unwrap();
+                }
+                path
+            });
+            (Spawner::over(ours), answered)
+        };
+        let (spawner, answered) = answering(
+            Reply::RoomTook { size: 5 },
+            vec![b"ab".to_vec(), b"cde".to_vec()],
+        );
+        assert_eq!(spawner.room_take("/workspace/a"), Ok(b"abcde".to_vec()));
+        assert_eq!(answered.join().unwrap(), "/workspace/a");
+        let (spawner, answered) = answering(Reply::RoomTook { size: 0 }, Vec::new());
+        assert_eq!(spawner.room_take("/workspace/empty"), Ok(Vec::new()));
+        answered.join().unwrap();
+        let (spawner, answered) = answering(
+            Reply::RoomTook {
+                size: TAKE_MOST + 1,
+            },
+            Vec::new(),
+        );
+        assert_eq!(spawner.room_take("/workspace/big"), Err(take_too_large()));
+        answered.join().unwrap();
+        let (spawner, answered) = answering(Reply::RoomTook { size: 5 }, vec![b"ab".to_vec()]);
+        assert!(
+            spawner.room_take("/workspace/a").is_err(),
+            "a stream short of its size"
+        );
+        answered.join().unwrap();
+        let (spawner, answered) = answering(Reply::RoomTook { size: 2 }, vec![b"abc".to_vec()]);
+        assert!(spawner.room_take("/workspace/a").is_err());
+        answered.join().unwrap();
+        let refused = Reply::Refused {
+            reason: String::from("the Room has no such file"),
+        };
+        let (spawner, answered) = answering(refused, Vec::new());
+        assert_eq!(
+            spawner.room_take("/workspace/a"),
+            Err(String::from("the Room has no such file"))
+        );
+        answered.join().unwrap();
+        let (spawner, answered) = answering(Reply::Done, Vec::new());
+        assert_eq!(
+            spawner.room_take("/workspace/a"),
+            Err(String::from("the spawner answered out of step"))
+        );
+        answered.join().unwrap();
+    }
+
+    /// From which byte on what is said of a stand-in file is changed, and
+    /// how.
+    type Swap = Option<(u64, fn(&mut Took))>;
+
+    /// A file put together with no deadline.
+    fn together(piece: impl FnMut(u64) -> Result<Took, String>) -> Result<Vec<u8>, String> {
+        assembled(piece, || false)
+    }
+
+    /// A file that takes too long to read is let go before its next piece:
+    /// the deadline is looked at before each piece after the first, and
+    /// one in time is put together whole. The broker waits past it.
+    #[test]
+    fn a_file_that_takes_too_long_is_let_go() {
+        assert!(TAKE_TIMEOUT > TAKE_TIME + Duration::from_secs(10));
+        assert_eq!(TAKE_TIME, Duration::from_secs(120));
+        let whole = whole();
+        for (looks, asked) in [(0, 1), (1, 2), (2, 3)] {
+            let pieces = file(5 * whole, None);
+            let mut asked_for = 0;
+            let mut looked = 0;
+            let taken = assembled(
+                |at| {
+                    asked_for += 1;
+                    pieces(at)
+                },
+                || {
+                    looked += 1;
+                    looked > looks
+                },
+            );
+            assert_eq!(taken, Err(String::from(TAKE_LATE)), "late after {looks}");
+            assert_eq!(asked_for, asked, "late after {looks}");
+        }
+        let mut looked = 0;
+        let taken = assembled(file(3 * whole, None), || {
+            looked += 1;
+            false
+        });
+        assert_eq!(
+            taken.map(|bytes| bytes.len()),
+            Ok(3 * usize::try_from(whole).unwrap())
+        );
+        assert_eq!(looked, 2, "the first piece needs no look, each after does");
+        assert_eq!(
+            assembled(file(9, None), || true).map(|bytes| bytes.len()),
+            Ok(9)
+        );
+    }
+
+    /// A whole piece of a file, as the Room hands one back.
+    fn whole() -> u64 {
+        u64::try_from(hatchling_core::room::TAKE_BYTES).unwrap()
+    }
+
+    /// A file of `size` bytes, each its byte's place mod 251, its pieces as
+    /// a supervisor would read them; `swap` changes what is said of it from
+    /// a piece on.
+    fn file(size: u64, swap: Swap) -> impl Fn(u64) -> Result<Took, String> {
+        move |at: u64| -> Result<Took, String> {
+            let to = at.saturating_add(whole()).min(size);
+            let mut took = Took {
+                bytes: (at..to).map(|at| u8::try_from(at % 251).unwrap()).collect(),
+                size,
+                ino: 9,
+                changed: 7,
+            };
+            if let Some((from, change)) = swap {
+                if at >= from {
+                    change(&mut took);
+                }
+            }
+            Ok(took)
+        }
+    }
+
+    /// A file is put together from its pieces, each asked for from where
+    /// the last ended, only while it is the same file, of the same length,
+    /// within the bound.
+    #[test]
+    fn a_file_is_put_together_only_as_the_same_file_within_the_bound() {
+        assert_eq!(
+            u64::try_from(TAKE_MOST).unwrap(),
+            hatchling_core::room::TAKE_FILE_BYTES
+        );
+        let whole = whole();
+        let expected = |size: u64| -> Vec<u8> {
+            (0..size)
+                .map(|at| u8::try_from(at % 251).unwrap())
+                .collect()
+        };
+        for size in [0, 1, whole - 1, whole, whole + 1, 3 * whole + 5] {
+            let mut asked = Vec::new();
+            let pieces = file(size, None);
+            let taken = together(|at| {
+                asked.push(at);
+                pieces(at)
+            });
+            assert_eq!(taken, Ok(expected(size)), "{size}");
+            let wanted: Vec<u64> = (0..size.div_ceil(whole).max(1))
+                .map(|piece| piece * whole)
+                .collect();
+            assert_eq!(asked, wanted, "{size}");
+        }
+        // The most a file may be is handed back; one byte more, after its
+        // first piece is read, is not.
+        let most = u64::try_from(TAKE_MOST).unwrap();
+        assert_eq!(
+            together(file(most, None)).map(|bytes| bytes.len()),
+            Ok(TAKE_MOST)
+        );
+        let mut asked = 0;
+        let over = file(most + 1, None);
+        let taken = together(|at| {
+            asked += 1;
+            over(at)
+        });
+        assert_eq!(
+            taken,
+            Err(String::from(
+                "the file is larger than 8 MiB, the most a file handed over may be"
+            ))
+        );
+        assert_eq!(asked, 1, "read on past the bound");
+        assert_eq!(together(file(u64::MAX, None)), Err(take_too_large()));
+        // A file that is another, or another length, or changed, after
+        // its first piece.
+        let changes: [fn(&mut Took); 3] = [
+            |took| took.ino += 1,
+            |took| took.size += 1,
+            |took| took.changed += 1,
+        ];
+        for change in changes {
+            let taken = together(file(3 * whole, Some((whole, change))));
+            assert_eq!(taken, Err(String::from(TAKE_CHANGED)));
+        }
+    }
+
+    /// A file put together is never more nor less than its length, whatever
+    /// the session let through, and a piece that isn't handed back ends it.
+    #[test]
+    fn a_file_is_never_put_together_from_what_isnt_its_pieces() {
+        let whole = whole();
+        // A piece of nothing where the file goes on is the end of it: it
+        // isn't asked for again. (Asked again, this stand-in stops it.)
+        let mut asked = 0;
+        let emptied = file(3 * whole, Some((whole, |took| took.bytes.clear())));
+        let taken = together(|at| {
+            asked += 1;
+            if asked > 3 {
+                return Err(String::from("asked again"));
+            }
+            emptied(at)
+        });
+        assert_eq!(
+            taken,
+            Err(String::from("the Room handed back no more of the file"))
+        );
+        assert_eq!(asked, 2);
+        let taken = together(file(whole + 1, Some((whole, |took| took.bytes.push(0)))));
+        assert_eq!(
+            taken,
+            Err(String::from(
+                "the Room handed back more of the file than it holds"
+            ))
+        );
+        let taken = together(file(3, Some((0, |took| took.bytes.push(0)))));
+        assert_eq!(
+            taken,
+            Err(String::from(
+                "the Room handed back more of the file than it holds"
+            ))
+        );
+        // A piece that isn't handed back ends it, with why.
+        let mut first = true;
+        let taken = together(|at| {
+            if std::mem::take(&mut first) {
+                return file(2 * whole, None)(at);
+            }
+            Err(String::from("the Room session was idle"))
+        });
+        assert_eq!(taken, Err(String::from("the Room session was idle")));
+        assert_eq!(
+            together(|_| Err(String::from("no such file"))),
+            Err(String::from("no such file"))
+        );
     }
 }

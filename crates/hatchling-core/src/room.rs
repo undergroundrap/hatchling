@@ -36,11 +36,20 @@
 //! sees half of it. A write or an edit that got no answer isn't known to
 //! have happened, and is never asked again by itself.
 //!
+//! And it may ask for a piece of a file in the workspace, to hand the file
+//! to the owner ([`Ask::Take`], WO-041): at most [`TAKE_BYTES`] of it from
+//! a byte it names, with the file's length and which file it is. The
+//! supervisor opens it itself, as the Room's user, beneath the workspace,
+//! following no link, and reads only a file. Each piece is asked for on
+//! its own, and nothing is kept between them: the spawner puts them
+//! together, and holds the file to being the same one, the same length,
+//! from its first piece to its last.
+//!
 //! The supervisor runs in the Room, as the Room's user: everything it says
 //! is untrusted. [`Captured::check`], [`Ended::check`], [`Page::check`],
-//! [`Found::check`], [`Wrote::check`], [`Edited::check`] and
-//! [`NoEdit::check`] are what the spawner holds its words to; unknown
-//! fields never decode.
+//! [`Found::check`], [`Wrote::check`], [`Edited::check`],
+//! [`NoEdit::check`] and [`Took::check`] are what the spawner holds its
+//! words to; unknown fields never decode.
 
 use std::fmt;
 use std::str::FromStr;
@@ -116,6 +125,12 @@ pub const EDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 /// How many of the places an edit's text was found at are named, when
 /// it was found at more than the one wanted.
 pub const EDIT_PLACES: usize = 8;
+
+/// The most of a file one take hands back, in bytes.
+pub const TAKE_BYTES: usize = 32 * 1024;
+
+/// The longest a file may be to be taken out of the Room, in bytes.
+pub const TAKE_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Where a job starts when its caller names no directory.
 pub const WORKSPACE: &str = "/workspace";
@@ -399,6 +414,34 @@ pub fn check_edit(path: &str, old: &[u8], new: &[u8]) -> Result<(), &'static str
     Ok(())
 }
 
+/// Whether a piece of a file may be asked to be taken.
+///
+/// It may from byte `at`, short of [`TAKE_FILE_BYTES`], of a file named by
+/// an absolute path of at most [`PATH_BYTES`] under [`WORKSPACE`]. The
+/// supervisor resolves the path beneath the workspace itself, and decides
+/// whether it is a file.
+///
+/// This is no boundary: `.`, `..` and an empty step pass it. What keeps a
+/// read in the workspace is the supervisor's open beneath it, as the
+/// Room's user, through no link and onto no other file system.
+///
+/// # Errors
+///
+/// Why it may not.
+pub fn check_take(path: &str, at: u64) -> Result<(), &'static str> {
+    check_file(path)?;
+    let under = path
+        .strip_prefix(WORKSPACE)
+        .is_some_and(|rest| rest.starts_with('/'));
+    if !under {
+        return Err("a file is handed over from the workspace: its path starts with /workspace/");
+    }
+    if at >= TAKE_FILE_BYTES {
+        return Err("a file is handed over only if it is at most 8 MiB");
+    }
+    Ok(())
+}
+
 /// What the spawner asks the supervisor. Each carries a nonce the answer
 /// must echo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,6 +540,17 @@ pub enum Ask {
         /// Whether every place the text is at is to be replaced.
         all: bool,
     },
+    /// Hand back a piece of the file at `path` in the workspace: at most
+    /// [`TAKE_BYTES`] of it from byte `at`, with its length and which
+    /// file it is.
+    Take {
+        /// Echoed by the answer.
+        nonce: String,
+        /// The file's absolute path in the Room, under the workspace.
+        path: String,
+        /// The first byte wanted, counted from 0.
+        at: u64,
+    },
 }
 
 impl Ask {
@@ -510,7 +564,8 @@ impl Ask {
             | Self::Page { nonce, .. }
             | Self::Search { nonce, .. }
             | Self::Write { nonce, .. }
-            | Self::Edit { nonce, .. } => nonce,
+            | Self::Edit { nonce, .. }
+            | Self::Take { nonce, .. } => nonce,
         }
     }
 }
@@ -763,6 +818,65 @@ impl Edited {
     }
 }
 
+/// Why the supervisor handed back no piece of a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoTake {
+    /// There is no file at that path.
+    NoSuchFile,
+    /// The Room's user may not read it.
+    Denied,
+    /// It is a directory, or something else that isn't a file.
+    NotAFile,
+    /// The path has a link in it: none is followed.
+    Link,
+    /// The path leads out of the workspace, or onto another file system.
+    Outside,
+    /// The file changed while the piece was read.
+    Changed,
+    /// It couldn't be read.
+    Failed,
+}
+
+/// A piece of a file, as the supervisor read it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Took {
+    /// The bytes, from the byte asked for.
+    #[serde(with = "b64")]
+    pub bytes: Vec<u8>,
+    /// The file's length, in bytes.
+    pub size: u64,
+    /// The file's inode number.
+    pub ino: u64,
+    /// When the file last changed, its contents or what is said of it, in
+    /// nanoseconds since the epoch.
+    pub changed: u64,
+}
+
+impl Took {
+    /// Whether this can be the piece of a file from byte `at`: no longer
+    /// than [`TAKE_BYTES`], not past the file's end, and short of that
+    /// only where the file ends.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub fn check(&self, at: u64) -> Result<(), &'static str> {
+        if self.bytes.len() > TAKE_BYTES {
+            return Err("a piece of a file is too long");
+        }
+        let end = at.saturating_add(u64::try_from(self.bytes.len()).unwrap_or(u64::MAX));
+        if end > self.size {
+            return Err("a piece of a file goes past the file's end");
+        }
+        if end < self.size && self.bytes.len() < TAKE_BYTES {
+            return Err("a piece of a file is short where the file goes on");
+        }
+        Ok(())
+    }
+}
+
 /// What the supervisor says. All but [`Say::Ended`] answer an [`Ask`],
 /// and echo its nonce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -855,6 +969,20 @@ pub enum Say {
         /// Why not.
         why: NoEdit,
     },
+    /// A piece of a file.
+    Took {
+        /// The ask's nonce.
+        nonce: String,
+        /// The piece.
+        took: Took,
+    },
+    /// No piece of the file was handed back.
+    NoTake {
+        /// The ask's nonce.
+        nonce: String,
+        /// Why not.
+        why: NoTake,
+    },
     /// A job has ended. Said once for each job that was started, unasked.
     Ended {
         /// The job's name.
@@ -885,7 +1013,9 @@ impl Say {
             | Self::Wrote { nonce, .. }
             | Self::NoWrite { nonce, .. }
             | Self::Edited { nonce, .. }
-            | Self::NoEdit { nonce, .. } => Some(nonce),
+            | Self::NoEdit { nonce, .. }
+            | Self::Took { nonce, .. }
+            | Self::NoTake { nonce, .. } => Some(nonce),
             Self::Ended { .. } => None,
         }
     }
@@ -1922,5 +2052,173 @@ mod tests {
             why: at(u32::MAX, &[u64::MAX; 8]),
         };
         assert!(crate::fits_one_frame(&longest));
+    }
+
+    /// A take is of a file named whole under the workspace, from a byte
+    /// short of the bound, and the most it may carry, asked or answered,
+    /// fits one frame.
+    #[test]
+    fn a_take_is_of_a_file_in_the_workspace_and_bounded() {
+        assert_eq!((TAKE_BYTES, TAKE_FILE_BYTES), (32_768, 8_388_608));
+        assert_eq!(TAKE_FILE_BYTES, SPILL_BYTES);
+        let deepest = format!("/workspace/{}", "\u{1}".repeat(PATH_BYTES - 11));
+        assert_eq!(deepest.len(), PATH_BYTES);
+        for good in ["/workspace/a", "/workspace/out/report.pdf", &deepest] {
+            assert!(check_take(good, 0).is_ok(), "{good:?}");
+        }
+        assert!(check_take("/workspace/a", TAKE_FILE_BYTES - 1).is_ok());
+        for at in [TAKE_FILE_BYTES, u64::MAX] {
+            let why = check_take("/workspace/a", at).unwrap_err();
+            assert!(why.contains("at most 8 MiB"), "{at}: {why}");
+        }
+        let too_deep = format!("{deepest}d");
+        for (path, why) in [
+            ("workspace/a", "absolute"),
+            ("", "absolute"),
+            ("/workspace/a\0", "invalid or too long"),
+            (too_deep.as_str(), "invalid or too long"),
+            ("/workspace/", "a directory"),
+            ("/workspace/out/", "a directory"),
+            ("/workspace", "from the workspace"),
+            ("/workspaces/a", "from the workspace"),
+            ("/session/jobs/a.stdout", "from the workspace"),
+            ("/etc/passwd", "from the workspace"),
+        ] {
+            let said = check_take(path, 0).unwrap_err();
+            assert!(said.contains(why), "{path:?}: {said}");
+        }
+        let most = Ask::Take {
+            nonce: "f".repeat(64),
+            path: deepest,
+            at: u64::MAX,
+        };
+        assert!(crate::fits_one_frame(&most));
+        let most = Say::Took {
+            nonce: "f".repeat(64),
+            took: Took {
+                bytes: vec![0xff; TAKE_BYTES],
+                size: u64::MAX,
+                ino: u64::MAX,
+                changed: u64::MAX,
+            },
+        };
+        assert!(crate::fits_one_frame(&most));
+    }
+
+    /// A take, and what is said of it, go on the wire as they are written
+    /// here, each with its nonce, and a field or a reason that isn't named
+    /// never decodes.
+    #[test]
+    fn a_take_and_its_answers_have_their_wire_form() {
+        let take = Ask::Take {
+            nonce: String::from("n4"),
+            path: String::from("/workspace/a.txt"),
+            at: 32_768,
+        };
+        let json = serde_json::to_string(&take).unwrap();
+        assert_eq!(
+            json,
+            r#"{"ask":"take","nonce":"n4","path":"/workspace/a.txt","at":32768}"#
+        );
+        assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), take);
+        assert_eq!(take.nonce(), "n4");
+        assert!(
+            serde_json::from_str::<Ask>(&json.replace("\"at\"", "\"follow\":true,\"at\"")).is_err()
+        );
+        let said = |say: &Say, written: &str| {
+            let json = serde_json::to_string(say).unwrap();
+            assert_eq!(json, written);
+            assert_eq!(serde_json::from_str::<Say>(&json).unwrap(), *say);
+            assert_eq!(say.nonce(), Some("n4"));
+        };
+        said(
+            &Say::Took {
+                nonce: String::from("n4"),
+                took: Took {
+                    bytes: b"hi\n".to_vec(),
+                    size: 3,
+                    ino: 12,
+                    changed: 1_700_000_000_000_000_001,
+                },
+            },
+            r#"{"say":"took","nonce":"n4","took":{"bytes":"aGkK","size":3,"ino":12,"changed":1700000000000000001}}"#,
+        );
+        for (why, word) in [
+            (NoTake::NoSuchFile, "no-such-file"),
+            (NoTake::Denied, "denied"),
+            (NoTake::NotAFile, "not-a-file"),
+            (NoTake::Link, "link"),
+            (NoTake::Outside, "outside"),
+            (NoTake::Changed, "changed"),
+            (NoTake::Failed, "failed"),
+        ] {
+            said(
+                &Say::NoTake {
+                    nonce: String::from("n4"),
+                    why,
+                },
+                &format!(r#"{{"say":"no-take","nonce":"n4","why":"{word}"}}"#),
+            );
+        }
+        for unknown in [
+            r#"{"say":"took","nonce":"n4","took":{"bytes":"","size":0,"ino":1,"changed":0,"mode":420}}"#,
+            r#"{"say":"took","nonce":"n4","took":{"bytes":"","size":0,"ino":1}}"#,
+            r#"{"say":"no-take","nonce":"n4","why":"gone"}"#,
+        ] {
+            assert!(serde_json::from_str::<Say>(unknown).is_err(), "{unknown}");
+        }
+    }
+
+    /// A piece of a file is held to what a piece from where it was asked
+    /// can be: no longer than one, not past the file's end, and short of
+    /// one only at the file's end.
+    #[test]
+    fn a_piece_taken_is_held_to_where_it_was_asked() {
+        let piece = |len: usize, size: u64| Took {
+            bytes: vec![7; len],
+            size,
+            ino: 1,
+            changed: 0,
+        };
+        let full = TAKE_BYTES;
+        let whole = u64::try_from(full).unwrap();
+        for (took, at) in [
+            (piece(0, 0), 0),
+            (piece(3, 3), 0),
+            (piece(full, whole), 0),
+            (piece(full, whole + 1), 0),
+            (piece(1, whole + 1), whole),
+            (piece(full, 3 * whole), whole),
+            (piece(0, whole), whole),
+        ] {
+            assert!(
+                took.check(at).is_ok(),
+                "{} at {at} of {}",
+                took.bytes.len(),
+                took.size
+            );
+        }
+        for (took, at, why) in [
+            (piece(full + 1, u64::MAX), 0, "too long"),
+            (piece(4, 3), 0, "past the file's end"),
+            (piece(1, whole), whole, "past the file's end"),
+            (piece(0, 3), 4, "past the file's end"),
+            (piece(1, 1), u64::MAX, "past the file's end"),
+            (piece(2, 3), 0, "short where the file goes on"),
+            (
+                piece(full - 1, whole + 1),
+                0,
+                "short where the file goes on",
+            ),
+            (piece(0, 1), 0, "short where the file goes on"),
+        ] {
+            let said = took.check(at).unwrap_err();
+            assert!(
+                said.contains(why),
+                "{} at {at} of {}: {said}",
+                took.bytes.len(),
+                took.size
+            );
+        }
     }
 }

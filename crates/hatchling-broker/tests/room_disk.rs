@@ -779,6 +779,94 @@ fn check_room_inbox(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
     Ok(())
 }
 
+/// A file in the workspace is handed back whole by the Room's supervisor,
+/// under the Room's filter and as its user, a piece at a time, byte for
+/// byte, up to the bound and no further. Nothing is handed back through a
+/// link, from a pipe, out of the workspace or from the inbox's mount. No
+/// job is started for it, and the Room goes on.
+fn check_room_take(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let workspace = place.disk.mount_point().join("workspace");
+    let out = workspace.join("handed-over");
+    std::fs::create_dir(&out)?;
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o755))?;
+    let made = |name: &str, bytes: &[u8]| -> Result<(), Failed> {
+        let path = out.join(name);
+        std::fs::write(&path, bytes)?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+        Ok(())
+    };
+    // Many pieces, a last one short of a whole one, and every byte value.
+    let whole: Vec<u8> = (0..100_003_u32)
+        .map(|at| u8::try_from(at.wrapping_mul(2_654_435_761) >> 24).unwrap_or(0))
+        .collect();
+    made("made.bin", &whole)?;
+    let taken = spawner.room_take("/workspace/handed-over/made.bin")?;
+    assert_eq!(Sha256::digest(&taken), Sha256::digest(&whole));
+    assert_eq!(taken.len(), whole.len());
+    made("empty", b"")?;
+    assert!(
+        spawner
+            .room_take("/workspace/handed-over/empty")?
+            .is_empty()
+    );
+    // The most a file handed over may be, and one byte more.
+    let most = usize::try_from(hatchling_core::room::TAKE_FILE_BYTES)?;
+    made("most.bin", &vec![0x5a; most])?;
+    let taken = spawner.room_take("/workspace/handed-over/most.bin")?;
+    assert_eq!(
+        (taken.len(), taken.iter().all(|byte| *byte == 0x5a)),
+        (most, true)
+    );
+    made("over.bin", &vec![0x5a; most + 1])?;
+    let refused = |path: &str| -> Result<String, Failed> {
+        Ok(spawner
+            .room_take(path)
+            .err()
+            .ok_or_else(|| format!("{path} was handed back"))?)
+    };
+    let over = refused("/workspace/handed-over/over.bin")?;
+    assert!(over.contains("larger than 8 MiB"), "{over}");
+    // No link is followed: to a file of the image's, to one in the
+    // workspace, or through a directory.
+    std::os::unix::fs::symlink("/etc/hostname", out.join("to-image"))?;
+    std::os::unix::fs::symlink("made.bin", out.join("to-made"))?;
+    std::os::unix::fs::symlink(".", out.join("here"))?;
+    for linked in ["to-image", "to-made", "here/made.bin"] {
+        let said = refused(&format!("/workspace/handed-over/{linked}"))?;
+        assert!(said.contains("no link is followed"), "{linked}: {said}");
+    }
+    // Nothing that isn't a file, and a pipe isn't waited for.
+    let fifo = Command::new("mkfifo").arg(out.join("pipe")).status()?;
+    assert!(fifo.success(), "the test's pipe wasn't made");
+    for other in ["/workspace/handed-over/pipe", "/workspace/handed-over"] {
+        let said = refused(other)?;
+        assert!(said.contains("not a file"), "{other}: {said}");
+    }
+    assert_eq!(
+        refused("/workspace/handed-over/absent")?,
+        "the Room has no such file"
+    );
+    // Nothing out of the workspace, nor from the inbox, which is a mount
+    // of its own: a file the owner gave is the owner's already.
+    let name = spawner.room_inbox_put("given.txt", b"from the owner")?;
+    for outside in [
+        String::from("/workspace/../etc/hostname"),
+        format!("/workspace/inbox/{name}"),
+    ] {
+        let said = refused(&outside)?;
+        assert!(said.contains("out of the workspace"), "{outside}: {said}");
+    }
+    spawner.room_inbox_remove(&name)?;
+    let image = refused("/etc/hostname")?;
+    assert!(image.contains("from the workspace"), "{image}");
+    // None of it started a job, and the Room it was read in goes on.
+    let same = foreground(spawner, &["kept"])?;
+    assert_eq!(exit_code(&same)?, 0, "a file handed back ended the Room");
+    std::fs::remove_dir_all(&out)?;
+    Ok(())
+}
+
 #[test]
 fn the_installed_spawner_hands_the_verified_image_to_its_mount_helper() -> Result<(), Failed> {
     const TEST: &str = "the_installed_spawner_hands_the_verified_image_to_its_mount_helper";
@@ -1577,6 +1665,7 @@ fn check_room_foreground(
     check_room_search(spawner)?;
     check_room_change(spawner)?;
     check_room_inbox(spawner, place)?;
+    check_room_take(spawner, place)?;
 
     // Closing the disk ends the Room first: nothing of it is left, and
     // the next job starts another, with scratch of its own. A page starts
