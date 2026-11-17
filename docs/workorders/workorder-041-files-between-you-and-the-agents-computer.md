@@ -93,5 +93,6 @@ Each slice's record, as it lands:
 - Slice 3, a file read out of the Room: [room-take-wire](../evidence/room-take-wire.md).
 - Slice 3, the Library's store: [library-store](../evidence/library-store.md).
 - Slice 3, the hand-over: [hand-over](../evidence/hand-over.md).
+- Slice 4, the Library on the local API: [library-api](../evidence/library-api.md).
 
 The whole is filled in at close.

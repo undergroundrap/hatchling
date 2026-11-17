@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 6;
+export const UI_SCHEMA_VERSION = 7;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 32;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -360,7 +360,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1611,6 +1611,20 @@ export type FileOffered = {
  */
 export type FileOutEnded = 'offered' | 'withheld' | 'unchecked' | 'refused';
 /**
+ * Why a file wasn't read out of the Library for the owner (v7).
+ */
+export type FileOutRefusal = {
+    readonly refusal: 'gone';
+} | {
+    readonly refusal: 'damaged';
+} | {
+    readonly refusal: 'busy';
+} | {
+    readonly refusal: 'unknown_download';
+} | {
+    readonly refusal: 'out_of_step';
+};
+/**
  * Why a file was not saved.
  */
 export type FileRefusal = {
@@ -2071,6 +2085,10 @@ export type LibraryFile = {
      */
     readonly id: string;
     /**
+     * When it was kept, as RFC 3339 (v7).
+     */
+    readonly kept_at: string;
+    /**
      * The broker's name for it: plain ASCII, made from the file's own.
      */
     readonly name: string;
@@ -2078,6 +2096,41 @@ export type LibraryFile = {
      * Its SHA-256, in lowercase hex.
      */
     readonly sha256: string;
+};
+/**
+ * The Library's use against its bounds, and the open conversation's
+ * standing (v7).
+ */
+export type LibraryStanding = {
+    /**
+     * The most bytes it keeps.
+     */
+    readonly byte_limit: number;
+    /**
+     * Their bytes together.
+     */
+    readonly bytes: number;
+    /**
+     * The most it keeps.
+     */
+    readonly file_limit: number;
+    /**
+     * The files it keeps.
+     */
+    readonly files: number;
+    /**
+     * The files the agent has given in the open conversation.
+     */
+    readonly given: number;
+    /**
+     * The most it gives in one conversation.
+     */
+    readonly given_limit: number;
+    /**
+     * Whether giving files is off for the open conversation: one held a
+     * secret. A new conversation turns it back on.
+     */
+    readonly off: boolean;
 };
 /**
  * One response header the broker sets on served media.
@@ -5179,6 +5232,30 @@ export type UiAction = {
      * Its name in the inbox.
      */
     readonly name: string;
+} | {
+    readonly action: 'list_library';
+} | {
+    readonly action: 'begin_file_out';
+    /**
+     * The Library's id for it.
+     */
+    readonly id: string;
+} | {
+    readonly action: 'file_out_part';
+    /**
+     * The download, as its beginning answered.
+     */
+    readonly download_id: string;
+    /**
+     * Its place.
+     */
+    readonly seq: number;
+} | {
+    readonly action: 'remove_library_file';
+    /**
+     * The Library's id for it.
+     */
+    readonly id: string;
 };
 /**
  * What an action did.
@@ -5481,6 +5558,56 @@ export type UiActionResult = {
      */
     readonly name: string;
     readonly result: 'inbox_file_removed';
+} | {
+    /**
+     * Its files.
+     */
+    readonly files: readonly (LibraryFile)[];
+    readonly result: 'library';
+    /**
+     * Its use, and the open conversation's.
+     */
+    readonly standing: LibraryStanding;
+} | {
+    /**
+     * The download: its parts are asked by it.
+     */
+    readonly download_id: string;
+    /**
+     * The file.
+     */
+    readonly file: LibraryFile;
+    /**
+     * How many parts it is, each [`FILE_IN_PART_BYTES`] but the last.
+     */
+    readonly parts: number;
+    readonly result: 'file_out_begun';
+} | {
+    /**
+     * Its bytes, base64.
+     */
+    readonly data: string;
+    /**
+     * The download.
+     */
+    readonly download_id: string;
+    readonly result: 'file_out_part_read';
+    /**
+     * The part.
+     */
+    readonly seq: number;
+} | {
+    /**
+     * Why.
+     */
+    readonly reason: FileOutRefusal;
+    readonly result: 'file_out_refused';
+} | {
+    /**
+     * The Library's id for it, as it was.
+     */
+    readonly id: string;
+    readonly result: 'library_file_removed';
 };
 /**
  * One artifact as the UI lists it: every revision kept.
@@ -5604,6 +5731,8 @@ export type UiEventBody = {
     readonly kind: 'file_offered';
 } | FileWithheld & {
     readonly kind: 'file_withheld';
+} | {
+    readonly kind: 'library_changed';
 } | {
     /**
      * The artifact.

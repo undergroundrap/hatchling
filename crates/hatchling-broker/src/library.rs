@@ -34,6 +34,7 @@ use hatchling_core::{MAX_SECRET_BYTES, SecretName};
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use zeroize::Zeroizing;
 
 use crate::Config;
 
@@ -74,6 +75,18 @@ pub fn is_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// A file read back for the owner (WO-041, slice 4).
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReadOut {
+    /// The file, whole, to its hash: wiped when dropped.
+    Whole(Zeroizing<Vec<u8>>),
+    /// The Library keeps no such file.
+    Gone,
+    /// Its chunks don't come to its hash, or one can't be read: nothing of
+    /// it is given.
+    Damaged,
 }
 
 /// A file the Library keeps, as its index says it.
@@ -467,27 +480,64 @@ impl<'k> Library<'k> {
     /// When the Library can't be read, or the file's chunks don't come to
     /// its hash.
     pub fn fetch(&self, id: &str) -> Result<Option<Vec<u8>>, String> {
+        match self.read_out(id)? {
+            ReadOut::Whole(mut bytes) => Ok(Some(std::mem::take(&mut *bytes))),
+            ReadOut::Gone => Ok(None),
+            ReadOut::Damaged => Err(format!("the Library's file {id} is damaged")),
+        }
+    }
+
+    /// The file `id`, whole, as it was kept; or that the Library keeps no
+    /// such file, or that its copy is damaged.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn read_out(&self, id: &str) -> Result<ReadOut, String> {
         self.opened(|vault, _| {
             let index = Self::index(vault)?;
             let Some(file) = index.iter().find(|file| file.id == id) else {
-                return Ok(None);
+                return Ok(ReadOut::Gone);
             };
-            let damaged = || format!("the Library's file {} is damaged", file.name);
-            let mut bytes = Vec::with_capacity(usize::try_from(file.bytes).unwrap_or(0));
+            // Never grown past the length the index says, so no copy of it
+            // is left behind unwiped.
+            let length = usize::try_from(file.bytes).unwrap_or(0);
+            let mut bytes = Zeroizing::new(Vec::with_capacity(length));
             for chunk in 0..file.chunks {
-                let secret = vault
-                    .fetch(&Self::name(&chunk_name(&file.id, chunk))?)
-                    .map_err(|_| damaged())?;
+                let Ok(secret) = vault.fetch(&Self::name(&chunk_name(&file.id, chunk))?) else {
+                    return Ok(ReadOut::Damaged);
+                };
+                if bytes.len().saturating_add(secret.as_bytes().len()) > length {
+                    return Ok(ReadOut::Damaged);
+                }
                 bytes.extend_from_slice(secret.as_bytes());
             }
             // The hash is the index's, sealed: chunks of another file, cut
             // short or out of order come to another hash. No more than the
             // index's chunks are read, each at most a sealed entry's most.
             if hex(&Sha256::digest(&bytes)) != file.sha256 {
-                return Err(damaged());
+                return Ok(ReadOut::Damaged);
             }
-            Ok(Some(bytes))
+            Ok(ReadOut::Whole(bytes))
         })
+    }
+
+    /// Puts junk of the same length in place of the first chunk of the
+    /// file `id`: it reads back damaged.
+    #[cfg(test)]
+    pub(crate) fn damage(&self, id: &str) {
+        let vault = self.vault().unwrap_or_else(|error| unreachable!("{error}"));
+        let name = Self::name(&chunk_name(id, 0)).unwrap_or_else(|error| unreachable!("{error}"));
+        let kept = vault
+            .fetch(&name)
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        let junk = vec![b'?'; kept.as_bytes().len()];
+        vault
+            .store(
+                &name,
+                &Secret::new(junk).unwrap_or_else(|error| unreachable!("{error}")),
+            )
+            .unwrap_or_else(|error| unreachable!("{error}"));
     }
 
     /// Removes the file `id`: whether the Library kept it.

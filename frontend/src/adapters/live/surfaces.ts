@@ -112,6 +112,7 @@ export class Surfaces {
             case 'file_in':
             case 'file_offered':
             case 'file_withheld':
+            case 'library_changed':
                 return undefined;
         }
     }

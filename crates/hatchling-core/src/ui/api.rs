@@ -125,6 +125,14 @@ pub enum ApiRequest {
     ListInbox,
     /// [`UiAction::RemoveInboxFile`].
     RemoveInboxFile,
+    /// [`UiAction::ListLibrary`].
+    ListLibrary,
+    /// [`UiAction::BeginFileOut`].
+    BeginFileOut,
+    /// [`UiAction::FileOutPart`].
+    FileOutPart,
+    /// [`UiAction::RemoveLibraryFile`].
+    RemoveLibraryFile,
 }
 
 impl ApiRequest {
@@ -177,6 +185,10 @@ impl ApiRequest {
             UiAction::EndFileIn { .. } => Self::EndFileIn,
             UiAction::ListInbox {} => Self::ListInbox,
             UiAction::RemoveInboxFile { .. } => Self::RemoveInboxFile,
+            UiAction::ListLibrary {} => Self::ListLibrary,
+            UiAction::BeginFileOut { .. } => Self::BeginFileOut,
+            UiAction::FileOutPart { .. } => Self::FileOutPart,
+            UiAction::RemoveLibraryFile { .. } => Self::RemoveLibraryFile,
         }
     }
 }
@@ -423,6 +435,22 @@ mod tests {
             (
                 action(UiAction::RemoveInboxFile { name: id() }),
                 ApiRequest::RemoveInboxFile,
+            ),
+            (action(UiAction::ListLibrary {}), ApiRequest::ListLibrary),
+            (
+                action(UiAction::BeginFileOut { id: id() }),
+                ApiRequest::BeginFileOut,
+            ),
+            (
+                action(UiAction::FileOutPart {
+                    download_id: id(),
+                    seq: 0,
+                }),
+                ApiRequest::FileOutPart,
+            ),
+            (
+                action(UiAction::RemoveLibraryFile { id: id() }),
+                ApiRequest::RemoveLibraryFile,
             ),
         ];
         for (request, kind) in cases {

@@ -60,7 +60,7 @@ pub use api::{ApiOutcome, ApiRequest, ApiToken};
 pub use control::{Actor, Control, Handoff};
 pub use files::{
     FILE_IN_BYTES, FILE_IN_NAME_BYTES, FILE_IN_PART_BYTES, FileIn, FileInRefusal, FileOffered,
-    FileWithheld, InboxFile, LibraryFile,
+    FileOutRefusal, FileWithheld, InboxFile, LibraryFile, LibraryStanding,
 };
 pub use surfaces::{
     AgentState, ArtifactBody, ArtifactRefusal, ArtifactRevision, BrowserAction, BrowserFrame,
@@ -78,7 +78,9 @@ pub use surfaces::{
 /// actions, the `file_in` event, and `file_in` activity.
 /// 6: files the agent hands the owner (WO-041): the `file_offered` and
 /// `file_withheld` events, and `file_out` activity.
-pub const UI_SCHEMA_VERSION: u16 = 6;
+/// 7: the Library in the app (WO-041): its list, a file read out in
+/// parts, removal, the `library_changed` event, and when a file was kept.
+pub const UI_SCHEMA_VERSION: u16 = 7;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -262,6 +264,9 @@ pub enum UiEventBody {
     FileOffered(FileOffered),
     /// The agent tried to hand the owner a file, and it was withheld (v6).
     FileWithheld(FileWithheld),
+    /// The Library changed: a file was removed. Its list is read again
+    /// (v7).
+    LibraryChanged {},
     /// A file was sent in a chat, as an artifact revision (v2).
     Attachment {
         /// The chat.
@@ -1670,6 +1675,28 @@ pub enum UiAction {
         /// Its name in the inbox.
         name: String,
     },
+    /// List the Library, the files the agent gave the owner (v7): the
+    /// owner's alone.
+    ListLibrary {},
+    /// Begin reading a file out of the Library (v7): the owner's alone,
+    /// one at a time a connection. Its parts are asked in order.
+    BeginFileOut {
+        /// The Library's id for it.
+        id: String,
+    },
+    /// Read one part of the file being read out (v7), in order from 0,
+    /// each at most [`FILE_IN_PART_BYTES`].
+    FileOutPart {
+        /// The download, as its beginning answered.
+        download_id: String,
+        /// Its place.
+        seq: u32,
+    },
+    /// Remove a file from the Library (v7): the owner's alone.
+    RemoveLibraryFile {
+        /// The Library's id for it.
+        id: String,
+    },
 }
 
 /// What an action did.
@@ -1906,6 +1933,42 @@ pub enum UiActionResult {
         /// Its name, as it was.
         name: String,
     },
+    /// The Library's files, newest first, and its standing (v7).
+    Library {
+        /// Its files.
+        files: Vec<LibraryFile>,
+        /// Its use, and the open conversation's.
+        standing: LibraryStanding,
+    },
+    /// A file is ready to be read out of the Library (v7), read back
+    /// whole and to its hash.
+    FileOutBegun {
+        /// The download: its parts are asked by it.
+        download_id: String,
+        /// The file.
+        file: LibraryFile,
+        /// How many parts it is, each [`FILE_IN_PART_BYTES`] but the last.
+        parts: u32,
+    },
+    /// One part of the file being read out (v7).
+    FileOutPartRead {
+        /// The download.
+        download_id: String,
+        /// The part.
+        seq: u32,
+        /// Its bytes, base64.
+        data: String,
+    },
+    /// The file wasn't read out (v7).
+    FileOutRefused {
+        /// Why.
+        reason: FileOutRefusal,
+    },
+    /// The file was removed from the Library (v7).
+    LibraryFileRemoved {
+        /// The Library's id for it, as it was.
+        id: String,
+    },
 }
 
 /// Why a confirmation stopped waiting without the owner's decision.
@@ -2123,6 +2186,7 @@ mod tests {
             name: s("report.pdf"),
             bytes: 9,
             sha256: s("ab"),
+            kept_at: s("2026-11-17T00:00:00Z"),
         };
         pinned(
             &UiEventBody::FileOffered(FileOffered {
@@ -2131,7 +2195,8 @@ mod tests {
                 file,
             }),
             &json!({"kind": "file_offered", "chat_id": "local", "message_id": "file-1",
-                "file": {"id": "f1", "name": "report.pdf", "bytes": 9, "sha256": "ab"}}),
+                "file": {"id": "f1", "name": "report.pdf", "bytes": 9, "sha256": "ab",
+                    "kept_at": "2026-11-17T00:00:00Z"}}),
         );
         for (name, expected) in [
             (
@@ -2153,7 +2218,97 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 6);
+        assert_eq!(UI_SCHEMA_VERSION, 7);
+    }
+
+    #[test]
+    fn the_librarys_actions_results_and_event_have_their_wire_form() {
+        for (action, expected) in [
+            (UiAction::ListLibrary {}, json!({"action": "list_library"})),
+            (
+                UiAction::BeginFileOut { id: s("f1") },
+                json!({"action": "begin_file_out", "id": "f1"}),
+            ),
+            (
+                UiAction::FileOutPart {
+                    download_id: s("out-1"),
+                    seq: 2,
+                },
+                json!({"action": "file_out_part", "download_id": "out-1", "seq": 2}),
+            ),
+            (
+                UiAction::RemoveLibraryFile { id: s("f1") },
+                json!({"action": "remove_library_file", "id": "f1"}),
+            ),
+        ] {
+            pinned(&action, &expected);
+        }
+        let file = LibraryFile {
+            id: s("f1"),
+            name: s("report.pdf"),
+            bytes: 9,
+            sha256: s("ab"),
+            kept_at: s("2026-11-17T00:00:00Z"),
+        };
+        let shown = json!({"id": "f1", "name": "report.pdf", "bytes": 9, "sha256": "ab",
+            "kept_at": "2026-11-17T00:00:00Z"});
+        for (result, expected) in [
+            (
+                UiActionResult::Library {
+                    files: vec![file.clone()],
+                    standing: LibraryStanding {
+                        files: 1,
+                        file_limit: 64,
+                        bytes: 9,
+                        byte_limit: 268_435_456,
+                        given: 1,
+                        given_limit: 16,
+                        off: false,
+                    },
+                },
+                json!({"result": "library", "files": [shown], "standing": {"files": 1,
+                    "file_limit": 64, "bytes": 9, "byte_limit": 268_435_456, "given": 1,
+                    "given_limit": 16, "off": false}}),
+            ),
+            (
+                UiActionResult::FileOutBegun {
+                    download_id: s("out-1"),
+                    file,
+                    parts: 1,
+                },
+                json!({"result": "file_out_begun", "download_id": "out-1", "file": shown, "parts": 1}),
+            ),
+            (
+                UiActionResult::FileOutPartRead {
+                    download_id: s("out-1"),
+                    seq: 0,
+                    data: s("YWI="),
+                },
+                json!({"result": "file_out_part_read", "download_id": "out-1", "seq": 0, "data": "YWI="}),
+            ),
+            (
+                UiActionResult::LibraryFileRemoved { id: s("f1") },
+                json!({"result": "library_file_removed", "id": "f1"}),
+            ),
+        ] {
+            pinned(&result, &expected);
+        }
+        for (reason, said) in [
+            (FileOutRefusal::Gone, "gone"),
+            (FileOutRefusal::Damaged, "damaged"),
+            (FileOutRefusal::Busy, "busy"),
+            (FileOutRefusal::UnknownDownload, "unknown_download"),
+            (FileOutRefusal::OutOfStep, "out_of_step"),
+        ] {
+            pinned(
+                &UiActionResult::FileOutRefused { reason },
+                &json!({"result": "file_out_refused", "reason": {"refusal": said}}),
+            );
+        }
+        pinned(
+            &UiEventBody::LibraryChanged {},
+            &json!({"kind": "library_changed"}),
+        );
     }
 
     #[test]

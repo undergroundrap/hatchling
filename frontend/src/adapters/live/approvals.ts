@@ -256,6 +256,11 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'file_in_refused':
             case 'inbox':
             case 'inbox_file_removed':
+            case 'library':
+            case 'file_out_begun':
+            case 'file_out_part_read':
+            case 'file_out_refused':
+            case 'library_file_removed':
                 return unknown('Hatchling answered with something other than a decision, so the answer is not confirmed. Check its status.');
         }
     }

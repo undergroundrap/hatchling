@@ -40,9 +40,10 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, FILE_IN_PART_BYTES, FileIn, FileInRefusal, GoalOp, Handoff, InboxFile, KeptOp,
-    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SiteOp, SuggestionOp, UiAction,
-    UiActionResult, UiEventBody, VaultProtection,
+    Decision, FILE_IN_PART_BYTES, FileIn, FileInRefusal, FileOutRefusal, GoalOp, Handoff,
+    InboxFile, KeptOp, LibraryFile, LibraryStanding, ProfileOp, ProfileResult, RoomDiskView,
+    SetupState, SignInOp, SiteOp, SuggestionOp, UiAction, UiActionResult, UiEventBody,
+    VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -344,6 +345,10 @@ impl<'a> Ops<'a> {
             | UiAction::EndFileIn { .. }
             | UiAction::ListInbox {}
             | UiAction::RemoveInboxFile { .. } => self.inbox(owns, action, replies),
+            UiAction::ListLibrary {}
+            | UiAction::BeginFileOut { .. }
+            | UiAction::FileOutPart { .. }
+            | UiAction::RemoveLibraryFile { .. } => self.library(owns, action, replies),
         }
     }
 
@@ -1121,6 +1126,130 @@ impl<'a> Ops<'a> {
         }
     }
 
+    /// The Library listed, a file read out of it, or one removed (WO-041):
+    /// the owner's alone. A file is read back whole and to its hash once,
+    /// and its parts are given in order from that copy.
+    fn library(
+        &self,
+        owns: bool,
+        action: &UiAction,
+        replies: &mut Replies<'a>,
+    ) -> (UiActionResult, ApiOutcome) {
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        if !owns {
+            return refused(ActionRefusal::NotGranted);
+        }
+        let served = |result| (result, ApiOutcome::Served);
+        let not = |reason| served(UiActionResult::FileOutRefused { reason });
+        // A part reads the copy held, never the Library.
+        if let UiAction::FileOutPart { download_id, seq } = action {
+            if replies.download.as_deref() != Some(download_id.as_str()) {
+                return not(FileOutRefusal::UnknownDownload);
+            }
+            return match replies.holding().part(download_id, *seq, Instant::now()) {
+                Ok(data) => served(UiActionResult::FileOutPartRead {
+                    download_id: download_id.clone(),
+                    seq: *seq,
+                    data,
+                }),
+                Err(reason) => not(reason),
+            };
+        }
+        let Some(library) = crate::library::Library::of(self.config, self.key) else {
+            return refused(ActionRefusal::Unavailable);
+        };
+        let unreadable = |error: String| {
+            tracing::warn!(%error, "the Library couldn't be read for the owner");
+            refused(ActionRefusal::Unavailable)
+        };
+        if let UiAction::BeginFileOut { id } = action {
+            return Self::begin_file_out(&library, id, replies);
+        }
+        if let UiAction::RemoveLibraryFile { id } = action {
+            return match library.remove(id) {
+                Ok(true) => {
+                    // A copy being downloaded goes with it.
+                    replies.holding().forget_file(id);
+                    // Every app reads its list again.
+                    self.bus
+                        .push(Timestamp::now().to_string(), UiEventBody::LibraryChanged {});
+                    served(UiActionResult::LibraryFileRemoved { id: id.clone() })
+                }
+                Ok(false) => not(FileOutRefusal::Gone),
+                Err(error) => unreadable(error),
+            };
+        }
+        if !matches!(action, UiAction::ListLibrary {}) {
+            return refused(ActionRefusal::BadRequest);
+        }
+        let read = library
+            .files()
+            .and_then(|files| library.standing().map(|standing| (files, standing)));
+        match read {
+            Ok((files, (given, off))) => served(UiActionResult::Library {
+                standing: standing(&files, given, off),
+                // Newest first: the index keeps them oldest first.
+                files: files.into_iter().rev().map(shown).collect(),
+            }),
+            Err(error) => unreadable(error),
+        }
+    }
+
+    /// Begins reading the file `id` out of `library` for the connection
+    /// `replies` is: read back whole and to its hash, and held while its
+    /// parts are asked. The connection's last download is let go.
+    fn begin_file_out(
+        library: &crate::library::Library<'_>,
+        id: &str,
+        replies: &mut Replies<'a>,
+    ) -> (UiActionResult, ApiOutcome) {
+        let served = |result| (result, ApiOutcome::Served);
+        let not = |reason| served(UiActionResult::FileOutRefused { reason });
+        let unreadable = |error: String| {
+            tracing::warn!(%error, "the Library couldn't be read for the owner");
+            let reason = ActionRefusal::Unavailable;
+            (UiActionResult::Refused { reason }, ApiOutcome::Refused)
+        };
+        let file = match library.files() {
+            Ok(files) => files.into_iter().find(|file| file.id == id),
+            Err(error) => return unreadable(error),
+        };
+        let Some(file) = file else {
+            return not(FileOutRefusal::Gone);
+        };
+        let Ok(download_id) = crate::approval::random_hex("out-") else {
+            return unreadable(String::from("no entropy for a download's id"));
+        };
+        // A new download lets go of the connection's last, whatever comes
+        // of it; and a busy broker reads nothing.
+        if let Some(before) = replies.download.take() {
+            replies.holding().let_go(&before);
+        }
+        if !replies.holding().has_room(Instant::now()) {
+            return not(FileOutRefusal::Busy);
+        }
+        let bytes = match library.read_out(id) {
+            Ok(crate::library::ReadOut::Whole(bytes)) => bytes,
+            Ok(crate::library::ReadOut::Gone) => return not(FileOutRefusal::Gone),
+            Ok(crate::library::ReadOut::Damaged) => return not(FileOutRefusal::Damaged),
+            Err(error) => return unreadable(error),
+        };
+        match replies
+            .holding()
+            .begin((&download_id, id), bytes, Instant::now())
+        {
+            Ok(parts) => {
+                replies.download = Some(download_id.clone());
+                served(UiActionResult::FileOutBegun {
+                    download_id,
+                    file: shown(file),
+                    parts,
+                })
+            }
+            Err(reason) => not(reason),
+        }
+    }
+
     /// Puts a file that is in, whole, in the inbox: the chat and the model
     /// are told of it, and Activity keeps how it ended. Its turn is let go
     /// once it is put.
@@ -1205,6 +1334,34 @@ fn plain(said: &str) -> String {
 /// What the owner is told when the inbox couldn't be reached or changed.
 const INBOX_FAILED: &str = "the agent's inbox couldn't be reached: Hatchling's log says why";
 
+/// A file the Library keeps, as the owner is shown it.
+fn shown(file: crate::library::KeptFile) -> LibraryFile {
+    LibraryFile {
+        id: file.id,
+        name: file.name,
+        bytes: file.bytes,
+        sha256: file.sha256,
+        kept_at: file.kept_at,
+    }
+}
+
+/// The Library's use of `files` against its bounds, and the open
+/// conversation's `given` and `off`.
+fn standing(files: &[crate::library::KeptFile], given: u32, off: bool) -> LibraryStanding {
+    use crate::library::{HANDED_PER_CONVERSATION, LIBRARY_BYTES, LIBRARY_FILES};
+    LibraryStanding {
+        files: u32::try_from(files.len()).unwrap_or(u32::MAX),
+        file_limit: u32::try_from(LIBRARY_FILES).unwrap_or(u32::MAX),
+        bytes: files
+            .iter()
+            .fold(0_u64, |held, file| held.saturating_add(file.bytes)),
+        byte_limit: LIBRARY_BYTES,
+        given,
+        given_limit: HANDED_PER_CONVERSATION,
+        off,
+    }
+}
+
 /// One connection's reply route: while attached, the agent's replies on
 /// the local channel go to the stream. Detached when dropped, unless a
 /// newer client has taken the route since.
@@ -1213,6 +1370,11 @@ pub struct Replies<'h> {
     attached: Option<(&'h LocalHub, SinkId)>,
     /// The file it is sending into the Room's inbox (WO-041).
     sending: Sending,
+    /// The file it is reading out of the Library, by its download id
+    /// (WO-041): the copy is let go when the connection ends.
+    download: Option<String>,
+    /// Where its copy is held: the broker's own, unless a test gives one.
+    holding: Option<&'static crate::file_out::Holding>,
 }
 
 impl std::fmt::Debug for Replies<'_> {
@@ -1236,6 +1398,22 @@ impl<'h> Replies<'h> {
 }
 
 impl Replies<'_> {
+    /// Where the file it reads out of the Library is held.
+    fn holding(&self) -> &'static crate::file_out::Holding {
+        self.holding.unwrap_or(&crate::file_out::HOLDING)
+    }
+
+    /// Holds its downloads in `holding`, a test's own.
+    #[cfg(test)]
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "a const fn taking a value with a destructor needs Rust 1.83's const drop rules; kept plain for every toolchain"
+    )]
+    pub(crate) fn holding_in(mut self, holding: &'static crate::file_out::Holding) -> Self {
+        self.holding = Some(holding);
+        self
+    }
+
     /// What Activity is to keep of a file this connection sent in, once
     /// it has ended (WO-041).
     pub const fn take_crossed(&mut self) -> Option<SubagentEvent> {
@@ -1261,6 +1439,9 @@ impl Drop for Replies<'_> {
     fn drop(&mut self) {
         if let Some((hub, sink)) = self.attached.take() {
             hub.detach(sink);
+        }
+        if let Some(download) = self.download.take() {
+            self.holding().let_go(&download);
         }
     }
 }
@@ -3593,6 +3774,341 @@ mod tests {
         assert_eq!(
             chats(&bus),
             [(ChatAuthor::System, String::from(NEW_CONVERSATION))]
+        );
+    }
+
+    /// An install with a Library (WO-041), for the owner's app.
+    struct Shelf {
+        config: Config,
+        key: MasterKey,
+        skills: Skills,
+        bus: Arc<Bus>,
+        _scratch: crate::api_auth::tests::Scratch,
+    }
+
+    impl Shelf {
+        fn new(name: &str) -> Self {
+            let scratch = scratch(name);
+            let mut config = owner_config(Some("/srv/hatchling/schedules"));
+            config.goals.grants = Vec::new();
+            config.scheduler.library = scratch.0.join("library");
+            Self {
+                config,
+                key: MasterKey::generate().unwrap(),
+                skills: Skills::load(&SkillConfig::disabled()).unwrap(),
+                bus: Arc::new(Bus::starting_at(1)),
+                _scratch: scratch,
+            }
+        }
+
+        fn ops(&self) -> Ops<'_> {
+            Ops::new(
+                &self.config,
+                &self.key,
+                &self.skills,
+                None,
+                Arc::clone(&self.bus),
+            )
+        }
+
+        fn library(&self) -> crate::library::Library<'_> {
+            crate::library::Library::of(&self.config, &self.key).unwrap()
+        }
+
+        fn keep(&self, name: &str, bytes: &[u8]) -> crate::library::KeptFile {
+            self.library()
+                .keep(name, bytes, "2026-11-17T00:00:00Z")
+                .unwrap()
+                .unwrap()
+        }
+    }
+
+    /// A connection's replies, its downloads held apart from every other
+    /// test's.
+    fn connection(holding: &'static crate::file_out::Holding) -> Replies<'static> {
+        Replies::default().holding_in(holding)
+    }
+
+    const fn not_out(reason: FileOutRefusal) -> (UiActionResult, ApiOutcome) {
+        (
+            UiActionResult::FileOutRefused { reason },
+            ApiOutcome::Served,
+        )
+    }
+
+    fn begun(answer: (UiActionResult, ApiOutcome)) -> (String, LibraryFile, u32) {
+        let (
+            UiActionResult::FileOutBegun {
+                download_id,
+                file,
+                parts,
+            },
+            ApiOutcome::Served,
+        ) = answer
+        else {
+            unreachable!("not begun: {answer:?}");
+        };
+        (download_id, file, parts)
+    }
+
+    fn part(download_id: &str, seq: u32) -> UiAction {
+        UiAction::FileOutPart {
+            download_id: download_id.to_owned(),
+            seq,
+        }
+    }
+
+    /// The Library, as the owner's app reads it (WO-041): listed newest
+    /// first with its use, and a file read out in order whole, from one
+    /// copy let go after its last part.
+    #[test]
+    fn the_library_is_listed_and_a_file_read_out_whole_in_order() {
+        use base64::Engine as _;
+        let shelf = Shelf::new("api-library");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let size = usize::try_from(FILE_IN_PART_BYTES).unwrap() * 2 + 3;
+        let bytes: Vec<u8> = (0..size)
+            .map(|at| u8::try_from(at % 251).unwrap())
+            .collect();
+        let a = shelf.keep("a.txt", &bytes);
+        let empty = shelf.keep("empty.bin", b"");
+        let mut replies = connection(crate::file_out::own());
+        let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
+        let (UiActionResult::Library { files, standing }, ApiOutcome::Served) =
+            ask(UiAction::ListLibrary {})
+        else {
+            unreachable!("not listed");
+        };
+        let names: Vec<&str> = files.iter().map(|file| file.name.as_str()).collect();
+        assert_eq!(names, ["empty.bin", "a.txt"]);
+        assert_eq!(files.last().map(|file| &file.sha256), Some(&a.sha256));
+        assert_eq!(
+            standing,
+            LibraryStanding {
+                files: 2,
+                file_limit: 64,
+                bytes: u64::try_from(size).unwrap(),
+                byte_limit: 256 * 1024 * 1024,
+                given: 2,
+                given_limit: 16,
+                off: false,
+            }
+        );
+        let (download_id, file, parts) = begun(ask(UiAction::BeginFileOut { id: a.id }));
+        assert_eq!(
+            (file.name.as_str(), file.bytes, parts),
+            ("a.txt", a.bytes, 3)
+        );
+        let mut read = Vec::new();
+        for seq in 0..parts {
+            let asked = ask(part(&download_id, seq));
+            let (UiActionResult::FileOutPartRead { data, .. }, ApiOutcome::Served) = asked else {
+                unreachable!("part {seq}: {asked:?}");
+            };
+            read.extend(
+                base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .unwrap(),
+            );
+        }
+        assert_eq!(read, bytes);
+        assert_eq!(
+            ask(part(&download_id, parts)),
+            not_out(FileOutRefusal::UnknownDownload),
+            "the copy was held after its last part"
+        );
+        // A file of no bytes is no parts; one the Library doesn't keep, gone.
+        assert_eq!(begun(ask(UiAction::BeginFileOut { id: empty.id })).2, 0);
+        assert_eq!(
+            ask(UiAction::BeginFileOut { id: "0".repeat(64) }),
+            not_out(FileOutRefusal::Gone)
+        );
+    }
+
+    /// A damaged file is said damaged; one removed is said gone, every app
+    /// is told once, and a copy of it being read goes with it.
+    #[test]
+    fn a_damaged_file_is_said_damaged_and_a_removed_one_gone() {
+        let shelf = Shelf::new("api-library-remove");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let a = shelf.keep("a.txt", b"abc");
+        let b = shelf.keep("b.txt", b"def");
+        let holding = crate::file_out::own();
+        let mut reading = connection(holding);
+        let (download_id, _, _) = begun(ops.handle(
+            &owner,
+            &UiAction::BeginFileOut { id: a.id.clone() },
+            &mut reading,
+        ));
+        let mut replies = connection(holding);
+        let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
+        shelf.library().damage(&b.id);
+        assert_eq!(
+            ask(UiAction::BeginFileOut { id: b.id }),
+            not_out(FileOutRefusal::Damaged)
+        );
+        let remove = || UiAction::RemoveLibraryFile { id: a.id.clone() };
+        assert_eq!(
+            ask(remove()),
+            (
+                UiActionResult::LibraryFileRemoved { id: a.id.clone() },
+                ApiOutcome::Served
+            )
+        );
+        assert_eq!(ask(remove()), not_out(FileOutRefusal::Gone));
+        let told = shelf
+            .bus
+            .after(None)
+            .into_iter()
+            .filter(|event| event.body == UiEventBody::LibraryChanged {})
+            .count();
+        assert_eq!(told, 1, "every app is told of a removal, once");
+        assert_eq!(shelf.library().files().unwrap().len(), 1);
+        assert_eq!(
+            ops.handle(&owner, &part(&download_id, 0), &mut reading),
+            not_out(FileOutRefusal::UnknownDownload),
+            "a removed file's copy was still read"
+        );
+    }
+
+    /// A download is its connection's: another can't read it by its id,
+    /// and a connection's next download lets go of its last.
+    #[test]
+    fn a_download_is_its_connections_and_its_next_lets_go_of_it() {
+        let shelf = Shelf::new("api-library-yours");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let kept = shelf.keep("a.txt", b"abcdef");
+        let holding = crate::file_out::own();
+        let begin = UiAction::BeginFileOut { id: kept.id };
+        let mut mine = connection(holding);
+        let mut theirs = connection(holding);
+        let (first, _, _) = begun(ops.handle(&owner, &begin, &mut mine));
+        assert_eq!(
+            ops.handle(&owner, &part(&first, 0), &mut theirs),
+            not_out(FileOutRefusal::UnknownDownload),
+            "another connection read this one's download"
+        );
+        let (second, _, _) = begun(ops.handle(&owner, &begin, &mut mine));
+        assert_eq!(holding.count(), 1, "the last download was kept");
+        assert_eq!(
+            ops.handle(&owner, &part(&first, 0), &mut mine),
+            not_out(FileOutRefusal::UnknownDownload)
+        );
+        let read = ops.handle(&owner, &part(&second, 0), &mut mine);
+        assert!(
+            matches!(
+                read,
+                (UiActionResult::FileOutPartRead { .. }, ApiOutcome::Served)
+            ),
+            "{read:?}"
+        );
+    }
+
+    /// When so many downloads are under way, the next is busy, until one
+    /// ends.
+    #[test]
+    fn a_download_past_the_bound_is_busy() {
+        let shelf = Shelf::new("api-library-busy");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let kept = shelf.keep("a.txt", b"abc");
+        let holding = crate::file_out::own();
+        let begin = UiAction::BeginFileOut { id: kept.id };
+        let mut under_way: Vec<Replies<'_>> = (0..crate::file_out::HELD_MAX)
+            .map(|_| connection(holding))
+            .collect();
+        for replies in &mut under_way {
+            begun(ops.handle(&owner, &begin, replies));
+        }
+        assert_eq!(
+            ops.handle(&owner, &begin, &mut connection(holding)),
+            not_out(FileOutRefusal::Busy)
+        );
+        // One ending makes room.
+        under_way.pop();
+        begun(ops.handle(&owner, &begin, &mut connection(holding)));
+    }
+
+    /// The Library is nobody's but the owner's, and where the operator set
+    /// none there is nothing to list, read or remove.
+    #[test]
+    fn the_library_is_the_owners_alone_and_off_where_there_is_none() {
+        let mut shelf = Shelf::new("api-library-owner");
+        // The owner holds the goals' grants too: a caller with the chat's
+        // alone holds grants, and isn't the owner.
+        shelf.config.goals.grants = owner_config(Some("/srv/hatchling/schedules")).goals.grants;
+        let owner = caller(&shelf.ops().owner_grants().into_iter().collect::<Vec<_>>());
+        assert_ne!(
+            owner,
+            caller(&[local_send()]),
+            "the caller below is the owner"
+        );
+        let kept = shelf.keep("a.txt", b"abc");
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        for action in [
+            UiAction::ListLibrary {},
+            UiAction::BeginFileOut {
+                id: kept.id.clone(),
+            },
+            part("out-1", 0),
+            UiAction::RemoveLibraryFile {
+                id: kept.id.clone(),
+            },
+        ] {
+            assert_eq!(
+                shelf.ops().handle(
+                    &caller(&[local_send()]),
+                    &action,
+                    &mut connection(crate::file_out::own())
+                ),
+                refused(ActionRefusal::NotGranted),
+                "{action:?}"
+            );
+        }
+        assert_eq!(
+            shelf.library().files().unwrap().len(),
+            1,
+            "a refused removal removed"
+        );
+        shelf.config.scheduler.library = PathBuf::new();
+        for action in [
+            UiAction::ListLibrary {},
+            UiAction::BeginFileOut {
+                id: kept.id.clone(),
+            },
+            UiAction::RemoveLibraryFile { id: kept.id },
+        ] {
+            assert_eq!(
+                shelf
+                    .ops()
+                    .handle(&owner, &action, &mut connection(crate::file_out::own())),
+                refused(ActionRefusal::Unavailable),
+                "{action:?}"
+            );
+        }
+    }
+
+    /// A connection that ends lets go of the file it was reading out.
+    #[test]
+    fn a_download_is_let_go_when_its_connection_ends() {
+        let shelf = Shelf::new("api-library-ends");
+        let kept = shelf.keep("a.txt", b"abc");
+        let holding = crate::file_out::own();
+        let mut replies = connection(holding);
+        let (download_id, _, _) = begun(shelf.ops().handle(
+            &caller(&[local_send()]),
+            &UiAction::BeginFileOut { id: kept.id },
+            &mut replies,
+        ));
+        assert_eq!(holding.count(), 1);
+        drop(replies);
+        assert_eq!(holding.count(), 0);
+        assert_eq!(
+            holding.part(&download_id, 0, Instant::now()),
+            Err(FileOutRefusal::UnknownDownload)
         );
     }
 

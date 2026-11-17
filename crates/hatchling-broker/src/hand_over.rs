@@ -54,6 +54,27 @@ pub(crate) const STALE: &str =
 pub(crate) const RESERVED: &str =
     "that file's name is one Windows keeps for itself: rename the file, then give it";
 
+/// Said of a file whose kind makes Windows reach out to another machine
+/// when the folder it is in is only shown.
+pub(crate) const REACHES_OUT: &str = "that kind of file can make Windows connect to another computer when its folder is only opened: put it in an archive (a .zip), then give that";
+
+/// The extensions of files Windows acts on when their folder is shown,
+/// lowercase: a link or a shell command file can name a share on another
+/// machine, which Windows then connects to with the owner's sign-in.
+const REACHING: [&str; 11] = [
+    "url",
+    "website",
+    "pif",
+    "deskthemepack",
+    "scf",
+    "lnk",
+    "library-ms",
+    "search-ms",
+    "searchconnector-ms",
+    "theme",
+    "themepack",
+];
+
 /// Said of a name that ends in a dot.
 pub(crate) const TRAILING_DOT: &str =
     "a file's name can't end in a dot: rename the file, then give it";
@@ -137,7 +158,21 @@ pub(crate) fn name_of(path: &str) -> Result<String, &'static str> {
     if name.ends_with('.') {
         return Err(TRAILING_DOT);
     }
+    if reaches_out(&name) {
+        return Err(REACHES_OUT);
+    }
     Ok(name)
+}
+
+/// Whether `name` is a file Windows acts on when its folder is shown,
+/// whatever its case: `desktop.ini`, or one with an extension in
+/// [`REACHING`].
+fn reaches_out(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "desktop.ini"
+        || lower
+            .rsplit_once('.')
+            .is_some_and(|(_, extension)| REACHING.contains(&extension))
 }
 
 /// Whether `stem` is a name Windows keeps for a device, whatever its case.
@@ -283,6 +318,7 @@ impl<'k> Handing<'k> {
             name: kept.name.clone(),
             bytes: kept.bytes,
             sha256: kept.sha256,
+            kept_at: kept.kept_at,
         };
         self.tell(|message_id| {
             UiEventBody::FileOffered(FileOffered {

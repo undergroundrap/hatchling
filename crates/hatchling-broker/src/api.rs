@@ -481,7 +481,8 @@ fn answer<'a>(
 
 /// Keeps one action of `caller`'s in the audit trail, as the API answered
 /// it. A file in is kept once, by how it ended, and not by its parts
-/// (WO-041): a part the backend answered isn't a line of its own.
+/// (WO-041): a part the backend answered isn't a line of its own. A file
+/// out is kept by its beginning, and not by its parts, the same way.
 fn audited(
     audit: &mut Audit,
     caller: &Caller,
@@ -489,7 +490,10 @@ fn audited(
     outcome: ApiOutcome,
     replies: &mut Replies<'_>,
 ) {
-    let part = matches!(action, UiAction::FileInPart { .. });
+    let part = matches!(
+        action,
+        UiAction::FileInPart { .. } | UiAction::FileOutPart { .. }
+    );
     if !(part && outcome == ApiOutcome::Served) {
         audit.record(Some(caller), ApiRequest::of_action(action), outcome);
     }
@@ -1535,6 +1539,58 @@ mod tests {
             drop(client);
             assert!(worker.join().unwrap().is_ok());
         });
+    }
+
+    /// A file out is one line, by its beginning: its parts aren't lines,
+    /// but one refused before the backend saw it is.
+    #[test]
+    fn a_file_out_is_kept_by_its_beginning_and_never_by_its_parts() {
+        let dir = scratch("file-out-audit");
+        let config = config_in(&dir);
+        let log = config.scheduler.activity_log();
+        let mut audit = Audit::new(log.clone(), String::from("api-files"));
+        let caller = Caller::new(String::from("uid 1000"), BTreeSet::new());
+        let mut replies = Replies::default();
+        let begin = UiAction::BeginFileOut {
+            id: String::from("f1"),
+        };
+        let part = UiAction::FileOutPart {
+            download_id: String::from("out-1"),
+            seq: 0,
+        };
+        audited(
+            &mut audit,
+            &caller,
+            &begin,
+            ApiOutcome::Served,
+            &mut replies,
+        );
+        audited(&mut audit, &caller, &part, ApiOutcome::Served, &mut replies);
+        audited(
+            &mut audit,
+            &caller,
+            &part,
+            ApiOutcome::Refused,
+            &mut replies,
+        );
+        let kept: Vec<SubagentEvent> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<ActivityEvent>(line).unwrap().kind)
+            .collect();
+        let call = |request, outcome| SubagentEvent::ApiCall {
+            caller: String::from("uid 1000"),
+            capabilities: Vec::new(),
+            request,
+            outcome,
+        };
+        assert_eq!(
+            kept,
+            [
+                call(ApiRequest::BeginFileOut, ApiOutcome::Served),
+                call(ApiRequest::FileOutPart, ApiOutcome::Refused),
+            ]
+        );
     }
 
     /// A file in is one line of Activity, by how it ended: its parts aren't
