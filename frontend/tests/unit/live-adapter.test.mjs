@@ -493,6 +493,14 @@ test('a file the agent gave, or that was withheld, is the app\'s own notice by t
     for (const message of messages)
         assert.doesNotMatch(message.text, /‮|<|\.\.\/|hidden/u, 'a name that isn\'t one reached the chat');
 });
+test('a Library changed elsewhere is taken without a word in the chat or Activity', () => {
+    const { transport, adapter } = connected();
+    const before = adapter.getSnapshot();
+    replay(transport, [sampleEvent(1, 1, { kind: 'library_changed' })]);
+    const after = adapter.getSnapshot();
+    assert.deepEqual(after.messages, before.messages);
+    assert.deepEqual(after.threads, before.threads);
+});
 test('a Library name is plain ASCII, bounded, and never hidden', () => {
     for (const good of ['a', 'report.pdf', 'out_1-2.tar.gz', 'n'.repeat(64)])
         assert.ok(isLibraryName(good), good);
