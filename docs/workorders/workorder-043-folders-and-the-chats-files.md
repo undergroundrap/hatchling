@@ -61,6 +61,8 @@ From an independent threat model of this work order and the code (2026-11-17), a
 
 Each slice's record, as it lands.
 
+- Slice 0, a hand-over spent before its file is checked ([#504](https://github.com/undergroundrap/hatchling/issues/504)): [hand-over-count.md](../evidence/hand-over-count.md).
+
 ## Notes
 
 Raised in WO-041's acceptance run and [#500](https://github.com/undergroundrap/hatchling/issues/500): a browser that asks where to save each download asked once for every file, and the agent couldn't give a project back as one. An archive made by the agent was considered and dropped: it hides its files from the secret check and the app's per-file warnings, and can carry a path that leaves its folder. Here the broker makes the archive.
