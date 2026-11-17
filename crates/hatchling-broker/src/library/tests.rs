@@ -435,6 +435,7 @@ fn a_keep_cut_short_is_undone_and_still_counts() {
             }),
             handed: 2,
             off: false,
+            conversation: 0,
         },
     );
     let vault = library.vault().unwrap();
@@ -478,6 +479,7 @@ fn a_keep_cut_short_after_its_index_is_finished() {
             }),
             handed: 1,
             off: false,
+            conversation: 0,
         },
     );
     assert_eq!(
@@ -727,4 +729,133 @@ fn a_removal_that_fails_at_any_store_is_said_as_it_is() {
             "{case}"
         );
     }
+}
+
+/// A hand-over is spent, sealed, before its file is checked: the count goes
+/// up, and nothing is kept until the file is.
+#[test]
+fn a_hand_over_is_spent_before_its_file_is_kept() {
+    let (config, _scratch, key) = kept("spend");
+    let library = Library::of(&config, &key).unwrap();
+    let conversation = library.conversation().unwrap();
+    assert_eq!(library.spend(3, conversation), Ok(Ok(())));
+    assert_eq!(library.standing().unwrap(), (1, false));
+    assert!(library.files().unwrap().is_empty());
+    // Kept as spent, it isn't counted again.
+    let kept = library
+        .keep_spent("a.txt", b"abc", "now", conversation)
+        .unwrap()
+        .unwrap();
+    assert_eq!(library.fetch(&kept.id).unwrap(), Some(b"abc".to_vec()));
+    assert_eq!(library.standing().unwrap(), (1, false));
+    // Spent to the last one, the next is refused, and nothing more spent.
+    for _ in 1..HANDED_PER_CONVERSATION {
+        assert_eq!(library.spend(1, conversation), Ok(Ok(())));
+    }
+    assert_eq!(library.spend(1, conversation), Ok(Err(Refused::Spent)));
+    assert_eq!(
+        library.standing().unwrap(),
+        (HANDED_PER_CONVERSATION, false)
+    );
+    // A hand-over spent before the last is still kept: its count is spent.
+    assert!(
+        library
+            .keep_spent("b.txt", b"b", "now", conversation)
+            .unwrap()
+            .is_ok()
+    );
+}
+
+/// What the Library couldn't keep is refused before anything is spent:
+/// off, spent, too long, or no room for its bytes.
+#[test]
+fn a_hand_over_the_library_couldnt_keep_spends_nothing() {
+    let (config, _scratch, key) = kept("spend-refused");
+    let library = Library::of(&config, &key).unwrap();
+    let conversation = library.conversation().unwrap();
+    assert_eq!(
+        library.spend(FILE_BYTES + 1, conversation),
+        Ok(Err(Refused::TooLarge))
+    );
+    // Near its byte bound, a file of more than the room left is refused.
+    let mut held = vec![FILE_BYTES; 31];
+    held.push(FILE_BYTES - 5);
+    library.pretend_held(&held);
+    let left = LIBRARY_BYTES - held.iter().sum::<u64>();
+    assert_eq!(left, 5);
+    assert_eq!(
+        library.spend(left + 1, conversation),
+        Ok(Err(Refused::Full))
+    );
+    assert_eq!(library.standing().unwrap(), (0, false));
+    assert_eq!(library.spend(left, conversation), Ok(Ok(())));
+    library.turn_off().unwrap();
+    assert_eq!(library.spend(1, conversation), Ok(Err(Refused::Off)));
+    assert_eq!(library.standing().unwrap(), (1, true));
+}
+
+/// A hand-over belongs to the conversation it began in: after the owner
+/// starts a new one, it is neither spent nor kept, and turns nothing off.
+#[test]
+fn a_hand_over_from_a_conversation_since_ended_is_neither_spent_nor_kept() {
+    let (config, _scratch, key) = kept("spend-stale");
+    let library = Library::of(&config, &key).unwrap();
+    let old = library.conversation().unwrap();
+    assert_eq!(library.spend(1, old), Ok(Ok(())));
+    library.new_conversation().unwrap();
+    let new = library.conversation().unwrap();
+    assert_ne!(new, old);
+    assert_eq!(library.spend(1, old), Ok(Err(Refused::Stale)));
+    assert_eq!(
+        library.keep_spent("a.txt", b"a", "now", old),
+        Ok(Err(Refused::Stale))
+    );
+    assert_eq!(library.standing().unwrap(), (0, false));
+    assert!(library.files().unwrap().is_empty());
+    assert_eq!(library.spend(1, new), Ok(Ok(())));
+    assert!(
+        library
+            .keep_spent("a.txt", b"a", "now", new)
+            .unwrap()
+            .is_ok()
+    );
+    // Turned off since it was spent, a hand-over isn't kept.
+    library.turn_off().unwrap();
+    assert_eq!(
+        library.keep_spent("b.txt", b"b", "now", new),
+        Ok(Err(Refused::Off))
+    );
+    assert_eq!(Refused::Stale.words(), crate::hand_over::STALE);
+}
+
+/// A state kept before the Library numbered its conversations reads as the
+/// first conversation, its count and off as they were.
+#[test]
+fn a_state_from_before_conversations_were_numbered_reads_as_the_first() {
+    let (config, _scratch, key) = kept("spend-old-state");
+    let library = Library::of(&config, &key).unwrap();
+    Library::write(
+        &library.vault().unwrap(),
+        STATE,
+        &serde_json::json!({"pending": null, "handed": 3, "off": true}),
+    )
+    .unwrap();
+    assert_eq!(library.standing().unwrap(), (3, true));
+    assert_eq!(library.conversation().unwrap(), 0);
+}
+
+/// A secret found by a run begun before the owner's new conversation turns
+/// nothing off in it.
+#[test]
+fn an_old_conversations_secret_turns_the_new_one_nothing_off() {
+    let (config, _scratch, key) = kept("off-stale");
+    let library = Library::of(&config, &key).unwrap();
+    let old = library.conversation().unwrap();
+    library.new_conversation().unwrap();
+    library.turn_off_in(old).unwrap();
+    assert_eq!(library.standing().unwrap(), (0, false));
+    library
+        .turn_off_in(library.conversation().unwrap())
+        .unwrap();
+    assert_eq!(library.standing().unwrap(), (0, true));
 }

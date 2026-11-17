@@ -245,7 +245,8 @@ fn a_file_holding_a_secret_is_withheld_and_turns_handing_over_off() {
         install.library().files().unwrap().is_empty(),
         "a withheld file was kept"
     );
-    assert_eq!(install.library().standing().unwrap(), (0, true));
+    // Checked, it was spent; found holding a secret, giving is off.
+    assert_eq!(install.library().standing().unwrap(), (1, true));
     let events = install.events();
     let [UiEventBody::FileWithheld(withheld)] = events.as_slice() else {
         unreachable!("{events:?}");
@@ -286,7 +287,7 @@ fn a_name_holding_a_secret_is_never_shown_or_kept() {
     };
     assert_eq!(withheld.name, None);
     assert_eq!(install.crossings(), [(None, 5, FileOutEnded::Withheld)]);
-    assert_eq!(install.library().standing().unwrap(), (0, true));
+    assert_eq!(install.library().standing().unwrap(), (1, true));
 }
 
 #[test]
@@ -310,10 +311,11 @@ fn a_file_that_couldnt_be_checked_is_never_told_as_a_secret() {
             }
         );
         assert!(install.library().files().unwrap().is_empty());
+        // Checked, or tried, it is spent; nothing is turned off.
         assert_eq!(
             install.library().standing().unwrap(),
-            (0, false),
-            "turned off"
+            (1, false),
+            "turned off, or not spent"
         );
         assert!(install.events().is_empty(), "the owner was told of it");
         assert_eq!(install.crossings(), [(None, 5, FileOutEnded::Unchecked)]);
@@ -379,8 +381,8 @@ fn what_is_refused_before_the_file_is_read_asks_the_room_nothing() {
 }
 
 /// The Room's refusal is said as the Room said it; a file the Library
-/// won't keep after its checks is said in the Library's words, by its
-/// name, which was checked.
+/// won't keep is said in the Library's words before the file is checked,
+/// so by no name: nothing was spent.
 #[test]
 fn a_file_the_room_or_the_library_refuses_is_said_so() {
     let install = install("refused");
@@ -405,10 +407,11 @@ fn a_file_the_room_or_the_library_refuses_is_said_so() {
         install.crossings(),
         [
             (None, 0, FileOutEnded::Refused),
-            (Some(String::from("a.txt")), size, FileOutEnded::Refused),
+            (None, size, FileOutEnded::Refused),
         ]
     );
     assert!(install.library().files().unwrap().is_empty());
+    assert_eq!(install.library().standing().unwrap(), (0, false));
 }
 
 #[test]
@@ -634,7 +637,8 @@ fn a_file_read_for_a_conversation_since_ended_is_never_kept() {
         assert_eq!(room.asked().len(), 1, "{case}");
         assert_eq!(ASKED.with(Cell::get), 2, "{case}");
         assert!(install.library().files().unwrap().is_empty(), "{case}");
-        assert_eq!(install.library().standing().unwrap(), (0, false), "{case}");
+        // It was checked, so it was spent, in the conversation it began in.
+        assert_eq!(install.library().standing().unwrap(), (1, false), "{case}");
         assert!(install.events().is_empty(), "{case}");
         assert_eq!(
             install.crossings(),
@@ -661,4 +665,195 @@ fn a_session_writes_only_so_many_lines_to_activity() {
     let other = install.handing(Some(&install.cell), chat, clear("a.txt"));
     other.hand(&room, "a.txt");
     assert_eq!(install.crossings().len(), lines + 1);
+}
+
+/// Checks that answer as told, and count how often they were asked.
+struct Counted {
+    says: Says,
+    asked: std::rc::Rc<Cell<u32>>,
+}
+
+impl Checks for Counted {
+    fn holds(&self, text: &[u8]) -> Result<bool, String> {
+        self.asked.set(self.asked.get() + 1);
+        self.says.holds(text)
+    }
+}
+
+/// A file the Library couldn't keep is never checked: the check is a guess
+/// at a secret, and a guess is only made when one is spent (#504).
+#[test]
+fn a_file_the_library_couldnt_keep_is_never_checked() {
+    let install = install("never-checked");
+    let library = install.library();
+    let mut held = vec![crate::library::FILE_BYTES; 31];
+    held.push(crate::library::FILE_BYTES - 5);
+    library.pretend_held(&held);
+    let left = crate::library::LIBRARY_BYTES - held.iter().sum::<u64>();
+    let asked = std::rc::Rc::new(Cell::new(0));
+    let mut handing = install.handing(Some(&install.cell), chat, clear("a.txt"));
+    handing.checks = Box::new(Counted {
+        says: clear("a.txt"),
+        asked: std::rc::Rc::clone(&asked),
+    });
+    let room = Room::with(Ok(vec![b'x'; usize::try_from(left).unwrap() + 1]));
+    for _ in 0..20 {
+        assert_eq!(
+            handing.hand(&room, "a.txt"),
+            RoomResult::NotHandedOver {
+                reason: String::from(Refused::Full.words())
+            }
+        );
+    }
+    assert_eq!(
+        asked.get(),
+        0,
+        "a file the Library couldn't keep was checked"
+    );
+    assert_eq!(library.standing().unwrap(), (0, false));
+}
+
+/// Every file checked spends one of the conversation's hand-overs, kept or
+/// not: one that couldn't be checked too. Past the last, nothing is read.
+#[test]
+fn every_file_checked_spends_a_hand_over() {
+    let install = install("every-checked");
+    let room = Room::with(Ok(b"x".to_vec()));
+    let unchecked = || Says {
+        name: b"a.txt".to_vec(),
+        for_name: Ok(false),
+        for_file: Err(String::from("no keeper")),
+    };
+    let handing = install.handing(Some(&install.cell), chat, unchecked());
+    for _ in 0..crate::library::HANDED_PER_CONVERSATION {
+        assert_eq!(
+            handing.hand(&room, "a.txt"),
+            RoomResult::NotHandedOver {
+                reason: String::from(UNCHECKED)
+            }
+        );
+    }
+    assert_eq!(
+        handing.hand(&room, "a.txt"),
+        RoomResult::NotHandedOver {
+            reason: String::from(Refused::Spent.words())
+        }
+    );
+    assert_eq!(
+        room.asked().len(),
+        usize::try_from(crate::library::HANDED_PER_CONVERSATION).unwrap(),
+        "a file was read past the last hand-over"
+    );
+}
+
+/// A Room whose file is read out while the owner starts a new conversation.
+struct Bumping<'a> {
+    room: Room,
+    library: Library<'a>,
+}
+
+impl Rooms for Bumping<'_> {
+    fn run(&self, run: &RoomRun) -> Result<RoomJobAnswer, String> {
+        self.room.run(run)
+    }
+    fn job(&self, job: &JobId, wait: u32) -> Result<RoomJobAnswer, String> {
+        self.room.job(job, wait)
+    }
+    fn stop(&self, job: &JobId) -> Result<RoomJobAnswer, String> {
+        self.room.stop(job)
+    }
+    fn output(&self, job: &JobId, stream: Stream, end: End) -> Result<Vec<u8>, String> {
+        self.room.output(job, stream, end)
+    }
+    fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String> {
+        self.room.page(path, from, lines)
+    }
+    fn search(&self, search: &RoomSearch) -> Result<Found, String> {
+        self.room.search(search)
+    }
+    fn change(&self, change: &RoomChange) -> Result<RoomChanged, String> {
+        self.room.change(change)
+    }
+    fn take(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.library.new_conversation().unwrap();
+        self.room.take(path)
+    }
+}
+
+/// A file read while the owner started a new conversation is neither
+/// checked, counted nor kept in it: the hand-over belongs to the one it
+/// began in.
+#[test]
+fn a_file_read_as_a_new_conversation_starts_is_never_checked_or_counted() {
+    let install = install("bump-read");
+    let asked = std::rc::Rc::new(Cell::new(0));
+    let mut handing = install.handing(Some(&install.cell), chat, clear("a.txt"));
+    handing.checks = Box::new(Counted {
+        says: clear("a.txt"),
+        asked: std::rc::Rc::clone(&asked),
+    });
+    let room = Bumping {
+        room: Room::with(Ok(b"x".to_vec())),
+        library: install.library(),
+    };
+    assert_eq!(
+        handing.hand(&room, "a.txt"),
+        RoomResult::NotHandedOver {
+            reason: String::from(STALE)
+        }
+    );
+    assert_eq!(asked.get(), 0, "a stale file was checked");
+    assert_eq!(install.library().standing().unwrap(), (0, false));
+    assert!(install.library().files().unwrap().is_empty());
+}
+
+/// Checks during which the owner starts a new conversation.
+struct BumpingChecks<'a> {
+    says: Says,
+    library: Library<'a>,
+}
+
+impl Checks for BumpingChecks<'_> {
+    fn holds(&self, text: &[u8]) -> Result<bool, String> {
+        if text == self.says.name.as_slice() {
+            self.library.new_conversation().unwrap();
+        }
+        self.says.holds(text)
+    }
+}
+
+/// A file checked while the owner started a new conversation is neither
+/// kept in it nor, holding a secret, turns it off: what it spent stays in
+/// the conversation it began in.
+#[test]
+fn a_file_checked_as_a_new_conversation_starts_is_neither_kept_nor_turns_it_off() {
+    for held in [false, true] {
+        let install = install(&format!("bump-check-{held}"));
+        let mut says = clear("a.txt");
+        says.for_file = Ok(held);
+        let mut handing = install.handing(Some(&install.cell), chat, clear("a.txt"));
+        handing.checks = Box::new(BumpingChecks {
+            says,
+            library: install.library(),
+        });
+        let room = Room::with(Ok(b"x".to_vec()));
+        let said = handing.hand(&room, "a.txt");
+        if held {
+            assert_eq!(
+                said,
+                RoomResult::NotHandedOver {
+                    reason: String::from(WITHHELD)
+                }
+            );
+        } else {
+            assert_eq!(
+                said,
+                RoomResult::NotHandedOver {
+                    reason: String::from(STALE)
+                }
+            );
+        }
+        assert_eq!(install.library().standing().unwrap(), (0, false), "{held}");
+        assert!(install.library().files().unwrap().is_empty(), "{held}");
+    }
 }

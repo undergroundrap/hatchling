@@ -1,6 +1,6 @@
 # WO-043: Folders, and the chat's files: give a project back, keep it in the chat, take what you need
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-room` (the supervisor's read of a folder), `crates/hatchling-broker` (the hand-over of a folder, the Library's groups and limits), `crates/hatchling-core` (the wire), `crates/hatchling-agent` (the tool), `crates/hatchling-vault` (its log of the Library's chunks), `frontend/` (the chat's cards, the Library's groups and choosing), `docs/`
 **Issue:** [#502](https://github.com/undergroundrap/hatchling/issues/502)
 **Trust boundary:** yes (what crosses out of a cell, and the limits on it)
@@ -60,6 +60,8 @@ From an independent threat model of this work order and the code (2026-11-17), a
 ## Evidence
 
 Each slice's record, as it lands.
+
+- Slice 0, a hand-over spent before its file is checked ([#504](https://github.com/undergroundrap/hatchling/issues/504)): [hand-over-count.md](../evidence/hand-over-count.md).
 
 ## Notes
 
