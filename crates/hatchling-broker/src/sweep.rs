@@ -186,6 +186,7 @@ pub fn state_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<P
         config.artifacts.root.clone(),
         config.spaces.root.clone(),
         config.scheduler.conversation.clone(),
+        config.scheduler.library.clone(),
         config.scheduler.usage.clone(),
         config.scheduler.owner_dir(),
         config.web.grants.clone(),
@@ -723,6 +724,7 @@ mod tests {
         };
         config.artifacts.workspace = Some(dir.0.join("workspace"));
         config.scheduler.conversation = dir.0.join("conversation");
+        config.scheduler.library = dir.0.join("library");
         config.scheduler.usage = dir.0.join("usage");
         config.web.grants = dir.0.join("sites");
         config.web.profiles = dir.0.join("profiles");
@@ -736,6 +738,7 @@ mod tests {
             &redaction.dir,
             &dir.0.join("workspace"),
             &dir.0.join("conversation"),
+            &dir.0.join("library"),
             &dir.0.join("usage"),
             &dir.0.join("sites"),
             &dir.0.join("profiles"),

@@ -48,6 +48,7 @@ hatchling_core::declare_environment! {
     HATCHLING_SCHEDULER_MODEL_OTHER_REASONING: ("optional; default provider-default", "The second model's thinking mode: provider-default or disabled."),
     HATCHLING_SCHEDULER_MODEL_OTHER_CONTEXT_WINDOW: ("optional", "The second model's context window in tokens, at least 8192."),
     HATCHLING_CONVERSATION_DIR: ("optional; default off", "Absolute sealed store of the chat's conversation; unset, a restart starts a new conversation."),
+    HATCHLING_LIBRARY_DIR: ("optional; default off", "Absolute sealed store of the files the agent hands the owner, the Library; unset, nothing is handed over."),
     HATCHLING_ARTIFACT_DIR: ("optional; default disabled", "Absolute sealed artifact build-store root."),
     HATCHLING_ARTIFACT_WORKSPACE: ("required with a configured harness", "Absolute workspace destination for approved deliveries."),
     HATCHLING_ARTIFACT_DENY: ("optional", "Comma-separated output categories the review policy refuses."),

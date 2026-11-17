@@ -50,7 +50,7 @@ Each level asks you to confirm, and takes a backup first:
 | Command | Clears | Keeps |
 | --- | --- | --- |
 | `reset conversation` | The conversation; the agent's computer's room disk is closed, and keeps its files | Everything else |
-| `reset agent` | The conversation, memory, goals, schedules and what it made, its room disk included | Your API keys, sign-ins, security keys and backup codes |
+| `reset agent` | The conversation, memory, goals, schedules and what it made, its room disk and the files it handed you (the Library) included | Your API keys, sign-ins, security keys and backup codes |
 | `reset everything` | All of that, your API keys and sign-ins, and the keyring | Your settings. Security keys aren't changed |
 
 Use `--yes` to skip the question in a script. Use `--no-backup` if you can't open the vault to back it up, which is what to do when your keys and codes are all gone.

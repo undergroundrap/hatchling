@@ -53,8 +53,8 @@ pub fn validate_sealed_vault(vault_config: &VaultConfig, key: &MasterKey) -> Res
 /// Every sealed store the broker keeps, as configured: its label and root.
 ///
 /// The secrets always; the schedules when scheduling is on; the
-/// artifacts, the spaces, the web's stores and the conversation when each
-/// is on (a store that is off has no root); the raw text of redaction
+/// artifacts, the spaces, the web's stores, the conversation and the
+/// Library when each is on (a store that is off has no root); the raw text of redaction
 /// records when there is an output gate (`redaction`).
 #[must_use]
 pub fn sealed_stores(
@@ -72,6 +72,7 @@ pub fn sealed_stores(
         (Store::PROFILES, &config.web.profiles),
         (Store::CREDENTIALS, &config.web.credentials),
         (Store::CONVERSATION, &config.scheduler.conversation),
+        (Store::LIBRARY, &config.scheduler.library),
     ] {
         if !root.as_os_str().is_empty() {
             stores.push((store, root.clone()));
@@ -351,6 +352,38 @@ mod tests {
     use hatchling_vault::{Secret, SecretName};
 
     use super::*;
+
+    /// Every store the broker can have fits one handoff from the keeper:
+    /// with each one configured, the Library among them, there are as many
+    /// as a handoff carries, and no more.
+    #[test]
+    fn the_brokers_stores_fit_one_handoff() {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        let root = PathBuf::from("/srv/hatchling");
+        config.scheduler.root = root.join("schedules");
+        config.artifacts.root = root.join("artifacts");
+        config.spaces.root = root.join("spaces");
+        config.web.grants = root.join("sites");
+        config.web.profiles = root.join("profiles");
+        config.web.credentials = root.join("credentials");
+        config.scheduler.conversation = root.join("conversation");
+        config.scheduler.library = root.join("library");
+        let redaction = RedactionConfig {
+            enabled: true,
+            dir: root.join("redactions"),
+            keep_raw: true,
+            timeout: std::time::Duration::from_secs(1),
+            builtins: crate::output_gate::Builtins::ALL,
+        };
+        let stores = broker_stores(&config, Some(&redaction));
+        let labels: Vec<&str> = stores.iter().map(|(store, _)| store.label()).collect();
+        assert!(labels.contains(&"library"), "{labels:?}");
+        assert_eq!(
+            stores.len(),
+            hatchling_vault::handoff::MAX_HANDED,
+            "{labels:?}"
+        );
+    }
 
     #[test]
     fn the_master_key_loads_the_same_each_start() {
