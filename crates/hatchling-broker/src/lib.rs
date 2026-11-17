@@ -46,6 +46,7 @@ pub mod channel;
 pub mod chat_run;
 pub mod cli;
 pub mod conversation_store;
+pub mod library;
 pub use approval::{ApprovalLedger, ApprovalToken, MintError, Verdict};
 pub use channel::{ChannelRegistry, handle_channel_op};
 pub mod config;

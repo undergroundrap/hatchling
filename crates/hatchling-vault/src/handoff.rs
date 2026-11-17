@@ -521,10 +521,12 @@ mod tests {
             Store::PROFILES,
             Store::CREDENTIALS,
             Store::CONVERSATION,
+            Store::LIBRARY,
         ] {
             assert_eq!(Store::from_label(store.label()), Some(store));
         }
         assert_eq!(Store::CONVERSATION.label(), "conversation");
+        assert_eq!(Store::LIBRARY.label(), "library");
     }
 
     /// The reader's parts, called directly: a root is handed only when

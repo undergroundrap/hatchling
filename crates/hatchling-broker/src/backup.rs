@@ -1174,6 +1174,8 @@ mod tests {
         }
         assert_eq!(part_of("conversation"), Part::Conversation);
         assert_eq!(part_of("artifacts"), Part::Mind);
+        // The files the agent handed over go with what it made.
+        assert_eq!(part_of("library"), Part::Mind);
     }
 
     /// A backup brought back over changes gives the state it was taken of,
