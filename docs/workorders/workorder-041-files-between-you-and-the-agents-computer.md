@@ -87,5 +87,6 @@ Each slice's record, as it lands:
 - Slice 1, the inbox put: [room-inbox-put](../evidence/room-inbox-put.md).
 - Slice 2, a file in through the local API: [room-file-in](../evidence/room-file-in.md).
 - Slice 2, a file in from the app: [room-file-in-app](../evidence/room-file-in-app.md).
+- Slice 3, a file read out of the Room: [room-take-wire](../evidence/room-take-wire.md).
 
 The whole is filled in at close.
