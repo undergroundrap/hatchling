@@ -35,7 +35,7 @@ There's one exception: the browser's cell. A saved sign-in's username and passwo
 
 The Broker is the watchman. An agent's cell has two lines out. One goes to the Broker, which checks each request against what's been granted. One goes to the Keeper, which does the same for vault requests, logs them, and refuses them all if the cell has no vault grant.
 
-After a chat or scheduled run, the Broker writes which tools it used and how each ended, and Activity shows that as the run's trail. You can compare what the agent said it did with what it did. The trail names tools, never what they carried. One thing is named: a file you hand the agent is a line of its own, with the name its inbox gave it, its size and how it ended, never what it held or your name for it. A subagent's own tools aren't in it, and the trail is written as a run ends, so a crash of the Broker can lose it.
+After a chat or scheduled run, the Broker writes which tools it used and how each ended, and Activity shows that as the run's trail. You can compare what the agent said it did with what it did. The trail names tools, never what they carried. Two things are named: a file you hand the agent is a line of its own, with the name its inbox gave it, its size and how it ended, never what it held or your name for it; and so is a file the agent gives you, by the plain name Hatchling gave it, its size and how it ended, never what it held or where it was. A subagent's own tools aren't in it, and the trail is written as a run ends, so a crash of the Broker can lose it.
 
 ### The cells
 
@@ -93,5 +93,7 @@ Some text on its way out is checked without asking you. What the agent puts in a
 **What the trail doesn't say.** It shows which tools a run used, not what it passed them.
 
 **A file you hand the agent.** It goes into the agent's own computer, which reads it and can change none of it, and nothing in it is ever run for you. Still, the agent reads it as it reads a page: a file someone sent you can steer it like a page can. If it holds a secret your vault keeps, Hatchling puts it all the same and says so, as it's your file; with a hosted model, what the agent reads of it goes to that company.
+
+**A file the agent gives you.** It's a copy of a file in the agent's own computer, checked for the secrets Hatchling keeps, file and name, before it's kept for you. The check catches accidents, not a determined agent: a secret encoded, compressed, encrypted or split up isn't found, and the real control is that your vault's secrets are never in its computer. One file can test many guesses at a secret at once, so one found turns giving files off for that conversation: the agent can't try again. A file the agent made can be hostile to whatever opens it: Hatchling gives you it to download, as a file, and never opens it for you.
 
 Found something that isn't here? [Report it privately](../SECURITY.md).

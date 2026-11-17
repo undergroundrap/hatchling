@@ -1013,7 +1013,7 @@ impl Releases {
 
     /// Whether `purpose` is a gate's, which scans rather than reads.
     fn scans(purpose: &str) -> bool {
-        matches!(purpose, "artifact-gate" | "output-gate")
+        matches!(purpose, "artifact-gate" | "output-gate" | "file-out-gate")
     }
 
     /// What a gate scans for: the held secrets a cell has been given or
@@ -2218,7 +2218,7 @@ mod tests {
         assert!(!searching.allow(Role::Authority, "search", &names(&["token"])));
         assert!(!searching.allow(Role::Broker, "egress", &search));
         // The gates scan: they read nothing by name.
-        for gate in ["artifact-gate", "output-gate"] {
+        for gate in ["artifact-gate", "output-gate", "file-out-gate"] {
             assert!(Releases::scans(gate));
             assert!(!broker(gate, &["token"]));
         }

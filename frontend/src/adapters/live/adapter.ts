@@ -343,6 +343,12 @@ export class LiveAdapter implements ProtocolAdapter {
                 this.#chats.fileIn(body, event.ts);
                 this.#inbox.observe(body);
                 return undefined;
+            case 'file_offered':
+                this.#chats.fileOffered(body, event.ts);
+                return undefined;
+            case 'file_withheld':
+                this.#chats.fileWithheld(body, event.ts);
+                return undefined;
             case 'artifact':
             case 'agent_status':
             case 'artifact_listed':

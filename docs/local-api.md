@@ -92,6 +92,16 @@ The owner hands the agent a file by sending it into the inbox of the agent's com
 - **`list_inbox`** answers `inbox`: each file's `name` and `bytes`, by number. **`remove_inbox_file`** with a `name` takes that file out, answered `inbox_file_removed`; its number isn't given again. A name the inbox doesn't give, or no such file, is `refused`.
 - **Activity keeps one `file_in` line a file**, once it ended: the inbox's name for it (none when it wasn't put), its size, and `ended`: `placed`, `refused`, `unknown`, or `abandoned` (let go before it was whole: a part out of step, a short end, its turn taken, or its connection closed). A file refused at its beginning (`busy`, `too_large`, `no_room`) wasn't begun, and has no line. Never what it held or the owner's name for it. A part isn't a line of its own, unless the API refused it before the broker saw it, as for a caller without the owner's grants.
 
+## Files from the agent
+
+The agent gives the owner a file from its computer with `give_file` (v6, [WO-041](workorders/workorder-041-files-between-you-and-the-agents-computer.md)), in a chat, where the operator gave the broker a Library (`HATCHLING_LIBRARY_DIR`). The stream tells the app how it went:
+
+- **`file_offered`**: the file was kept in the Library and is the owner's to download. It carries the `local` chat, a `message_id` of the broker's, and the `file`: its `id`, the broker's `name` for it (plain ASCII: letters, digits, `.`, `_`, `-`, at most 64 bytes, no leading dot), its `bytes` and its `sha256`.
+- **`file_withheld`**: the file, or its name, held a secret the broker keeps, which is never named. Nothing was kept, and giving files is off for the conversation until the owner starts a new one. Its `name` is left out when the name itself held the secret.
+- **Activity keeps one `file_out` line a file read out of the agent's computer**, at most 32 a session: the broker's name (none unless it was checked and found clear), its size, and `ended`: `offered`, `withheld`, `unchecked` (it couldn't be checked: nothing kept, nothing turned off) or `refused`. Never what it held, or its path in the agent's computer.
+
+Downloading a file, listing the Library and removing a file come with the app's side ([WO-041](workorders/workorder-041-files-between-you-and-the-agents-computer.md)'s last slice); until then the packaged install doesn't set `HATCHLING_LIBRARY_DIR`.
+
 ## Approvals
 
 When the agent proposes an action that needs your yes (building an idea into an artifact, or reading a site it hasn't been allowed), the broker freezes it and asks you on the stream, never in the chat (WO-027, WO-028).

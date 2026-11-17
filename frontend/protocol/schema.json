@@ -480,6 +480,38 @@
             "ended"
           ],
           "type": "object"
+        },
+        {
+          "description": "A file the agent began handing its owner (WO-041), once it ended:\nthe broker's name for it, its size, and how it ended. Never what\nit holds, or its path in the Room.",
+          "properties": {
+            "bytes": {
+              "description": "Its size: 0 when it was never read out.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ended": {
+              "$ref": "#/$defs/FileOutEnded",
+              "description": "How it ended."
+            },
+            "event": {
+              "const": "file_out",
+              "type": "string"
+            },
+            "name": {
+              "description": "The broker's name for it: none unless it was checked and found\nto hold no secret.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "event",
+            "bytes",
+            "ended"
+          ],
+          "type": "object"
         }
       ],
       "properties": {
@@ -3777,6 +3809,54 @@
         }
       ]
     },
+    "FileOffered": {
+      "description": "The agent handed the owner a file (v6): it is kept in the Library.",
+      "properties": {
+        "chat_id": {
+          "description": "The chat it was handed over in.",
+          "type": "string"
+        },
+        "file": {
+          "$ref": "#/$defs/LibraryFile",
+          "description": "The file."
+        },
+        "message_id": {
+          "description": "Its place in the chat: the broker's.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id",
+        "file"
+      ],
+      "type": "object"
+    },
+    "FileOutEnded": {
+      "description": "How a file the agent began handing its owner ended.",
+      "oneOf": [
+        {
+          "const": "offered",
+          "description": "It was kept in the Library, and offered to the owner.",
+          "type": "string"
+        },
+        {
+          "const": "withheld",
+          "description": "It held a secret the broker keeps: nothing was kept, and handing\nfiles over is off for the conversation.",
+          "type": "string"
+        },
+        {
+          "const": "unchecked",
+          "description": "It couldn't be checked: nothing was kept, and nothing turned off.",
+          "type": "string"
+        },
+        {
+          "const": "refused",
+          "description": "It was refused before it could be checked, or kept: not a file\nthe Room hands over, a name that can't be one, a Library full, a\nconversation that has handed over as many as it may or is off.",
+          "type": "string"
+        }
+      ]
+    },
     "FileRefusal": {
       "description": "Why a file was not saved.",
       "oneOf": [
@@ -3827,6 +3907,31 @@
           "type": "object"
         }
       ]
+    },
+    "FileWithheld": {
+      "description": "The agent tried to hand the owner a file, and it was withheld (v6): it\nholds a secret the broker keeps, which is never named. Handing files\nover is off for the conversation.",
+      "properties": {
+        "chat_id": {
+          "description": "The chat it was handed over in.",
+          "type": "string"
+        },
+        "message_id": {
+          "description": "Its place in the chat: the broker's.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The broker's name for it: none when the name itself held the\nsecret.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id"
+      ],
+      "type": "object"
     },
     "GoalOp": {
       "description": "An operation on the owner's goals, from their app: the same goals the\nagent reads in a chat and a feed.",
@@ -4978,6 +5083,36 @@
           "type": "string"
         }
       ]
+    },
+    "LibraryFile": {
+      "description": "A file the agent handed the owner (WO-041), as the Library keeps it.",
+      "properties": {
+        "bytes": {
+          "description": "Its length, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "The broker's id for it.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The broker's name for it: plain ASCII, made from the file's own.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Its SHA-256, in lowercase hex.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "bytes",
+        "sha256"
+      ],
+      "type": "object"
     },
     "MediaHeader": {
       "description": "One response header the broker sets on served media.",
@@ -6580,6 +6715,49 @@
             },
             "result": {
               "const": "no-change",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file was handed over (v32): the owner is offered it, by the\nbroker's name for it.",
+          "properties": {
+            "bytes": {
+              "description": "Its length, in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "name": {
+              "description": "The broker's name for it, as the owner is shown it.",
+              "type": "string"
+            },
+            "result": {
+              "const": "handed-over",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "name",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Nothing was handed over (v32): the reason says why, and whether\nhanding files over is now off for the conversation.",
+          "properties": {
+            "reason": {
+              "description": "Why, in words for the agent.",
+              "type": "string"
+            },
+            "result": {
+              "const": "not-handed-over",
               "type": "string"
             }
           },
@@ -9922,6 +10100,24 @@
                 "new"
               ],
               "type": "object"
+            },
+            {
+              "description": "Hand the owner a file in the workspace (v32, WO-041): the broker\ncopies it out whole, checks it, and offers it to the owner in the\nchat and the Library. What changes in the file after is nothing\nhanded over.",
+              "properties": {
+                "op": {
+                  "const": "hand-over",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "The file, by its absolute path under the workspace, or a path\nunder it.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "path"
+              ],
+              "type": "object"
             }
           ],
           "properties": {
@@ -11899,6 +12095,11 @@
         {
           "const": "room",
           "description": "Running commands in its own computer, the Room.",
+          "type": "string"
+        },
+        {
+          "const": "files",
+          "description": "Handing the owner a file from its own computer (WO-041).",
           "type": "string"
         }
       ]
@@ -13898,6 +14099,34 @@
           "type": "object"
         },
         {
+          "$ref": "#/$defs/FileOffered",
+          "description": "The agent handed the owner a file, kept in the Library (v6).",
+          "properties": {
+            "kind": {
+              "const": "file_offered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/FileWithheld",
+          "description": "The agent tried to hand the owner a file, and it was withheld (v6).",
+          "properties": {
+            "kind": {
+              "const": "file_withheld",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
           "description": "A file was sent in a chat, as an artifact revision (v2).",
           "properties": {
             "artifact_id": {
@@ -14808,8 +15037,8 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 31,
-    "ui_schema_version": 5
+    "session_protocol": 32,
+    "ui_schema_version": 6
   },
   "x-roots": {
     "ActivityEvent": {

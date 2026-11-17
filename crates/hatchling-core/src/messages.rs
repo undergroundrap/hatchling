@@ -1478,6 +1478,16 @@ pub enum RoomOp {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         all: bool,
     },
+    /// Hand the owner a file in the workspace (v32, WO-041): the broker
+    /// copies it out whole, checks it, and offers it to the owner in the
+    /// chat and the Library. What changes in the file after is nothing
+    /// handed over.
+    #[serde(rename = "hand-over")]
+    HandOver {
+        /// The file, by its absolute path under the workspace, or a path
+        /// under it.
+        path: String,
+    },
 }
 
 /// How many lines a read hands back when it names no count.
@@ -1661,6 +1671,22 @@ pub enum RoomResult {
     /// changed.
     #[serde(rename = "no-change")]
     NoChange {
+        /// Why, in words for the agent.
+        reason: String,
+    },
+    /// The file was handed over (v32): the owner is offered it, by the
+    /// broker's name for it.
+    #[serde(rename = "handed-over")]
+    HandedOver {
+        /// The broker's name for it, as the owner is shown it.
+        name: String,
+        /// Its length, in bytes.
+        bytes: u64,
+    },
+    /// Nothing was handed over (v32): the reason says why, and whether
+    /// handing files over is now off for the conversation.
+    #[serde(rename = "not-handed-over")]
+    NotHandedOver {
         /// Why, in words for the agent.
         reason: String,
     },
@@ -5492,7 +5518,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 31);
+        assert_eq!(crate::PROTOCOL_VERSION, 32);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5597,7 +5623,47 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 31);
+        assert_eq!(crate::PROTOCOL_VERSION, 32);
+    }
+
+    /// A hand-over and its results go on the wire as written, and a field
+    /// they don't have never decodes.
+    #[test]
+    fn a_hand_over_op_and_its_results_have_their_wire_form() {
+        let give = SessionRequest::Room(RoomOp::HandOver {
+            path: String::from("out/report.pdf"),
+        });
+        let json = serde_json::to_string(&give).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","op":"hand-over","path":"out/report.pdf"}"#
+        );
+        assert_eq!(asked(&json).unwrap(), give);
+        assert!(asked(r#"{"kind":"room","op":"hand-over","path":"a","name":"b"}"#).is_err());
+        assert!(asked(r#"{"kind":"room","op":"hand-over"}"#).is_err());
+        let handed = SessionResponse::Room(RoomResult::HandedOver {
+            name: String::from("report.pdf"),
+            bytes: 9,
+        });
+        let json = serde_json::to_string(&handed).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","result":"handed-over","name":"report.pdf","bytes":9}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionResponse>(&json).unwrap(),
+            handed
+        );
+        let not = SessionResponse::Room(RoomResult::NotHandedOver {
+            reason: String::from("withheld"),
+        });
+        let json = serde_json::to_string(&not).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","result":"not-handed-over","reason":"withheld"}"#
+        );
+        assert_eq!(serde_json::from_str::<SessionResponse>(&json).unwrap(), not);
+        assert_eq!(crate::PROTOCOL_VERSION, 32);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5656,6 +5722,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 31);
+        assert_eq!(crate::PROTOCOL_VERSION, 32);
     }
 }

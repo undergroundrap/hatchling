@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v31 (current). This doc is the human-readable reference
+**Status:** v32 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -632,6 +632,40 @@ which shows a card kept from a chat with its run's own account.
   stand.
 - A run that answered with nothing leaves a card without it, and so is
   every card a run suggested.
+
+## v32 — Giving the owner a file
+
+- **`RoomOp::HandOver { path }`**: a file in the agent's computer given
+  to the owner (WO-041). `path` is under `/workspace`, absolute or taken
+  under it, and names a file: not a directory, a link at any step, a
+  pipe, or anything on another file system, the inbox's mount among
+  them. The Room's supervisor reads it, as the Room's user, a piece at a
+  time; the spawner puts it together, at most 8 MiB, and holds it to
+  being one file from its first piece to its last.
+- Only a chat's own run gives a file, in the conversation open now: a
+  session with nobody there, one the broker didn't start as a run, one
+  the chat didn't start, and one started before the owner's new
+  conversation are each refused before anything is read. It is offered
+  to the model (the `files` tool group, `give_file`) only in a chat with
+  its computer, where the operator gave the broker a Library
+  (`HATCHLING_LIBRARY_DIR`).
+- **The broker's name, never the agent's**: the file's last component in
+  ASCII letters, digits, `.`, `_` and `-`, at most 64 bytes, no leading
+  dot; refused when what is before its first dot is a name Windows keeps
+  for a device (`CON`, `PRN`, `AUX`, `NUL`, `COM0` to `COM9`, `LPT0` to
+  `LPT9`), or it ends in a dot.
+- **Checked, the file and its name**, for the secrets a gate scans for
+  and the keeper's whole set (the vault's access log has a
+  `file-out-gate` scan and a `file-out-check` line). A secret found
+  withholds it, never named, and turns giving files off for the
+  conversation until the owner starts a new one; the run goes on. A
+  check that couldn't be made gives nothing and turns nothing off.
+- **`RoomResult`** gains:
+  - `HandedOver { name, bytes }`: kept in the Library, and offered to
+    the owner by that name.
+  - `NotHandedOver { reason }`: nothing was given, and why, in words for
+    the agent: refused, withheld, not checked, too large, or a Library or
+    a conversation that holds as many as it may.
 
 ## Device handshake
 

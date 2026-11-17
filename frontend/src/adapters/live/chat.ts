@@ -4,14 +4,14 @@
 // text message through the markdown renderer, so it arrives with its link
 // forms broken apart (see text.ts). System notices render as plain text.
 import type { Chat, Message } from '../../protocol/models.js';
-import type { ActivityEvent, ChatMessage, UiEventBody } from './protocol/generated.js';
+import type { ActivityEvent, ChatMessage, FileOffered, FileWithheld, UiEventBody } from './protocol/generated.js';
 import { trailLine } from './activity.js';
 /** A file sent in a chat . */
 export type Attachment = Extract<UiEventBody, {
     readonly kind: 'attachment';
 }>;
 import type { FileIn } from './inbox.js';
-import { SECRET_SUFFIX, isInboxName, sizeWords } from '../../session/inbox.js';
+import { SECRET_SUFFIX, isInboxName, isLibraryName, sizeWords } from '../../session/inbox.js';
 import { clockTime, inertLinks } from './text.js';
 /** The main chat's id: always present, whatever the history holds. */
 export const MAIN_CHAT = 'main';
@@ -43,6 +43,8 @@ export const KEEP = 'Keep for later';
 /** How the offer to keep is named, after the answer it is under. */
 const KEEP_SUFFIX = ':keep';
 /** What the owner is told of a file given that holds a secret Hatchling keeps. */
+/** Why a file the agent tried to give was withheld. */
+export const WITHHELD = 'it holds a secret Hatchling keeps. Giving files is off for this conversation; a new conversation turns it back on.';
 export const HOLDS_SECRET = 'This file holds a secret Hatchling keeps, or it couldn’t be checked. Hatchling reads what’s in it, and with a hosted model, so does the model’s provider. Removing it from the agent’s inbox stops later reads; it can’t undo one already made.';
 /** A run's record, as the line under the answer it wrote. */
 interface Trail {
@@ -105,6 +107,25 @@ export class ChatBook {
         this.#messages.set(entry.message_id, { id: entry.message_id, chatId, time, source: null, reaction: null, kind: 'notice', role: 'agent', text: `You gave Hatchling a file.${where}`, evidenceId: null });
         if (entry.holds_secret)
             this.#messages.set(`${entry.message_id}${SECRET_SUFFIX}`, { id: `${entry.message_id}${SECRET_SUFFIX}`, chatId, time, source: null, reaction: null, kind: 'error', role: 'agent', text: HOLDS_SECRET, evidenceId: null });
+    }
+    /**
+     * The broker's word that the agent gave the owner a file (WO-041): a
+     * notice of the app's own, by the broker's plain name for it, which
+     * is shown only when it is one.
+     */
+    fileOffered(entry: FileOffered, at: string): void {
+        const chatId = appChat(entry.chat_id);
+        this.#updated.set(chatId, at);
+        const named = isLibraryName(entry.file.name) ? `: ${entry.file.name}, ${sizeWords(entry.file.bytes)}` : `, ${sizeWords(entry.file.bytes)}`;
+        this.#messages.set(entry.message_id, { id: entry.message_id, chatId, time: clockTime(at), source: null, reaction: null, kind: 'notice', role: 'agent', text: `Hatchling gave you a file${named}. It is kept in Hatchling’s Library.`, evidenceId: null });
+    }
+    /** The broker's word that a file the agent tried to give the owner was withheld. */
+    fileWithheld(entry: FileWithheld, at: string): void {
+        const chatId = appChat(entry.chat_id);
+        this.#updated.set(chatId, at);
+        const name = entry.name ?? null;
+        const named = name !== null && isLibraryName(name) ? `, ${name},` : '';
+        this.#messages.set(entry.message_id, { id: entry.message_id, chatId, time: clockTime(at), source: null, reaction: null, kind: 'error', role: 'agent', text: `Hatchling tried to give you a file${named} and it was withheld: ${WITHHELD}`, evidenceId: null });
     }
     /** Whether a chat exists, so an action never targets one that does not. */
     has(chatId: string): boolean {

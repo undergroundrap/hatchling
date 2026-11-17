@@ -492,6 +492,13 @@ impl Cell<Ready> {
             registry.register(Box::new(crate::tools::WriteTool::new(self.connection())));
             registry.register(Box::new(crate::tools::EditTool::new(self.connection())));
         }
+        // Handing the owner a file goes with its computer, where the
+        // broker keeps a Library for it (WO-041).
+        if on(hatchling_core::run_tools::ToolGroup::Room)
+            && on(hatchling_core::run_tools::ToolGroup::Files)
+        {
+            registry.register(Box::new(crate::tools::GiveFileTool::new(self.connection())));
+        }
         if on(hatchling_core::run_tools::ToolGroup::Browser) {
             registry.register(Box::new(crate::tools::BrowserOpenTool::new(
                 self.connection(),

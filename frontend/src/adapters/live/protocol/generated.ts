@@ -2,9 +2,9 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 5;
+export const UI_SCHEMA_VERSION = 6;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 31;
+export const SESSION_PROTOCOL_VERSION = 32;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -288,6 +288,21 @@ export type ActivityEvent = {
     /**
      * Its name in the inbox: none when it wasn't put, or it isn't
      * known whether it was.
+     */
+    readonly name?: string | null;
+} | {
+    /**
+     * Its size: 0 when it was never read out.
+     */
+    readonly bytes: number;
+    /**
+     * How it ended.
+     */
+    readonly ended: FileOutEnded;
+    readonly event: 'file_out';
+    /**
+     * The broker's name for it: none unless it was checked and found
+     * to hold no secret.
      */
     readonly name?: string | null;
 });
@@ -1575,6 +1590,27 @@ export type FileInRefusal = {
     readonly refusal: 'unknown';
 };
 /**
+ * The agent handed the owner a file (v6): it is kept in the Library.
+ */
+export type FileOffered = {
+    /**
+     * The chat it was handed over in.
+     */
+    readonly chat_id: string;
+    /**
+     * The file.
+     */
+    readonly file: LibraryFile;
+    /**
+     * Its place in the chat: the broker's.
+     */
+    readonly message_id: string;
+};
+/**
+ * How a file the agent began handing its owner ended.
+ */
+export type FileOutEnded = 'offered' | 'withheld' | 'unchecked' | 'refused';
+/**
  * Why a file was not saved.
  */
 export type FileRefusal = {
@@ -1587,6 +1623,26 @@ export type FileRefusal = {
     readonly refusal: 'unsupported_type';
 } | {
     readonly refusal: 'full';
+};
+/**
+ * The agent tried to hand the owner a file, and it was withheld (v6): it
+ * holds a secret the broker keeps, which is never named. Handing files
+ * over is off for the conversation.
+ */
+export type FileWithheld = {
+    /**
+     * The chat it was handed over in.
+     */
+    readonly chat_id: string;
+    /**
+     * Its place in the chat: the broker's.
+     */
+    readonly message_id: string;
+    /**
+     * The broker's name for it: none when the name itself held the
+     * secret.
+     */
+    readonly name?: string | null;
 };
 /**
  * An operation on the owner's goals, from their app: the same goals the
@@ -2002,6 +2058,27 @@ export type KeptResult = {
  * reaches the browser's own shortcuts.
  */
 export type Key = 'enter' | 'tab' | 'escape' | 'backspace' | 'arrow_up' | 'arrow_down' | 'arrow_left' | 'arrow_right';
+/**
+ * A file the agent handed the owner (WO-041), as the Library keeps it.
+ */
+export type LibraryFile = {
+    /**
+     * Its length, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * The broker's id for it.
+     */
+    readonly id: string;
+    /**
+     * The broker's name for it: plain ASCII, made from the file's own.
+     */
+    readonly name: string;
+    /**
+     * Its SHA-256, in lowercase hex.
+     */
+    readonly sha256: string;
+};
 /**
  * One response header the broker sets on served media.
  */
@@ -2687,6 +2764,22 @@ export type RoomResult = {
      */
     readonly reason: string;
     readonly result: 'no-change';
+} | {
+    /**
+     * Its length, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * The broker's name for it, as the owner is shown it.
+     */
+    readonly name: string;
+    readonly result: 'handed-over';
+} | {
+    /**
+     * Why, in words for the agent.
+     */
+    readonly reason: string;
+    readonly result: 'not-handed-over';
 } | {
     /**
      * Whether a command may have been started all the same: its
@@ -4112,6 +4205,13 @@ export type SessionRequest = {
      * workspace.
      */
     readonly path: string;
+} | {
+    readonly op: 'hand-over';
+    /**
+     * The file, by its absolute path under the workspace, or a path
+     * under it.
+     */
+    readonly path: string;
 }) | {
     readonly kind: 'chat';
 } & ({
@@ -4771,7 +4871,7 @@ export type SyncItem = {
 /**
  * A tool group the operator turns on.
  */
-export type ToolGroup = 'web' | 'search' | 'browser' | 'skills' | 'goals' | 'memory' | 'schedule' | 'suggest' | 'room';
+export type ToolGroup = 'web' | 'search' | 'browser' | 'skills' | 'goals' | 'memory' | 'schedule' | 'suggest' | 'room' | 'files';
 /**
  * How often a session used one tool, by how each use ended.
  */
@@ -5500,6 +5600,10 @@ export type UiEventBody = {
     readonly kind: 'artifact_listed';
 } | FileIn & {
     readonly kind: 'file_in';
+} | FileOffered & {
+    readonly kind: 'file_offered';
+} | FileWithheld & {
+    readonly kind: 'file_withheld';
 } | {
     /**
      * The artifact.

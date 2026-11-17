@@ -898,7 +898,11 @@ fn serve_session(
         .with_board(crate::browser_board::board(config));
     // The session's commands in the Room: named here, and stopped when
     // the session ends.
-    let mut room = crate::room_ops::RoomSession::new(config);
+    // It hands the owner a file only as the broker's own run, named by
+    // the cell the broker started it as (WO-041).
+    let mut room = crate::room_ops::RoomSession::new(config).handing(
+        crate::hand_over::Handing::new(config, key, known, cell_id, session_id.as_str()),
+    );
     let _admissions = crate::space_ops::EndAdmissions(space_session.pin.session.clone());
     // What the session does, as the broker serves it: summarized in the
     // owner's Activity when the session ends, however it ends.

@@ -14,7 +14,7 @@ import sys
 GRANTS = [{"grant": "channel-send", "channel": "local"}]
 
 # The local API's version these examples speak first.
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def send(sock, value):

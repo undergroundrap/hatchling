@@ -55,6 +55,8 @@ impl Running {
             | RoomResult::Wrote { .. }
             | RoomResult::Edited { .. }
             | RoomResult::NoChange { .. }
+            | RoomResult::HandedOver { .. }
+            | RoomResult::NotHandedOver { .. }
             | RoomResult::Failed { job: None, .. } => {}
         }
     }
@@ -347,6 +349,13 @@ mod tests {
                 bytes: 1,
             },
             RoomResult::NoChange {
+                reason: String::from("no"),
+            },
+            RoomResult::HandedOver {
+                name: String::from("report.pdf"),
+                bytes: 9,
+            },
+            RoomResult::NotHandedOver {
                 reason: String::from("no"),
             },
         ];

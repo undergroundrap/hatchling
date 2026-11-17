@@ -30,11 +30,18 @@ ANSWERED = """([task, answer]) => {
         b.textContent.includes(answer) && (asked.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0);
 }"""
 
+# The app's schema version, as its generated protocol says: a hello with
+# another is answered `incompatible`.
+GENERATED = Path(__file__).resolve().parents[1] / "frontend/src/adapters/live/protocol/generated.ts"
+SCHEMA_VERSION = int(
+    re.search(r"^export const UI_SCHEMA_VERSION = (\d+);$", GENERATED.read_text(encoding="utf-8"), re.M).group(1)
+)
+
 # A hello on the host's channel, as the page sends it: the broker's answer,
 # or nothing if it closes the connection first.
-HELLO = """async ([url, token]) => await new Promise(resolve => {
+HELLO = """async ([url, token, version]) => await new Promise(resolve => {
     const socket = new WebSocket(url);
-    const hello = { type: 'hello', schema_version: 5, client: 'app-end-to-end' };
+    const hello = { type: 'hello', schema_version: version, client: 'app-end-to-end' };
     if (token !== null) hello.token = token;
     socket.onopen = () => socket.send(JSON.stringify(hello));
     socket.onmessage = event => { resolve(JSON.parse(event.data).type); socket.close(); };
@@ -51,7 +58,7 @@ def check_token(page, address):
     channel = address.split("#", 1)[0].replace("http://", "ws://", 1).rstrip("/") + "/ui"
     wrong = ("0" if token[0] != "0" else "1") + token[1:]
     for given, expected in ((token, "welcome"), (None, None), (wrong, None)):
-        answer = page.evaluate(HELLO, [channel, given])
+        answer = page.evaluate(HELLO, [channel, given, SCHEMA_VERSION])
         if answer != expected:
             raise ValueError(f"A hello with {'the token' if given == token else 'no token' if given is None else 'a wrong token'} got {answer!r}")
 

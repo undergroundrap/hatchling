@@ -1632,6 +1632,53 @@ impl Tool for WriteTool<'_> {
     }
 }
 
+/// What the model is told with a file handed over.
+const HANDED_OVER: &str = "the owner is offered this file to download, by this name, from Hatchling's Library. It is a copy made now: changing the file after changes nothing they have. Say in your answer what it is";
+
+/// Hands the owner a file from the agent's own computer (WO-041).
+pub struct GiveFileTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> GiveFileTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for GiveFileTool<'_> {
+    fn name(&self) -> &'static str {
+        "give_file"
+    }
+
+    fn description(&self) -> &'static str {
+        "Give the owner a file you made in your own computer, for them to download: a document, an image, data, a program. Give its path in /workspace: one that doesn't start with / is under /workspace. It must be a file, not a folder or a link, of at most 8 MiB; make an archive of a folder first with run. Hatchling copies it now, checks it, and offers it to the owner by a plain name made from the file's own; the reply says that name. A file that holds a secret Hatchling keeps is withheld, and giving files is then off for the rest of this conversation: never put a secret in a file you give. At most 16 files a conversation."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The file to give, for example report.pdf or /workspace/out/data.csv."
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let op = RoomOp::HandOver {
+            path: string_argument(self.name(), &arguments, "path")?.to_owned(),
+        };
+        change_asked(self.stream, self.name(), op)
+    }
+}
+
 /// Replaces one exact piece of the text of a file in the agent's own
 /// computer.
 pub struct EditTool<'s> {
@@ -1794,6 +1841,14 @@ fn room_output(result: RoomResult) -> ToolOutput {
             json!({ "edited": path, "places": replaced, "first_line": line, "bytes": bytes }),
         ),
         RoomResult::NoChange { reason } => ToolOutput::Err(format!("not done: {reason}")),
+        RoomResult::HandedOver { name, bytes } => ToolOutput::Ok(json!({
+            "handed_over": name,
+            "bytes": bytes,
+            "note": HANDED_OVER,
+        })),
+        RoomResult::NotHandedOver { reason } => {
+            ToolOutput::Err(format!("nothing was handed over: {reason}"))
+        }
         RoomResult::Failed { reason, job: None } => {
             ToolOutput::Err(format!("nothing was run: {reason}"))
         }
@@ -4536,6 +4591,26 @@ mod tests {
         }
     }
 
+    /// The give tool tells the model where a file comes from, how big it
+    /// may be, what is withheld and what that turns off.
+    #[test]
+    fn the_give_tools_metadata_is_stable() {
+        let (a, _b) = socket_pair();
+        let give = GiveFileTool::new(&a);
+        assert_eq!(give.name(), "give_file");
+        for said in [
+            "path in /workspace",
+            "at most 8 MiB",
+            "make an archive of a folder first with run",
+            "the reply says that name",
+            "giving files is then off for the rest of this conversation",
+            "never put a secret in a file you give",
+            "At most 16 files a conversation.",
+        ] {
+            assert!(give.description().contains(said), "{said}");
+        }
+    }
+
     #[test]
     fn the_read_tools_metadata_is_stable() {
         let (a, _b) = socket_pair();
@@ -5035,6 +5110,23 @@ mod tests {
             ToolOutput::Err(String::from(
                 "the spawner cannot be reached. The program may have started all the same, as j-3: ask after it with run_check before you run anything again"
             ))
+        );
+        assert_eq!(
+            room_output(RoomResult::HandedOver {
+                name: String::from("report.pdf"),
+                bytes: 10,
+            }),
+            ToolOutput::Ok(json!({
+                "handed_over": "report.pdf",
+                "bytes": 10,
+                "note": HANDED_OVER,
+            }))
+        );
+        assert_eq!(
+            room_output(RoomResult::NotHandedOver {
+                reason: String::from("it was withheld")
+            }),
+            ToolOutput::Err(String::from("nothing was handed over: it was withheld"))
         );
     }
 

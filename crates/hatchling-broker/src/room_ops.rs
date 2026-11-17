@@ -55,6 +55,8 @@ pub(crate) trait Rooms {
     fn search(&self, search: &RoomSearch) -> Result<Found, String>;
     /// As [`crate::spawner::Spawner::room_change`].
     fn change(&self, change: &RoomChange) -> Result<RoomChanged, String>;
+    /// As [`crate::spawner::Spawner::room_take`].
+    fn take(&self, path: &str) -> Result<Vec<u8>, String>;
 }
 
 impl Rooms for crate::spawner::Spawner {
@@ -84,6 +86,10 @@ impl Rooms for crate::spawner::Spawner {
 
     fn change(&self, change: &RoomChange) -> Result<RoomChanged, String> {
         self.room_change(change)
+    }
+
+    fn take(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.room_take(path)
     }
 }
 
@@ -132,6 +138,8 @@ pub(crate) struct RoomSession<'r> {
     ran: BTreeSet<JobId>,
     /// Those of them known to be over.
     over: BTreeSet<JobId>,
+    /// How it hands the owner a file, where it may (WO-041).
+    handing: Option<crate::hand_over::Handing<'r>>,
 }
 
 impl Drop for RoomSession<'_> {
@@ -176,7 +184,15 @@ impl<'r> RoomSession<'r> {
             named: 0,
             ran: BTreeSet::new(),
             over: BTreeSet::new(),
+            handing: None,
         }
+    }
+
+    /// Hands the owner a file as `handing` does.
+    #[must_use]
+    pub(crate) fn handing(mut self, handing: crate::hand_over::Handing<'r>) -> Self {
+        self.handing = Some(handing);
+        self
     }
 
     /// Answers `op`.
@@ -192,6 +208,8 @@ impl<'r> RoomSession<'r> {
                 RoomResult::NoSearch { reason }
             } else if matches!(op, RoomOp::Write { .. } | RoomOp::Edit { .. }) {
                 RoomResult::NoChange { reason }
+            } else if matches!(op, RoomOp::HandOver { .. }) {
+                RoomResult::NotHandedOver { reason }
             } else {
                 RoomResult::Failed { reason, job: None }
             };
@@ -273,6 +291,12 @@ impl<'r> RoomSession<'r> {
                 },
             ),
             RoomOp::Write { .. } | RoomOp::Edit { .. } => changed(rooms, op),
+            RoomOp::HandOver { path } => self.handing.as_ref().map_or_else(
+                || RoomResult::NotHandedOver {
+                    reason: String::from(crate::hand_over::OFF_HERE),
+                },
+                |handing| handing.hand(rooms, path),
+            ),
         }
     }
 
@@ -420,7 +444,8 @@ fn change_of(op: &RoomOp) -> Option<RoomChange> {
         | RoomOp::Job { .. }
         | RoomOp::Stop { .. }
         | RoomOp::Read { .. }
-        | RoomOp::Search { .. } => None,
+        | RoomOp::Search { .. }
+        | RoomOp::HandOver { .. } => None,
     }
 }
 
@@ -465,7 +490,7 @@ fn refused(reason: &str) -> RoomResult {
 
 /// The file a session names, as the Room is asked for it: a path that
 /// isn't absolute is under the workspace.
-fn placed(path: &str) -> String {
+pub(crate) fn placed(path: &str) -> String {
     if path.starts_with('/') {
         return path.to_owned();
     }

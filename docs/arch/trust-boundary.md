@@ -268,9 +268,29 @@ through a shared mapping is seen only when it is written back), and a
 file put together from pieces may then be one that never was whole in
 the Room. That is the Room's own file, as the Room's user could have
 made it. What matters is after: the broker hashes, checks and keeps the
-one copy it was handed, and never reads the Room again for it. Nothing
-yet asks for a file to hand over: the broker's own store for it, its
-checks, and the agent's tool come next.
+one copy it was handed, and never reads the Room again for it.
+
+The agent asks for a file to be given to its owner with `give_file`
+(`RoomOp::HandOver`, WO-041). The broker answers it only for its own
+run, as the chat started it, in the conversation open now: the
+session's cell is the one the broker started it as, never the one it
+names, and the chat says which run is its own. Before anything is read,
+the Library must be there and take another file, and the name must be
+one: the broker makes it of the file's last component, in plain ASCII,
+and refuses a name Windows keeps for a device or one ending in a dot. The
+one buffer the spawner hands back is checked, and so is the name, for
+the secrets a gate scans for and for the keeper's whole set. A secret
+found withholds the file and turns giving files off for the
+conversation, kept sealed in the Library so a restart keeps it, until
+the owner starts a new one: a file is large enough to test many guesses
+at once, and one found is the last. The run goes on. A check that
+couldn't be made gives nothing and turns nothing off. A file that is
+clear is kept in the Library, by that one buffer, and the owner's app is
+told of it. Activity keeps a line for each, with the broker's name, its
+size and how it ended: a departure from naming tools alone, made so the
+owner can see what left the agent's computer. Never what it held, or its
+path. The model is offered the tool only in a chat with its computer,
+where the operator gave the broker a Library.
 
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true

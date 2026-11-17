@@ -5055,7 +5055,11 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             Reply::RoomTook { size: 5 },
             vec![b"ab".to_vec(), b"cde".to_vec()],
         );
-        assert_eq!(spawner.room_take("/workspace/a"), Ok(b"abcde".to_vec()));
+        // Asked as a session's Room is: through `Rooms`.
+        assert_eq!(
+            crate::room_ops::Rooms::take(&spawner, "/workspace/a"),
+            Ok(b"abcde".to_vec())
+        );
         assert_eq!(answered.join().unwrap(), "/workspace/a");
         let (spawner, answered) = answering(Reply::RoomTook { size: 0 }, Vec::new());
         assert_eq!(spawner.room_take("/workspace/empty"), Ok(Vec::new()));

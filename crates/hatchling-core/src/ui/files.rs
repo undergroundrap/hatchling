@@ -79,3 +79,45 @@ pub struct FileIn {
     /// It was put all the same: it is the owner's.
     pub holds_secret: bool,
 }
+
+/// A file the agent handed the owner (WO-041), as the Library keeps it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct LibraryFile {
+    /// The broker's id for it.
+    pub id: String,
+    /// The broker's name for it: plain ASCII, made from the file's own.
+    pub name: String,
+    /// Its length, in bytes.
+    pub bytes: u64,
+    /// Its SHA-256, in lowercase hex.
+    pub sha256: String,
+}
+
+/// The agent handed the owner a file (v6): it is kept in the Library.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FileOffered {
+    /// The chat it was handed over in.
+    pub chat_id: String,
+    /// Its place in the chat: the broker's.
+    pub message_id: String,
+    /// The file.
+    pub file: LibraryFile,
+}
+
+/// The agent tried to hand the owner a file, and it was withheld (v6): it
+/// holds a secret the broker keeps, which is never named. Handing files
+/// over is off for the conversation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FileWithheld {
+    /// The chat it was handed over in.
+    pub chat_id: String,
+    /// Its place in the chat: the broker's.
+    pub message_id: String,
+    /// The broker's name for it: none when the name itself held the
+    /// secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
