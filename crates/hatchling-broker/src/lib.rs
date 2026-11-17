@@ -74,6 +74,11 @@ pub mod feed_run;
     reason = "the API's actions and its connections share a file on its way in"
 )]
 mod file_in;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "a session's Room and its tests reach what a file out says and checks"
+)]
+mod hand_over;
 pub use feed_run::{FEED_TASK, FeedLauncher, FeedRun};
 pub mod follow_ups;
 pub mod goals_ops;

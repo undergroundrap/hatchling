@@ -728,6 +728,7 @@ fn a_checks_line_says_what_it_was_for_and_whose_run_it_was() -> Result<(), Strin
         (CheckFor::Search, "search-check"),
         (CheckFor::Typed, "typed-check"),
         (CheckFor::FileIn, "file-in-check"),
+        (CheckFor::FileOut, "file-out-check"),
     ] {
         for (asked, found) in [(EGRESS_KEY, true), ("a clean text", false)] {
             let answer = install

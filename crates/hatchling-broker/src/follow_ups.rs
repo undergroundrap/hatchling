@@ -109,6 +109,17 @@ impl FollowUps {
         now
     }
 
+    /// Whether `cell`'s run is the chat's in flight, and its own message
+    /// was sent in the conversation open now: `None` when it isn't a chat
+    /// run in flight.
+    #[must_use]
+    pub fn open_for(&self, cell: &str) -> Option<bool> {
+        self.flights
+            .iter()
+            .find(|flight| flight.cell == cell)
+            .map(|flight| flight.sent_in == flight.hub.conversation())
+    }
+
     /// `cell`'s run ended: everything it was given, oldest first. It is
     /// given nothing more.
     pub fn ended(&mut self, cell: &str) -> Vec<String> {
@@ -142,6 +153,12 @@ pub fn more(cell: &str) -> Vec<String> {
     shared().more(cell)
 }
 
+/// [`FollowUps::open_for`], of the broker's own.
+#[must_use]
+pub fn open_for(cell: &str) -> Option<bool> {
+    shared().open_for(cell)
+}
+
 /// [`FollowUps::ended`], of the broker's own.
 #[must_use]
 pub fn ended(cell: &str) -> Vec<String> {
@@ -169,6 +186,24 @@ mod tests {
             hatchling_channel::IngressEvent::Queued,
             "{text}"
         );
+    }
+
+    /// A run in flight is in the open conversation until the owner starts
+    /// a new one; a run that isn't in flight, or ended, is no chat run.
+    #[test]
+    fn a_run_is_in_the_open_conversation_until_a_new_one_starts() {
+        let hub = hub();
+        let mut flights = FollowUps::new();
+        assert_eq!(flights.open_for("cell-a"), None);
+        flights.began("cell-a", &hub, hub.conversation());
+        assert_eq!(flights.open_for("cell-a"), Some(true));
+        assert_eq!(flights.open_for("cell-b"), None);
+        hub.new_conversation();
+        assert_eq!(flights.open_for("cell-a"), Some(false));
+        flights.began("cell-b", &hub, hub.conversation());
+        assert_eq!(flights.open_for("cell-b"), Some(true));
+        let _ = flights.ended("cell-a");
+        assert_eq!(flights.open_for("cell-a"), None);
     }
 
     /// A run in flight is given what the owner sent, oldest first and

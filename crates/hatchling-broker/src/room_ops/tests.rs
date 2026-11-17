@@ -13,6 +13,7 @@ enum Asked {
     Page(String, u64, u32),
     Search(RoomSearch),
     Change(RoomChange),
+    Take(String),
 }
 
 /// A stand-in for the spawner: it answers each ask from what it was told
@@ -134,6 +135,11 @@ impl Rooms for Fake {
     fn change(&self, change: &RoomChange) -> Result<RoomChanged, String> {
         self.asked.borrow_mut().push(Asked::Change(change.clone()));
         self.changes.borrow_mut().remove(0)
+    }
+
+    fn take(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.asked.borrow_mut().push(Asked::Take(path.to_owned()));
+        Err(String::from("no file here"))
     }
 }
 
@@ -1341,4 +1347,50 @@ fn what_is_said_of_a_change_fits_one_frame() {
             &hatchling_core::SessionResponse::Room(result)
         ));
     }
+}
+
+/// A file is handed over only by a session with its person there, a Room
+/// to read it from, and a way to hand it over: the broker's own run's.
+/// Each refusal is said as no file handed over, and the Room isn't asked.
+#[test]
+fn a_file_is_handed_over_only_where_it_may_be() {
+    let fake = Fake::default();
+    let op = RoomOp::HandOver {
+        path: String::from("report.pdf"),
+    };
+    let mut alone = RoomSession::over_rooms(false, Some(&fake), Some(String::from("j")));
+    assert_eq!(alone.handle(&op), refused(UNATTENDED));
+    let mut nowhere = RoomSession::over_rooms(true, None, Some(String::from("j")));
+    assert_eq!(
+        nowhere.handle(&op),
+        RoomResult::NotHandedOver {
+            reason: String::from(NO_ROOM)
+        }
+    );
+    let mut unhanded = RoomSession::over_rooms(true, Some(&fake), Some(String::from("j")));
+    assert_eq!(
+        unhanded.handle(&op),
+        RoomResult::NotHandedOver {
+            reason: String::from(crate::hand_over::OFF_HERE)
+        }
+    );
+    assert!(fake.asked().is_empty(), "the Room was asked for a file");
+    assert_eq!(change_of(&op), None, "a file handed over is no change");
+    // A session that hands files over asks its Handing, which says what
+    // it says: here, that the session is no chat's run.
+    let scratch = crate::api_auth::tests::scratch("room-ops-handing");
+    let mut config = crate::api_auth::tests::owner_config(None);
+    config.scheduler.library = scratch.0.join("library");
+    let key = hatchling_vault::MasterKey::generate().unwrap();
+    let cell: hatchling_core::CellId = "cell-handing".parse().unwrap();
+    let mut handing = RoomSession::over_rooms(true, Some(&fake), Some(String::from("j"))).handing(
+        crate::hand_over::Handing::new(&config, &key, false, &cell, "run-1"),
+    );
+    assert_eq!(
+        handing.handle(&op),
+        RoomResult::NotHandedOver {
+            reason: String::from(crate::hand_over::NOT_THE_CHAT)
+        }
+    );
+    assert!(fake.asked().is_empty(), "the Room was asked for a file");
 }

@@ -47,7 +47,7 @@ use crate::messages::{
     BuildFailure, DeliveryRefusal, ScheduleOp, ScheduleResult, SkillOp, SkillResult,
 };
 use crate::subagent::{
-    ActivityEvent, ChildVerdict, FileInEnded, HarnessOutcome, SubagentEvent, ToolUse,
+    ActivityEvent, ChildVerdict, FileInEnded, FileOutEnded, HarnessOutcome, SubagentEvent, ToolUse,
 };
 
 pub mod api;
@@ -59,7 +59,8 @@ pub mod surfaces;
 pub use api::{ApiOutcome, ApiRequest, ApiToken};
 pub use control::{Actor, Control, Handoff};
 pub use files::{
-    FILE_IN_BYTES, FILE_IN_NAME_BYTES, FILE_IN_PART_BYTES, FileIn, FileInRefusal, InboxFile,
+    FILE_IN_BYTES, FILE_IN_NAME_BYTES, FILE_IN_PART_BYTES, FileIn, FileInRefusal, FileOffered,
+    FileWithheld, InboxFile, LibraryFile,
 };
 pub use surfaces::{
     AgentState, ArtifactBody, ArtifactRefusal, ArtifactRevision, BrowserAction, BrowserFrame,
@@ -75,7 +76,9 @@ pub use surfaces::{
 /// 4: coding-harness runs: `harness_run` activity.
 /// 5: files into the Room's inbox (WO-041): the file-in and inbox
 /// actions, the `file_in` event, and `file_in` activity.
-pub const UI_SCHEMA_VERSION: u16 = 5;
+/// 6: files the agent hands the owner (WO-041): the `file_offered` and
+/// `file_withheld` events, and `file_out` activity.
+pub const UI_SCHEMA_VERSION: u16 = 6;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -255,6 +258,10 @@ pub enum UiEventBody {
     ArtifactListed(UiArtifact),
     /// The owner put a file in the Room's inbox (v5).
     FileIn(FileIn),
+    /// The agent handed the owner a file, kept in the Library (v6).
+    FileOffered(FileOffered),
+    /// The agent tried to hand the owner a file, and it was withheld (v6).
+    FileWithheld(FileWithheld),
     /// A file was sent in a chat, as an artifact revision (v2).
     Attachment {
         /// The chat.
@@ -348,6 +355,10 @@ pub const fn activity_state(event: &SubagentEvent) -> ActivityState {
         | SubagentEvent::FileIn {
             ended: FileInEnded::Placed,
             ..
+        }
+        | SubagentEvent::FileOut {
+            ended: FileOutEnded::Offered,
+            ..
         } => ActivityState::Success,
         SubagentEvent::Finished {
             verdict: ChildVerdict::Partial,
@@ -361,10 +372,18 @@ pub const fn activity_state(event: &SubagentEvent) -> ActivityState {
         | SubagentEvent::FileIn {
             ended: FileInEnded::Unknown | FileInEnded::Abandoned,
             ..
+        }
+        | SubagentEvent::FileOut {
+            ended: FileOutEnded::Unchecked,
+            ..
         } => ActivityState::Interrupted,
         SubagentEvent::Failed { .. }
         | SubagentEvent::FileIn {
             ended: FileInEnded::Refused,
+            ..
+        }
+        | SubagentEvent::FileOut {
+            ended: FileOutEnded::Withheld | FileOutEnded::Refused,
             ..
         }
         | SubagentEvent::ApiCall {
@@ -2067,6 +2086,77 @@ mod tests {
     /// A file in is activity by the inbox's name, its size and how it
     /// ended: never what it held, nor the owner's name for it.
     #[test]
+    fn a_file_out_is_activity_by_its_name_size_and_ending() {
+        let out = |name: Option<&str>, ended| SubagentEvent::FileOut {
+            name: name.map(str::to_owned),
+            bytes: 9,
+            ended,
+        };
+        pinned(
+            &event(out(Some("report.pdf"), FileOutEnded::Offered)),
+            &json!({"event_id": "run-1:3", "ts": "2026-10-07T02:00:00Z", "run_id": "run-1",
+                "event": "file_out", "name": "report.pdf", "bytes": 9, "ended": "offered"}),
+        );
+        for (ended, word, state) in [
+            (FileOutEnded::Offered, "offered", ActivityState::Success),
+            (FileOutEnded::Withheld, "withheld", ActivityState::Failed),
+            (
+                FileOutEnded::Unchecked,
+                "unchecked",
+                ActivityState::Interrupted,
+            ),
+            (FileOutEnded::Refused, "refused", ActivityState::Failed),
+        ] {
+            pinned(
+                &event(out(None, ended)),
+                &json!({"event_id": "run-1:3", "ts": "2026-10-07T02:00:00Z", "run_id": "run-1",
+                    "event": "file_out", "bytes": 9, "ended": word}),
+            );
+            assert_eq!(activity_state(&out(None, ended)), state, "{word}");
+        }
+    }
+
+    #[test]
+    fn a_file_offered_and_one_withheld_have_their_wire_form() {
+        let file = LibraryFile {
+            id: s("f1"),
+            name: s("report.pdf"),
+            bytes: 9,
+            sha256: s("ab"),
+        };
+        pinned(
+            &UiEventBody::FileOffered(FileOffered {
+                chat_id: s("local"),
+                message_id: s("file-1"),
+                file,
+            }),
+            &json!({"kind": "file_offered", "chat_id": "local", "message_id": "file-1",
+                "file": {"id": "f1", "name": "report.pdf", "bytes": 9, "sha256": "ab"}}),
+        );
+        for (name, expected) in [
+            (
+                Some(s("notes.txt")),
+                json!({"kind": "file_withheld", "chat_id": "local",
+                "message_id": "file-2", "name": "notes.txt"}),
+            ),
+            (
+                None,
+                json!({"kind": "file_withheld", "chat_id": "local", "message_id": "file-2"}),
+            ),
+        ] {
+            pinned(
+                &UiEventBody::FileWithheld(FileWithheld {
+                    chat_id: s("local"),
+                    message_id: s("file-2"),
+                    name,
+                }),
+                &expected,
+            );
+        }
+        assert_eq!(UI_SCHEMA_VERSION, 6);
+    }
+
+    #[test]
     fn a_file_in_is_activity_by_its_inbox_name_size_and_ending() {
         pinned(
             &event(file_in(FileInEnded::Placed)),
@@ -3486,7 +3576,7 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<SuggestionState>("\"retired\"").is_err());
-        assert_eq!(PROTOCOL_VERSION, 31);
+        assert_eq!(PROTOCOL_VERSION, 32);
     }
 
     /// v30: a chat answer says when its run ran out of steps, and is
@@ -3540,6 +3630,6 @@ mod tests {
             )
         );
         assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), said);
-        assert_eq!(PROTOCOL_VERSION, 31);
+        assert_eq!(PROTOCOL_VERSION, 32);
     }
 }

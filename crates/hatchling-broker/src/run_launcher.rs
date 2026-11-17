@@ -318,8 +318,7 @@ pub fn scoped_config(
     // of those is the owner's sign-ins: they browse signed out, a site put
     // to the owner as for any other page.
     if !request.chat {
-        run.web.profiles = PathBuf::new();
-        run.web.credentials = PathBuf::new();
+        unattended(&mut run);
     }
     run.vault.grants = grants
         .iter()
@@ -414,6 +413,7 @@ pub fn scoped_config(
         }),
         // A run's model calls are the owner's usage too.
         usage: config.scheduler.usage.clone(),
+        library: run_library(config, request),
         ..SchedulerConfig::disabled()
     };
     run
@@ -890,7 +890,8 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
 /// goals if there's a goals store and the run may read it, and asking to
 /// keep something in their memory if there's a memory store and the run
 /// may ask. Its own computer, the Room, if `room` says it is offered one
-/// ([`crate::room_ops::offered`]).
+/// ([`crate::room_ops::offered`]), and with it handing the owner a file,
+/// if the operator gave the broker a Library (WO-041).
 pub(crate) fn run_tools(
     config: &Config,
     grants: &[ScheduleGrant],
@@ -933,10 +934,31 @@ pub(crate) fn run_tools(
                 && config.scheduler.enabled(),
         ),
         (ToolGroup::Room, room),
+        (
+            ToolGroup::Files,
+            room && !config.scheduler.library.as_os_str().is_empty(),
+        ),
     ]
     .into_iter()
     .filter_map(|(group, on)| on.then_some(group))
     .collect()
+}
+
+/// What a run with nobody there doesn't have: the owner's signed-in
+/// profiles and the sign-ins filled into them (WO-030).
+fn unattended(run: &mut Config) {
+    run.web.profiles = PathBuf::new();
+    run.web.credentials = PathBuf::new();
+}
+
+/// A run's Library (WO-041): the broker's, for a chat run, which gives
+/// the owner a file with its person there; none for any other run.
+fn run_library(config: &Config, request: &RunRequest) -> PathBuf {
+    if request.chat {
+        config.scheduler.library.clone()
+    } else {
+        PathBuf::new()
+    }
 }
 
 /// A run's build store (WO-032): for a chat run, when the operator named
@@ -1408,6 +1430,14 @@ mod tests {
             let mut with_room = on.clone();
             with_room.insert(ToolGroup::Room);
             assert_eq!(run_tools(&config, &[], true), with_room);
+            // Giving the owner a file goes with it, where there is a
+            // Library, and never without it (WO-041).
+            let mut library = config.clone();
+            library.scheduler.library = PathBuf::from("/srv/h/library");
+            let mut with_files = with_room.clone();
+            with_files.insert(ToolGroup::Files);
+            assert_eq!(run_tools(&library, &[], true), with_files);
+            assert_eq!(run_tools(&library, &[], false), on);
         }
     }
 
@@ -1663,6 +1693,22 @@ mod tests {
         let chat = scoped_config(&broker, &chat, "run-1", run_socket());
         assert_eq!(chat.web.profiles, broker.web.profiles);
         assert_eq!(chat.web.credentials, broker.web.credentials);
+    }
+
+    /// The Library goes to a chat run, which gives the owner a file with
+    /// its person there, and to no other run (WO-041).
+    #[test]
+    fn only_a_chat_run_has_the_library() {
+        let mut broker = config();
+        broker.scheduler.library = PathBuf::from("/srv/h/library");
+        let scheduled = scoped_config(&broker, &request(Vec::new()), "run-1", run_socket());
+        assert_eq!(scheduled.scheduler.library, PathBuf::new());
+        let chat = RunRequest {
+            chat: true,
+            ..request(Vec::new())
+        };
+        let chat = scoped_config(&broker, &chat, "run-1", run_socket());
+        assert_eq!(chat.scheduler.library, broker.scheduler.library);
     }
 
     /// WO-032: a chat run gets the build store with ideas alone, when the

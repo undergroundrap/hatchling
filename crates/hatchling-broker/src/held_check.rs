@@ -97,6 +97,10 @@ pub enum CheckFor {
     /// A file the owner sends into the Room's inbox (WO-041): a hit warns
     /// the owner, and the file is put all the same.
     FileIn,
+    /// A file the agent hands the owner, and its name (WO-041): a hit
+    /// withholds it, and turns handing files over off for the
+    /// conversation. The run goes on.
+    FileOut,
 }
 
 impl CheckFor {
@@ -109,6 +113,7 @@ impl CheckFor {
             Self::Search => "search-check",
             Self::Typed => "typed-check",
             Self::FileIn => "file-in-check",
+            Self::FileOut => "file-out-check",
         }
     }
 }

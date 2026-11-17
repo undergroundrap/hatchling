@@ -84,6 +84,14 @@ export const SECRET_SUFFIX = ':secret';
 export function isInboxName(name: string): boolean {
     return /^\d{4,9}-[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/u.test(name);
 }
+/**
+ * Whether `name` is one the broker gives a file the agent handed over: 1 to
+ * 64 ASCII letters, digits, `.`, `_` or `-`, not starting with a dot. Any
+ * other is never shown as the file's name.
+ */
+export function isLibraryName(name: string): boolean {
+    return /^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/u.test(name);
+}
 /** A size in the owner's words. */
 export function sizeWords(bytes: number): string {
     if (bytes < 1024)

@@ -431,6 +431,38 @@ pub enum SubagentEvent {
         /// How it ended.
         ended: FileInEnded,
     },
+    /// A file the agent began handing its owner (WO-041), once it ended:
+    /// the broker's name for it, its size, and how it ended. Never what
+    /// it holds, or its path in the Room.
+    #[serde(rename = "file_out")]
+    FileOut {
+        /// The broker's name for it: none unless it was checked and found
+        /// to hold no secret.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// Its size: 0 when it was never read out.
+        bytes: u64,
+        /// How it ended.
+        ended: FileOutEnded,
+    },
+}
+
+/// How a file the agent began handing its owner ended.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum FileOutEnded {
+    /// It was kept in the Library, and offered to the owner.
+    Offered,
+    /// It held a secret the broker keeps: nothing was kept, and handing
+    /// files over is off for the conversation.
+    Withheld,
+    /// It couldn't be checked: nothing was kept, and nothing turned off.
+    Unchecked,
+    /// It was refused before it could be checked, or kept: not a file
+    /// the Room hands over, a name that can't be one, a Library full, a
+    /// conversation that has handed over as many as it may or is off.
+    Refused,
 }
 
 /// How a file sent into the Room's inbox ended.

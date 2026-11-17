@@ -538,3 +538,58 @@ fn loop_asks_the_broker_to_write_and_edit_its_files() {
         );
     }
 }
+
+/// The model's `give_file` reaches the broker as a Room op, offered only
+/// where the broker says files may be given: with its computer and the
+/// `files` group. Where it isn't offered, a call to it is no tool's.
+#[test]
+fn loop_asks_the_broker_to_give_a_file_only_where_it_may() {
+    for (groups, offered) in [
+        (
+            std::collections::BTreeSet::from([ToolGroup::Room, ToolGroup::Files]),
+            true,
+        ),
+        (std::collections::BTreeSet::from([ToolGroup::Room]), false),
+        (std::collections::BTreeSet::from([ToolGroup::Files]), false),
+    ] {
+        let broker = FixtureBroker::spawn("loop-give", BrokerBehavior::Vault(Vec::new())).unwrap();
+        let cell = ready_cell_offering(&broker, Some(groups.clone())).unwrap();
+        let model = FakeModel::new(vec![
+            ModelAction::ToolCalls(vec![ToolCall {
+                name: String::from("give_file"),
+                arguments: json!({ "path": "report.pdf" }),
+            }]),
+            ModelAction::Text(String::from("nothing was given")),
+        ]);
+        let result = cell.run_loop(
+            hatchling_agent::PromptKind::Chat,
+            &model,
+            String::from("give me the report"),
+            LoopBudget { max_steps: 5 },
+        );
+        let seen = model.seen_histories();
+        let system = format!("{:?}", seen.first().and_then(|history| history.first()));
+        assert_eq!(
+            system.contains("`give_file` gives the owner a file"),
+            offered,
+            "{groups:?}: {system}"
+        );
+        assert_eq!(result.unwrap().answer, "nothing was given");
+        let turn2 = seen.get(1).expect("model should have a second turn");
+        let results = tool_results(turn2, 2).expect("expected ToolUse at index 2");
+        let [ToolOutput::Err(told)] = results.as_slice() else {
+            unreachable!("nothing is given here, got {results:?}")
+        };
+        let unattended =
+            "commands run only in a chat, with the owner there: this run has no computer";
+        if offered {
+            assert_eq!(told, unattended);
+        } else {
+            // A tool it wasn't given: never asked of the broker.
+            assert!(
+                told.contains("give_file") && told != unattended,
+                "{groups:?}: {told}"
+            );
+        }
+    }
+}

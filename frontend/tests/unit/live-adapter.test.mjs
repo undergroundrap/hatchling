@@ -16,6 +16,8 @@ import { stepOutcome, timelineGroups } from '../../dist/app/features/activity/ti
 import { ApprovalReview } from '../../dist/app/features/approvals/review.js';
 import { markdown } from '../../dist/app/components/markdown.js';
 import { validThreadCopy } from '../../dist/app/protocol/rules.js';
+import { WITHHELD } from '../../dist/app/adapters/live/chat.js';
+import { isLibraryName } from '../../dist/app/session/inbox.js';
 // The app shows times on the person's clock; these tests read the fixtures'
 // UTC times on a UTC clock, wherever they run.
 process.env.TZ = 'UTC';
@@ -431,6 +433,71 @@ test('files sent into the agent\'s inbox are a thread of their own: a row per fi
     for (const row of files.lanes[0].rows)
         for (const words of [row.title, row.subtitle, row.report])
             assert.doesNotMatch(words, /owner name|\.\.\//, `${row.id} shows the owner's name`);
+});
+test('files the agent gave are a thread of their own: a row per file by the broker\'s name, and how each ended', () => {
+    const { transport, adapter } = connected();
+    const states = { offered: 'success', withheld: 'failed', unchecked: 'interrupted', refused: 'failed' };
+    const file = (seq, id, ended, name, bytes) => sampleEvent(seq, seq, { kind: 'activity', state: states[ended], event: { event: 'file_out', event_id: `session-1:file-out-${id}`, run_id: 'session-1', ts: sampleTime(seq), ...(name === null ? {} : { name }), bytes, ended } });
+    replay(transport, [
+        file(1, 1, 'offered', 'report.pdf', 2048),
+        file(2, 2, 'withheld', null, 12),
+        file(3, 3, 'unchecked', null, 5),
+        // A name the broker never gives is shown as none.
+        file(4, 4, 'refused', '../not‮a name', 0),
+        // The same line seen again changes nothing.
+        file(5, 1, 'offered', 'report.pdf', 2048),
+    ]);
+    const threads = adapter.getSnapshot().threads;
+    assert.deepEqual(threads.map(item => item.id), ['session-1:given']);
+    const given = threads[0];
+    assert.deepEqual([given.name, given.subtitle, given.statusTitle, given.state, given.verdict], ['Files from the agent', '4 files · 1 given to you', 'Files recorded', 'completed', null]);
+    assert.ok(validThreadCopy(given.name, given.subtitle, given.statusTitle));
+    assert.equal(given.summary, '4 files from the agent: 1 given to you, 3 not.');
+    assert.deepEqual(given.lanes.map(item => [item.id, item.name, item.rows.length]), [['session-1:given', 'To you, from the agent’s computer', 4]]);
+    assert.deepEqual(given.lanes[0].rows.map(row => [row.title, row.subtitle, row.status, row.outputFailed, row.icon]), [
+        ['Gave you a file', 'report.pdf, 2 KB', 'success', false, 'file'],
+        ['A file was withheld', 'A file of 12 bytes', 'failed', true, 'warning'],
+        ['A file couldn’t be checked', 'A file of 5 bytes', 'interrupted', false, 'warning'],
+        ['A file wasn’t given', 'A file of 0 bytes', 'failed', true, 'warning'],
+    ]);
+    assert.equal(given.lanes[0].rows[0].report, 'report.pdf, 2 KB. Hatchling keeps it for you in its Library.');
+    assert.match(given.lanes[0].rows[1].report, /held a secret Hatchling keeps/u);
+});
+test('a file the agent gave, or that was withheld, is the app\'s own notice by the broker\'s name, shown only when it is one', () => {
+    const { transport, adapter } = connected();
+    const file = (fields) => ({ id: 'f1', name: 'report.pdf', bytes: 2048, sha256: 'ab', ...fields });
+    replay(transport, [
+        sampleEvent(1, 1, { kind: 'file_offered', chat_id: 'local', message_id: 'file-a', file: file({}) }),
+        sampleEvent(2, 2, { kind: 'file_offered', chat_id: 'local', message_id: 'file-b', file: file({ name: '../‮exe.txt <b>' }) }),
+        sampleEvent(3, 3, { kind: 'file_withheld', chat_id: 'local', message_id: 'file-c', name: 'notes.txt' }),
+        sampleEvent(4, 4, { kind: 'file_withheld', chat_id: 'local', message_id: 'file-d' }),
+        sampleEvent(5, 5, { kind: 'file_withheld', chat_id: 'local', message_id: 'file-e', name: '.hidden' }),
+        // Seen again in a replay, nothing doubles.
+        sampleEvent(6, 1, { kind: 'file_offered', chat_id: 'local', message_id: 'file-a', file: file({}) }),
+    ]);
+    const messages = adapter.getSnapshot().messages.filter(message => message.id.startsWith('file-'));
+    assert.deepEqual(messages.map(message => [message.id, message.kind, message.role, message.chatId]), [
+        ['file-a', 'notice', 'agent', 'main'],
+        ['file-b', 'notice', 'agent', 'main'],
+        ['file-c', 'error', 'agent', 'main'],
+        ['file-d', 'error', 'agent', 'main'],
+        ['file-e', 'error', 'agent', 'main'],
+    ]);
+    assert.deepEqual(messages.map(message => message.text), [
+        'Hatchling gave you a file: report.pdf, 2 KB. It is kept in Hatchling’s Library.',
+        'Hatchling gave you a file, 2 KB. It is kept in Hatchling’s Library.',
+        `Hatchling tried to give you a file, notes.txt, and it was withheld: ${WITHHELD}`,
+        `Hatchling tried to give you a file and it was withheld: ${WITHHELD}`,
+        `Hatchling tried to give you a file and it was withheld: ${WITHHELD}`,
+    ]);
+    for (const message of messages)
+        assert.doesNotMatch(message.text, /‮|<|\.\.\/|hidden/u, 'a name that isn\'t one reached the chat');
+});
+test('a Library name is plain ASCII, bounded, and never hidden', () => {
+    for (const good of ['a', 'report.pdf', 'out_1-2.tar.gz', 'n'.repeat(64)])
+        assert.ok(isLibraryName(good), good);
+    for (const bad of ['', '.hidden', 'a/b', 'a b', 'café', 'a‮b', 'n'.repeat(65), '0001 x'])
+        assert.ok(!isLibraryName(bad), bad);
 });
 test('a run\'s trail is a thread of its own: a row per tool by how its uses ended, and the model\'s calls', () => {
     const { transport, adapter } = connected();

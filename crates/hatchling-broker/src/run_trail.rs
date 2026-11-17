@@ -623,13 +623,15 @@ const fn room_ending(result: &RoomResult) -> Ending {
         | RoomResult::Page { .. }
         | RoomResult::Found { .. }
         | RoomResult::Wrote { .. }
-        | RoomResult::Edited { .. } => Done,
+        | RoomResult::Edited { .. }
+        | RoomResult::HandedOver { .. } => Done,
         RoomResult::Refused { .. } | RoomResult::Unknown { .. } => Refused,
         RoomResult::Lost { .. }
         | RoomResult::Failed { .. }
         | RoomResult::NoPage { .. }
         | RoomResult::NoSearch { .. }
-        | RoomResult::NoChange { .. } => Failed,
+        | RoomResult::NoChange { .. }
+        | RoomResult::NotHandedOver { .. } => Failed,
     }
 }
 
@@ -1266,6 +1268,14 @@ mod tests {
         assert_eq!(ending_of(&edited), Done);
         let none = SessionResponse::Room(RoomResult::NoChange { reason: s("no") });
         assert_eq!(ending_of(&none), Failed);
+        // A file handed over is done; one that wasn't, a failure.
+        let handed = SessionResponse::Room(RoomResult::HandedOver {
+            name: s("a.txt"),
+            bytes: 1,
+        });
+        assert_eq!(ending_of(&handed), Done);
+        let unhanded = SessionResponse::Room(RoomResult::NotHandedOver { reason: s("no") });
+        assert_eq!(ending_of(&unhanded), Failed);
     }
 
     /// A run's session finds the store's activity log through its

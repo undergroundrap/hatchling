@@ -110,6 +110,8 @@ export class Surfaces {
             case 'confirmation_closed':
             case 'attachment':
             case 'file_in':
+            case 'file_offered':
+            case 'file_withheld':
                 return undefined;
         }
     }

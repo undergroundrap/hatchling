@@ -831,6 +831,14 @@ impl Ops<'_> {
             }
             None => start(),
         }
+        // The new conversation hands files over again, from none (WO-041).
+        // One the Library can't be told of keeps its count and its off:
+        // that errs toward giving nothing.
+        if let Some(library) = crate::library::Library::of(self.config, self.key) {
+            if let Err(error) = library.new_conversation() {
+                tracing::error!(%error, "the Library couldn't be told of a new conversation");
+            }
+        }
         self.bus.push(
             Timestamp::now().to_string(),
             UiEventBody::ChatMessage(ChatMessage {
@@ -3530,6 +3538,7 @@ mod tests {
         let mut config = owner_config(Some("/srv/hatchling/schedules"));
         config.goals.grants = Vec::new();
         config.scheduler.conversation = scratch.0.join("conversation");
+        config.scheduler.library = scratch.0.join("library");
         let key = MasterKey::generate().unwrap();
         let skills = Skills::load(&SkillConfig::disabled()).unwrap();
         let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
@@ -3547,13 +3556,24 @@ mod tests {
             assistant: String::from("a0"),
         });
         assert!(store.keep_if(|| true, &kept).unwrap());
+        // Giving files is off for the conversation, and it has given some.
+        let library = crate::library::Library::of(&config, &key).unwrap();
+        library.keep("a.txt", b"x", "now").unwrap().unwrap();
+        library.turn_off().unwrap();
         let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
         assert_eq!(ops.handle(&owner, &new, &mut replies).1, ApiOutcome::Served);
         assert_eq!(hub.conversation(), 1);
+        // The new conversation gives files again, from none; what was
+        // given stays.
+        assert_eq!(library.standing().unwrap(), (0, false));
+        assert_eq!(library.files().unwrap().len(), 1);
         assert_eq!(
             store.resume().unwrap(),
             hatchling_core::conversation::Conversation::default()
         );
+        // A new conversation that couldn't start leaves the Library as it
+        // was: off, for the conversation still open.
+        library.turn_off().unwrap();
         let mut broken = config.clone();
         std::fs::write(scratch.0.join("file"), b"").unwrap();
         broken.scheduler.conversation = scratch.0.join("file").join("conversation");
@@ -3569,6 +3589,7 @@ mod tests {
             )
         );
         assert_eq!(hub.conversation(), 1);
+        assert_eq!(library.standing().unwrap(), (0, true));
         assert_eq!(
             chats(&bus),
             [(ChatAuthor::System, String::from(NEW_CONVERSATION))]

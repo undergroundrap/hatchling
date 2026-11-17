@@ -140,6 +140,7 @@ pub(crate) fn here(config: &Config, browser: bool, room: bool) -> BTreeSet<ToolG
         (ToolGroup::Schedule, kept || config.scheduler.enabled()),
         (ToolGroup::Suggest, kept || config.scheduler.enabled()),
         (ToolGroup::Room, room),
+        (ToolGroup::Files, room && hands_over(config)),
     ]
     .into_iter()
     .filter_map(|(group, on)| on.then_some(group))
@@ -158,7 +159,14 @@ const fn lacking(group: ToolGroup) -> &'static str {
         ToolGroup::Schedule => "no scheduled work",
         ToolGroup::Suggest => "no Ideas page",
         ToolGroup::Room => "no computer of its own",
+        ToolGroup::Files => "no way to hand the owner a file",
     }
+}
+
+/// Whether files may be handed over here: the operator gave the broker a
+/// Library (WO-041).
+fn hands_over(config: &Config) -> bool {
+    !config.scheduler.library.as_os_str().is_empty()
 }
 
 /// One of the owner's goals, as a suggestion's source is looked up.
@@ -1860,7 +1868,9 @@ pub(crate) mod tests {
     /// and from nothing a run was granted.
     #[test]
     fn what_this_install_has_is_read_from_its_settings() {
-        use ToolGroup::{Browser, Goals, Memory, Room, Schedule, Search, Skills, Suggest, Web};
+        use ToolGroup::{
+            Browser, Files, Goals, Memory, Room, Schedule, Search, Skills, Suggest, Web,
+        };
         let dir = scratch("here");
         let mut bare = config(&dir, Some("local"));
         bare.web.enabled = false;
@@ -1890,6 +1900,10 @@ pub(crate) mod tests {
         );
         assert_eq!(with(&|_| (), true, false), [Browser]);
         assert_eq!(with(&|_| (), false, true), [Room]);
+        // Files are given where the broker keeps a Library, with a Room.
+        let library = |config: &mut Config| config.scheduler.library = dir.join("library");
+        assert_eq!(with(&library, false, true), [Room, Files]);
+        assert_eq!(with(&library, false, false), []);
         assert_eq!(
             with(
                 &|config| config.skills.skills_dir = dir.join("skills"),

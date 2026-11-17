@@ -103,6 +103,20 @@ impl AppStream {
         true
     }
 
+    /// Tells the app `body`, now. Whether an app was attached.
+    pub fn event(&self, body: UiEventBody) -> bool {
+        let Some(bus) = self
+            .bus
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+        else {
+            return false;
+        };
+        bus.push(Timestamp::now().to_string(), body);
+        true
+    }
+
     /// Tells the app that the run answering the owner took `count` more
     /// of their messages into it. Whether an app was attached.
     pub fn joined(&self, count: u32) -> bool {

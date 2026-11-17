@@ -346,6 +346,33 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "ended"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "bytes": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "ended": {
+                        "$ref": "#/$defs/FileOutEnded"
+                    },
+                    "event": {
+                        "const": "file_out",
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    }
+                },
+                "required": [
+                    "event",
+                    "bytes",
+                    "ended"
+                ],
+                "type": "object"
             }
         ],
         "properties": {
@@ -1639,6 +1666,45 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "FileOffered": {
+        "properties": {
+            "chat_id": {
+                "type": "string"
+            },
+            "file": {
+                "$ref": "#/$defs/LibraryFile"
+            },
+            "message_id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "chat_id",
+            "message_id",
+            "file"
+        ],
+        "type": "object"
+    },
+    "FileOutEnded": {
+        "oneOf": [
+            {
+                "const": "offered",
+                "type": "string"
+            },
+            {
+                "const": "withheld",
+                "type": "string"
+            },
+            {
+                "const": "unchecked",
+                "type": "string"
+            },
+            {
+                "const": "refused",
+                "type": "string"
+            }
+        ]
+    },
     "FileRefusal": {
         "oneOf": [
             {
@@ -1683,6 +1749,27 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             }
         ]
+    },
+    "FileWithheld": {
+        "properties": {
+            "chat_id": {
+                "type": "string"
+            },
+            "message_id": {
+                "type": "string"
+            },
+            "name": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            }
+        },
+        "required": [
+            "chat_id",
+            "message_id"
+        ],
+        "type": "object"
     },
     "GoalOp": {
         "oneOf": [
@@ -2224,6 +2311,30 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             }
         ]
+    },
+    "LibraryFile": {
+        "properties": {
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "id": {
+                "type": "string"
+            },
+            "name": {
+                "type": "string"
+            },
+            "sha256": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "id",
+            "name",
+            "bytes",
+            "sha256"
+        ],
+        "type": "object"
     },
     "ModelServer": {
         "properties": {
@@ -4234,6 +4345,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "room",
                 "type": "string"
+            },
+            {
+                "const": "files",
+                "type": "string"
             }
         ]
     },
@@ -5957,6 +6072,32 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "properties": {
                     "kind": {
                         "const": "file_in",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind"
+                ],
+                "type": "object"
+            },
+            {
+                "$ref": "#/$defs/FileOffered",
+                "properties": {
+                    "kind": {
+                        "const": "file_offered",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind"
+                ],
+                "type": "object"
+            },
+            {
+                "$ref": "#/$defs/FileWithheld",
+                "properties": {
+                    "kind": {
+                        "const": "file_withheld",
                         "type": "string"
                     }
                 },

@@ -26,7 +26,8 @@
 // recorded them as it answered, so they say what the run really did, whatever
 // its answer says.
 import type { ActionIcon, ActivityLane, ActivityRow, ActivityThread, RunningActivityStep, Verdict } from '../../protocol/models.js';
-import type { ActivityEvent, ApiRequest, ChatMessage, ChildFailure, ChildVerdict, FileInEnded, HarnessOutcome, ToolTally, ToolUse } from './protocol/generated.js';
+import type { ActivityEvent, ApiRequest, ChatMessage, ChildFailure, ChildVerdict, FileInEnded, FileOutEnded, HarnessOutcome, ToolTally, ToolUse } from './protocol/generated.js';
+import { isLibraryName } from '../../session/inbox.js';
 import { between, clockTime, count, quoted } from './text.js';
 interface Ending {
     readonly status: Verdict;
@@ -105,6 +106,22 @@ interface Crossing {
     readonly name: string | null;
     readonly bytes: number;
     readonly ended: FileInEnded;
+}
+/** One file the agent began giving the owner, once it ended. */
+interface Given {
+    readonly id: string;
+    readonly at: string;
+    readonly name: string | null;
+    readonly bytes: number;
+    readonly ended: FileOutEnded;
+}
+/** The files the agent began giving the owner, one thread per run. */
+interface Handed {
+    readonly kind: 'handed';
+    readonly id: string;
+    readonly startedAt: string;
+    lastAt: string;
+    readonly given: Given[];
 }
 /** The files sent into the agent's inbox, one thread per run id. */
 interface Crossings {
@@ -301,6 +318,17 @@ const HARNESS_OUTCOMES: Readonly<Record<HarnessOutcome, {
     refused: { status: 'failed', icon: 'warning', title: 'Refused before it started', said: 'was refused by Hatchling before it started' },
 };
 /** How each file sent into the agent's inbox ended, in the user's words. */
+const GIVEN_ENDINGS: Readonly<Record<FileOutEnded, {
+    readonly status: Verdict;
+    readonly icon: ActionIcon;
+    readonly title: string;
+    readonly said: string;
+}>> = {
+    offered: { status: 'success', icon: 'file', title: 'Gave you a file', said: 'Hatchling keeps it for you in its Library.' },
+    withheld: { status: 'failed', icon: 'warning', title: 'A file was withheld', said: 'It held a secret Hatchling keeps, and wasn’t given. Giving files was turned off for that conversation.' },
+    unchecked: { status: 'interrupted', icon: 'warning', title: 'A file couldn’t be checked', said: 'It couldn’t be checked for the secrets Hatchling keeps, so it wasn’t given, and nothing was turned off.' },
+    refused: { status: 'failed', icon: 'warning', title: 'A file wasn’t given', said: 'Hatchling didn’t give it, and told the agent why.' },
+};
 const FILE_ENDINGS: Readonly<Record<FileInEnded, {
     readonly status: Verdict;
     readonly icon: ActionIcon;
@@ -512,6 +540,34 @@ function crossingRow(laneId: string, crossing: Crossing): ActivityRow {
     const where = crossing.name === null ? '' : ` The agent reads it at /workspace/inbox/${crossing.name}.`;
     return { id: crossing.id, workId: crossing.id, laneId, title: end.title, subtitle: named, icon: end.icon, report: `${named}. ${end.said}${where}`, startedAt: crossing.at, endedAt: crossing.at, durationMs: null, outputFailed: end.status === 'failed', status: end.status, phase: 'action' };
 }
+function givenRow(laneId: string, given: Given): ActivityRow {
+    const end = GIVEN_ENDINGS[given.ended];
+    // A name is shown only when it is one the broker gives.
+    const named = given.name === null || !isLibraryName(given.name) ? `A file of ${size(given.bytes)}` : `${given.name}, ${size(given.bytes)}`;
+    return { id: given.id, workId: given.id, laneId, title: end.title, subtitle: named, icon: end.icon, report: `${named}. ${end.said}`, startedAt: given.at, endedAt: given.at, durationMs: null, outputFailed: end.status === 'failed', status: end.status, phase: 'action' };
+}
+function projectHanded(handed: Handed): ActivityThread {
+    const all = handed.given;
+    const offered = all.filter(given => given.ended === 'offered').length;
+    const laneId = `${handed.id}:given`;
+    const summary = `${count(all.length, 'file', 'files')} from the agent: ${offered} given to you, ${all.length - offered} not.`;
+    return {
+        id: laneId,
+        name: 'Files from the agent',
+        subtitle: `${count(all.length, 'file', 'files')} · ${offered} given to you`,
+        statusTitle: 'Files recorded',
+        state: 'completed',
+        verdict: null,
+        summary,
+        finishMessage: summary,
+        time: clockTime(handed.lastAt),
+        startedAt: handed.startedAt,
+        endedAt: null,
+        evidenceArtifactId: null,
+        lanes: [{ id: laneId, name: 'To you, from the agent’s computer', parentId: null, rows: all.map(given => givenRow(laneId, given)) }],
+        pendingSteps: [],
+    };
+}
 function projectCrossings(crossings: Crossings): ActivityThread {
     const all = crossings.crossings;
     const placed = all.filter(crossing => crossing.ended === 'placed').length;
@@ -535,7 +591,7 @@ function projectCrossings(crossings: Crossings): ActivityThread {
     };
 }
 /** One thread, whichever kind it is. */
-function projectAny(thread: Run | Calls | Harnessed | Crossings | Task | Trail): ActivityThread {
+function projectAny(thread: Run | Calls | Harnessed | Crossings | Handed | Task | Trail): ActivityThread {
     switch (thread.kind) {
         case 'task':
             return projectTask(thread);
@@ -549,6 +605,8 @@ function projectAny(thread: Run | Calls | Harnessed | Crossings | Task | Trail):
             return projectHarness(thread);
         case 'files':
             return projectCrossings(thread);
+        case 'handed':
+            return projectHanded(thread);
     }
 }
 /** The activity threads, built from activity events in sequence order. */
@@ -556,6 +614,7 @@ export class ActivityBook {
     readonly #runs = new Map<string, Run>();
     readonly #calls = new Map<string, Calls>();
     readonly #crossings = new Map<string, Crossings>();
+    readonly #handed = new Map<string, Handed>();
     readonly #harnessed = new Map<string, Harnessed>();
     readonly #tasks = new Map<string, Task>();
     readonly #trails = new Map<string, Trail>();
@@ -564,7 +623,7 @@ export class ActivityBook {
     /** The tasks another's run took into it: its answer is theirs, and they are no threads of their own. */
     readonly #joined = new Set<Task>();
     /** Every thread, in the order each first appeared. */
-    readonly #order: (Run | Calls | Harnessed | Crossings | Task | Trail)[] = [];
+    readonly #order: (Run | Calls | Harnessed | Crossings | Handed | Task | Trail)[] = [];
     /**
      * Apply one event. A subagent's first ending is its ending: a later,
      * contradictory one is ignored. Events for a subagent whose spawn was not
@@ -592,6 +651,14 @@ export class ActivityBook {
                 return;
             crossings.lastAt = event.ts;
             crossings.crossings.push({ id: event.event_id, at: event.ts, name: event.name ?? null, bytes: event.bytes, ended: event.ended });
+            return;
+        }
+        if (event.event === 'file_out') {
+            const handed = this.#handed.get(event.run_id) ?? this.#begin<Handed>(this.#handed, { kind: 'handed', id: event.run_id, startedAt: event.ts, lastAt: event.ts, given: [] });
+            if (handed.given.some(given => given.id === event.event_id))
+                return;
+            handed.lastAt = event.ts;
+            handed.given.push({ id: event.event_id, at: event.ts, name: event.name ?? null, bytes: event.bytes, ended: event.ended });
             return;
         }
         if (event.event === 'api_call') {
@@ -668,7 +735,7 @@ export class ActivityBook {
         asked.lastAt = ts;
     }
     /** Records a new thread under its id, in arrival order. */
-    #begin<Thread extends Run | Calls | Harnessed | Crossings | Task | Trail>(threads: Map<string, Thread>, thread: Thread): Thread {
+    #begin<Thread extends Run | Calls | Harnessed | Crossings | Handed | Task | Trail>(threads: Map<string, Thread>, thread: Thread): Thread {
         threads.set(thread.id, thread);
         this.#order.push(thread);
         return thread;
