@@ -92,5 +92,6 @@ Each slice's record, as it lands:
 - Slice 2, a file in from the app: [room-file-in-app](../evidence/room-file-in-app.md).
 - Slice 3, a file read out of the Room: [room-take-wire](../evidence/room-take-wire.md).
 - Slice 3, the Library's store: [library-store](../evidence/library-store.md).
+- Slice 3, the hand-over: [hand-over](../evidence/hand-over.md).
 
 The whole is filled in at close.
