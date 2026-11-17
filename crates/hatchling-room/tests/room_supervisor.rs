@@ -21,8 +21,8 @@ mod proof {
 
     use hatchling_core::framing::{read_frame, write_frame};
     use hatchling_core::room::{
-        Ask, Captured, Edited, End, Ended, JobId, NoEdit, NoPage, NoSearch, NoWrite, Say, Stream,
-        Wrote,
+        Ask, Captured, Edited, End, Ended, JobId, NoEdit, NoPage, NoSearch, NoTake, NoWrite, Say,
+        Stream, TAKE_BYTES, Wrote,
     };
     use hatchling_sys::{Child, ForkResult, SeccompProfile};
     use rustix::event::{PollFd, PollFlags, poll};
@@ -184,6 +184,7 @@ mod proof {
         the_supervisor_hands_back_pages(&peer, &dir);
         the_supervisor_answers_a_search(&peer, &dir);
         the_supervisor_writes_and_edits_a_file(&peer, &dir);
+        the_supervisor_hands_back_a_file_from_the_workspace(&peer, &dir);
         drop(peer);
         assert_eq!(supervisor.wait_deadline(Duration::from_secs(4)).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&dir);
@@ -399,6 +400,62 @@ mod proof {
             unreachable!("what was written isn't a page");
         };
         assert_eq!(page.bytes, b"all new\n");
+    }
+
+    /// The supervisor, under the filter, hands back the pieces of a file
+    /// in its workspace: it opens the workspace, opens the file beneath it
+    /// through no link, looks at what it is, reads a piece from where it
+    /// was asked, and looks again. Whatever it asks of the kernel for that,
+    /// the filter lets it ask. A link and a step out of the workspace are
+    /// refused, and a pipe isn't waited for.
+    fn the_supervisor_hands_back_a_file_from_the_workspace(peer: &UnixStream, dir: &Path) {
+        let workspace = dir.join("workspace");
+        std::fs::create_dir_all(workspace.join("out")).unwrap();
+        let whole: Vec<u8> = (0..TAKE_BYTES + 3)
+            .map(|at| u8::try_from(at % 251).unwrap())
+            .collect();
+        std::fs::write(workspace.join("out/made.bin"), &whole).unwrap();
+        std::os::unix::fs::symlink(dir.join("jobs/writer.stdout"), workspace.join("link")).unwrap();
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            workspace.join("pipe"),
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let take = |path: &str, at: u64| {
+            let asked = Ask::Take {
+                nonce: format!("take-{at}"),
+                path: path.to_owned(),
+                at,
+            };
+            ask(peer, &asked)
+        };
+        let mut taken = Vec::new();
+        for at in [0, u64::try_from(TAKE_BYTES).unwrap()] {
+            let said = take("/workspace/out/made.bin", at);
+            let Say::Took { took, .. } = said else {
+                unreachable!("{said:?} isn't a piece of a file");
+            };
+            took.check(at).unwrap();
+            assert_eq!(took.size, u64::try_from(whole.len()).unwrap());
+            taken.extend_from_slice(&took.bytes);
+        }
+        assert_eq!(taken, whole);
+        for (path, why) in [
+            ("/workspace/link", NoTake::Link),
+            ("/workspace/../jobs/writer.stdout", NoTake::Outside),
+            ("/workspace/pipe", NoTake::NotAFile),
+            ("/workspace/out", NoTake::NotAFile),
+            ("/workspace/absent", NoTake::NoSuchFile),
+        ] {
+            let said = take(path, 0);
+            assert!(
+                matches!(said, Say::NoTake { why: said_why, .. } if said_why == why),
+                "{path}: {said:?}"
+            );
+        }
     }
 
     fn the_supervisor_ends_on_what_it_cannot_read() {

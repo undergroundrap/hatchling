@@ -235,6 +235,43 @@ asked is told the file may or may not have been changed; a change the
 supervisor was never given wasn't made, and is said as that. No file is
 changed for a caller that has gone.
 
+The spawner may ask the supervisor for a file in the workspace whole,
+for it to be handed to the owner (WO-041): a path under `/workspace`,
+absolute and at most 1024 bytes. The supervisor reads it itself, as the
+Room's user, under the Room's filter, a piece of at most 32 KiB at a
+time, each asked for on its own from where the last one ended: no job is
+started, no program is run, and nothing is kept between pieces. It opens
+the workspace, then the file beneath it with `openat2`: no step of the
+path may be a link, lead out of the workspace, or cross onto another
+file system, the inbox's mount among them. It opens without waiting,
+and reads only a file, so a pipe nobody writes to can't hold its one
+thread. Each piece says the file's length, its inode and when it last
+changed, as they were before the piece was read; a file that changed
+while a piece was read is said to have, and no piece of it is handed
+back. This is honesty and liveness, not secrecy: the Room's user can
+copy anything it can read into the workspace and hand that over.
+
+The spawner puts the pieces together, as root. It hands the file back
+only if the inode, length and change time the supervisor said of it are
+the same from its first piece to its last, if it is no longer than
+8 MiB, which is known from the first piece before any more is read, and
+if it was read within two minutes, the Room's start among them: a
+supervisor that answers each piece just in time can't hold a caller for
+the length of every piece's own wait. A file that changed, is past the
+bound, or took too long isn't handed back, and is said as that. The
+broker reads it from the spawner only at the length the spawner said,
+and never past the bound.
+
+What is compared is what the supervisor says, and the supervisor is the
+Room's: a file can change in ways its change time doesn't show (a write
+through a shared mapping is seen only when it is written back), and a
+file put together from pieces may then be one that never was whole in
+the Room. That is the Room's own file, as the Room's user could have
+made it. What matters is after: the broker hashes, checks and keeps the
+one copy it was handed, and never reads the Room again for it. Nothing
+yet asks for a file to hand over: the broker's own store for it, its
+checks, and the agent's tool come next.
+
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
 together, takes each kept piece only at the length the supervisor said it
@@ -244,9 +281,10 @@ may be and ends at the end of a line, and names each stream's file
 itself, from the job's name. It takes what a write came to only if the
 file is as long as what was sent and was replaced only if it was to be;
 what an edit came to only if it was at one place, unless every place
-was asked for, in a file no longer than one may be; and the places
-text is said to be at only if they can be places. Anything else ends
-the session.
+was asked for, in a file no longer than one may be; the places
+text is said to be at only if they can be places; and a piece of a file
+only if it is no longer than one, isn't past the file's end, and is short
+of a whole one only where the file ends. Anything else ends the session.
 
 The Room is kept between jobs, as one session for the install. One
 spawner thread holds it from its launch until it is down, and holds the
