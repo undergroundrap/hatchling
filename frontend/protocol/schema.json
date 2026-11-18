@@ -498,6 +498,15 @@
               "const": "file_out",
               "type": "string"
             },
+            "files": {
+              "description": "A folder's count of files, once it is kept (v8, WO-043): none\nfor a file.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "name": {
               "description": "The broker's name for it: none unless it was checked and found\nto hold no secret.",
               "type": [
@@ -880,6 +889,11 @@
         {
           "const": "remove_library_file",
           "description": "[`UiAction::RemoveLibraryFile`].",
+          "type": "string"
+        },
+        {
+          "const": "list_folder",
+          "description": "[`UiAction::ListFolder`] (v8).",
           "type": "string"
         }
       ]
@@ -3944,6 +3958,45 @@
             "refusal"
           ],
           "type": "object"
+        },
+        {
+          "description": "A folder's list or file was asked of an item that is a file (v8).",
+          "properties": {
+            "refusal": {
+              "const": "not_a_folder",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An item that is a folder was asked as a file (v8): a file of it is\nasked by its place.",
+          "properties": {
+            "refusal": {
+              "const": "a_folder",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A place past the folder's files (v8).",
+          "properties": {
+            "refusal": {
+              "const": "out_of_range",
+              "type": "string"
+            }
+          },
+          "required": [
+            "refusal"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -4020,6 +4073,31 @@
       "required": [
         "chat_id",
         "message_id"
+      ],
+      "type": "object"
+    },
+    "FolderEntry": {
+      "description": "One file of a folder in the Library (v8), as its list says it.",
+      "properties": {
+        "bytes": {
+          "description": "Its length, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "path": {
+          "description": "Its path in the folder: steps of printable ASCII joined by `/`.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Its SHA-256, in lowercase hex.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
       ],
       "type": "object"
     },
@@ -5213,6 +5291,12 @@
           "minimum": 0,
           "type": "integer"
         },
+        "conversation": {
+          "description": "The conversation it came from, by the Library's number for it (v8).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "id": {
           "description": "The broker's id for it.",
           "type": "string"
@@ -5225,6 +5309,13 @@
           "description": "The broker's name for it: plain ASCII, made from the file's own.",
           "type": "string"
         },
+        "reply": {
+          "description": "The reply it came from: the chat run's cell id (v8); none for one\nkept before items were grouped.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "sha256": {
           "description": "Its SHA-256, in lowercase hex.",
           "type": "string"
@@ -5235,7 +5326,69 @@
         "name",
         "bytes",
         "sha256",
-        "kept_at"
+        "kept_at",
+        "conversation"
+      ],
+      "type": "object"
+    },
+    "LibraryFolder": {
+      "description": "A folder the agent handed the owner (v8, WO-043), as the Library keeps\nit: its files are listed by [`crate::ui::UiAction::ListFolder`].",
+      "properties": {
+        "bytes": {
+          "description": "Its files' length together, in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "conversation": {
+          "description": "The conversation it came from, by the Library's number for it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "How many files it holds.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "description": "The broker's id for it.",
+          "type": "string"
+        },
+        "kept_at": {
+          "description": "When it was kept, as RFC 3339.",
+          "type": "string"
+        },
+        "left_out": {
+          "$ref": "#/$defs/LeftOut",
+          "description": "What its walk left out, by kind."
+        },
+        "name": {
+          "description": "The broker's name for it: plain ASCII, made from the folder's own.",
+          "type": "string"
+        },
+        "reply": {
+          "description": "The reply it came from: the chat run's cell id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sha256": {
+          "description": "The SHA-256, in lowercase hex, of its list as the Library keeps it:\nthe JSON of its entries, each its path, length and SHA-256.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "files",
+        "bytes",
+        "sha256",
+        "kept_at",
+        "conversation",
+        "left_out"
       ],
       "type": "object"
     },
@@ -5254,14 +5407,32 @@
           "minimum": 0,
           "type": "integer"
         },
+        "conversation": {
+          "description": "The open conversation, by the Library's number for it (v8).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
         "file_limit": {
-          "description": "The most it keeps.",
+          "description": "The most items it keeps.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         },
         "files": {
-          "description": "The files it keeps.",
+          "description": "The items it keeps, files and folders (v8: a folder is one).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_in_all": {
+          "description": "The files it keeps in all, each of a folder's counted (v8).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files_in_all_limit": {
+          "description": "The most files it keeps in all (v8).",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
@@ -5281,6 +5452,18 @@
         "off": {
           "description": "Whether giving files is off for the open conversation: one held a\nsecret. A new conversation turns it back on.",
           "type": "boolean"
+        },
+        "read": {
+          "description": "What the open conversation has read out of the agent's computer, in\nbytes (v8).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "read_limit": {
+          "description": "The most one conversation reads (v8).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": [
@@ -5290,7 +5473,12 @@
         "byte_limit",
         "given",
         "given_limit",
-        "off"
+        "off",
+        "files_in_all",
+        "files_in_all_limit",
+        "read",
+        "read_limit",
+        "conversation"
       ],
       "type": "object"
     },
@@ -13243,14 +13431,48 @@
               "const": "begin_file_out",
               "type": "string"
             },
+            "file": {
+              "description": "Its place in the folder's list, from 0 (v8): a folder's file\nonly.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "id": {
-              "description": "The Library's id for it.",
+              "description": "The Library's id for it, or for the folder it is in.",
               "type": "string"
             }
           },
           "required": [
             "action",
             "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Read a page of a folder's list (v8): the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "list_folder",
+              "type": "string"
+            },
+            "from": {
+              "description": "The place of the page's first entry, from 0.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "description": "The Library's id for the folder.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "id",
+            "from"
           ],
           "type": "object"
         },
@@ -14104,12 +14326,19 @@
           "type": "object"
         },
         {
-          "description": "The Library's files, newest first, and its standing (v7).",
+          "description": "The Library's files and folders, each newest first, and its\nstanding (v7; folders v8).",
           "properties": {
             "files": {
               "description": "Its files.",
               "items": {
                 "$ref": "#/$defs/LibraryFile"
+              },
+              "type": "array"
+            },
+            "folders": {
+              "description": "Its folders (v8).",
+              "items": {
+                "$ref": "#/$defs/LibraryFolder"
               },
               "type": "array"
             },
@@ -14125,7 +14354,102 @@
           "required": [
             "result",
             "files",
+            "folders",
             "standing"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A page of a folder's list (v8): at most [`FOLDER_PAGE`] entries,\nread back whole and to the folder's hash.",
+          "properties": {
+            "entries": {
+              "description": "The page's entries, in the list's order.",
+              "items": {
+                "$ref": "#/$defs/FolderEntry"
+              },
+              "type": "array"
+            },
+            "from": {
+              "description": "The place of the first entry.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "description": "The folder.",
+              "type": "string"
+            },
+            "result": {
+              "const": "folder",
+              "type": "string"
+            },
+            "total": {
+              "description": "How many files the folder holds.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "result",
+            "id",
+            "from",
+            "total",
+            "entries"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A file of a folder is ready to be read out (v8), read back whole and\nto its own hash. Its parts are asked as a file's are.",
+          "properties": {
+            "bytes": {
+              "description": "Its length, in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "download_id": {
+              "description": "The download: its parts are asked by it.",
+              "type": "string"
+            },
+            "file": {
+              "description": "Its place in the folder's list.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "description": "The folder.",
+              "type": "string"
+            },
+            "parts": {
+              "description": "How many parts it is, each [`FILE_IN_PART_BYTES`] but the last.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "path": {
+              "description": "Its path in the folder.",
+              "type": "string"
+            },
+            "result": {
+              "const": "folder_file_out_begun",
+              "type": "string"
+            },
+            "sha256": {
+              "description": "Its SHA-256, in lowercase hex.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "download_id",
+            "id",
+            "file",
+            "path",
+            "bytes",
+            "sha256",
+            "parts"
           ],
           "type": "object"
         },
@@ -15482,7 +15806,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 33,
-    "ui_schema_version": 7
+    "ui_schema_version": 8
   },
   "x-roots": {
     "ActivityEvent": {

@@ -94,16 +94,65 @@ pub struct LibraryFile {
     pub sha256: String,
     /// When it was kept, as RFC 3339 (v7).
     pub kept_at: String,
+    /// The conversation it came from, by the Library's number for it (v8).
+    pub conversation: u64,
+    /// The reply it came from: the chat run's cell id (v8); none for one
+    /// kept before items were grouped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
 }
+
+/// A folder the agent handed the owner (v8, WO-043), as the Library keeps
+/// it: its files are listed by [`crate::ui::UiAction::ListFolder`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct LibraryFolder {
+    /// The broker's id for it.
+    pub id: String,
+    /// The broker's name for it: plain ASCII, made from the folder's own.
+    pub name: String,
+    /// How many files it holds.
+    pub files: u32,
+    /// Its files' length together, in bytes.
+    pub bytes: u64,
+    /// The SHA-256, in lowercase hex, of its list as the Library keeps it:
+    /// the JSON of its entries, each its path, length and SHA-256.
+    pub sha256: String,
+    /// When it was kept, as RFC 3339.
+    pub kept_at: String,
+    /// The conversation it came from, by the Library's number for it.
+    pub conversation: u64,
+    /// The reply it came from: the chat run's cell id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<String>,
+    /// What its walk left out, by kind.
+    pub left_out: crate::LeftOut,
+}
+
+/// One file of a folder in the Library (v8), as its list says it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FolderEntry {
+    /// Its path in the folder: steps of printable ASCII joined by `/`.
+    pub path: String,
+    /// Its length, in bytes.
+    pub bytes: u64,
+    /// Its SHA-256, in lowercase hex.
+    pub sha256: String,
+}
+
+/// The most entries one page of a folder's list holds (v8): a page of the
+/// longest fits one frame.
+pub const FOLDER_PAGE: u32 = 32;
 
 /// The Library's use against its bounds, and the open conversation's
 /// standing (v7).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct LibraryStanding {
-    /// The files it keeps.
+    /// The items it keeps, files and folders (v8: a folder is one).
     pub files: u32,
-    /// The most it keeps.
+    /// The most items it keeps.
     pub file_limit: u32,
     /// Their bytes together.
     pub bytes: u64,
@@ -116,6 +165,17 @@ pub struct LibraryStanding {
     /// Whether giving files is off for the open conversation: one held a
     /// secret. A new conversation turns it back on.
     pub off: bool,
+    /// The files it keeps in all, each of a folder's counted (v8).
+    pub files_in_all: u32,
+    /// The most files it keeps in all (v8).
+    pub files_in_all_limit: u32,
+    /// What the open conversation has read out of the agent's computer, in
+    /// bytes (v8).
+    pub read: u64,
+    /// The most one conversation reads (v8).
+    pub read_limit: u64,
+    /// The open conversation, by the Library's number for it (v8).
+    pub conversation: u64,
 }
 
 /// Why a file wasn't read out of the Library for the owner (v7).
@@ -137,6 +197,13 @@ pub enum FileOutRefusal {
     UnknownDownload,
     /// A part asked out of order. The download is let go, and begun again.
     OutOfStep,
+    /// A folder's list or file was asked of an item that is a file (v8).
+    NotAFolder,
+    /// An item that is a folder was asked as a file (v8): a file of it is
+    /// asked by its place.
+    AFolder,
+    /// A place past the folder's files (v8).
+    OutOfRange,
 }
 
 /// The agent handed the owner a file (v6): it is kept in the Library.

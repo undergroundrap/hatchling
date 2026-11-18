@@ -1568,6 +1568,7 @@ mod tests {
         let mut replies = Replies::default();
         let begin = UiAction::BeginFileOut {
             id: String::from("f1"),
+            file: None,
         };
         let part = UiAction::FileOutPart {
             download_id: String::from("out-1"),

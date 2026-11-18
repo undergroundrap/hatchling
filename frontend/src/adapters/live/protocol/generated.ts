@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 7;
+export const UI_SCHEMA_VERSION = 8;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 33;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -301,6 +301,11 @@ export type ActivityEvent = {
     readonly ended: FileOutEnded;
     readonly event: 'file_out';
     /**
+     * A folder's count of files, once it is kept (v8, WO-043): none
+     * for a file.
+     */
+    readonly files?: number | null;
+    /**
      * The broker's name for it: none unless it was checked and found
      * to hold no secret.
      */
@@ -360,7 +365,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1623,6 +1628,12 @@ export type FileOutRefusal = {
     readonly refusal: 'unknown_download';
 } | {
     readonly refusal: 'out_of_step';
+} | {
+    readonly refusal: 'not_a_folder';
+} | {
+    readonly refusal: 'a_folder';
+} | {
+    readonly refusal: 'out_of_range';
 };
 /**
  * Why a file was not saved.
@@ -1657,6 +1668,23 @@ export type FileWithheld = {
      * secret.
      */
     readonly name?: string | null;
+};
+/**
+ * One file of a folder in the Library (v8), as its list says it.
+ */
+export type FolderEntry = {
+    /**
+     * Its length, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * Its path in the folder: steps of printable ASCII joined by `/`.
+     */
+    readonly path: string;
+    /**
+     * Its SHA-256, in lowercase hex.
+     */
+    readonly sha256: string;
 };
 /**
  * An operation on the owner's goals, from their app: the same goals the
@@ -2098,6 +2126,10 @@ export type LibraryFile = {
      */
     readonly bytes: number;
     /**
+     * The conversation it came from, by the Library's number for it (v8).
+     */
+    readonly conversation: number;
+    /**
      * The broker's id for it.
      */
     readonly id: string;
@@ -2110,7 +2142,55 @@ export type LibraryFile = {
      */
     readonly name: string;
     /**
+     * The reply it came from: the chat run's cell id (v8); none for one
+     * kept before items were grouped.
+     */
+    readonly reply?: string | null;
+    /**
      * Its SHA-256, in lowercase hex.
+     */
+    readonly sha256: string;
+};
+/**
+ * A folder the agent handed the owner (v8, WO-043), as the Library keeps
+ * it: its files are listed by [`crate::ui::UiAction::ListFolder`].
+ */
+export type LibraryFolder = {
+    /**
+     * Its files' length together, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * The conversation it came from, by the Library's number for it.
+     */
+    readonly conversation: number;
+    /**
+     * How many files it holds.
+     */
+    readonly files: number;
+    /**
+     * The broker's id for it.
+     */
+    readonly id: string;
+    /**
+     * When it was kept, as RFC 3339.
+     */
+    readonly kept_at: string;
+    /**
+     * What its walk left out, by kind.
+     */
+    readonly left_out: LeftOut;
+    /**
+     * The broker's name for it: plain ASCII, made from the folder's own.
+     */
+    readonly name: string;
+    /**
+     * The reply it came from: the chat run's cell id.
+     */
+    readonly reply?: string | null;
+    /**
+     * The SHA-256, in lowercase hex, of its list as the Library keeps it:
+     * the JSON of its entries, each its path, length and SHA-256.
      */
     readonly sha256: string;
 };
@@ -2128,13 +2208,25 @@ export type LibraryStanding = {
      */
     readonly bytes: number;
     /**
-     * The most it keeps.
+     * The open conversation, by the Library's number for it (v8).
+     */
+    readonly conversation: number;
+    /**
+     * The most items it keeps.
      */
     readonly file_limit: number;
     /**
-     * The files it keeps.
+     * The items it keeps, files and folders (v8: a folder is one).
      */
     readonly files: number;
+    /**
+     * The files it keeps in all, each of a folder's counted (v8).
+     */
+    readonly files_in_all: number;
+    /**
+     * The most files it keeps in all (v8).
+     */
+    readonly files_in_all_limit: number;
     /**
      * The files the agent has given in the open conversation.
      */
@@ -2148,6 +2240,15 @@ export type LibraryStanding = {
      * secret. A new conversation turns it back on.
      */
     readonly off: boolean;
+    /**
+     * What the open conversation has read out of the agent's computer, in
+     * bytes (v8).
+     */
+    readonly read: number;
+    /**
+     * The most one conversation reads (v8).
+     */
+    readonly read_limit: number;
 };
 /**
  * One response header the broker sets on served media.
@@ -5279,7 +5380,22 @@ export type UiAction = {
 } | {
     readonly action: 'begin_file_out';
     /**
-     * The Library's id for it.
+     * Its place in the folder's list, from 0 (v8): a folder's file
+     * only.
+     */
+    readonly file?: number | null;
+    /**
+     * The Library's id for it, or for the folder it is in.
+     */
+    readonly id: string;
+} | {
+    readonly action: 'list_folder';
+    /**
+     * The place of the page's first entry, from 0.
+     */
+    readonly from: number;
+    /**
+     * The Library's id for the folder.
      */
     readonly id: string;
 } | {
@@ -5605,11 +5721,63 @@ export type UiActionResult = {
      * Its files.
      */
     readonly files: readonly (LibraryFile)[];
+    /**
+     * Its folders (v8).
+     */
+    readonly folders: readonly (LibraryFolder)[];
     readonly result: 'library';
     /**
      * Its use, and the open conversation's.
      */
     readonly standing: LibraryStanding;
+} | {
+    /**
+     * The page's entries, in the list's order.
+     */
+    readonly entries: readonly (FolderEntry)[];
+    /**
+     * The place of the first entry.
+     */
+    readonly from: number;
+    /**
+     * The folder.
+     */
+    readonly id: string;
+    readonly result: 'folder';
+    /**
+     * How many files the folder holds.
+     */
+    readonly total: number;
+} | {
+    /**
+     * Its length, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * The download: its parts are asked by it.
+     */
+    readonly download_id: string;
+    /**
+     * Its place in the folder's list.
+     */
+    readonly file: number;
+    /**
+     * The folder.
+     */
+    readonly id: string;
+    /**
+     * How many parts it is, each [`FILE_IN_PART_BYTES`] but the last.
+     */
+    readonly parts: number;
+    /**
+     * Its path in the folder.
+     */
+    readonly path: string;
+    readonly result: 'folder_file_out_begun';
+    /**
+     * Its SHA-256, in lowercase hex.
+     */
+    readonly sha256: string;
 } | {
     /**
      * The download: its parts are asked by it.

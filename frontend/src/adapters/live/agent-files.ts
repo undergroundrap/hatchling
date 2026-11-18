@@ -65,6 +65,9 @@ const OUT_REFUSED: Readonly<Record<FileOutRefusal['refusal'], string>> = {
     busy: `Other downloads are under way. ${NOTHING_SAVED} Try again in a minute.`,
     unknown_download: NOT_WHOLE,
     out_of_step: NOT_WHOLE,
+    not_a_folder: 'Hatchling answered for a file as if it were a folder.',
+    a_folder: 'It is a folder: downloading a folder comes in a later version of Hatchling.',
+    out_of_range: 'Hatchling answered for a file its folder doesn’t hold.',
 };
 /** Why the API refused, before the broker read anything, for each thing asked. */
 const NOT_READ: Readonly<Record<ActionRefusal, string>> = {
@@ -94,6 +97,28 @@ function kept(file: {
     readonly kept_at: string;
 }): AgentFile {
     return { id: file.id, name: file.name, bytes: file.bytes, sha256: file.sha256, keptAt: file.kept_at };
+}
+/** An id the broker gives an item: 64 lowercase hex digits. */
+const ITEM_ID = /^[0-9a-f]{64}$/u;
+/** The most bytes a file the agent gives holds. */
+const FILE_BYTES = 8 * 1024 * 1024;
+/** Whether `file` is one the broker gives: its name as a file's, its size within a file's. */
+function isShownFile(file: {
+    readonly name: string;
+    readonly bytes: number;
+}): boolean {
+    return isGivenName(file.name) && file.bytes <= FILE_BYTES;
+}
+/** The most files, and bytes, a folder the agent gives holds. */
+const FOLDER_FILES = 512;
+const FOLDER_BYTES = 32 * 1024 * 1024;
+/** Whether `folder` is one the broker gives: its name as a file's, its counts within a folder's. */
+function isShownFolder(folder: {
+    readonly name: string;
+    readonly files: number;
+    readonly bytes: number;
+}): boolean {
+    return isGivenName(folder.name) && folder.files >= 1 && folder.files <= FOLDER_FILES && folder.bytes <= FOLDER_BYTES;
 }
 /** `data` as bytes; none when it isn't base64. */
 function decoded(data: string): Uint8Array | null {
@@ -188,11 +213,17 @@ export class LiveAgentFiles implements AgentFilesPort {
         if (reply.kind !== 'answered')
             this.#state = { kind: 'failed', detail: reply.detail };
         else if (reply.result.result === 'library') {
-            const standing = reply.result.standing;
+            const { files, folders, standing } = reply.result;
+            // An item it can't name is shown all the same, by its size, so
+            // nothing the Library counts is out of the owner's sight.
+            const unnamed = [...files.filter(file => !isShownFile(file)), ...folders.filter(folder => !isShownFolder(folder))]
+                .map(item => ({ id: item.id, bytes: item.bytes, removable: ITEM_ID.test(item.id) }));
             this.#state = {
                 kind: 'read',
-                files: reply.result.files.filter(file => isGivenName(file.name)).map(kept),
-                standing: { files: standing.files, fileLimit: standing.file_limit, bytes: standing.bytes, byteLimit: standing.byte_limit, given: standing.given, givenLimit: standing.given_limit, off: standing.off },
+                files: files.filter(isShownFile).map(kept),
+                folders: folders.filter(isShownFolder).map(folder => ({ id: folder.id, name: folder.name, files: folder.files, bytes: folder.bytes, keptAt: folder.kept_at })),
+                unnamed,
+                standing: { files: standing.files, fileLimit: standing.file_limit, bytes: standing.bytes, byteLimit: standing.byte_limit, given: standing.given, givenLimit: standing.given_limit, off: standing.off, filesInAll: standing.files_in_all, filesInAllLimit: standing.files_in_all_limit, read: standing.read, readLimit: standing.read_limit },
             };
             this.#listed = read;
         }

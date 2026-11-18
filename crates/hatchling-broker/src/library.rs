@@ -118,6 +118,10 @@ pub const LIST_CHUNKS: u64 = LIST_BYTES.div_ceil(32 * 1024);
 /// The longest an item's time of keeping may be, in bytes.
 const KEPT_AT_BYTES: usize = 40;
 
+/// The most a conversation's number may be: what a JSON number holds
+/// exactly, so the owner's app reads it as it is.
+pub const CONVERSATIONS: u64 = (1 << 53) - 1;
+
 /// A run's cell id: `run-` and 24 lowercase hex digits.
 const RUN_ID_BYTES: usize = 4 + 24;
 
@@ -259,6 +263,17 @@ pub enum ListOut {
     /// The Library keeps no such folder.
     Gone,
     /// The list doesn't come to its hash, or isn't one a folder can have.
+    Damaged,
+}
+
+/// A file of a folder read back for the owner, with its entry.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EntryOut {
+    /// Its entry in the folder's list, and its bytes, to its own hash.
+    Whole(FolderFile, Zeroizing<Vec<u8>>),
+    /// The Library keeps no such folder or file.
+    Gone,
+    /// It, or the folder's list, doesn't come to its hash.
     Damaged,
 }
 
@@ -492,6 +507,7 @@ fn is_item(item: &KeptItem) -> bool {
         && is_hash(&item.sha256)
         && is_kept_at(&item.kept_at)
         && is_reply(&item.reply)
+        && item.conversation <= CONVERSATIONS
         && item.chunks == chunks_of(item.bytes);
     shaped
         && match item.kind {
@@ -507,6 +523,31 @@ fn is_item(item: &KeptItem) -> bool {
                     && (1..=LIST_CHUNKS).contains(&item.list_chunks)
             }
         }
+}
+
+/// The Library's items and the open conversation's standing, as they
+/// were at one moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shelf {
+    /// Its items, oldest first.
+    pub items: Vec<KeptItem>,
+    /// The open conversation's hand-overs.
+    pub handed: u32,
+    /// Whether handing over is off for it.
+    pub off: bool,
+    /// What it has read out of the Room, in bytes.
+    pub read: u64,
+    /// Its number.
+    pub conversation: u64,
+}
+
+/// The conversation after `conversation`: refused past
+/// [`CONVERSATIONS`], never wrapped, so no two are ever one.
+fn next(conversation: u64) -> Result<u64, String> {
+    conversation
+        .checked_add(1)
+        .filter(|next| *next <= CONVERSATIONS)
+        .ok_or_else(|| String::from("the Library has numbered all the conversations it can"))
 }
 
 /// What `index` holds in all: its bytes and its files.
@@ -628,6 +669,7 @@ impl<'k> Library<'k> {
         let state: State = Self::read(vault, STATE)?.unwrap_or_default();
         if state.handed > HANDED_PER_CONVERSATION
             || state.read > READ_PER_CONVERSATION
+            || state.conversation > CONVERSATIONS
             || state.pending.as_ref().is_some_and(|pending| {
                 !is_id(&pending.id)
                     || pending.chunks > chunks_of(FOLDER_BYTES)
@@ -916,6 +958,12 @@ impl<'k> Library<'k> {
         reply: &str,
     ) -> Result<Result<KeptItem, Refused>, String> {
         check_paths(files.iter().map(|(path, _)| *path)).map_err(String::from)?;
+        if files
+            .iter()
+            .any(|(_, bytes)| u64::try_from(bytes.len()).unwrap_or(u64::MAX) > FILE_BYTES)
+        {
+            return Err(String::from("a file in a folder is larger than 8 MiB"));
+        }
         let list: Vec<FolderFile> = files
             .iter()
             .map(|(path, bytes)| FolderFile {
@@ -1082,7 +1130,7 @@ impl<'k> Library<'k> {
             state.handed = 0;
             state.read = 0;
             state.off = false;
-            state.conversation = state.conversation.wrapping_add(1);
+            state.conversation = next(state.conversation)?;
             Self::write(vault, STATE, &state)
         })
     }
@@ -1096,7 +1144,7 @@ impl<'k> Library<'k> {
     /// When the Library can't be read or written.
     pub fn regroup(&self) -> Result<(), String> {
         self.opened(|vault, mut state| {
-            state.conversation = state.conversation.wrapping_add(1);
+            state.conversation = next(state.conversation)?;
             Self::write(vault, STATE, &state)
         })
     }
@@ -1118,6 +1166,24 @@ impl<'k> Library<'k> {
     /// When the Library can't be read.
     pub fn read_so_far(&self) -> Result<u64, String> {
         self.opened(|_, state| Ok(state.read))
+    }
+
+    /// The items the Library keeps, oldest first, and the open
+    /// conversation's standing, read at once.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn shelf(&self) -> Result<Shelf, String> {
+        self.opened(|vault, state| {
+            Ok(Shelf {
+                items: Self::index(vault)?,
+                handed: state.handed,
+                off: state.off,
+                read: state.read,
+                conversation: state.conversation,
+            })
+        })
     }
 
     /// The items the Library keeps, oldest first.
@@ -1244,7 +1310,9 @@ impl<'k> Library<'k> {
             .try_fold(0_u64, |all, file| all.checked_add(file.bytes));
         let sound = total == Some(item.bytes)
             && u64::try_from(files.len()).ok() == Some(item.files)
-            && files.iter().all(|file| is_hash(&file.sha256))
+            && files
+                .iter()
+                .all(|file| is_hash(&file.sha256) && file.bytes <= FILE_BYTES)
             && check_paths(files.iter().map(|file| file.path.as_str())).is_ok();
         Ok(if sound {
             ListOut::Whole(files)
@@ -1300,21 +1368,37 @@ impl<'k> Library<'k> {
     ///
     /// When the Library can't be read.
     pub fn read_out_in(&self, id: &str, n: usize) -> Result<ReadOut, String> {
+        Ok(match self.entry_out(id, n)? {
+            EntryOut::Whole(_, bytes) => ReadOut::Whole(bytes),
+            EntryOut::Gone => ReadOut::Gone,
+            EntryOut::Damaged => ReadOut::Damaged,
+        })
+    }
+
+    /// File `n` of folder `id`, counted from 0: its entry in the folder's
+    /// list and its bytes, whole and to its own hash, read at one moment;
+    /// or that the Library keeps no such folder or file, or that it, or
+    /// the folder's list, is damaged.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn entry_out(&self, id: &str, n: usize) -> Result<EntryOut, String> {
         self.opened(|vault, _| {
             let index = Self::index(vault)?;
             let Some(folder) = index
                 .iter()
                 .find(|item| item.id == id && item.kind == ItemKind::Folder)
             else {
-                return Ok(ReadOut::Gone);
+                return Ok(EntryOut::Gone);
             };
             let files = match Self::list_in(vault, folder)? {
                 ListOut::Whole(files) => files,
-                ListOut::Gone => return Ok(ReadOut::Gone),
-                ListOut::Damaged => return Ok(ReadOut::Damaged),
+                ListOut::Gone => return Ok(EntryOut::Gone),
+                ListOut::Damaged => return Ok(EntryOut::Damaged),
             };
             let Some(file) = files.get(n) else {
-                return Ok(ReadOut::Gone);
+                return Ok(EntryOut::Gone);
             };
             let from = files
                 .iter()
@@ -1323,9 +1407,9 @@ impl<'k> Library<'k> {
             Ok(
                 match Self::read_run(vault, &folder.id, from, file.bytes, chunk_name)? {
                     Some(bytes) if hex(&Sha256::digest(&*bytes)) == file.sha256 => {
-                        ReadOut::Whole(bytes)
+                        EntryOut::Whole(file.clone(), bytes)
                     }
-                    _ => ReadOut::Damaged,
+                    _ => EntryOut::Damaged,
                 },
             )
         })

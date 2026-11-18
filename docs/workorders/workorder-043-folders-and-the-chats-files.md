@@ -65,6 +65,7 @@ Each slice's record, as it lands.
 - Slice 1, the Room lists a folder: [room-list-wire.md](../evidence/room-list-wire.md).
 - Slice 2, the Library's items, groups, bounds and log: [library-items.md](../evidence/library-items.md).
 - Slice 3, the folder hand-over and `give_folder`: [give-folder.md](../evidence/give-folder.md).
+- Slice 4, the Library's folders through the local API (UI v8): [library-api.md](../evidence/library-api.md).
 
 ## Notes
 

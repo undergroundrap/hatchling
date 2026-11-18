@@ -40,10 +40,10 @@ use hatchling_core::messages::{ScheduleGrant, ScheduleOp};
 use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
-    Decision, FILE_IN_PART_BYTES, FileIn, FileInRefusal, FileOutRefusal, GoalOp, Handoff,
-    InboxFile, KeptOp, LibraryFile, LibraryStanding, ProfileOp, ProfileResult, RoomDiskView,
-    SetupState, SignInOp, SiteOp, SuggestionOp, UiAction, UiActionResult, UiEventBody,
-    VaultProtection,
+    Decision, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal, FileOutRefusal, FolderEntry,
+    GoalOp, Handoff, InboxFile, KeptOp, LibraryFile, LibraryFolder, LibraryStanding, ProfileOp,
+    ProfileResult, RoomDiskView, SetupState, SignInOp, SiteOp, SuggestionOp, UiAction,
+    UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -348,7 +348,8 @@ impl<'a> Ops<'a> {
             UiAction::ListLibrary {}
             | UiAction::BeginFileOut { .. }
             | UiAction::FileOutPart { .. }
-            | UiAction::RemoveLibraryFile { .. } => self.library(owns, action, replies),
+            | UiAction::RemoveLibraryFile { .. }
+            | UiAction::ListFolder { .. } => self.library(owns, action, replies),
         }
     }
 
@@ -1162,8 +1163,14 @@ impl<'a> Ops<'a> {
             tracing::warn!(%error, "the Library couldn't be read for the owner");
             refused(ActionRefusal::Unavailable)
         };
-        if let UiAction::BeginFileOut { id } = action {
-            return Self::begin_file_out(&library, id, replies);
+        if let UiAction::BeginFileOut { id, file } = action {
+            return Self::begin_file_out(&library, id, *file, replies);
+        }
+        if let UiAction::ListFolder { id, from } = action {
+            return match Self::folder_page(&library, id, *from) {
+                Ok(result) => served(result),
+                Err(error) => unreadable(error),
+            };
         }
         if let UiAction::RemoveLibraryFile { id } = action {
             return match library.remove(id) {
@@ -1182,32 +1189,74 @@ impl<'a> Ops<'a> {
         if !matches!(action, UiAction::ListLibrary {}) {
             return refused(ActionRefusal::BadRequest);
         }
-        let read = library
-            .items()
-            .and_then(|items| library.standing().map(|standing| (items, standing)));
-        match read {
-            Ok((items, (given, off))) => served(UiActionResult::Library {
-                // Its use counts every item, a folder too, which this
-                // version of the API doesn't list (WO-043).
-                standing: standing(&items, given, off),
+        match library.shelf() {
+            Ok(read) => {
+                let standing = standing(&read);
                 // Newest first: the index keeps them oldest first.
-                files: items
+                let (files, folders): (Vec<_>, Vec<_>) = read
+                    .items
                     .into_iter()
                     .rev()
-                    .filter(|item| item.kind == crate::library::ItemKind::File)
-                    .map(shown)
-                    .collect(),
-            }),
+                    .partition(|item| item.kind == crate::library::ItemKind::File);
+                served(UiActionResult::Library {
+                    files: files.into_iter().map(shown).collect(),
+                    folders: folders.into_iter().map(shown_folder).collect(),
+                    standing,
+                })
+            }
             Err(error) => unreadable(error),
         }
     }
 
-    /// Begins reading the file `id` out of `library` for the connection
-    /// `replies` is: read back whole and to its hash, and held while its
-    /// parts are asked. The connection's last download is let go.
+    /// The page of folder `id`'s list from `from`, read back whole and to
+    /// its hash: at most [`FOLDER_PAGE`] entries.
+    fn folder_page(
+        library: &crate::library::Library<'_>,
+        id: &str,
+        from: u32,
+    ) -> Result<UiActionResult, String> {
+        let not = |reason| Ok(UiActionResult::FileOutRefused { reason });
+        let Some(item) = library.items()?.into_iter().find(|item| item.id == id) else {
+            return not(FileOutRefusal::Gone);
+        };
+        if item.kind != crate::library::ItemKind::Folder {
+            return not(FileOutRefusal::NotAFolder);
+        }
+        let total = u32::try_from(item.files).unwrap_or(u32::MAX);
+        if from >= total {
+            return not(FileOutRefusal::OutOfRange);
+        }
+        let entries = match library.list_of(id)? {
+            crate::library::ListOut::Whole(entries) => entries,
+            crate::library::ListOut::Gone => return not(FileOutRefusal::Gone),
+            crate::library::ListOut::Damaged => return not(FileOutRefusal::Damaged),
+        };
+        let entries = entries
+            .into_iter()
+            .skip(usize::try_from(from).unwrap_or(usize::MAX))
+            .take(usize::try_from(FOLDER_PAGE).unwrap_or(usize::MAX))
+            .map(|entry| FolderEntry {
+                path: entry.path,
+                bytes: entry.bytes,
+                sha256: entry.sha256,
+            })
+            .collect();
+        Ok(UiActionResult::Folder {
+            id: id.to_owned(),
+            from,
+            total,
+            entries,
+        })
+    }
+
+    /// Begins reading the file `id`, or file `file` of the folder `id`,
+    /// out of `library` for the connection `replies` is: read back whole
+    /// and to its own hash, and held, under the item's id, while its parts
+    /// are asked. The connection's last download is let go.
     fn begin_file_out(
         library: &crate::library::Library<'_>,
         id: &str,
+        file: Option<u32>,
         replies: &mut Replies<'a>,
     ) -> (UiActionResult, ApiOutcome) {
         let served = |result| (result, ApiOutcome::Served);
@@ -1217,39 +1266,70 @@ impl<'a> Ops<'a> {
             let reason = ActionRefusal::Unavailable;
             (UiActionResult::Refused { reason }, ApiOutcome::Refused)
         };
-        let file = match library.files() {
-            Ok(files) => files.into_iter().find(|file| file.id == id),
+        // A new download lets go of the connection's last, whatever comes
+        // of it.
+        if let Some(before) = replies.download.take() {
+            replies.holding().let_go(&before);
+        }
+        let item = match library.items() {
+            Ok(items) => items.into_iter().find(|item| item.id == id),
             Err(error) => return unreadable(error),
         };
-        let Some(file) = file else {
+        let Some(item) = item else {
             return not(FileOutRefusal::Gone);
+        };
+        // A folder's file is asked by its place, within its count, before
+        // anything is read; a file by its id alone.
+        let place = match (item.kind, file) {
+            (crate::library::ItemKind::File, None) => None,
+            (crate::library::ItemKind::File, Some(_)) => return not(FileOutRefusal::NotAFolder),
+            (crate::library::ItemKind::Folder, None) => return not(FileOutRefusal::AFolder),
+            (crate::library::ItemKind::Folder, Some(n)) if u64::from(n) < item.files => Some(n),
+            (crate::library::ItemKind::Folder, Some(_)) => return not(FileOutRefusal::OutOfRange),
         };
         let Ok(download_id) = crate::approval::random_hex("out-") else {
             return unreadable(String::from("no entropy for a download's id"));
         };
-        // A new download lets go of the connection's last, whatever comes
-        // of it; and a busy broker reads nothing.
-        if let Some(before) = replies.download.take() {
-            replies.holding().let_go(&before);
-        }
+        // A busy broker reads nothing.
         if !replies.holding().has_room(Instant::now()) {
             return not(FileOutRefusal::Busy);
         }
-        let bytes = match library.read_out(id) {
-            Ok(crate::library::ReadOut::Whole(bytes)) => bytes,
-            Ok(crate::library::ReadOut::Gone) => return not(FileOutRefusal::Gone),
-            Ok(crate::library::ReadOut::Damaged) => return not(FileOutRefusal::Damaged),
+        let Some(n) = place else {
+            let bytes = match library.read_out(id) {
+                Ok(crate::library::ReadOut::Whole(bytes)) => bytes,
+                Ok(crate::library::ReadOut::Gone) => return not(FileOutRefusal::Gone),
+                Ok(crate::library::ReadOut::Damaged) => return not(FileOutRefusal::Damaged),
+                Err(error) => return unreadable(error),
+            };
+            return match hold(library, (&download_id, id), bytes, replies) {
+                Ok(parts) => {
+                    replies.download = Some(download_id.clone());
+                    served(UiActionResult::FileOutBegun {
+                        download_id,
+                        file: shown(item),
+                        parts,
+                    })
+                }
+                Err(reason) => not(reason),
+            };
+        };
+        // Its entry, path, length and hash, and its bytes, read at once.
+        let (entry, bytes) = match library.entry_out(id, usize::try_from(n).unwrap_or(usize::MAX)) {
+            Ok(crate::library::EntryOut::Whole(entry, bytes)) => (entry, bytes),
+            Ok(crate::library::EntryOut::Gone) => return not(FileOutRefusal::Gone),
+            Ok(crate::library::EntryOut::Damaged) => return not(FileOutRefusal::Damaged),
             Err(error) => return unreadable(error),
         };
-        match replies
-            .holding()
-            .begin((&download_id, id), bytes, Instant::now())
-        {
+        match hold(library, (&download_id, id), bytes, replies) {
             Ok(parts) => {
                 replies.download = Some(download_id.clone());
-                served(UiActionResult::FileOutBegun {
+                served(UiActionResult::FolderFileOutBegun {
                     download_id,
-                    file: shown(file),
+                    id: id.to_owned(),
+                    file: n,
+                    path: entry.path,
+                    bytes: entry.bytes,
+                    sha256: entry.sha256,
                     parts,
                 })
             }
@@ -1341,32 +1421,96 @@ fn plain(said: &str) -> String {
 /// What the owner is told when the inbox couldn't be reached or changed.
 const INBOX_FAILED: &str = "the agent's inbox couldn't be reached: Hatchling's log says why";
 
+/// Holds `bytes`, read out of the item `id` in `library`, as the download
+/// `download_id` for the connection `replies` is: how many parts it is.
+/// An item removed while it was read is let go at once, so no copy of a
+/// removed item is held; a removal after this lets it go itself.
+///
+/// # Errors
+///
+/// Why it isn't held: no room, or the item was removed.
+fn hold(
+    library: &crate::library::Library<'_>,
+    (download_id, id): (&str, &str),
+    bytes: zeroize::Zeroizing<Vec<u8>>,
+    replies: &Replies<'_>,
+) -> Result<u32, FileOutRefusal> {
+    let parts = replies
+        .holding()
+        .begin((download_id, id), bytes, Instant::now())?;
+    let kept = library
+        .items()
+        .is_ok_and(|items| items.iter().any(|item| item.id == id));
+    if !kept {
+        replies.holding().let_go(download_id);
+        return Err(FileOutRefusal::Gone);
+    }
+    Ok(parts)
+}
+
+/// The reply an item came from, as the owner is shown it: none for one
+/// kept before items were grouped.
+fn reply_of(reply: String) -> Option<String> {
+    (!reply.is_empty()).then_some(reply)
+}
+
 /// A file the Library keeps, as the owner is shown it.
-fn shown(file: crate::library::KeptItem) -> LibraryFile {
+pub(crate) fn shown(file: crate::library::KeptItem) -> LibraryFile {
     LibraryFile {
         id: file.id,
         name: file.name,
         bytes: file.bytes,
         sha256: file.sha256,
         kept_at: file.kept_at,
+        conversation: file.conversation,
+        reply: reply_of(file.reply),
     }
 }
 
-/// The Library's use by `items` against its bounds, and the open
-/// conversation's `given` and `off`: each item counted, as the Library
-/// counts it against its most.
-fn standing(items: &[crate::library::KeptItem], given: u32, off: bool) -> LibraryStanding {
-    use crate::library::{HANDED_PER_CONVERSATION, LIBRARY_BYTES, LIBRARY_ITEMS};
+/// A folder the Library keeps, as the owner is shown it.
+fn shown_folder(folder: crate::library::KeptItem) -> LibraryFolder {
+    LibraryFolder {
+        id: folder.id,
+        name: folder.name,
+        files: u32::try_from(folder.files).unwrap_or(u32::MAX),
+        bytes: folder.bytes,
+        sha256: folder.sha256,
+        kept_at: folder.kept_at,
+        conversation: folder.conversation,
+        reply: reply_of(folder.reply),
+        left_out: folder.left_out,
+    }
+}
+
+/// The Library's use by `shelf`'s items against its bounds, and the open
+/// conversation's standing: each item counted, as the Library counts it
+/// against its most, all as they were at one moment.
+fn standing(shelf: &crate::library::Shelf) -> LibraryStanding {
+    use crate::library::{
+        HANDED_PER_CONVERSATION, LIBRARY_BYTES, LIBRARY_FILES, LIBRARY_ITEMS, READ_PER_CONVERSATION,
+    };
+    let (bytes, files) = shelf
+        .items
+        .iter()
+        .fold((0_u64, 0_u64), |(bytes, files), item| {
+            (
+                bytes.saturating_add(item.bytes),
+                files.saturating_add(item.files),
+            )
+        });
     LibraryStanding {
-        files: u32::try_from(items.len()).unwrap_or(u32::MAX),
+        files: u32::try_from(shelf.items.len()).unwrap_or(u32::MAX),
         file_limit: u32::try_from(LIBRARY_ITEMS).unwrap_or(u32::MAX),
-        bytes: items
-            .iter()
-            .fold(0_u64, |held, item| held.saturating_add(item.bytes)),
+        bytes,
         byte_limit: LIBRARY_BYTES,
-        given,
+        given: shelf.handed,
         given_limit: HANDED_PER_CONVERSATION,
-        off,
+        off: shelf.off,
+        files_in_all: u32::try_from(files).unwrap_or(u32::MAX),
+        files_in_all_limit: u32::try_from(LIBRARY_FILES).unwrap_or(u32::MAX),
+        read: shelf.read,
+        read_limit: READ_PER_CONVERSATION,
+        conversation: shelf.conversation,
     }
 }
 
@@ -3866,50 +4010,240 @@ mod tests {
         }
     }
 
-    /// The Library, as the owner's app reads it (WO-041): listed newest
-    /// first with its use, and a file read out in order whole, from one
-    /// copy let go after its last part.
-    /// A folder the Library keeps counts in its use, as the Library counts
-    /// it against its most, but this version of the API lists and serves
-    /// files only (WO-043 lists folders later).
+    impl Shelf {
+        /// Keeps `files`, each a path and its bytes, as the folder `name`.
+        fn keep_folder(&self, name: &str, files: &[(&str, &[u8])]) -> crate::library::KeptItem {
+            let library = self.library();
+            let conversation = library.conversation().unwrap();
+            let bytes = files
+                .iter()
+                .map(|(_, bytes)| u64::try_from(bytes.len()).unwrap())
+                .sum();
+            let claim = crate::library::Claim::folder(u64::try_from(files.len()).unwrap(), bytes);
+            let spent = library.spend(&claim, conversation).unwrap().unwrap();
+            library
+                .keep_folder_spent(
+                    name,
+                    files,
+                    hatchling_core::LeftOut {
+                        links: 1,
+                        mounts: 0,
+                        others: 0,
+                    },
+                    "2026-11-18T00:00:00Z",
+                    spent,
+                    crate::library::tests::REPLY,
+                )
+                .unwrap()
+                .unwrap()
+        }
+    }
+
+    /// A folder is listed with its group and counts, its list read a page
+    /// at a time, a file of it read out by its place to its own hash, and
+    /// it is removed as an item (v8, WO-043).
     #[test]
-    fn a_folder_counts_in_the_librarys_use_and_isnt_listed_yet() {
+    fn a_folder_is_listed_and_its_list_read_a_page_at_a_time() {
         let shelf = Shelf::new("api-library-folder");
         let ops = shelf.ops();
         let owner = caller(&[local_send()]);
         let file = shelf.keep("a.txt", b"abc");
-        let library = shelf.library();
-        let conversation = library.conversation().unwrap();
-        let claim = crate::library::Claim::folder(2, 7);
-        let spent = library.spend(&claim, conversation).unwrap().unwrap();
-        let folder = library
-            .keep_folder_spent(
-                "site",
-                &[("index.html", b"<p>".as_slice()), ("a/b.css", b"b {}")],
-                hatchling_core::LeftOut::default(),
-                "now",
-                spent,
-                crate::library::tests::REPLY,
-            )
-            .unwrap()
-            .unwrap();
+        let folder = shelf.keep_folder("site", &[("index.html", b"<p>"), ("a/b.css", b"b {}")]);
         let mut replies = connection(crate::file_out::own());
         let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
-        let (UiActionResult::Library { files, standing }, ApiOutcome::Served) =
+        let (
+            UiActionResult::Library {
+                files,
+                folders,
+                standing,
+            },
+            ApiOutcome::Served,
+        ) = ask(UiAction::ListLibrary {})
+        else {
+            unreachable!("not listed");
+        };
+        assert_eq!(files, [shown(file.clone())]);
+        assert_eq!(
+            folders,
+            [LibraryFolder {
+                id: folder.id.clone(),
+                name: String::from("site"),
+                files: 2,
+                bytes: 7,
+                sha256: folder.sha256.clone(),
+                kept_at: String::from("2026-11-18T00:00:00Z"),
+                conversation: 0,
+                reply: Some(String::from(crate::library::tests::REPLY)),
+                left_out: hatchling_core::LeftOut {
+                    links: 1,
+                    mounts: 0,
+                    others: 0,
+                },
+            }]
+        );
+        assert_eq!(
+            (standing.files, standing.bytes, standing.files_in_all),
+            (2, 10, 3)
+        );
+        assert_eq!(
+            (standing.given, standing.read, standing.conversation),
+            (2, 10, 0)
+        );
+        // Its list, a page from a place, held to its count.
+        let page = |from| UiAction::ListFolder {
+            id: folder.id.clone(),
+            from,
+        };
+        assert_eq!(
+            ask(page(0)),
+            (
+                UiActionResult::Folder {
+                    id: folder.id.clone(),
+                    from: 0,
+                    total: 2,
+                    entries: vec![
+                        FolderEntry {
+                            path: String::from("index.html"),
+                            bytes: 3,
+                            sha256: hex_of(b"<p>"),
+                        },
+                        FolderEntry {
+                            path: String::from("a/b.css"),
+                            bytes: 4,
+                            sha256: hex_of(b"b {}"),
+                        },
+                    ],
+                },
+                ApiOutcome::Served
+            )
+        );
+        let (UiActionResult::Folder { entries, .. }, _) = ask(page(1)) else {
+            unreachable!("no page from 1");
+        };
+        assert_eq!(entries.len(), 1);
+        assert_eq!(ask(page(2)), not_out(FileOutRefusal::OutOfRange));
+        let file_page = UiAction::ListFolder {
+            id: file.id,
+            from: 0,
+        };
+        assert_eq!(ask(file_page), not_out(FileOutRefusal::NotAFolder));
+        let none = UiAction::ListFolder {
+            id: "0".repeat(64),
+            from: 0,
+        };
+        assert_eq!(ask(none), not_out(FileOutRefusal::Gone));
+    }
+
+    /// The standing is the open conversation's, and each item says the
+    /// conversation it came from.
+    #[test]
+    fn the_standing_and_each_item_say_their_conversation() {
+        let shelf = Shelf::new("api-library-conversation");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        shelf.keep("a.txt", b"abc");
+        let mut replies = connection(crate::file_out::own());
+        let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
+        // The standing is the open conversation's: a new one has given and
+        // read nothing, and says its own number.
+        shelf.library().new_conversation().unwrap();
+        let (UiActionResult::Library { standing, .. }, ApiOutcome::Served) =
             ask(UiAction::ListLibrary {})
         else {
             unreachable!("not listed");
         };
-        let ids: Vec<&str> = files.iter().map(|listed| listed.id.as_str()).collect();
-        assert_eq!(ids, [file.id.as_str()]);
-        assert_eq!((standing.files, standing.bytes, standing.given), (2, 10, 2));
-        // Not served as a file, and removed as an item.
         assert_eq!(
-            ask(UiAction::BeginFileOut {
-                id: folder.id.clone()
-            }),
-            not_out(FileOutRefusal::Gone)
+            (standing.given, standing.read, standing.conversation),
+            (0, 0, 1)
         );
+        // An item kept in it says so.
+        shelf.keep("b.txt", b"d");
+        let (UiActionResult::Library { files, .. }, ApiOutcome::Served) =
+            ask(UiAction::ListLibrary {})
+        else {
+            unreachable!("not listed");
+        };
+        let said: Vec<(&str, u64)> = files
+            .iter()
+            .map(|listed| (listed.name.as_str(), listed.conversation))
+            .collect();
+        assert_eq!(said, [("b.txt", 1), ("a.txt", 0)]);
+    }
+
+    /// A file of a folder is read out by its place, to its own hash; and
+    /// the folder is removed as an item, a copy being read going with it.
+    #[test]
+    fn a_folders_file_is_read_out_by_its_place_and_the_folder_removed() {
+        use base64::Engine as _;
+        let shelf = Shelf::new("api-library-folder-out");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let file = shelf.keep("a.txt", b"abc");
+        let folder = shelf.keep_folder("site", &[("index.html", b"<p>"), ("a/b.css", b"b {}")]);
+        let mut replies = connection(crate::file_out::own());
+        let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
+        // A file of it, by its place; a folder isn't a file, nor a file a
+        // folder, and a place past its files is refused unread.
+        let begin = |id: &str, file| UiAction::BeginFileOut {
+            id: id.to_owned(),
+            file,
+        };
+        // A begun download is let go by the next begin, refused or not.
+        let (UiActionResult::FileOutBegun { download_id, .. }, _) = ask(begin(&file.id, None))
+        else {
+            unreachable!("not begun");
+        };
+        assert_eq!(
+            ask(begin(&folder.id, None)),
+            not_out(FileOutRefusal::AFolder)
+        );
+        assert_eq!(
+            ask(part(&download_id, 0)),
+            not_out(FileOutRefusal::UnknownDownload)
+        );
+        assert_eq!(
+            ask(begin(&file.id, Some(0))),
+            not_out(FileOutRefusal::NotAFolder)
+        );
+        assert_eq!(
+            ask(begin(&folder.id, Some(2))),
+            not_out(FileOutRefusal::OutOfRange)
+        );
+        let (
+            UiActionResult::FolderFileOutBegun {
+                download_id,
+                id,
+                file: place,
+                path,
+                bytes,
+                sha256,
+                parts,
+            },
+            ApiOutcome::Served,
+        ) = ask(begin(&folder.id, Some(1)))
+        else {
+            unreachable!("not begun");
+        };
+        assert_eq!(
+            (id.as_str(), place, path.as_str(), bytes, sha256, parts),
+            (folder.id.as_str(), 1, "a/b.css", 4, hex_of(b"b {}"), 1)
+        );
+        let (UiActionResult::FileOutPartRead { data, .. }, ApiOutcome::Served) =
+            ask(part(&download_id, 0))
+        else {
+            unreachable!("no part");
+        };
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap(),
+            b"b {}"
+        );
+        // Removed as an item: a copy being read goes with it.
+        let (download_id, ..) = match ask(begin(&folder.id, Some(0))) {
+            (UiActionResult::FolderFileOutBegun { download_id, .. }, _) => (download_id, ()),
+            other => unreachable!("not begun: {other:?}"),
+        };
         assert!(matches!(
             ask(UiAction::RemoveLibraryFile { id: folder.id }),
             (
@@ -3917,7 +4251,208 @@ mod tests {
                 ApiOutcome::Served
             )
         ));
-        assert_eq!(shelf.library().items().unwrap().len(), 1);
+        assert_eq!(
+            ask(part(&download_id, 0)),
+            not_out(FileOutRefusal::UnknownDownload)
+        );
+        assert_eq!(shelf.library().items().unwrap(), [file]);
+    }
+
+    /// An item kept before items were grouped is listed with no reply.
+    #[test]
+    fn an_item_kept_before_groups_is_listed_with_no_reply() {
+        let shelf = Shelf::new("api-library-old");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let kept = shelf.keep("a.txt", b"abc");
+        shelf
+            .library()
+            .pretend_index(&vec![crate::library::KeptItem {
+                reply: String::new(),
+                ..kept
+            }]);
+        let mut replies = connection(crate::file_out::own());
+        let (UiActionResult::Library { files, .. }, ApiOutcome::Served) =
+            ops.handle(&owner, &UiAction::ListLibrary {}, &mut replies)
+        else {
+            unreachable!("not listed");
+        };
+        assert_eq!(files.first().map(|file| file.reply.clone()), Some(None));
+    }
+
+    /// A page of the longest paths the Library keeps, and a list of the
+    /// most items it keeps said at their longest, each fit one frame: by
+    /// the Library's own bounds.
+    #[test]
+    fn the_librarys_largest_answers_fit_one_frame() {
+        use crate::library::{CONVERSATIONS, FILE_BYTES, LIBRARY_ITEMS, NAME_BYTES, PATH_BYTES};
+        let entry = FolderEntry {
+            path: "p".repeat(PATH_BYTES),
+            bytes: FILE_BYTES,
+            sha256: "f".repeat(64),
+        };
+        let page = UiActionResult::Folder {
+            id: "f".repeat(64),
+            from: u32::MAX,
+            total: u32::MAX,
+            entries: vec![entry; usize::try_from(FOLDER_PAGE).unwrap()],
+        };
+        let reply = |result| hatchling_core::ui::UiResponse::ActionResult {
+            request_id: String::from("request-1"),
+            result,
+        };
+        assert!(hatchling_core::fits_one_frame(&reply(page)));
+        let folder = LibraryFolder {
+            id: "f".repeat(64),
+            name: "n".repeat(NAME_BYTES),
+            files: u32::MAX,
+            bytes: u64::MAX,
+            sha256: "f".repeat(64),
+            kept_at: "\"".repeat(40),
+            conversation: CONVERSATIONS,
+            reply: Some(String::from(crate::library::tests::REPLY)),
+            left_out: hatchling_core::LeftOut {
+                links: u32::MAX,
+                mounts: u32::MAX,
+                others: u32::MAX,
+            },
+        };
+        let library = UiActionResult::Library {
+            files: Vec::new(),
+            folders: vec![folder; LIBRARY_ITEMS],
+            standing: LibraryStanding {
+                files: u32::MAX,
+                file_limit: u32::MAX,
+                bytes: u64::MAX,
+                byte_limit: u64::MAX,
+                given: u32::MAX,
+                given_limit: u32::MAX,
+                off: false,
+                files_in_all: u32::MAX,
+                files_in_all_limit: u32::MAX,
+                read: u64::MAX,
+                read_limit: u64::MAX,
+                conversation: CONVERSATIONS,
+            },
+        };
+        assert!(hatchling_core::fits_one_frame(&reply(library)));
+    }
+
+    /// A copy held for an item the Library no longer keeps, as one removed
+    /// while it was read, is let go at once; one still kept is held.
+    #[test]
+    fn a_copy_of_an_item_removed_while_it_was_read_is_let_go() {
+        let shelf = Shelf::new("api-library-race");
+        let kept = shelf.keep("a.txt", b"abc");
+        let library = shelf.library();
+        let replies = connection(crate::file_out::own());
+        let removed = "0".repeat(64);
+        for (id, held) in [(kept.id.as_str(), true), (removed.as_str(), false)] {
+            let download_id = format!("out-{held}");
+            let bytes = zeroize::Zeroizing::new(b"abc".to_vec());
+            let expected = if held {
+                Ok(1)
+            } else {
+                Err(FileOutRefusal::Gone)
+            };
+            assert_eq!(
+                hold(&library, (&download_id, id), bytes, &replies),
+                expected
+            );
+            assert_eq!(
+                replies
+                    .holding()
+                    .part(&download_id, 0, Instant::now())
+                    .is_ok(),
+                held,
+                "{id}"
+            );
+        }
+    }
+
+    /// SHA-256 of `bytes`, in lowercase hex.
+    fn hex_of(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        use std::fmt::Write as _;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .fold(String::new(), |mut hex, byte| {
+                let _ = write!(hex, "{byte:02x}");
+                hex
+            })
+    }
+
+    /// The largest folder the agent can give is read through the API
+    /// whole: every page of its list, and every file to its own hash.
+    #[test]
+    fn the_largest_folder_is_read_whole_through_the_api() {
+        use base64::Engine as _;
+        let shelf = Shelf::new("api-library-largest");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let paths: Vec<String> = (0..512)
+            .map(|n| format!("d{}/f{n:03}.txt", n % 7))
+            .collect();
+        let bodies: Vec<Vec<u8>> = (0..512_u32).map(|n| n.to_le_bytes().repeat(3)).collect();
+        let files: Vec<(&str, &[u8])> = paths
+            .iter()
+            .zip(&bodies)
+            .map(|(path, body)| (path.as_str(), body.as_slice()))
+            .collect();
+        let folder = shelf.keep_folder("large", &files);
+        let mut replies = connection(crate::file_out::own());
+        let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
+        let mut listed = Vec::new();
+        let mut from = 0;
+        while from < 512 {
+            let (UiActionResult::Folder { entries, total, .. }, ApiOutcome::Served) =
+                ask(UiAction::ListFolder {
+                    id: folder.id.clone(),
+                    from,
+                })
+            else {
+                unreachable!("no page from {from}");
+            };
+            assert_eq!(total, 512);
+            assert!(entries.len() <= usize::try_from(FOLDER_PAGE).unwrap());
+            from += u32::try_from(entries.len()).unwrap();
+            listed.extend(entries);
+        }
+        assert_eq!(
+            listed
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            paths.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        for (n, entry) in (0_u32..).zip(&listed) {
+            let (
+                UiActionResult::FolderFileOutBegun {
+                    download_id,
+                    path,
+                    sha256,
+                    ..
+                },
+                ApiOutcome::Served,
+            ) = ask(UiAction::BeginFileOut {
+                id: folder.id.clone(),
+                file: Some(n),
+            })
+            else {
+                unreachable!("{n} not begun");
+            };
+            let (UiActionResult::FileOutPartRead { data, .. }, ApiOutcome::Served) =
+                ask(part(&download_id, 0))
+            else {
+                unreachable!("{n}: no part");
+            };
+            assert_eq!((&path, &sha256), (&entry.path, &entry.sha256), "{n}");
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .unwrap();
+            assert_eq!(hex_of(&bytes), entry.sha256, "{n}");
+            assert_eq!(Some(&bytes), bodies.get(usize::try_from(n).unwrap()), "{n}");
+        }
     }
 
     #[test]
@@ -3934,8 +4469,12 @@ mod tests {
         let empty = shelf.keep("empty.bin", b"");
         let mut replies = connection(crate::file_out::own());
         let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
-        let (UiActionResult::Library { files, standing }, ApiOutcome::Served) =
-            ask(UiAction::ListLibrary {})
+        let (
+            UiActionResult::Library {
+                files, standing, ..
+            },
+            ApiOutcome::Served,
+        ) = ask(UiAction::ListLibrary {})
         else {
             unreachable!("not listed");
         };
@@ -3952,9 +4491,17 @@ mod tests {
                 given: 2,
                 given_limit: 16,
                 off: false,
+                files_in_all: 2,
+                files_in_all_limit: 4096,
+                read: u64::try_from(size).unwrap(),
+                read_limit: 128 * 1024 * 1024,
+                conversation: 0,
             }
         );
-        let (download_id, file, parts) = begun(ask(UiAction::BeginFileOut { id: a.id }));
+        let (download_id, file, parts) = begun(ask(UiAction::BeginFileOut {
+            id: a.id,
+            file: None,
+        }));
         assert_eq!(
             (file.name.as_str(), file.bytes, parts),
             ("a.txt", a.bytes, 3)
@@ -3978,9 +4525,19 @@ mod tests {
             "the copy was held after its last part"
         );
         // A file of no bytes is no parts; one the Library doesn't keep, gone.
-        assert_eq!(begun(ask(UiAction::BeginFileOut { id: empty.id })).2, 0);
         assert_eq!(
-            ask(UiAction::BeginFileOut { id: "0".repeat(64) }),
+            begun(ask(UiAction::BeginFileOut {
+                id: empty.id,
+                file: None
+            }))
+            .2,
+            0
+        );
+        assert_eq!(
+            ask(UiAction::BeginFileOut {
+                id: "0".repeat(64),
+                file: None
+            }),
             not_out(FileOutRefusal::Gone)
         );
     }
@@ -3998,14 +4555,20 @@ mod tests {
         let mut reading = connection(holding);
         let (download_id, _, _) = begun(ops.handle(
             &owner,
-            &UiAction::BeginFileOut { id: a.id.clone() },
+            &UiAction::BeginFileOut {
+                id: a.id.clone(),
+                file: None,
+            },
             &mut reading,
         ));
         let mut replies = connection(holding);
         let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
         shelf.library().damage(&b.id);
         assert_eq!(
-            ask(UiAction::BeginFileOut { id: b.id }),
+            ask(UiAction::BeginFileOut {
+                id: b.id,
+                file: None
+            }),
             not_out(FileOutRefusal::Damaged)
         );
         let remove = || UiAction::RemoveLibraryFile { id: a.id.clone() };
@@ -4041,7 +4604,10 @@ mod tests {
         let owner = caller(&[local_send()]);
         let kept = shelf.keep("a.txt", b"abcdef");
         let holding = crate::file_out::own();
-        let begin = UiAction::BeginFileOut { id: kept.id };
+        let begin = UiAction::BeginFileOut {
+            id: kept.id,
+            file: None,
+        };
         let mut mine = connection(holding);
         let mut theirs = connection(holding);
         let (first, _, _) = begun(ops.handle(&owner, &begin, &mut mine));
@@ -4075,7 +4641,10 @@ mod tests {
         let owner = caller(&[local_send()]);
         let kept = shelf.keep("a.txt", b"abc");
         let holding = crate::file_out::own();
-        let begin = UiAction::BeginFileOut { id: kept.id };
+        let begin = UiAction::BeginFileOut {
+            id: kept.id,
+            file: None,
+        };
         let mut under_way: Vec<Replies<'_>> = (0..crate::file_out::HELD_MAX)
             .map(|_| connection(holding))
             .collect();
@@ -4086,6 +4655,19 @@ mod tests {
             ops.handle(&owner, &begin, &mut connection(holding)),
             not_out(FileOutRefusal::Busy)
         );
+        // Nothing is read while busy: a damaged file, or a folder's, is
+        // busy, not damaged.
+        let damaged = shelf.keep("b.txt", b"def");
+        shelf.library().damage(&damaged.id);
+        let folder = shelf.keep_folder("site", &[("a", b"x")]);
+        shelf.library().damage(&folder.id);
+        for (id, file) in [(damaged.id, None), (folder.id, Some(0))] {
+            let asked = UiAction::BeginFileOut { id, file };
+            assert_eq!(
+                ops.handle(&owner, &asked, &mut connection(holding)),
+                not_out(FileOutRefusal::Busy)
+            );
+        }
         // One ending makes room.
         under_way.pop();
         begun(ops.handle(&owner, &begin, &mut connection(holding)));
@@ -4111,6 +4693,7 @@ mod tests {
             UiAction::ListLibrary {},
             UiAction::BeginFileOut {
                 id: kept.id.clone(),
+                file: None,
             },
             part("out-1", 0),
             UiAction::RemoveLibraryFile {
@@ -4137,6 +4720,7 @@ mod tests {
             UiAction::ListLibrary {},
             UiAction::BeginFileOut {
                 id: kept.id.clone(),
+                file: None,
             },
             UiAction::RemoveLibraryFile { id: kept.id },
         ] {
@@ -4159,7 +4743,10 @@ mod tests {
         let mut replies = connection(holding);
         let (download_id, _, _) = begun(shelf.ops().handle(
             &caller(&[local_send()]),
-            &UiAction::BeginFileOut { id: kept.id },
+            &UiAction::BeginFileOut {
+                id: kept.id,
+                file: None,
+            },
             &mut replies,
         ));
         assert_eq!(holding.count(), 1);
