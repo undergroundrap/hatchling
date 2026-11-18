@@ -598,6 +598,9 @@ enum Request {
     /// Hand back the whole of the file at `path` in the Room's workspace,
     /// for it to be handed to the owner (WO-041).
     RoomTake { path: String },
+    /// Hand back what the folder at `path` in the Room's workspace holds,
+    /// for it to be handed to the owner (WO-043).
+    RoomList { path: String },
 }
 
 /// What the spawner answers.
@@ -638,10 +641,45 @@ enum Reply {
     /// The file asked for was read whole: its `size` bytes follow, in
     /// frames.
     RoomTook { size: usize },
+    /// The folder asked for was listed whole: its listing follows, as
+    /// `size` bytes of JSON, in frames.
+    RoomListed { size: usize },
 }
 
 pub use crate::room_session::{Change as RoomChange, Changed as RoomChanged, Search as RoomSearch};
-use hatchling_core::room::Took;
+use hatchling_core::room::{Entry, LIST_FOLDER_NAMES, LIST_PAGE, Listed, Took, check_entries};
+
+/// What a folder in the Room holds, put together from its pages (WO-043).
+///
+/// It is the Room's word for it, held to its names being names, in the
+/// order of their bytes, no more than a folder listed may hold.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Listing {
+    /// The folder's inode number.
+    pub ino: u64,
+    /// When the folder last changed, in nanoseconds since the epoch.
+    pub changed: u64,
+    /// Its names, each with what it is.
+    pub entries: Vec<Entry>,
+}
+
+impl Listing {
+    /// Whether this can be what a folder holds: no more names than one
+    /// listed may hold, each a name, in order, each with an inode or a
+    /// length only where one is said.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub fn check(&self) -> Result<(), &'static str> {
+        let most = usize::try_from(LIST_FOLDER_NAMES).unwrap_or(usize::MAX);
+        if self.entries.len() > most {
+            return Err("a folder is said to hold more names than one listed may");
+        }
+        check_entries(&self.entries, b"")
+    }
+}
 pub use hatchling_core::room::{Edited, Found, Page, Wrote};
 
 pub use crate::room_job::{
@@ -841,6 +879,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => {
@@ -920,6 +959,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -967,6 +1007,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -992,6 +1033,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -1020,6 +1062,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -1061,6 +1104,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -1089,6 +1133,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -1186,6 +1231,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -1230,6 +1276,7 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -1272,6 +1319,7 @@ impl Spawner {
             | Reply::RoomFound { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -1314,6 +1362,59 @@ impl Spawner {
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
             | Reply::RoomPlaced { .. }
+            | Reply::RoomListed { .. }
+            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// What the folder at `path` in the installed Room's workspace holds,
+    /// for it to be handed to the owner (WO-043). The Room is started for
+    /// it when it isn't running. The folder is read by the Room's
+    /// supervisor, as the Room's user, beneath the workspace and through
+    /// no link, a page at a time. The spawner holds it to the inode,
+    /// change time and count of names the supervisor said of it staying
+    /// the same from its first page to its last, every page but the last
+    /// whole, and to being read within two minutes; the listing it hands
+    /// back is held here again to its names being names, in order.
+    ///
+    /// What a listing says a name is, is the Room's word: a file in it is
+    /// read by [`Self::room_take`], which decides.
+    ///
+    /// # Errors
+    ///
+    /// When the folder may not be asked for; when it isn't a folder the
+    /// Room lists, holds too many names, or changed while it was read; and
+    /// as a job's are, when the Room can't be started or asked.
+    pub fn room_list(&self, path: &str) -> Result<Listing, String> {
+        hatchling_core::room::check_list(path, b"")?;
+        let connection = self.connect().map_err(|error| error.to_string())?;
+        connection
+            .set_read_timeout(Some(LIST_TIMEOUT))
+            .map_err(|error| error.to_string())?;
+        let request = Request::RoomList {
+            path: path.to_owned(),
+        };
+        send(&connection, &request).map_err(|error| error.to_string())?;
+        match receive(&connection).map_err(|error| error.to_string())? {
+            Reply::RoomListed { size } => {
+                let bytes = read_sized(&connection, size, LIST_MOST, list_too_large)?;
+                let listing: Listing =
+                    serde_json::from_slice(&bytes).map_err(|_| String::from(LIST_UNREAD))?;
+                listing.check().map_err(String::from)?;
+                Ok(listing)
+            }
+            Reply::Refused { reason } => Err(reason),
+            Reply::Started { .. }
+            | Reply::Exited { .. }
+            | Reply::Done
+            | Reply::RoomDisk { .. }
+            | Reply::RoomJob { .. }
+            | Reply::RoomOutput { .. }
+            | Reply::RoomPage { .. }
+            | Reply::RoomFound { .. }
+            | Reply::RoomChanged { .. }
+            | Reply::RoomPlaced { .. }
+            | Reply::RoomTook { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -1355,6 +1456,7 @@ impl Spawner {
             | Reply::RoomOutput { .. }
             | Reply::RoomPage { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -1381,6 +1483,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -1422,6 +1525,7 @@ impl Spawner {
             | Reply::RoomPage { .. }
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
+            | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
@@ -1470,6 +1574,7 @@ impl SpawnedProcess {
                     | Reply::RoomPage { .. }
                     | Reply::RoomFound { .. }
                     | Reply::RoomChanged { .. }
+                    | Reply::RoomListed { .. }
                     | Reply::RoomTook { .. }
                     | Reply::RoomPlaced { .. }
                     | Reply::RoomInbox { .. },
@@ -1936,6 +2041,7 @@ fn serve_connection(
             inbox_told(stream, remove, policy, keeper, sessions)
         }
         Request::RoomTake { path } => took_told(stream, &path, sessions),
+        Request::RoomList { path } => listed_told(stream, &path, sessions, LIST_TIME),
     }
 }
 
@@ -2019,6 +2125,113 @@ fn took_told(stream: &UnixStream, path: &str, sessions: &Sessions) -> Result<(),
         Err(reason) => return send(stream, &Reply::Refused { reason }),
     };
     send(stream, &Reply::RoomTook { size: bytes.len() })?;
+    for chunk in bytes.chunks(DELIVERY_CHUNK) {
+        write_frame(stream, chunk).map_err(gone)?;
+    }
+    Ok(())
+}
+
+/// The most a folder's listing may be as JSON, in bytes: past
+/// [`LIST_FOLDER_NAMES`] of the longest names, each with the most that is
+/// said of it.
+const LIST_MOST: usize = 512 * 1024;
+
+/// Why a folder isn't listed for the length of its listing.
+fn list_too_large() -> String {
+    String::from("the folder's listing is longer than any folder handed over may have")
+}
+
+/// Why a folder isn't listed whose listing doesn't read.
+const LIST_UNREAD: &str = "the spawner sent a folder's listing that doesn't read";
+
+/// Why a folder isn't listed that changed while it was read.
+const LIST_CHANGED: &str = "the folder changed while it was read: hand it over once it is done";
+
+/// Why a folder isn't listed whose pages aren't whole.
+const LIST_SHORT: &str = "the Room handed back a page of the folder short of a whole one";
+
+/// How long a folder may take to be listed whole, the Room's start among
+/// it. It is looked at before each page after the first, so a listing can
+/// run past it by one page's wait: by however long that page waits its
+/// turn in the session, behind what else is asked of it.
+const LIST_TIME: Duration = Duration::from_secs(120);
+
+/// How long the broker waits for a folder's listing: past the time it
+/// may take, and one page's own wait. It is the ceiling a caller waits;
+/// a listing still going after it is let go at its next page, its caller
+/// gone.
+const LIST_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// Why a folder isn't listed that took too long to read.
+const LIST_LATE: &str = "the folder took longer than two minutes to read out of the Room: hand it over again, or a smaller one";
+
+/// What a folder holds, its pages asked for one at a time with `page`,
+/// each after the last name of the one before. It must be the same folder,
+/// of the same count of names, from its first page to its last, and every
+/// page whole but the last.
+///
+/// `page` is the session's: each page it hands back has been held to the
+/// name it was asked after, so the names are in order. Before each page
+/// after the first, `late` says whether the folder has taken too long.
+fn listing(
+    mut page: impl FnMut(&[u8]) -> Result<Listed, String>,
+    mut late: impl FnMut() -> bool,
+) -> Result<Listing, String> {
+    let first = page(b"")?;
+    let total = usize::try_from(first.total).unwrap_or(usize::MAX);
+    let same = (first.ino, first.changed, first.total);
+    let mut entries = first.entries;
+    if entries.len() != total.min(LIST_PAGE) {
+        return Err(String::from(LIST_SHORT));
+    }
+    while entries.len() < total {
+        if late() {
+            return Err(String::from(LIST_LATE));
+        }
+        let after = entries
+            .last()
+            .map(|entry| entry.name.clone())
+            .unwrap_or_default();
+        let next = page(&after)?;
+        if (next.ino, next.changed, next.total) != same {
+            return Err(String::from(LIST_CHANGED));
+        }
+        // An honest page after the first can be the wrong length only if
+        // the folder changed between pages within one tick of its clock.
+        if next.entries.len() != (total - entries.len()).min(LIST_PAGE) {
+            return Err(String::from(LIST_CHANGED));
+        }
+        entries.extend(next.entries);
+    }
+    Ok(Listing {
+        ino: same.0,
+        changed: same.1,
+        entries,
+    })
+}
+
+/// Answers a request for what the folder at `path` in the Room holds, put
+/// together from the pages the session hands back within `time`: its
+/// length as JSON, then the JSON in frames, or why there is none.
+fn listed_told(
+    stream: &UnixStream,
+    path: &str,
+    sessions: &Sessions,
+    time: Duration,
+) -> Result<(), Error> {
+    let until = Instant::now() + time;
+    let listed = listing(
+        |after| sessions.list(path, after, stream),
+        || until.checked_duration_since(Instant::now()).is_none(),
+    );
+    let listing = match listed {
+        Ok(listing) => listing,
+        Err(reason) => return send(stream, &Reply::Refused { reason }),
+    };
+    let bytes = serde_json::to_vec(&listing).map_err(|error| Error::Spawner {
+        reason: format!("cannot write a listing: {error}"),
+    })?;
+    send(stream, &Reply::RoomListed { size: bytes.len() })?;
     for chunk in bytes.chunks(DELIVERY_CHUNK) {
         write_frame(stream, chunk).map_err(gone)?;
     }
@@ -5284,5 +5497,430 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             together(|_| Err(String::from("no such file"))),
             Err(String::from("no such file"))
         );
+    }
+
+    /// A folder is listed whole through the session, page by page, in a
+    /// session it starts; one asked for that may not be is refused before
+    /// any session, and one that changes between pages is refused.
+    #[test]
+    fn a_folder_is_listed_whole_through_the_session() {
+        use crate::room_job::tests::run;
+        use crate::room_session::tests::{stand_ins, stood_in, stood_names};
+        let (sessions, started, _ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let asked = spawner.connect().unwrap();
+        let invalid = Request::RoomList {
+            path: String::from("/etc"),
+        };
+        send(&asked, &invalid).unwrap();
+        assert!(matches!(
+            receive(&asked).unwrap(),
+            Reply::Refused { reason } if reason.contains("from the workspace")
+        ));
+        assert_eq!(started.load(Ordering::SeqCst), 0, "started for nothing");
+        // Three pages, the last short of a whole one.
+        let listing = spawner.room_list("/workspace/site").unwrap();
+        let names: Vec<Vec<u8>> = listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect();
+        assert_eq!(names, stood_names("/workspace/site"));
+        assert!(names.len() > 2 * LIST_PAGE && names.len() < 3 * LIST_PAGE);
+        assert_eq!((listing.ino, listing.changed), (1, 0));
+        assert!(listing.entries.iter().all(|entry| entry.ino == 1));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        // A job is run in the session a listing started, and a folder
+        // listed in it after.
+        assert_eq!(spawner.room_run(&run("j", &["true"])), Ok(stood_in(1, "j")));
+        let changed = spawner.room_list("/workspace/changing").unwrap_err();
+        assert_eq!(changed, LIST_CHANGED);
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        drop((asked, spawner));
+        served.join().unwrap();
+    }
+
+    /// A folder that may not be asked for is refused by whoever asks,
+    /// before the spawner is asked anything.
+    #[test]
+    fn a_folder_that_may_not_be_listed_never_reaches_the_spawner() {
+        let (alone, closed) = UnixStream::pair().unwrap();
+        closed.shutdown(std::net::Shutdown::Both).unwrap();
+        drop(closed);
+        let nobody = Spawner::over(alone);
+        for (path, why) in [
+            ("/etc", "from the workspace"),
+            ("workspace/a", "absolute"),
+            ("/workspaces", "from the workspace"),
+            ("/workspace/a/../b", "empty, . or .."),
+        ] {
+            let refused = nobody.room_list(path).unwrap_err();
+            assert!(refused.contains(why), "{path}: {refused}");
+        }
+        let unasked = nobody.room_list("/workspace/a").unwrap_err();
+        assert!(unasked.contains("cannot be reached"), "{unasked}");
+    }
+
+    /// A file entry of a listing, named `name`.
+    fn listed_file(name: &[u8]) -> Entry {
+        Entry {
+            name: name.to_vec(),
+            kind: hatchling_core::room::Kind::File,
+            ino: 3,
+            size: 4,
+        }
+    }
+
+    /// A spawner that answers the one listing it is asked for with
+    /// `reply`, then `frames`: the broker's end of it, and the path it was
+    /// asked for once it has answered.
+    fn answering(reply: Reply, frames: Vec<Vec<u8>>) -> (Spawner, std::thread::JoinHandle<String>) {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let answered = std::thread::spawn(move || {
+            let stream = UnixStream::from(hatchling_sys::net::recv_fd(theirs.as_fd()).unwrap());
+            let request: Request = serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
+            let Request::RoomList { path } = request else {
+                unreachable!("asked {request:?}");
+            };
+            send(&stream, &reply).unwrap();
+            for frame in frames {
+                write_frame(&stream, &frame).unwrap();
+            }
+            path
+        });
+        (Spawner::over(ours), answered)
+    }
+
+    /// What the spawner says of a folder is held by the broker to what it
+    /// asked: the listing of the length it was told, never past the bound,
+    /// a listing that reads, of names in order, and nothing that answers
+    /// something else.
+    #[test]
+    fn a_folder_listed_is_read_as_the_spawner_says_it_within_the_bound() {
+        let told = |listing: &Listing| {
+            let bytes = serde_json::to_vec(listing).unwrap();
+            let (first, rest) = bytes.split_at(bytes.len() / 2);
+            (
+                Reply::RoomListed { size: bytes.len() },
+                vec![first.to_vec(), rest.to_vec()],
+            )
+        };
+        let good = Listing {
+            ino: 1,
+            changed: 2,
+            entries: vec![listed_file(b"a"), listed_file(b"b")],
+        };
+        let (reply, frames) = told(&good);
+        let (spawner, answered) = answering(reply, frames);
+        assert_eq!(spawner.room_list("/workspace/site"), Ok(good));
+        assert_eq!(answered.join().unwrap(), "/workspace/site");
+        // Names out of order, or that can't be names, aren't a listing.
+        for entries in [
+            vec![listed_file(b"b"), listed_file(b"a")],
+            vec![listed_file(b"a"), listed_file(b"a")],
+            vec![listed_file(b"..")],
+        ] {
+            let bad = Listing {
+                ino: 1,
+                changed: 2,
+                entries,
+            };
+            let (reply, frames) = told(&bad);
+            let (spawner, answered) = answering(reply, frames);
+            let refused = spawner.room_list("/workspace/site").unwrap_err();
+            assert!(refused.contains("a page of a folder"), "{refused}");
+            answered.join().unwrap();
+        }
+        let most = usize::try_from(LIST_FOLDER_NAMES).unwrap();
+        let over = Listing {
+            ino: 1,
+            changed: 2,
+            entries: (0..=most)
+                .map(|at| listed_file(format!("{at:05}").as_bytes()))
+                .collect(),
+        };
+        let (reply, frames) = told(&over);
+        let (spawner, answered) = answering(reply, frames);
+        let refused = spawner.room_list("/workspace/site").unwrap_err();
+        assert!(refused.contains("more names"), "{refused}");
+        answered.join().unwrap();
+        let (spawner, answered) = answering(Reply::RoomListed { size: 3 }, vec![b"{]}".to_vec()]);
+        assert_eq!(
+            spawner.room_list("/workspace/site"),
+            Err(String::from(LIST_UNREAD))
+        );
+        answered.join().unwrap();
+        let (spawner, answered) = answering(
+            Reply::RoomListed {
+                size: LIST_MOST + 1,
+            },
+            Vec::new(),
+        );
+        let too_large = spawner.room_list("/workspace/site").unwrap_err();
+        assert!(
+            too_large.contains("longer than any folder handed over may have"),
+            "{too_large}"
+        );
+        answered.join().unwrap();
+        let (spawner, answered) = answering(Reply::RoomListed { size: 5 }, vec![b"ab".to_vec()]);
+        assert!(
+            spawner.room_list("/workspace/site").is_err(),
+            "a stream short of its size"
+        );
+        answered.join().unwrap();
+        let refused = Reply::Refused {
+            reason: String::from("the Room has no such folder"),
+        };
+        let (spawner, answered) = answering(refused, Vec::new());
+        assert_eq!(
+            spawner.room_list("/workspace/site"),
+            Err(String::from("the Room has no such folder"))
+        );
+        answered.join().unwrap();
+        for other in [Reply::Done, Reply::RoomTook { size: 0 }] {
+            let (spawner, answered) = answering(other, Vec::new());
+            assert_eq!(
+                spawner.room_list("/workspace/site"),
+                Err(String::from("the spawner answered out of step"))
+            );
+            answered.join().unwrap();
+        }
+    }
+
+    /// The longest listing a folder can have, the longest names each with
+    /// the most said of it, is within the bound on one.
+    #[test]
+    fn the_longest_listing_is_within_its_bound() {
+        let most = usize::try_from(LIST_FOLDER_NAMES).unwrap();
+        let longest = Listing {
+            ino: u64::MAX,
+            changed: u64::MAX,
+            entries: (0..most)
+                .map(|_| Entry {
+                    name: vec![0xff; hatchling_core::room::NAME_BYTES],
+                    kind: hatchling_core::room::Kind::Folder,
+                    ino: u64::MAX,
+                    size: u64::MAX,
+                })
+                .collect(),
+        };
+        let bytes = serde_json::to_vec(&longest).unwrap();
+        assert!(bytes.len() <= LIST_MOST, "{}", bytes.len());
+        assert!(bytes.len() > LIST_MOST / 2, "the bound is far past it");
+    }
+
+    /// A folder of `total` names numbered from 00000, its pages as a
+    /// supervisor would read them, after the name each is asked after;
+    /// `change` says what is said of it from the second page on.
+    fn folder(
+        total: u32,
+        change: Option<(u64, u64, u32)>,
+    ) -> impl Fn(&[u8]) -> Result<Listed, String> {
+        // No folder has more pages than the most names over a whole page,
+        // and one: a listing that asks for more never ends.
+        let asked = std::cell::Cell::new(0_u32);
+        move |after: &[u8]| -> Result<Listed, String> {
+            asked.set(asked.get() + 1);
+            assert!(asked.get() <= 17, "asked for more pages than a folder has");
+            let entries: Vec<Entry> = (0..total)
+                .map(|at| listed_file(format!("{at:05}").as_bytes()))
+                .filter(|entry| entry.name.as_slice() > after)
+                .take(LIST_PAGE)
+                .collect();
+            let (ino, changed, total) = match change {
+                Some(changed) if !after.is_empty() => changed,
+                _ => (9, 7, total),
+            };
+            Ok(Listed {
+                ino,
+                changed,
+                total,
+                entries,
+            })
+        }
+    }
+
+    /// A folder is put together from whole pages, each asked after the
+    /// last name of the one before, no more asked than it has pages, and
+    /// it is what the pages held.
+    #[test]
+    fn a_folder_is_put_together_from_whole_pages() {
+        let page = u32::try_from(LIST_PAGE).unwrap();
+        for (total, pages) in [
+            (0, 1),
+            (1, 1),
+            (page, 1),
+            (page + 1, 2),
+            (2 * page, 2),
+            (2 * page + 2, 3),
+            (LIST_FOLDER_NAMES, 16),
+        ] {
+            let pages_of = folder(total, None);
+            let mut asked: Vec<Vec<u8>> = Vec::new();
+            let listing = listing(
+                |after| {
+                    asked.push(after.to_vec());
+                    pages_of(after)
+                },
+                || false,
+            )
+            .unwrap();
+            assert_eq!(asked.len(), pages, "{total}");
+            assert_eq!(asked.first(), Some(&Vec::new()));
+            assert_eq!(listing.entries.len(), usize::try_from(total).unwrap());
+            assert_eq!((listing.ino, listing.changed), (9, 7));
+            assert!(listing.check().is_ok());
+            for (at, after) in asked.iter().enumerate().skip(1) {
+                let last = listing.entries.get(at * LIST_PAGE - 1).unwrap();
+                assert_eq!(after, &last.name, "{total}: page {at}");
+            }
+        }
+    }
+
+    /// A folder whose inode, change time or count of names differs from
+    /// one page to the next has changed, and a page short of a whole one
+    /// where the folder goes on, or longer than what is left, isn't one.
+    #[test]
+    fn a_folder_that_changed_or_came_back_short_is_refused() {
+        let page = u32::try_from(LIST_PAGE).unwrap();
+        for change in [(10, 7, 2 * page), (9, 8, 2 * page), (9, 7, 2 * page + 1)] {
+            let listed = listing(folder(2 * page, Some(change)), || false);
+            assert_eq!(listed, Err(String::from(LIST_CHANGED)), "{change:?}");
+        }
+        // A first page short of a whole one, and one of a folder said to
+        // hold more than it hands back.
+        let first_short = folder(2 * page, None);
+        let short_first = |after: &[u8]| {
+            let mut listed = first_short(after)?;
+            // Only the first: every page after it is whole.
+            if after.is_empty() {
+                listed.entries.pop();
+            }
+            Ok(listed)
+        };
+        assert_eq!(
+            listing(short_first, || false),
+            Err(String::from(LIST_SHORT))
+        );
+        let three = folder(3, None);
+        let more_said = |after: &[u8]| {
+            let mut listed = three(after)?;
+            listed.total = 4;
+            Ok(listed)
+        };
+        assert_eq!(listing(more_said, || false), Err(String::from(LIST_SHORT)));
+        // A later page short of a whole one, an empty one, and one longer
+        // than what is left: the folder changed between pages.
+        for cut in [1, LIST_PAGE] {
+            let later_short = folder(3 * page, None);
+            let short_later = move |after: &[u8]| {
+                let mut listed = later_short(after)?;
+                if !after.is_empty() {
+                    listed.entries.truncate(LIST_PAGE - cut);
+                }
+                Ok(listed)
+            };
+            assert_eq!(
+                listing(short_later, || false),
+                Err(String::from(LIST_CHANGED)),
+                "cut {cut}"
+            );
+        }
+        let last_long = folder(page + 1, None);
+        let long_last = |after: &[u8]| {
+            let mut listed = last_long(after)?;
+            if !after.is_empty() {
+                listed.entries.push(listed_file(b"99999"));
+            }
+            Ok(listed)
+        };
+        assert_eq!(
+            listing(long_last, || false),
+            Err(String::from(LIST_CHANGED))
+        );
+        // Why a page wasn't handed back is why the folder isn't.
+        let mut asked = 0;
+        let then_none = folder(2 * page, None);
+        let failing = |after: &[u8]| {
+            asked += 1;
+            if after.is_empty() {
+                then_none(after)
+            } else {
+                Err(String::from("the Room has no such folder"))
+            }
+        };
+        assert_eq!(
+            listing(failing, || false),
+            Err(String::from("the Room has no such folder"))
+        );
+        assert_eq!(asked, 2);
+    }
+
+    /// A folder that takes too long to list is let go before its next
+    /// page: the deadline is looked at before each page after the first.
+    /// The broker waits past it.
+    #[test]
+    fn a_folder_that_takes_too_long_is_let_go() {
+        assert!(LIST_TIMEOUT > LIST_TIME + Duration::from_secs(10));
+        assert_eq!(LIST_TIME, Duration::from_secs(120));
+        let page = u32::try_from(LIST_PAGE).unwrap();
+        for (looks, pages) in [(0, 1), (1, 2), (2, 3)] {
+            let pages_of = folder(5 * page, None);
+            let mut asked = 0;
+            let mut looked = 0;
+            let listed = listing(
+                |after| {
+                    asked += 1;
+                    pages_of(after)
+                },
+                || {
+                    looked += 1;
+                    looked > looks
+                },
+            );
+            assert_eq!(listed, Err(String::from(LIST_LATE)), "late after {looks}");
+            assert_eq!(asked, pages, "late after {looks}");
+        }
+        let mut looked = 0;
+        let listed = listing(folder(3 * page, None), || {
+            looked += 1;
+            false
+        });
+        assert_eq!(
+            listed.map(|listing| listing.entries.len()),
+            Ok(3 * LIST_PAGE)
+        );
+        assert_eq!(looked, 2, "the first page needs no look, each after does");
+        assert_eq!(
+            listing(folder(9, None), || true).map(|listing| listing.entries.len()),
+            Ok(9)
+        );
+    }
+
+    /// The spawner lets go of a folder that takes longer than its time,
+    /// before its next page, and lists one within it whole.
+    #[test]
+    fn a_folder_the_spawner_lists_is_held_to_its_time() {
+        use crate::room_session::tests::stand_ins;
+        let (sessions, _started, _ended) = stand_ins();
+        let told = |time: Duration| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            listed_told(&theirs, "/workspace/site", &sessions, time).unwrap();
+            // What was said is there to read; nothing more is coming.
+            drop(theirs);
+            receive(&ours).unwrap()
+        };
+        assert!(matches!(
+            told(Duration::ZERO),
+            Reply::Refused { reason } if reason == LIST_LATE
+        ));
+        assert!(matches!(told(LIST_TIME), Reply::RoomListed { .. }));
     }
 }

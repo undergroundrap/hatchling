@@ -270,6 +270,31 @@ the Room. That is the Room's own file, as the Room's user could have
 made it. What matters is after: the broker hashes, checks and keeps the
 one copy it was handed, and never reads the Room again for it.
 
+The spawner may also ask the supervisor what one folder in the
+workspace holds, for a folder to be handed to the owner (WO-043): the
+workspace itself, or a path under it of at most 1024 bytes, none of its
+steps empty, `.` or `..`. The supervisor opens the folder as it opens a
+file to take, beneath the workspace through no link and onto no other
+file system, and hands back a page of at most 64 of its names, after
+the one asked for, in the order of their bytes. Each name is looked at
+following no link: a file and its length, a folder, a link, something
+else, or, when it is on another mount than the folder (the inbox, at the
+workspace's top), a mount, whatever it is. Nothing is kept between
+pages. A page reads the folder's names twice and looks at the folder
+before and after: a name read twice, or names, inode or change time not
+the same after as before, is a folder that changed, and no page is
+handed back. A folder of more than 1024 names isn't listed.
+
+The spawner puts the pages together, as root: the same inode, change
+time and count of names from the first page to the last, every page but
+the last whole, so a folder is at most 16 pages, all within two
+minutes, the Room's start among them. The broker reads the listing at
+the length the spawner said, never past 512 KiB, and checks it again:
+its names names, in order, no more than 1024. What a listing says a
+name is, is the Room's word, as a file's length and change time are:
+a file in it is handed over only as a file is, read whole by a take,
+which decides what it is.
+
 The agent asks for a file to be given to its owner with `give_file`
 (`RoomOp::HandOver`, WO-041). The broker answers it only for its own
 run, as the chat started it, in the conversation open now: the
