@@ -205,3 +205,11 @@ The app's checks, on its final code with the protocol schema regenerated
 and its types generated from it: 571, 238 and 16 tests passed, none
 failed, no lint or design error, and the seam check: the frozen
 contract's four files unchanged.
+
+After the record's first push, CI's live-adapter coverage found one
+branch of Activity's folder line never taken (a fallback for a count a
+folder always has): 99.91% of branches against 100%. The app's local
+check had passed it vacuously: run through Windows' `cmd`, its coverage
+include matches no file. The line was rewritten without the fallback,
+and the same gate, run from bash with CI's quoting, covers 100% of the
+live adapter's lines, branches and functions. No Rust changed.
