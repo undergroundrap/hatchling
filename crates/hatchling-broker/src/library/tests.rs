@@ -38,6 +38,22 @@ fn has_chunk(library: &Library<'_>, id: &str, chunk: u64) -> bool {
 }
 
 /// Writes `state` as the Library's, as a crash would have left it.
+/// Leaves a state no Library can read: past the most a conversation
+/// hands over.
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the API's tests damage the Library this way too"
+)]
+pub(crate) fn damage_state(library: &Library<'_>) {
+    leave_state(
+        library,
+        &State {
+            handed: HANDED_PER_CONVERSATION + 1,
+            ..State::default()
+        },
+    );
+}
+
 fn leave_state(library: &Library<'_>, state: &State) {
     Library::write(&library.vault().unwrap(), STATE, state).unwrap();
 }
@@ -681,6 +697,7 @@ fn a_keep_cut_short_is_undone_and_still_counts() {
             off: false,
             conversation: 0,
             read: 0,
+            removed: Vec::new(),
         },
     );
     let vault = library.vault().unwrap();
@@ -727,6 +744,7 @@ fn a_keep_cut_short_after_its_index_is_finished() {
             off: false,
             conversation: 0,
             read: 0,
+            removed: Vec::new(),
         },
     );
     assert_eq!(
@@ -962,6 +980,9 @@ fn a_removal_that_fails_at_any_store_is_said_as_it_is() {
         let said = library.remove(&file.id);
         assert_eq!(said.is_ok(), removed, "{case}: {said:?}");
         let listed = library.files().unwrap();
+        // What was removed is said with the removal, in its first write.
+        let gone = library.shelf().unwrap().removed;
+        assert_eq!(gone.len(), usize::from(removed), "{case}");
         if removed {
             assert!(listed.is_empty(), "{case}");
             assert!(
@@ -1987,6 +2008,190 @@ fn the_shelf_is_the_items_and_the_standing_at_once() {
             off: true,
             read: 2,
             conversation: 1,
+            removed: Vec::new(),
         }
     );
+}
+
+/// An item of the open conversation, with a reply, named `n`.
+fn given(n: u64, conversation: u64, reply: &str) -> KeptItem {
+    KeptItem {
+        id: format!("{n:064x}"),
+        name: format!("f{n}.txt"),
+        conversation,
+        reply: String::from(reply),
+        ..item(ItemKind::File, 1, 1)
+    }
+}
+
+/// What the open conversation gave and the owner removed is said, after
+/// a restart too: only its own items, never one kept before items had
+/// replies; cleared by a new conversation and by a restart's regroup.
+#[test]
+fn what_the_open_conversation_gave_and_was_removed_is_kept_to_be_said() {
+    let (config, _scratch, key) = kept("removed");
+    let library = Library::of(&config, &key).unwrap();
+    library.new_conversation().unwrap();
+    library.pretend_index(&vec![
+        given(1, 1, REPLY),
+        given(2, 0, REPLY),
+        given(3, 1, ""),
+    ]);
+    for n in 1..=3_u64 {
+        assert_eq!(library.remove(&format!("{n:064x}")), Ok(true));
+    }
+    let shelf = library.shelf().unwrap();
+    assert_eq!(
+        shelf.removed,
+        [Removed {
+            id: format!("{:064x}", 1),
+            kind: ItemKind::File,
+            name: String::from("f1.txt"),
+            files: 1,
+            bytes: 1,
+            reply: String::from(REPLY),
+        }]
+    );
+    // A restart that groups apart, or the owner's new conversation,
+    // clears it.
+    library.regroup().unwrap();
+    assert!(library.shelf().unwrap().removed.is_empty());
+    library.pretend_index(&vec![given(4, 2, REPLY)]);
+    library.remove(&format!("{:064x}", 4)).unwrap();
+    assert_eq!(library.shelf().unwrap().removed.len(), 1);
+    library.new_conversation().unwrap();
+    assert!(library.shelf().unwrap().removed.is_empty());
+}
+
+/// At most what one conversation gives is kept, the oldest going first,
+/// and a removal never fails for it.
+#[test]
+fn what_was_removed_is_kept_to_its_bound_the_oldest_going() {
+    let (config, _scratch, key) = kept("removed-most");
+    let library = Library::of(&config, &key).unwrap();
+    let most = u64::from(HANDED_PER_CONVERSATION);
+    let index: Vec<KeptItem> = (0..=most).map(|n| given(n, 0, REPLY)).collect();
+    library.pretend_index(&index);
+    for n in 0..=most {
+        assert_eq!(library.remove(&format!("{n:064x}")), Ok(true));
+    }
+    let removed = library.shelf().unwrap().removed;
+    assert_eq!(removed.len(), usize::try_from(most).unwrap());
+    assert_eq!(
+        removed.first().map(|gone| gone.name.as_str()),
+        Some("f1.txt")
+    );
+}
+
+/// A removed item the index names still is never said removed; what was
+/// removed that can't be one is dropped, never the Library's undoing.
+#[test]
+fn what_was_removed_is_held_to_what_it_can_be() {
+    let (config, _scratch, key) = kept("removed-sound");
+    let library = Library::of(&config, &key).unwrap();
+    let gone = |n: u64, reply: &str| Removed {
+        id: format!("{n:064x}"),
+        kind: ItemKind::File,
+        name: format!("f{n}.txt"),
+        files: 1,
+        bytes: 1,
+        reply: String::from(reply),
+    };
+    leave_state(
+        &library,
+        &State {
+            removed: vec![gone(1, REPLY)],
+            ..State::default()
+        },
+    );
+    library.pretend_index(&vec![given(1, 0, REPLY)]);
+    assert!(library.shelf().unwrap().removed.is_empty());
+    // With nothing kept, what can't be removed is dropped all the same.
+    library.pretend_index(&Vec::<KeptItem>::new());
+    let most = usize::try_from(HANDED_PER_CONVERSATION).unwrap();
+    for removed in [
+        vec![gone(1, "")],
+        vec![gone(1, "cell-1")],
+        vec![gone(1, REPLY), gone(1, REPLY)],
+        (0..=u64::try_from(most).unwrap())
+            .map(|n| gone(n, REPLY))
+            .collect(),
+        vec![Removed {
+            files: 2,
+            ..gone(1, REPLY)
+        }],
+        vec![Removed {
+            name: String::from(".hidden"),
+            ..gone(1, REPLY)
+        }],
+        vec![Removed {
+            id: String::from("not-an-id"),
+            ..gone(1, REPLY)
+        }],
+        vec![Removed {
+            bytes: FILE_BYTES + 1,
+            ..gone(1, REPLY)
+        }],
+        vec![Removed {
+            kind: ItemKind::Folder,
+            files: FOLDER_FILES + 1,
+            ..gone(1, REPLY)
+        }],
+        vec![Removed {
+            kind: ItemKind::Folder,
+            files: 2,
+            bytes: FOLDER_BYTES + 1,
+            ..gone(1, REPLY)
+        }],
+    ] {
+        leave_state(
+            &library,
+            &State {
+                removed,
+                ..State::default()
+            },
+        );
+        assert_eq!(library.shelf().unwrap().removed, Vec::new());
+    }
+    // A folder within its bounds is one.
+    leave_state(
+        &library,
+        &State {
+            removed: vec![Removed {
+                kind: ItemKind::Folder,
+                files: FOLDER_FILES,
+                bytes: FOLDER_BYTES,
+                ..gone(1, REPLY)
+            }],
+            ..State::default()
+        },
+    );
+    assert_eq!(library.shelf().unwrap().removed.len(), 1);
+}
+
+/// The owner's new conversation is two steps: the next number with
+/// handing over off, so no run of the last gives anything while the chat
+/// moves on; then on, once it has. A step left undone leaves it off.
+#[test]
+fn a_new_conversation_is_begun_off_and_finished_on() {
+    let (config, _scratch, key) = kept("new-two-steps");
+    let library = Library::of(&config, &key).unwrap();
+    keep(&library, "a.txt", b"abc");
+    let last = library.conversation().unwrap();
+    let begun = library.begin_new_conversation().unwrap();
+    assert_eq!(begun, last + 1);
+    assert_eq!(library.conversation(), Ok(begun));
+    assert_eq!(library.standing().unwrap(), (1, true));
+    // A run of the last conversation is stale; one of the new is off.
+    assert_eq!(
+        library.spend(&Claim::file(1), last),
+        Ok(Err(Refused::Stale))
+    );
+    assert_eq!(library.spend(&Claim::file(1), begun), Ok(Err(Refused::Off)));
+    // Finishing another conversation does nothing; this one turns it on.
+    library.finish_new_conversation(begun + 1).unwrap();
+    assert_eq!(library.standing().unwrap(), (1, true));
+    library.finish_new_conversation(begun).unwrap();
+    assert_eq!(library.standing().unwrap(), (0, false));
+    assert_eq!(library.read_so_far(), Ok(0));
 }

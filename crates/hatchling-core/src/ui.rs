@@ -60,8 +60,8 @@ pub use api::{ApiOutcome, ApiRequest, ApiToken};
 pub use control::{Actor, Control, Handoff};
 pub use files::{
     FILE_IN_BYTES, FILE_IN_NAME_BYTES, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal,
-    FileOffered, FileOutRefusal, FileWithheld, FolderEntry, InboxFile, LibraryFile, LibraryFolder,
-    LibraryStanding,
+    FileOffered, FileOutRefusal, FileWithheld, FolderEntry, FolderOffered, InboxFile, LibraryFile,
+    LibraryFolder, LibraryRemoved, LibraryStanding,
 };
 pub use surfaces::{
     AgentState, ArtifactBody, ArtifactRefusal, ArtifactRevision, BrowserAction, BrowserFrame,
@@ -269,6 +269,8 @@ pub enum UiEventBody {
     FileOffered(FileOffered),
     /// The agent tried to hand the owner a file, and it was withheld (v6).
     FileWithheld(FileWithheld),
+    /// The agent handed the owner a folder, kept in the Library (v8).
+    FolderOffered(FolderOffered),
     /// The Library changed: a file was removed. Its list is read again
     /// (v7).
     LibraryChanged {},
@@ -1956,6 +1958,9 @@ pub enum UiActionResult {
         files: Vec<LibraryFile>,
         /// Its folders (v8).
         folders: Vec<LibraryFolder>,
+        /// What was removed that the open conversation gave, oldest first
+        /// (v8): its chat says so.
+        removed: Vec<LibraryRemoved>,
         /// Its use, and the open conversation's.
         standing: LibraryStanding,
     },
@@ -2896,6 +2901,14 @@ mod tests {
             UiActionResult::Library {
                 files: vec![file],
                 folders: vec![folder],
+                removed: vec![LibraryRemoved {
+                    id: s("r1"),
+                    name: s("old.txt"),
+                    folder: false,
+                    files: 1,
+                    bytes: 4,
+                    reply: s("run-1"),
+                }],
                 standing: LibraryStanding {
                     files: 2,
                     file_limit: 64,
@@ -2915,6 +2928,8 @@ mod tests {
                     "name": "site", "files": 2, "bytes": 7, "sha256": "cd",
                     "kept_at": "2026-11-18T00:00:00Z", "conversation": 3,
                     "left_out": {"links": 1, "mounts": 0, "others": 0}}],
+                    "removed": [{"id": "r1", "name": "old.txt", "folder": false, "files": 1,
+                    "bytes": 4, "reply": "run-1"}],
                     "standing": {"files": 2, "file_limit": 64, "bytes": 16,
                     "byte_limit": 268_435_456, "given": 1, "given_limit": 16, "off": false,
                     "files_in_all": 3, "files_in_all_limit": 4096, "read": 16,
@@ -2947,6 +2962,37 @@ mod tests {
             },
             &json!({"result": "folder_file_out_begun", "download_id": "out-2", "id": "d1",
                 "file": 1, "path": "css/a.css", "bytes": 4, "sha256": "ef", "parts": 1}),
+        );
+    }
+
+    /// A folder offered says the folder, as the list does (v8).
+    #[test]
+    fn a_folder_offered_has_its_wire_form() {
+        let folder = LibraryFolder {
+            id: s("d1"),
+            name: s("site"),
+            files: 2,
+            bytes: 7,
+            sha256: s("cd"),
+            kept_at: s("2026-11-18T00:00:00Z"),
+            conversation: 3,
+            reply: None,
+            left_out: crate::LeftOut {
+                links: 1,
+                mounts: 0,
+                others: 0,
+            },
+        };
+        pinned(
+            &UiEventBody::FolderOffered(FolderOffered {
+                chat_id: s("local"),
+                message_id: s("file-3"),
+                folder,
+            }),
+            &json!({"kind": "folder_offered", "chat_id": "local", "message_id": "file-3",
+                "folder": {"id": "d1", "name": "site", "files": 2, "bytes": 7, "sha256": "cd",
+                "kept_at": "2026-11-18T00:00:00Z", "conversation": 3,
+                "left_out": {"links": 1, "mounts": 0, "others": 0}}}),
         );
     }
 
@@ -3004,6 +3050,7 @@ mod tests {
             result: UiActionResult::Library {
                 files: Vec::new(),
                 folders: vec![folder; 64],
+                removed: Vec::new(),
                 standing,
             },
         };

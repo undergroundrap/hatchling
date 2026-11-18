@@ -60,6 +60,10 @@ static STORE: Mutex<()> = Mutex::new(());
 /// What the store held when the broker started, read once.
 static AT_START: OnceLock<Resumed> = OnceLock::new();
 
+/// The run that answered each exchange kept when the broker started, read
+/// once with them (WO-043).
+static RUNS_AT_START: OnceLock<Vec<String>> = OnceLock::new();
+
 /// Which exchanges are the conversation: those numbered from
 /// `next - kept` up to `next`, each in the slot its number gives, and
 /// what the owner said `earlier`, oldest first. An index from before
@@ -71,6 +75,11 @@ struct Index {
     kept: u64,
     #[serde(default)]
     earlier: Vec<String>,
+    /// The cell id of the run that answered each exchange kept, in their
+    /// order; none, empty, for one that named none (WO-043). Empty in an
+    /// index from before runs were kept.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    runs: Vec<String>,
 }
 
 /// The slot exchange `number` is kept in.
@@ -154,6 +163,14 @@ impl<'k> ConversationStore<'k> {
         if conversation::earlier(&index.earlier).len() != index.earlier.len() {
             return Err(String::from(
                 "what the owner said earlier is past the bounds a run is given",
+            ));
+        }
+        let runs = u64::try_from(index.runs.len()).unwrap_or(u64::MAX);
+        if !(runs == 0 || runs == index.kept)
+            || !index.runs.iter().all(|run| crate::library::is_reply(run))
+        {
+            return Err(String::from(
+                "the conversation's runs aren't its exchanges'",
             ));
         }
         Ok(Some(index))
@@ -249,6 +266,7 @@ impl<'k> ConversationStore<'k> {
         &self,
         current: impl FnOnce() -> bool,
         conversation: &Conversation,
+        run: Option<&str>,
     ) -> Result<bool, String> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         if !current() {
@@ -272,12 +290,28 @@ impl<'k> ConversationStore<'k> {
             .checked_add(1)
             .ok_or_else(|| String::from("the conversation has no number left"))?;
         let earlier = conversation::earlier(&conversation.earlier);
+        // The run that answered each exchange kept: those before, as the
+        // index says them, and the newest's, kept with it in this one write.
+        // With none kept, the last `kept` of them are none.
+        let mut runs = Self::runs_of(&index);
+        runs.push(
+            run.filter(|run| crate::library::is_reply(run))
+                .unwrap_or_default()
+                .to_owned(),
+        );
+        let runs: Vec<String> = runs
+            .into_iter()
+            .rev()
+            .take(usize::try_from(kept).unwrap_or(usize::MAX))
+            .rev()
+            .collect();
         Self::write_index(
             &vault,
             &Index {
                 next,
                 kept,
                 earlier,
+                runs,
             },
         )?;
         // The exchanges the conversation no longer holds.
@@ -285,6 +319,28 @@ impl<'k> ConversationStore<'k> {
             Self::clear_slot(&vault, slot(gone))?;
         }
         Ok(true)
+    }
+
+    /// The run that answered each of `index`'s exchanges: none for each of
+    /// an index from before runs were kept.
+    fn runs_of(index: &Index) -> Vec<String> {
+        if index.runs.is_empty() {
+            vec![String::new(); usize::try_from(index.kept).unwrap_or(0)]
+        } else {
+            index.runs.clone()
+        }
+    }
+
+    /// The run that answered each exchange kept, in their order: none,
+    /// empty, for one kept before runs were.
+    ///
+    /// # Errors
+    ///
+    /// Why it can't be read.
+    pub fn runs(&self) -> Result<Vec<String>, String> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        Ok(Self::read_index(&vault)?.map_or_else(Vec::new, |index| Self::runs_of(&index)))
     }
 
     /// Starts a new conversation: every slot is removed, whatever the
@@ -304,6 +360,7 @@ impl<'k> ConversationStore<'k> {
             next,
             kept: 0,
             earlier: Vec::new(),
+            runs: Vec::new(),
         };
         Self::write_index(&vault, &empty)?;
         for slot in 0..SLOTS {
@@ -333,46 +390,64 @@ impl<'k> ConversationStore<'k> {
 /// What `store` held when the broker started: read the first time it's
 /// asked, so the chat and the app are given the same.
 pub fn at_start(store: &ConversationStore<'_>) -> &'static Resumed {
-    AT_START.get_or_init(|| store.resume_or_start_new())
+    AT_START.get_or_init(|| {
+        let resumed = store.resume_or_start_new();
+        let runs = match &resumed {
+            Resumed::Kept(_) => store.runs().unwrap_or_default(),
+            Resumed::Unreadable => Vec::new(),
+        };
+        let _ = RUNS_AT_START.set(runs);
+        resumed
+    })
 }
 
 /// Shows the app what was kept across a restart, on the local chat: what
 /// the owner said earlier under a notice, then each exchange as it was
 /// under another. Nothing when none was.
 pub fn show(bus: &Bus, resumed: &Resumed) {
-    let push = |author: ChatAuthor, text: &str| match crate::approval::random_hex("msg-") {
-        Ok(message_id) => {
-            bus.push(
-                Timestamp::now().to_string(),
-                UiEventBody::ChatMessage(ChatMessage {
-                    chat_id: String::from(crate::api_ops::LOCAL_CHAT),
-                    message_id,
-                    author,
-                    run: None,
-                    out_of_steps: false,
-                    text: text.to_owned(),
-                }),
-            );
-        }
-        Err(error) => tracing::warn!(%error, "a kept message can't be shown"),
-    };
+    show_with(bus, resumed, RUNS_AT_START.get().map_or(&[], Vec::as_slice));
+}
+
+/// [`show`], each exchange's answer said with the run that answered it,
+/// as `runs` says them in order: what the chat draws its cards under
+/// (WO-043).
+fn show_with(bus: &Bus, resumed: &Resumed, runs: &[String]) {
+    let push =
+        |author: ChatAuthor, text: &str, run: Option<&String>| match crate::approval::random_hex(
+            "msg-",
+        ) {
+            Ok(message_id) => {
+                bus.push(
+                    Timestamp::now().to_string(),
+                    UiEventBody::ChatMessage(ChatMessage {
+                        chat_id: String::from(crate::api_ops::LOCAL_CHAT),
+                        message_id,
+                        author,
+                        run: run.filter(|run| !run.is_empty()).cloned(),
+                        out_of_steps: false,
+                        text: text.to_owned(),
+                    }),
+                );
+            }
+            Err(error) => tracing::warn!(%error, "a kept message can't be shown"),
+        };
     match resumed {
         Resumed::Kept(kept) => {
             if !kept.earlier.is_empty() {
-                push(ChatAuthor::System, EARLIER);
+                push(ChatAuthor::System, EARLIER, None);
                 for said in &kept.earlier {
-                    push(ChatAuthor::User, said);
+                    push(ChatAuthor::User, said, None);
                 }
             }
             if !kept.exchanges.is_empty() {
-                push(ChatAuthor::System, KEPT);
-                for exchange in &kept.exchanges {
-                    push(ChatAuthor::User, &exchange.user);
-                    push(ChatAuthor::Agent, &exchange.assistant);
+                push(ChatAuthor::System, KEPT, None);
+                for (at, exchange) in kept.exchanges.iter().enumerate() {
+                    push(ChatAuthor::User, &exchange.user, None);
+                    push(ChatAuthor::Agent, &exchange.assistant, runs.get(at));
                 }
             }
         }
-        Resumed::Unreadable => push(ChatAuthor::System, UNREADABLE),
+        Resumed::Unreadable => push(ChatAuthor::System, UNREADABLE, None),
     }
 }
 
@@ -393,9 +468,9 @@ impl<'k> SealedConversation<'k> {
 }
 
 impl Keeps for SealedConversation<'_> {
-    fn keep(&self, sent_in: u64, kept: &Conversation) {
+    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>) {
         let current = || self.hub.conversation() == sent_in;
-        if let Err(error) = self.store.keep_if(current, kept) {
+        if let Err(error) = self.store.keep_if(current, kept, run) {
             tracing::warn!(%error, "the conversation can't be kept");
         }
     }
@@ -433,7 +508,7 @@ mod tests {
     ) -> Conversation {
         for exchange in exchanges {
             kept.push(exchange.clone());
-            assert!(store.keep_if(|| true, &kept).unwrap());
+            assert!(store.keep_if(|| true, &kept, None).unwrap());
         }
         kept
     }
@@ -503,6 +578,7 @@ mod tests {
             next: 12,
             kept: 3,
             earlier: said(&["Call me Sam."]),
+            runs: Vec::new(),
         };
         ConversationStore::write_index(&vault, &index).unwrap();
         assert_eq!(ConversationStore::read_index(&vault).unwrap(), Some(index));
@@ -537,9 +613,25 @@ mod tests {
     fn what_was_kept_at_the_start_is_read_once() {
         let (config, _scratch, key) = kept("at-start");
         let store = ConversationStore::of(&config, &key).unwrap();
-        keep_all(&store, &[exchange("q0", "a0")]);
+        let kept = holding(&[exchange("q0", "a0")]);
+        assert!(store.keep_if(|| true, &kept, Some(&run(9))).unwrap());
         let first = at_start(&store);
-        assert_eq!(first, &Resumed::Kept(holding(&[exchange("q0", "a0")])));
+        assert_eq!(first, &Resumed::Kept(kept));
+        // The answer is shown again with the run read with it (WO-043).
+        let bus = Bus::starting_at(1);
+        show(&bus, first);
+        let runs: Vec<Option<String>> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event: UiEvent| {
+                if let UiEventBody::ChatMessage(chat) = event.body {
+                    Some(chat.run)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(runs, [None, None, Some(run(9))]);
         store.start_new(|| {}).unwrap();
         assert!(std::ptr::eq(at_start(&store), first));
     }
@@ -621,7 +713,7 @@ mod tests {
         let claimed: Vec<_> = (0..5)
             .map(|n| exchange(&format!("q{n}"), &format!("a{n}")))
             .collect();
-        assert!(store.keep_if(|| true, &holding(&claimed)).unwrap());
+        assert!(store.keep_if(|| true, &holding(&claimed), None).unwrap());
         assert_eq!(store.resume().unwrap(), holding(&[exchange("q4", "a4")]));
     }
 
@@ -634,7 +726,7 @@ mod tests {
         let kept = keep_all(&store, &[exchange("q0", "a0")]);
         let mut moved = kept.clone();
         moved.push(exchange("q1", "a1"));
-        assert!(!store.keep_if(|| false, &moved).unwrap());
+        assert!(!store.keep_if(|| false, &moved, None).unwrap());
         assert_eq!(store.resume().unwrap(), kept);
         assert_eq!(held(&config, &key), [0]);
     }
@@ -730,10 +822,18 @@ mod tests {
         let (config, _scratch, key) = kept("hub");
         let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
         let sealed = SealedConversation::new(ConversationStore::of(&config, &key).unwrap(), &hub);
-        sealed.keep(0, &holding(&[exchange("q0", "a0")]));
+        sealed.keep(0, &holding(&[exchange("q0", "a0")]), None);
         hub.new_conversation();
-        sealed.keep(0, &holding(&[exchange("q0", "a0"), exchange("q1", "a1")]));
-        sealed.keep(1, &holding(&[exchange("q0", "a0"), exchange("q2", "a2")]));
+        sealed.keep(
+            0,
+            &holding(&[exchange("q0", "a0"), exchange("q1", "a1")]),
+            None,
+        );
+        sealed.keep(
+            1,
+            &holding(&[exchange("q0", "a0"), exchange("q2", "a2")]),
+            None,
+        );
         assert_eq!(
             ConversationStore::of(&config, &key)
                 .unwrap()
@@ -754,6 +854,105 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// A run id of the grammar the broker mints.
+    fn run(n: u64) -> String {
+        format!("run-{n:024x}")
+    }
+
+    /// Each exchange is kept with the run that answered it, in the one
+    /// index write that keeps it; the oldest goes with its exchange; one
+    /// that names no run, or one that can't be a run's, is kept as none
+    /// (WO-043).
+    #[test]
+    fn each_exchange_is_kept_with_the_run_that_answered_it() {
+        let (config, _scratch, key) = kept("runs");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        assert_eq!(store.runs().unwrap(), Vec::<String>::new());
+        let mut kept = Conversation::default();
+        let most = u64::try_from(MAX_EXCHANGES).unwrap();
+        for n in 0..=most {
+            kept.push(exchange(&format!("q{n}"), &format!("a{n}")));
+            let named = run(n);
+            let said = match n {
+                1 => None,
+                2 => Some("session-not-a-run"),
+                _ => Some(named.as_str()),
+            };
+            assert!(store.keep_if(|| true, &kept, said).unwrap());
+        }
+        let runs = store.runs().unwrap();
+        let expected: Vec<String> = (1..=most)
+            .map(|n| match n {
+                1 | 2 => String::new(),
+                _ => run(n),
+            })
+            .collect();
+        assert_eq!(runs, expected);
+        assert_eq!(runs.len(), store.resume().unwrap().exchanges.len());
+        // A new conversation keeps none.
+        store.start_new(|| {}).unwrap();
+        assert_eq!(store.runs().unwrap(), Vec::<String>::new());
+    }
+
+    /// An index from before runs were kept reads with none for each
+    /// exchange; one whose runs aren't its exchanges' is damage.
+    #[test]
+    fn an_index_without_runs_reads_and_one_with_others_is_damage() {
+        let (config, _scratch, key) = kept("runs-old");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        keep_all(&store, &[exchange("q0", "a0"), exchange("q1", "a1")]);
+        let vault = store.vault().unwrap();
+        let index = ConversationStore::read_index(&vault).unwrap().unwrap();
+        let old = Index {
+            runs: Vec::new(),
+            ..index.clone()
+        };
+        ConversationStore::write_index(&vault, &old).unwrap();
+        assert_eq!(store.runs().unwrap(), [String::new(), String::new()]);
+        for runs in [vec![run(1)], vec![run(1), String::from("cell-1")]] {
+            let other = Index {
+                runs,
+                ..index.clone()
+            };
+            ConversationStore::write_index(&vault, &other).unwrap();
+            assert!(store.runs().is_err());
+            assert!(store.resume().is_err());
+        }
+    }
+
+    /// Each answer is shown again with the run that answered it, and what
+    /// the owner said with none (WO-043).
+    #[test]
+    fn each_answer_shown_again_names_its_run() {
+        let bus = Bus::starting_at(1);
+        show_with(
+            &bus,
+            &Resumed::Kept(holding(&[exchange("q0", "a0"), exchange("q1", "a1")])),
+            &[run(7), String::new()],
+        );
+        let runs: Vec<(ChatAuthor, Option<String>)> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event: UiEvent| {
+                if let UiEventBody::ChatMessage(chat) = event.body {
+                    Some((chat.author, chat.run))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                (ChatAuthor::System, None),
+                (ChatAuthor::User, None),
+                (ChatAuthor::Agent, Some(run(7))),
+                (ChatAuthor::User, None),
+                (ChatAuthor::Agent, None),
+            ]
+        );
     }
 
     /// The app is shown what the agent is still given, under Hatchling's

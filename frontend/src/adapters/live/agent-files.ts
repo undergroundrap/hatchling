@@ -7,7 +7,7 @@
 import type { LiveClient } from './client.js';
 import type { ActionRefusal, FileOutRefusal, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
 import type { CommandResult } from '../../protocol/models.js';
-import type { AgentFile, AgentFilesPort, AgentFilesState, OfferedFile } from '../../session/agent-files.js';
+import type { AgentFile, AgentFilesPort, AgentFilesState, AgentFolder, GivenCard, OfferedFile, OfferedFolder } from '../../session/agent-files.js';
 import { isGivenName, runs } from '../../session/agent-files.js';
 import { sizeWords } from '../../session/inbox.js';
 import { within } from './inbox.js';
@@ -16,6 +16,19 @@ import { zipStored } from './zip.js';
 export type FileOffered = Extract<UiEventBody, {
     kind: 'file_offered';
 }>;
+/** The stream's word that the agent gave a folder. */
+export type FolderOffered = Extract<UiEventBody, {
+    kind: 'folder_offered';
+}>;
+/** The chat's word on which run wrote each answer it shows. */
+export interface ChatRuns {
+    /** The run that wrote the answer `messageId`; none for any other message. */
+    of(messageId: string): string | undefined;
+    /** The runs whose answers the chat shows. */
+    shown(): ReadonlySet<string>;
+}
+/** A chat that shows no answer's run. */
+const NO_RUNS: ChatRuns = { of: () => undefined, shown: () => new Set() };
 /** The most bytes a file from the agent holds: the Library's bound for one file. */
 export const FILE_OUT_BYTES = 8 * 1024 * 1024;
 /** The most bytes a part carries. */
@@ -95,8 +108,22 @@ function kept(file: {
     readonly bytes: number;
     readonly sha256: string;
     readonly kept_at: string;
+    readonly conversation: number;
+    readonly reply?: string | null;
 }): AgentFile {
-    return { id: file.id, name: file.name, bytes: file.bytes, sha256: file.sha256, keptAt: file.kept_at };
+    return { id: file.id, name: file.name, bytes: file.bytes, sha256: file.sha256, keptAt: file.kept_at, reply: file.reply ?? null, conversation: file.conversation };
+}
+/** A folder as the stream or the list says it. */
+function keptFolder(folder: {
+    readonly id: string;
+    readonly name: string;
+    readonly files: number;
+    readonly bytes: number;
+    readonly kept_at: string;
+    readonly conversation: number;
+    readonly reply?: string | null;
+}): AgentFolder {
+    return { id: folder.id, name: folder.name, files: folder.files, bytes: folder.bytes, keptAt: folder.kept_at, reply: folder.reply ?? null, conversation: folder.conversation };
 }
 /** An id the broker gives an item: 64 lowercase hex digits. */
 const ITEM_ID = /^[0-9a-f]{64}$/u;
@@ -134,6 +161,11 @@ type Offered = AgentFile & {
     readonly removed: boolean;
     readonly after: number;
 };
+/** A folder a message showed, and the read of the list it was first known before. */
+type OfferedDir = AgentFolder & {
+    readonly removed: boolean;
+    readonly after: number;
+};
 export class LiveAgentFiles implements AgentFilesPort {
     readonly #client: LiveClient;
     readonly #changed: () => void;
@@ -143,6 +175,8 @@ export class LiveAgentFiles implements AgentFilesPort {
     readonly #wait: number;
     #state: AgentFilesState = { kind: 'unread' };
     readonly #offered = new Map<string, Offered>();
+    readonly #offeredFolders = new Map<string, OfferedDir>();
+    readonly #runs: ChatRuns;
     readonly #downloading = new Set<string>();
     /** How far every file's download has got, while it runs. */
     #progress: {
@@ -154,14 +188,16 @@ export class LiveAgentFiles implements AgentFilesPort {
     #reads = 0;
     #taken = 0;
     #listed = 0;
-    constructor(client: LiveClient, changed: () => void, nextId: () => string, { save = saveBytes, digest = browserDigest(), wait = STEP_WAIT_MS }: {
+    constructor(client: LiveClient, changed: () => void, nextId: () => string, { save = saveBytes, digest = browserDigest(), wait = STEP_WAIT_MS, runs = NO_RUNS }: {
         readonly save?: Saver;
         readonly digest?: Digest | null;
         readonly wait?: number;
+        readonly runs?: ChatRuns;
     } = {}) {
         this.#client = client;
         this.#changed = changed;
         this.#nextId = nextId;
+        this.#runs = runs;
         this.#save = save;
         this.#digest = digest;
         this.#wait = wait;
@@ -180,6 +216,61 @@ export class LiveAgentFiles implements AgentFilesPort {
         const known = this.#offered.get(event.message_id);
         this.#offered.set(event.message_id, { ...kept(event.file), removed: known?.removed ?? false, after: known?.after ?? this.#reads });
         void this.refresh();
+    }
+    /**
+     * The stream's word that the agent gave a folder: kept by its message,
+     * and the list read again. One whose name the broker never gives is not kept.
+     */
+    observeFolder(event: FolderOffered): void {
+        if (!isShownFolder(event.folder))
+            return;
+        const known = this.#offeredFolders.get(event.message_id);
+        this.#offeredFolders.set(event.message_id, { ...keptFolder(event.folder), removed: known?.removed ?? false, after: known?.after ?? this.#reads });
+        void this.refresh();
+    }
+    /** The folder a message showed as given, removed once a list read after it no longer holds it. */
+    offeredFolder(messageId: string): OfferedFolder | undefined {
+        const folder = this.#offeredFolders.get(messageId);
+        if (folder === undefined)
+            return undefined;
+        const state = this.#state;
+        const gone = state.kind === 'read' && this.#listed > folder.after && !state.folders.some(listed => listed.id === folder.id);
+        const { after: _after, ...shown } = folder;
+        return { ...shown, removed: folder.removed || gone };
+    }
+    /** The ids a message of the stream showed: they aren't shown again. */
+    #noticed(): ReadonlySet<string> {
+        return new Set([...[...this.#offered.values()].map(file => file.id), ...[...this.#offeredFolders.values()].map(folder => folder.id)]);
+    }
+    /** What the list says the reply `run` gave, unless a message of the stream showed it. */
+    #cards(keep: (reply: string) => boolean): GivenCard[] {
+        const state = this.#state;
+        if (state.kind !== 'read')
+            return [];
+        const noticed = this.#noticed();
+        const fresh = (item: {
+            readonly id: string;
+            readonly reply: string | null;
+            readonly conversation: number;
+        }): boolean => item.reply !== null && keep(item.reply) && !noticed.has(item.id);
+        return [
+            ...state.folders.filter(fresh).map((folder): GivenCard => ({ kind: 'folder', folder })),
+            ...state.files.filter(fresh).map((file): GivenCard => ({ kind: 'file', file })),
+            ...state.removed.filter(gone => keep(gone.reply) && !noticed.has(gone.id)).map((removed): GivenCard => ({ kind: 'removed', removed })),
+        ];
+    }
+    givenIn(messageId: string): readonly GivenCard[] {
+        const run = this.#runs.of(messageId);
+        return run === undefined ? [] : this.#cards(reply => reply === run);
+    }
+    givenElsewhere(): readonly GivenCard[] {
+        const shown = this.#runs.shown();
+        const state = this.#state;
+        if (state.kind !== 'read')
+            return [];
+        const open = state.standing.conversation;
+        const ours = new Set([...state.files, ...state.folders].filter(item => item.conversation === open).map(item => item.id));
+        return this.#cards(reply => !shown.has(reply)).filter(card => card.kind === 'removed' || ours.has(card.kind === 'file' ? card.file.id : card.folder.id));
     }
     /**
      * The file a message showed as given. It reads as removed once this app
@@ -213,7 +304,7 @@ export class LiveAgentFiles implements AgentFilesPort {
         if (reply.kind !== 'answered')
             this.#state = { kind: 'failed', detail: reply.detail };
         else if (reply.result.result === 'library') {
-            const { files, folders, standing } = reply.result;
+            const { files, folders, removed, standing } = reply.result;
             // An item it can't name is shown all the same, by its size, so
             // nothing the Library counts is out of the owner's sight.
             const unnamed = [...files.filter(file => !isShownFile(file)), ...folders.filter(folder => !isShownFolder(folder))]
@@ -221,9 +312,10 @@ export class LiveAgentFiles implements AgentFilesPort {
             this.#state = {
                 kind: 'read',
                 files: files.filter(isShownFile).map(kept),
-                folders: folders.filter(isShownFolder).map(folder => ({ id: folder.id, name: folder.name, files: folder.files, bytes: folder.bytes, keptAt: folder.kept_at })),
+                folders: folders.filter(isShownFolder).map(keptFolder),
                 unnamed,
-                standing: { files: standing.files, fileLimit: standing.file_limit, bytes: standing.bytes, byteLimit: standing.byte_limit, given: standing.given, givenLimit: standing.given_limit, off: standing.off, filesInAll: standing.files_in_all, filesInAllLimit: standing.files_in_all_limit, read: standing.read, readLimit: standing.read_limit },
+                removed: removed.filter(gone => isGivenName(gone.name) && ITEM_ID.test(gone.id)).map(gone => ({ id: gone.id, name: gone.name, folder: gone.folder, files: gone.files, bytes: gone.bytes, reply: gone.reply })),
+                standing: { files: standing.files, fileLimit: standing.file_limit, bytes: standing.bytes, byteLimit: standing.byte_limit, given: standing.given, givenLimit: standing.given_limit, off: standing.off, filesInAll: standing.files_in_all, filesInAllLimit: standing.files_in_all_limit, read: standing.read, readLimit: standing.read_limit, conversation: standing.conversation },
             };
             this.#listed = read;
         }

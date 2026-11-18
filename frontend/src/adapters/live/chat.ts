@@ -4,7 +4,7 @@
 // text message through the markdown renderer, so it arrives with its link
 // forms broken apart (see text.ts). System notices render as plain text.
 import type { Chat, Message } from '../../protocol/models.js';
-import type { ActivityEvent, ChatMessage, FileOffered, FileWithheld, UiEventBody } from './protocol/generated.js';
+import type { ActivityEvent, ChatMessage, FileOffered, FileWithheld, FolderOffered, UiEventBody } from './protocol/generated.js';
 import { trailLine } from './activity.js';
 /** A file sent in a chat . */
 export type Attachment = Extract<UiEventBody, {
@@ -74,6 +74,14 @@ export class ChatBook {
                 this.#unfinished.set(entry.message_id, entry.run);
         }
     }
+    /** The run that wrote the answer `id`, by its cell id; none for any other message. */
+    runOf(id: string): string | undefined {
+        return this.#runs.get(id);
+    }
+    /** The runs whose answers the chat shows. */
+    runsShown(): ReadonlySet<string> {
+        return new Set(this.#runs.values());
+    }
     /** The run an offer to keep is for, by the offer's id; none for any other message. */
     keepable(id: string): string | undefined {
         return id.endsWith(KEEP_SUFFIX) ? this.#unfinished.get(id.slice(0, -KEEP_SUFFIX.length)) : undefined;
@@ -118,6 +126,14 @@ export class ChatBook {
         this.#updated.set(chatId, at);
         const named = isLibraryName(entry.file.name) ? `: ${entry.file.name}, ${sizeWords(entry.file.bytes)}` : `, ${sizeWords(entry.file.bytes)}`;
         this.#messages.set(entry.message_id, { id: entry.message_id, chatId, time: clockTime(at), source: null, reaction: null, kind: 'notice', role: 'agent', text: `Hatchling gave you a file${named}. It is kept in Hatchling’s Library.`, evidenceId: null });
+    }
+    /** The broker's word that the agent gave the owner a folder. */
+    folderOffered(entry: FolderOffered, at: string): void {
+        const chatId = appChat(entry.chat_id);
+        this.#updated.set(chatId, at);
+        const files = entry.folder.files === 1 ? '1 file' : `${entry.folder.files} files`;
+        const named = isLibraryName(entry.folder.name) ? `: ${entry.folder.name}, ${files}, ${sizeWords(entry.folder.bytes)}` : `, ${files}, ${sizeWords(entry.folder.bytes)}`;
+        this.#messages.set(entry.message_id, { id: entry.message_id, chatId, time: clockTime(at), source: null, reaction: null, kind: 'notice', role: 'agent', text: `Hatchling gave you a folder${named}. It is kept in Hatchling’s Library.`, evidenceId: null });
     }
     /** The broker's word that a file the agent tried to give the owner was withheld. */
     fileWithheld(entry: FileWithheld, at: string): void {

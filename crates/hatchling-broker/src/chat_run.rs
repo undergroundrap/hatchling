@@ -249,19 +249,20 @@ pub enum Step {
 /// Where the chat keeps the conversation beyond the broker's memory.
 pub trait Keeps {
     /// Keeps `kept`, the conversation `sent_in` as the chat holds it once
-    /// its newest exchange, the last of `kept.exchanges` if any, is kept.
-    fn keep(&self, sent_in: u64, kept: &Conversation);
+    /// its newest exchange, the last of `kept.exchanges` if any, is kept,
+    /// with the cell id of the `run` that answered it (WO-043).
+    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>);
 }
 
 /// Nowhere: the conversation lives in the broker's memory alone.
 impl Keeps for () {
-    fn keep(&self, _: u64, _: &Conversation) {}
+    fn keep(&self, _: u64, _: &Conversation, _: Option<&str>) {}
 }
 
 impl<K: Keeps> Keeps for Option<K> {
-    fn keep(&self, sent_in: u64, kept: &Conversation) {
+    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>) {
         if let Some(keeps) = self {
-            keeps.keep(sent_in, kept);
+            keeps.keep(sent_in, kept, run);
         }
     }
 }
@@ -450,12 +451,12 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// Keeps the exchange of `user` and `answer`, the person having been
     /// shown `answer` as written; past the bounds, the oldest answers go,
     /// and what the owner said in them is kept as earlier.
-    fn keep(&mut self, user: String, answer: String) -> Compacted {
+    fn keep(&mut self, user: String, answer: String, run: Option<&str>) -> Compacted {
         let compacted = self.kept.push(ChatExchange {
             user,
             assistant: answer,
         });
-        self.keeps.keep(self.conversation, &self.kept);
+        self.keeps.keep(self.conversation, &self.kept, run);
         compacted
     }
 
@@ -540,8 +541,9 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             return match delivery.deliver_answer(&local, &answer, cell.as_deref(), spent) {
                 Ok(shown) => {
                     if shown && sent_in == self.conversation {
+                        let run = cell.clone();
                         self.ended(spent, cell, &user, &answer, sent_in);
-                        let compacted = self.keep(user, answer);
+                        let compacted = self.keep(user, answer, run.as_deref());
                         if let Some(notice) = self.told.notice(compacted) {
                             if let Err(error) = delivery.deliver_notice(&local, notice) {
                                 tracing::warn!(error = ?error, "a compaction notice was not delivered");
@@ -1011,11 +1013,15 @@ mod tests {
     /// Records the conversation kept beyond memory, with its number, at
     /// each exchange kept.
     #[derive(Default)]
-    struct Recorded(RefCell<Vec<(u64, Conversation)>>);
+    struct Recorded(
+        RefCell<Vec<(u64, Conversation)>>,
+        RefCell<Vec<Option<String>>>,
+    );
 
     impl Keeps for &Recorded {
-        fn keep(&self, sent_in: u64, kept: &Conversation) {
+        fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>) {
             self.0.borrow_mut().push((sent_in, kept.clone()));
+            self.1.borrow_mut().push(run.map(str::to_owned));
         }
     }
 
@@ -1092,6 +1098,14 @@ mod tests {
             exchanges: Vec::new(),
         };
         assert_eq!(*recorded.0.borrow(), [(2, after_q1), (2, after_q3.clone())]);
+        // Each kept with the run that answered it (WO-043).
+        assert_eq!(
+            *recorded.1.borrow(),
+            [
+                Some(String::from("run-scripted")),
+                Some(String::from("run-scripted"))
+            ]
+        );
         assert_eq!(chat.earlier(), after_q3.earlier);
         assert!(chat.history().is_empty());
         // A new conversation's run is given nothing said before it.
@@ -1108,8 +1122,8 @@ mod tests {
         assert_eq!(given, Some((Vec::new(), Vec::new())));
         assert!(chat.earlier().is_empty());
         // Given no store, nothing is kept beyond memory.
-        None::<&Recorded>.keep(5, &after_q3);
-        Some(&recorded).keep(5, &after_q3);
+        None::<&Recorded>.keep(5, &after_q3, None);
+        Some(&recorded).keep(5, &after_q3, None);
         assert_eq!(recorded.0.borrow().len(), 3);
     }
 

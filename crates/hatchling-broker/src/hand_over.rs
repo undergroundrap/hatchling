@@ -477,17 +477,23 @@ impl<'k> Handing<'k> {
     }
 
     /// The folder was kept: Activity keeps it with its count of files,
-    /// every app is told to read the Library again, and the agent is told
-    /// of it.
+    /// the owner's app is told of it in the chat, and the agent.
     fn folder_offered(&self, kept: crate::library::KeptItem) -> RoomResult {
         let files = u32::try_from(kept.files).unwrap_or(u32::MAX);
+        let folder = crate::api_ops::shown_folder(kept.clone());
         self.record(
             Some(&kept.name),
             kept.bytes,
             Some(files),
             FileOutEnded::Offered,
         );
-        crate::app_stream::stream(self.config).event(UiEventBody::LibraryChanged {});
+        self.tell(|message_id| {
+            UiEventBody::FolderOffered(hatchling_core::ui::FolderOffered {
+                chat_id: String::from(LOCAL_CHAT),
+                message_id,
+                folder: folder.clone(),
+            })
+        });
         RoomResult::FolderHandedOver {
             name: kept.name,
             files,

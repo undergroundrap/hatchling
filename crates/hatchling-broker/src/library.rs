@@ -457,6 +457,48 @@ struct State {
     /// The bytes the open conversation has read out of the Room.
     #[serde(default)]
     read: u64,
+    /// What was removed from the open conversation, oldest first: so its
+    /// chat says so after a restart (WO-043).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    removed: Vec<Removed>,
+}
+
+/// An item removed from the open conversation, as its chat says it was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Removed {
+    /// The broker's id for it.
+    pub id: String,
+    /// What it was.
+    pub kind: ItemKind,
+    /// Its name, as the broker made it.
+    pub name: String,
+    /// How many files it was.
+    pub files: u64,
+    /// Its bytes, all its files' together.
+    pub bytes: u64,
+    /// The reply it came from: the chat run's cell id.
+    pub reply: String,
+}
+
+/// Whether `removed` is what the Library can have removed from the open
+/// conversation: of an item it could have kept, with a reply, each once.
+fn is_removed(removed: &[Removed]) -> bool {
+    let ids: HashSet<&str> = removed.iter().map(|gone| gone.id.as_str()).collect();
+    removed.len() <= usize::try_from(HANDED_PER_CONVERSATION).unwrap_or(usize::MAX)
+        && ids.len() == removed.len()
+        && removed.iter().all(|gone| {
+            is_id(&gone.id)
+                && is_name(&gone.name)
+                && !gone.reply.is_empty()
+                && is_reply(&gone.reply)
+                && match gone.kind {
+                    ItemKind::File => gone.files == 1 && gone.bytes <= FILE_BYTES,
+                    ItemKind::Folder => {
+                        (1..=FOLDER_FILES).contains(&gone.files) && gone.bytes <= FOLDER_BYTES
+                    }
+                }
+        })
 }
 
 /// How many chunks `bytes` are kept in.
@@ -539,6 +581,8 @@ pub struct Shelf {
     pub read: u64,
     /// Its number.
     pub conversation: u64,
+    /// What was removed from it, oldest first.
+    pub removed: Vec<Removed>,
 }
 
 /// The conversation after `conversation`: refused past
@@ -677,6 +721,13 @@ impl<'k> Library<'k> {
             })
         {
             return Err(String::from("the Library's state holds what a state can't"));
+        }
+        // What was removed only says so in the chat: one that can't be is
+        // dropped, never the Library's undoing.
+        let mut state = state;
+        if !is_removed(&state.removed) {
+            tracing::warn!("the Library's removed items can't be what was removed: dropped");
+            state.removed.clear();
         }
         Ok(state)
     }
@@ -1119,8 +1170,45 @@ impl<'k> Library<'k> {
         self.turn_off_in(self.conversation()?)
     }
 
+    /// The owner's new conversation, begun: the next number, with handing
+    /// over **off** until [`Self::finish_new_conversation`], so no run of
+    /// the last conversation gives anything while the chat moves on. Its
+    /// number.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read or written.
+    pub fn begin_new_conversation(&self) -> Result<u64, String> {
+        self.opened(|vault, mut state| {
+            state.off = true;
+            state.conversation = next(state.conversation)?;
+            state.removed.clear();
+            Self::write(vault, STATE, &state)?;
+            Ok(state.conversation)
+        })
+    }
+
+    /// The owner's new conversation `conversation`, once the chat moved on
+    /// to it: its count and bytes start again, and handing over is on.
+    /// Nothing for any other conversation.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read or written: handing over stays off.
+    pub fn finish_new_conversation(&self, conversation: u64) -> Result<(), String> {
+        self.opened(|vault, mut state| {
+            if state.conversation != conversation {
+                return Ok(());
+            }
+            state.handed = 0;
+            state.read = 0;
+            state.off = false;
+            Self::write(vault, STATE, &state)
+        })
+    }
+
     /// A new conversation started: its count and bytes start again, and
-    /// handing over is on.
+    /// handing over is on. Both of the owner's steps at once.
     ///
     /// # Errors
     ///
@@ -1131,6 +1219,7 @@ impl<'k> Library<'k> {
             state.read = 0;
             state.off = false;
             state.conversation = next(state.conversation)?;
+            state.removed.clear();
             Self::write(vault, STATE, &state)
         })
     }
@@ -1145,6 +1234,7 @@ impl<'k> Library<'k> {
     pub fn regroup(&self) -> Result<(), String> {
         self.opened(|vault, mut state| {
             state.conversation = next(state.conversation)?;
+            state.removed.clear();
             Self::write(vault, STATE, &state)
         })
     }
@@ -1176,12 +1266,21 @@ impl<'k> Library<'k> {
     /// When the Library can't be read.
     pub fn shelf(&self) -> Result<Shelf, String> {
         self.opened(|vault, state| {
+            let items = Self::index(vault)?;
+            // What was removed, unless the index names it still: an item
+            // is never both.
+            let removed = state
+                .removed
+                .into_iter()
+                .filter(|gone| !items.iter().any(|item| item.id == gone.id))
+                .collect();
             Ok(Shelf {
-                items: Self::index(vault)?,
+                items,
                 handed: state.handed,
                 off: state.off,
                 read: state.read,
                 conversation: state.conversation,
+                removed,
             })
         })
     }
@@ -1496,6 +1595,24 @@ impl<'k> Library<'k> {
                 list_chunks: item.list_chunks,
             };
             state.pending = Some(pending.clone());
+            // What the open conversation gave, its chat says was removed:
+            // written with the removal, so it is said if the removal is
+            // made. Never for an item kept before items had replies; past
+            // the most, the oldest goes.
+            if item.conversation == state.conversation && !item.reply.is_empty() {
+                let most = usize::try_from(HANDED_PER_CONVERSATION).unwrap_or(usize::MAX);
+                if state.removed.len() >= most {
+                    state.removed.remove(0);
+                }
+                state.removed.push(Removed {
+                    id: item.id.clone(),
+                    kind: item.kind,
+                    name: item.name.clone(),
+                    files: item.files,
+                    bytes: item.bytes,
+                    reply: item.reply.clone(),
+                });
+            }
             if let Err(error) = Self::write(vault, STATE, &state) {
                 // A write can fail after its rename: a removal written as
                 // pending is one the next operation finishes.

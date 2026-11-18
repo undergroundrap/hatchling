@@ -1918,6 +1918,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "FolderOffered": {
+        "properties": {
+            "chat_id": {
+                "type": "string"
+            },
+            "folder": {
+                "$ref": "#/$defs/LibraryFolder"
+            },
+            "message_id": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "chat_id",
+            "message_id",
+            "folder"
+        ],
+        "type": "object"
+    },
     "GoalOp": {
         "oneOf": [
             {
@@ -2566,6 +2585,39 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "kept_at",
             "conversation",
             "left_out"
+        ],
+        "type": "object"
+    },
+    "LibraryRemoved": {
+        "properties": {
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "files": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "folder": {
+                "type": "boolean"
+            },
+            "id": {
+                "type": "string"
+            },
+            "name": {
+                "type": "string"
+            },
+            "reply": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "id",
+            "name",
+            "folder",
+            "files",
+            "bytes",
+            "reply"
         ],
         "type": "object"
     },
@@ -6222,6 +6274,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                         },
                         "type": "array"
                     },
+                    "removed": {
+                        "items": {
+                            "$ref": "#/$defs/LibraryRemoved"
+                        },
+                        "type": "array"
+                    },
                     "result": {
                         "const": "library",
                         "type": "string"
@@ -6234,6 +6292,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "result",
                     "files",
                     "folders",
+                    "removed",
                     "standing"
                 ],
                 "type": "object"
@@ -6678,6 +6737,19 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "properties": {
                     "kind": {
                         "const": "file_withheld",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "kind"
+                ],
+                "type": "object"
+            },
+            {
+                "$ref": "#/$defs/FolderOffered",
+                "properties": {
+                    "kind": {
+                        "const": "folder_offered",
                         "type": "string"
                     }
                 },

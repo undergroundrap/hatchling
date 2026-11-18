@@ -4101,6 +4101,29 @@
       ],
       "type": "object"
     },
+    "FolderOffered": {
+      "description": "The agent handed the owner a folder (v8, WO-043): it is kept in the\nLibrary.",
+      "properties": {
+        "chat_id": {
+          "description": "The chat it was handed over in.",
+          "type": "string"
+        },
+        "folder": {
+          "$ref": "#/$defs/LibraryFolder",
+          "description": "The folder."
+        },
+        "message_id": {
+          "description": "Its place in the chat: the broker's.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chat_id",
+        "message_id",
+        "folder"
+      ],
+      "type": "object"
+    },
     "GoalOp": {
       "description": "An operation on the owner's goals, from their app: the same goals the\nagent reads in a chat and a feed.",
       "oneOf": [
@@ -5389,6 +5412,48 @@
         "kept_at",
         "conversation",
         "left_out"
+      ],
+      "type": "object"
+    },
+    "LibraryRemoved": {
+      "description": "An item removed from the Library that the open conversation gave (v8,\nWO-043): its chat says so, after a restart too.",
+      "properties": {
+        "bytes": {
+          "description": "Its bytes, all its files' together.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "files": {
+          "description": "How many files it was.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "folder": {
+          "description": "Whether it was a folder.",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The broker's id for it, as it was.",
+          "type": "string"
+        },
+        "name": {
+          "description": "The broker's name for it.",
+          "type": "string"
+        },
+        "reply": {
+          "description": "The reply it came from: the chat run's cell id.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "folder",
+        "files",
+        "bytes",
+        "reply"
       ],
       "type": "object"
     },
@@ -14342,6 +14407,13 @@
               },
               "type": "array"
             },
+            "removed": {
+              "description": "What was removed that the open conversation gave, oldest first\n(v8): its chat says so.",
+              "items": {
+                "$ref": "#/$defs/LibraryRemoved"
+              },
+              "type": "array"
+            },
             "result": {
               "const": "library",
               "type": "string"
@@ -14355,6 +14427,7 @@
             "result",
             "files",
             "folders",
+            "removed",
             "standing"
           ],
           "type": "object"
@@ -14873,6 +14946,20 @@
           "properties": {
             "kind": {
               "const": "file_withheld",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/FolderOffered",
+          "description": "The agent handed the owner a folder, kept in the Library (v8).",
+          "properties": {
+            "kind": {
+              "const": "folder_offered",
               "type": "string"
             }
           },

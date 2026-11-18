@@ -13,7 +13,7 @@ import { messageActions, nativeAttachment } from './message-actions.js';
 import { floatingAgent } from '../context/presence.js';
 import { bindIconMotion } from '../../components/motion.js';
 import { fileSendRows, giveFile, givenFileDetail, offersFiles } from './file-in.js';
-import { offeredFileDetail } from './file-out.js';
+import { givenElsewhere, givenInReply, offeredFileDetail, offeredFolderDetail } from './file-out.js';
 import type { AppContext } from '../../app/context.js';
 import type { ArtifactFormat, DeepReadonly, Message } from '../../protocol/models.js';
 import { h } from '../../components/dom.js';
@@ -28,7 +28,9 @@ export function renderChat(ctx: AppContext): HTMLElement {
     const history = ctx.delivery.history(chat.id);
     const messages = history.hasCache || history.phase === 'ready' ? ctx.state.messages.filter(message => message.chatId === chat.id) : [];
     const pending = ctx.delivery.visibleEntries(chat.id);
-    const column = h('div', { class: 'chat-column' }, messages.length ? null : historyPlaceholder(ctx), ...messages.map(message => renderMessage(ctx, message)), ...pending.map(item => outboxRow(ctx, item)), ctx.state.turn === 'working' && ctx.delivery.connection.kind === 'ready' && history.phase === 'ready' ? h('div', { class: 'typing-indicator', 'aria-label': 'Working on it' }, h('i'), h('i'), h('i')) : null);
+    // What this conversation gave in replies it doesn't show, kept apart under none.
+    const elsewhere = chat.id === 'main' && messages.length > 0 ? givenElsewhere(ctx) : null;
+    const column = h('div', { class: 'chat-column' }, messages.length ? null : historyPlaceholder(ctx), elsewhere, ...messages.map(message => renderMessage(ctx, message)), ...pending.map(item => outboxRow(ctx, item)), ctx.state.turn === 'working' && ctx.delivery.connection.kind === 'ready' && history.phase === 'ready' ? h('div', { class: 'typing-indicator', 'aria-label': 'Working on it' }, h('i'), h('i'), h('i')) : null);
     const stream = h('div', { class: `chat-scroll${messages.length === 0 ? ' has-history-state' : ''}`, 'data-scroll': `chat-${ctx.ui.chatId}`, role: 'log', 'aria-label': 'Conversation', 'aria-live': 'polite', 'aria-busy': history.phase === 'loading' }, column);
     const connection = connectionBanner(ctx);
     const stale = historyNotice(ctx);
@@ -63,6 +65,10 @@ function renderMessage(ctx: AppContext, message: DeepReadonly<Message>): HTMLEle
         const bubbles = [message.text];
         for (const text of bubbles)
             root.append(h('div', { class: `bubble ${user ? 'user-bubble' : 'agent-bubble'}` }, markdown(text, false)));
+        // What the agent gave in this reply, from the Library (WO-043).
+        const given = givenInReply(ctx, message);
+        if (given !== null)
+            root.append(given);
     }
     else if (message.kind === 'choice') {
         root.append(h('div', { class: 'bubble agent-bubble choice-bubble' }, h('p', {}, message.text), h('div', { class: 'choice-options', role: 'group', 'aria-label': message.text }, ...message.options.map((option) => {
@@ -112,7 +118,7 @@ function renderMessage(ctx: AppContext, message: DeepReadonly<Message>): HTMLEle
     else {
         const evidenceId = message.evidenceId;
         const name = message.kind === 'device' ? 'device' : message.kind === 'error' ? 'warning' : 'run';
-        root.append(h('div', { class: `stream-event ${message.kind}` }, icon(name, 16), h('div', {}, h('p', {}, message.text), givenFileDetail(ctx, message), offeredFileDetail(ctx, message), evidenceId ? button('View evidence', () => ctx.openThread(evidenceId), { variant: 'link' }) : null)));
+        root.append(h('div', { class: `stream-event ${message.kind}` }, icon(name, 16), h('div', {}, h('p', {}, message.text), givenFileDetail(ctx, message), offeredFileDetail(ctx, message), offeredFolderDetail(ctx, message), evidenceId ? button('View evidence', () => ctx.openThread(evidenceId), { variant: 'link' }) : null)));
     }
     if (message.reaction) {
         const reaction = button(message.reaction, () => { void ctx.run({ type: 'message.react', id: message.id, reaction: '' }, true); }, { className: 'reaction-chip' });
