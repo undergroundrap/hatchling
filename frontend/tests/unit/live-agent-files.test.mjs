@@ -10,7 +10,8 @@ import { LiveAdapter } from '../../dist/app/adapters/live/adapter.js';
 import { LiveClient } from '../../dist/app/adapters/live/client.js';
 import { FILE_OUT_BYTES, LiveAgentFiles, PART_BYTES, browserDigest, saveBytes } from '../../dist/app/adapters/live/agent-files.js';
 import { SAMPLE_WELCOME, sampleEvent } from '../../dist/app/adapters/live/fixtures.js';
-import { caution, isGivenName, runs } from '../../dist/app/session/agent-files.js';
+import { caution, folderPathsRefused, isGivenName, leftOutWords, libraryGroups, runs } from '../../dist/app/session/agent-files.js';
+import { holdsGit } from '../../dist/app/adapters/live/agent-files.js';
 class FakeTransport {
     sent = [];
     handlers = [];
@@ -75,7 +76,7 @@ function library(respond, options = {}) {
     const saved = [];
     let drawn = 0;
     let serial = 0;
-    const files = new LiveAgentFiles(client, () => drawn++, () => `request-${++serial}`, { save: (bytes, name) => saved.push([bytes, name]), digest: async (bytes) => sha(bytes), wait: 1000, ...options });
+    const files = new LiveAgentFiles(client, () => drawn++, () => `request-${++serial}`, { save: (parts, name) => saved.push([Buffer.concat(parts.map(part => Buffer.from(part))), name]), digest: async (bytes) => sha(bytes), wait: 1000, ...options });
     client.connect();
     transport.open();
     transport.deliver(SAMPLE_WELCOME);
@@ -285,7 +286,8 @@ test('a file is saved as bytes, typed as bytes whatever its name, and its addres
         body: { append: (element) => appended.push(element) },
     };
     try {
-        saveBytes(Uint8Array.from([60, 104, 49, 62]), 'page.html');
+        saveBytes([Uint8Array.from([60, 104]), Uint8Array.from([49, 62])], 'page.html');
+        assert.equal(blob.size, 4);
         assert.equal(blob.type, 'application/octet-stream');
         const [link] = made;
         assert.deepEqual([link.tag, link.attributes, link.clicked, link.removed, appended.length], ['a', { href: 'blob:test-1', download: 'page.html' }, 1, true, 1]);
@@ -435,13 +437,13 @@ test('every file downloads as one .zip, each checked as a download is, and saved
     const { files, saved, transport } = library(keeping([{ file: wire(a, { name: 'a.bin' }), bytes: a }, { file: wire(b, { id: 'f2', name: 'a.bin', kept_at: '2026-11-17T01:00:00Z' }), bytes: b }]));
     await settle();
     const going = files.downloadAll();
-    assert.deepEqual([files.downloadingAll(), files.downloading('f1'), files.downloading('f9')], [{ done: 0, total: 2 }, true, true]);
+    assert.deepEqual([files.downloadProgress(), files.downloading('f1'), files.downloading('f9')], [{ done: 0, total: 2 }, true, true]);
     assert.deepEqual(await files.download('f1'), { ok: false, message: 'Another file is downloading. Try again when it’s done.' });
     assert.deepEqual(await files.downloadAll(), { ok: false, message: 'A download is under way. Try again when it’s done.' });
     const result = await going;
     assert.equal(result.ok, true);
-    assert.match(result.message, /^Gave your browser hatchling-library\.zip, 2 files, .*\. 2 of them can run something when opened, as Settings says of each: open them only if you trust what the agent made\.$/u);
-    assert.equal(files.downloadingAll(), null);
+    assert.match(result.message, /^Gave your browser hatchling-library\.zip, 2 files, .*\. 2 of them can run something when opened: open them only if you trust what the agent made\.$/u);
+    assert.equal(files.downloadProgress(), null);
     assert.deepEqual(saved.map(([, name]) => name), [ALL_NAME]);
     assert.deepEqual(transport.actions('begin_file_out').map(action => action.id), ['f1', 'f2']);
     // The .zip holds each file whole, by its name.
@@ -468,7 +470,7 @@ test('every file\'s download counts each file done, so the owner sees it go', as
     const client = new LiveClient(transport, 'test-ui', () => undefined);
     let files;
     let serial = 0;
-    files = new LiveAgentFiles(client, () => counts.push(files?.downloadingAll() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => sha(bytes), wait: 1000 });
+    files = new LiveAgentFiles(client, () => counts.push(files?.downloadProgress() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => sha(bytes), wait: 1000 });
     client.connect();
     transport.open();
     transport.deliver(SAMPLE_WELCOME);
@@ -485,8 +487,8 @@ test('a download that throws saves nothing and says so', async () => {
     const one = library(keeping([{ file: wire(a), bytes: a }, { file: wire(a, { id: 'f2', name: 'b.txt' }), bytes: a }]), { save: throwing });
     await settle();
     assert.deepEqual(await one.files.download('f1'), { ok: false, message: 'The file couldn’t be downloaded. Nothing was saved. Try again.' });
-    assert.deepEqual(await one.files.downloadAll(), { ok: false, message: 'The files couldn’t be put together, perhaps for want of memory. Nothing was saved. Download them one at a time.' });
-    assert.deepEqual([one.files.downloading('f1'), one.files.downloadingAll()], [false, null]);
+    assert.deepEqual(await one.files.downloadAll(), { ok: false, message: 'The files couldn’t be put together: too many for one .zip, or too much for this page’s memory. Nothing was saved. Choose fewer, or download them one at a time.' });
+    assert.deepEqual([one.files.downloading('f1'), one.files.downloadProgress()], [false, null]);
 });
 test('a download of every file that fails anywhere saves nothing, and says which', async () => {
     const a = bytesOf(3);
@@ -498,7 +500,7 @@ test('a download of every file that fails anywhere saves nothing, and says which
     // Nothing listed, nothing read yet, or no hash to check with: nothing asked.
     const empty = library(keeping([]));
     await settle();
-    assert.deepEqual(await empty.files.downloadAll(), { ok: false, message: 'Hatchling’s Library holds no files to download.' });
+    assert.deepEqual(await empty.files.downloadAll(), { ok: false, message: 'Hatchling’s Library holds nothing to download.' });
     const unread = new LiveAgentFiles(new LiveClient(new FakeTransport(), 'test-ui', () => undefined), () => undefined, () => 'request-1', { save: () => assert.fail('saved'), digest: async () => '' });
     assert.deepEqual(await unread.downloadAll(), { ok: false, message: 'Hatchling’s Library hasn’t been read yet. Refresh it, then try again.' });
     const blind = library(keeping([{ file: wire(a), bytes: a }]), { digest: null });
@@ -536,9 +538,9 @@ test('a folder is listed by its name and counts; an item whose name or counts th
     assert.equal(state.kind, 'read');
     assert.deepEqual(state.files.map(file => file.id), ['f1']);
     assert.deepEqual(state.folders, [
-        { id: 'd'.repeat(64), name: 'site', files: 3, bytes: 4096, keptAt: '2026-11-18T00:00:00Z', reply: null, conversation: 1 },
-        { id: '0'.repeat(64), name: 'one', files: 1, bytes: 32 * 1024 * 1024, keptAt: '2026-11-18T00:00:00Z', reply: null, conversation: 1 },
-        { id: '2'.repeat(64), name: 'most', files: 512, bytes: 4096, keptAt: '2026-11-18T00:00:00Z', reply: null, conversation: 1 },
+        { id: 'd'.repeat(64), name: 'site', files: 3, bytes: 4096, sha256: 'ab', leftOut: { links: 0, mounts: 0, others: 0 }, keptAt: '2026-11-18T00:00:00Z', reply: null, conversation: 1 },
+        { id: '0'.repeat(64), name: 'one', files: 1, bytes: 32 * 1024 * 1024, sha256: 'ab', leftOut: { links: 0, mounts: 0, others: 0 }, keptAt: '2026-11-18T00:00:00Z', reply: null, conversation: 1 },
+        { id: '2'.repeat(64), name: 'most', files: 512, bytes: 4096, sha256: 'ab', leftOut: { links: 0, mounts: 0, others: 0 }, keptAt: '2026-11-18T00:00:00Z', reply: null, conversation: 1 },
     ]);
     // Every item it can't name is shown; one whose id the broker never gives can't be removed from here.
     assert.deepEqual(state.unnamed, [
@@ -555,7 +557,7 @@ test('a folder is listed by its name and counts; an item whose name or counts th
 test('a folder asked for as a file, or a place it doesn\'t hold, is said and saves nothing', async () => {
     const bytes = bytesOf(3);
     for (const [refusal, said] of [
-        ['a_folder', 'It is a folder: downloading a folder comes in a later version of Hatchling.'],
+        ['a_folder', 'Hatchling answered for a folder as if it were a file.'],
         ['not_a_folder', 'Hatchling answered for a file as if it were a folder.'],
         ['out_of_range', 'Hatchling answered for a file its folder doesn’t hold.'],
     ]) {
@@ -608,7 +610,7 @@ test('a folder the stream says was given is kept by its message, and reads as re
     assert.equal(files.offeredFolder('fold-1'), undefined);
     files.observeFolder({ kind: 'folder_offered', chat_id: 'local', message_id: 'fold-1', folder });
     await settle();
-    assert.deepEqual(files.offeredFolder('fold-1'), { id: 'd'.repeat(64), name: 'site', files: 2, bytes: 7, keptAt: '2026-11-18T00:00:00Z', reply: runId(1), conversation: 1, removed: false });
+    assert.deepEqual(files.offeredFolder('fold-1'), { id: 'd'.repeat(64), name: 'site', files: 2, bytes: 7, sha256: 'ab', leftOut: { links: 0, mounts: 0, others: 0 }, keptAt: '2026-11-18T00:00:00Z', reply: runId(1), conversation: 1, removed: false });
     // Shown again, nothing doubles.
     files.observeFolder({ kind: 'folder_offered', chat_id: 'local', message_id: 'fold-1', folder });
     await settle();
@@ -632,4 +634,346 @@ test('a folder removed since its live notice is not said again under its reply, 
     assert.deepEqual(files.givenIn('m1'), []);
     assert.equal(files.offeredFolder('fold-1').removed, true);
     assert.deepEqual(files.givenElsewhere().map(card => card.kind === 'folder' ? card.folder.name : card.kind), ['site2']);
+});
+/** The files of `zip`, by the name each has, read by its central directory. */
+function unzipped(zip) {
+    const end = zip.length - 22;
+    assert.equal(zip.readUInt32LE(end), 0x06054b50);
+    const out = new Map();
+    let at = zip.readUInt32LE(end + 16);
+    for (let entry = 0; entry < zip.readUInt16LE(end + 10); entry++) {
+        assert.equal(zip.readUInt32LE(at), 0x02014b50);
+        const size = zip.readUInt32LE(at + 24);
+        const nameLength = zip.readUInt16LE(at + 28);
+        const local = zip.readUInt32LE(at + 42);
+        const name = zip.subarray(at + 46, at + 46 + nameLength).toString('latin1');
+        const start = local + 30 + zip.readUInt16LE(local + 26);
+        out.set(name, { bytes: Buffer.from(zip.subarray(start, start + size)), attributes: zip.readUInt32LE(at + 38) });
+        at += 46 + nameLength;
+    }
+    return out;
+}
+/** The list a folder of `entries` (each `{ path, bytes }`) has, as the Library keeps it. */
+const listOf = (entries) => entries.map(({ path, bytes }) => ({ path, bytes: bytes.length, sha256: sha(bytes) }));
+/** A folder of `entries` as the wire says it, its list's hash the Library's. */
+function folderWire(entries, fields = {}) {
+    return { id: 'd'.repeat(64), name: 'site', files: entries.length, bytes: entries.reduce((all, entry) => all + entry.bytes.length, 0), sha256: sha(Buffer.from(JSON.stringify(listOf(entries)))), kept_at: '2026-11-18T00:00:00Z', conversation: 1, reply: runId(1), left_out: { links: 0, mounts: 0, others: 0 }, ...fields };
+}
+/**
+ * A broker keeping the folder `folder` of `entries` and the files `files`,
+ * answering as the Library does; `fields` change a page, a file's start or a part.
+ */
+function keepingFolder(folder, entries, files = [], fields = {}) {
+    const asFiles = keeping(files);
+    let begun = null;
+    return (action) => {
+        switch (action.action) {
+            case 'list_library': return { result: 'library', folders: [folder], removed: [], files: files.map(entry => entry.file), standing: STANDING };
+            case 'list_folder': {
+                const list = listOf(entries);
+                return { result: 'folder', id: action.id, from: action.from, total: list.length, entries: list.slice(action.from, action.from + 32), ...fields.page?.(action) };
+            }
+            case 'begin_file_out': {
+                if (action.file === undefined) {
+                    begun = null;
+                    return asFiles(action);
+                }
+                const entry = entries[action.file];
+                begun = entry.bytes;
+                return { result: 'folder_file_out_begun', download_id: 'out-2', id: action.id, file: action.file, path: entry.path, bytes: entry.bytes.length, sha256: sha(entry.bytes), parts: Math.ceil(entry.bytes.length / PART_BYTES), ...fields.begun?.(action) };
+            }
+            case 'file_out_part': {
+                if (begun === null)
+                    return asFiles(action);
+                const part = begun.subarray(action.seq * PART_BYTES, (action.seq + 1) * PART_BYTES);
+                return { result: 'file_out_part_read', download_id: action.download_id, seq: action.seq, data: Buffer.from(part).toString('base64'), ...fields.part?.(action) };
+            }
+            default: return asFiles(action);
+        }
+    };
+}
+test('a folder downloads as one .zip under its name, its folders as they were, every file read out, checked and whole', async () => {
+    // At least 100 files, nested: every one comes back byte for byte.
+    const entries = [
+        { path: 'index.html', bytes: bytesOf(10) },
+        { path: 'assets/big.bin', bytes: bytesOf(PART_BYTES * 2 + 3) },
+        { path: 'assets/empty', bytes: new Uint8Array(0) },
+        ...Array.from({ length: 110 }, (_, n) => ({ path: `pages/${n % 4}/deep/p${n}.md`, bytes: Buffer.from(`page ${n}`) })),
+    ];
+    const folder = folderWire(entries);
+    const { files, saved, transport } = library(keepingFolder(folder, entries));
+    await settle();
+    const going = files.download(folder.id);
+    assert.deepEqual([files.downloading(folder.id), files.downloadProgress()], [true, { done: 0, total: 113 }]);
+    const result = await going;
+    assert.equal(result.ok, true, result.message);
+    assert.match(result.message, /^Gave your browser site\.zip, 113 files, .*, to save\. 2 of them can run something when opened: open them only if you trust what the agent made\.$/u);
+    assert.deepEqual(transport.actions('list_folder').map(action => action.from), [0, 32, 64, 96]);
+    assert.deepEqual(transport.actions('begin_file_out').map(action => action.file), entries.map((_, at) => at));
+    assert.deepEqual([saved.length, saved[0][1]], [1, 'site.zip']);
+    const zip = unzipped(saved[0][0]);
+    for (const entry of entries)
+        assert.ok(zip.get(`site/${entry.path}`)?.bytes.equals(Buffer.from(entry.bytes)), entry.path);
+    // Each folder is an entry of its own, once, marked as a folder; nothing else is in it.
+    const folders = [...zip.keys()].filter(name => name.endsWith('/'));
+    assert.deepEqual(folders.slice(0, 2), ['site/', 'site/assets/']);
+    assert.equal(new Set(folders).size, folders.length);
+    assert.ok(folders.every(name => zip.get(name).attributes === 0x10 && zip.get(name).bytes.length === 0));
+    assert.equal(zip.size, entries.length + folders.length);
+    assert.equal(files.downloadProgress(), null);
+    assert.equal(files.downloading(folder.id), false);
+});
+test('a folder the stream gave downloads before the list holds it; one being read can\'t be asked again', async () => {
+    const entries = [{ path: 'a.txt', bytes: bytesOf(4) }];
+    const folder = folderWire(entries);
+    const respond = keepingFolder(folder, entries);
+    const { files, saved } = library((action) => action.action === 'list_library' ? { result: 'library', files: [], folders: [], removed: [], standing: STANDING } : respond(action));
+    await settle();
+    files.observeFolder({ kind: 'folder_offered', chat_id: 'local', message_id: 'fold-1', folder });
+    const going = files.download(folder.id);
+    assert.deepEqual(await files.download(folder.id), { ok: false, message: 'It is already downloading.' });
+    assert.equal((await going).ok, true);
+    assert.equal(saved[0][1], 'site.zip');
+});
+test('a folder\'s list is held to the folder chosen, page by page and to its hash, and each file to its entry; any that isn\'t saves nothing', async () => {
+    const entries = [{ path: 'a/one.txt', bytes: bytesOf(5) }, { path: 'two.txt', bytes: bytesOf(PART_BYTES + 1) }];
+    const said = async (folderFields, fields, wire_ = entries) => {
+        const folder = folderWire(wire_, folderFields);
+        const { files, saved } = library(keepingFolder(folder, entries, [], fields));
+        await settle();
+        const result = await files.download(folder.id);
+        assert.deepEqual([result.ok, saved.length], [false, 0], result.message);
+        return result.message;
+    };
+    const UNEXPECTED = 'site: Hatchling answered with something else. Nothing was saved.';
+    const NOT_LISTED = 'site: Hatchling’s list of its files doesn’t match the folder. Nothing was saved.';
+    // A page of another folder, from another place, of another count, or short.
+    assert.equal(await said({}, { page: () => ({ id: 'e'.repeat(64) }) }), UNEXPECTED);
+    assert.equal(await said({}, { page: action => ({ from: action.from + 1 }) }), UNEXPECTED);
+    assert.equal(await said({}, { page: () => ({ total: 3 }) }), UNEXPECTED);
+    assert.equal(await said({}, { page: () => ({ entries: [] }) }), UNEXPECTED);
+    assert.equal(await said({}, { page: () => ({ result: 'inbox', files: [] }) }), UNEXPECTED);
+    assert.equal(await said({}, { page: () => ({ result: 'file_out_refused', reason: { refusal: 'damaged' } }) }), 'site: Hatchling’s copy of it is damaged. Nothing was saved. Remove it, and ask the agent for it again.');
+    // A list that isn't the folder's: another hash, another size, a hash that can't be one, or a file larger than one can be.
+    assert.equal(await said({ sha256: sha(bytesOf(1)) }, {}), NOT_LISTED);
+    assert.equal(await said({ bytes: 1 }, {}), NOT_LISTED);
+    const upper = listOf(entries).map(entry => ({ ...entry, sha256: entry.sha256.toUpperCase() }));
+    assert.equal(await said({ sha256: sha(Buffer.from(JSON.stringify(upper))) }, { page: action => ({ entries: upper.slice(action.from) }) }), NOT_LISTED);
+    const large = listOf(entries).map((entry, at) => at === 0 ? { ...entry, bytes: FILE_OUT_BYTES + 1 } : entry);
+    assert.equal(await said({ sha256: sha(Buffer.from(JSON.stringify(large))), bytes: large.reduce((all, entry) => all + entry.bytes, 0) }, { page: action => ({ entries: large.slice(action.from) }) }), NOT_LISTED);
+    // A path Hatchling never keeps, whatever the list's hash says.
+    const bad = [{ path: '../out.txt', bytes: bytesOf(1) }];
+    const climbing = folderWire(bad);
+    const climb = library(keepingFolder(climbing, bad));
+    await settle();
+    assert.deepEqual(await climb.files.download(climbing.id), { ok: false, message: 'site: A path in it isn’t one Hatchling keeps (a step of a path is empty, . or ..). Nothing was saved.' });
+    // A file that starts as another's: its folder, place, path, size, hash or parts.
+    for (const begun of [{ id: 'e'.repeat(64) }, { file: 9 }, { path: 'x.txt' }, { bytes: 4 }, { sha256: sha(bytesOf(9)) }, { parts: 7 }])
+        assert.equal(await said({}, { begun: () => begun }), UNEXPECTED, JSON.stringify(begun));
+    assert.equal(await said({}, { begun: () => ({ result: 'file_out_refused', reason: { refusal: 'out_of_range' } }) }), 'site: Hatchling answered for a file its folder doesn’t hold.');
+    // A part that isn't the file's.
+    assert.equal(await said({}, { part: () => ({ data: Buffer.from('changed').toString('base64') }) }), 'site: The file didn’t arrive whole. Nothing was saved. Try again.');
+    // No answer at all, to a page or a file's start.
+    const quiet = async (name) => {
+        const folder = folderWire(entries);
+        const respond = keepingFolder(folder, entries);
+        const { files } = library((action) => action.action === name ? undefined : respond(action), { wait: 20 });
+        await settle();
+        return (await files.download(folder.id)).message;
+    };
+    assert.equal(await quiet('list_folder'), 'site: Hatchling didn’t answer in time. Nothing was saved.');
+    assert.equal(await quiet('begin_file_out'), 'site: Hatchling didn’t answer in time. Nothing was saved.');
+});
+test('what a folder\'s walk left out, a .git in it, and paths too long for Explorer are said when it is saved', async () => {
+    const long = `${'d'.repeat(120)}/${'e'.repeat(80)}.txt`;
+    const entries = [{ path: '.git/hooks/pre-commit', bytes: bytesOf(3) }, { path: long, bytes: bytesOf(2) }, { path: 'run.sh', bytes: bytesOf(1) }];
+    const folder = folderWire(entries, { left_out: { links: 2, mounts: 1, others: 1 } });
+    const { files } = library(keepingFolder(folder, entries));
+    await settle();
+    const { message } = await files.download(folder.id);
+    assert.equal(message, `Gave your browser site.zip, 3 files, ${message.match(/3 files, ([^,]+),/u)[1]}, to save. 1 of them can run something when opened: open them only if you trust what the agent made. It holds a git repository: git run in it can run that repository’s hooks and settings, so look at them before you use git there. 1 path in it is long: unpack it near the top of a drive, or Windows’ Explorer may not unpack it. site: Left out when it was given: 2 links, 1 other drive, 1 special file.`);
+    // Two long paths are said as two.
+    const two = [{ path: long, bytes: bytesOf(1) }, { path: `${long}x`, bytes: bytesOf(1) }];
+    const both = folderWire(two);
+    const second = library(keepingFolder(both, two));
+    await settle();
+    assert.match((await second.files.download(both.id)).message, / 2 paths in it are long: unpack it near the top of a drive, or Windows’ Explorer may not unpack them\.$/u);
+});
+test('items chosen download as one .zip, in the order asked: files by name, folders under theirs, names at the top made distinct', async () => {
+    const entries = [{ path: 'inner.txt', bytes: bytesOf(6) }];
+    const folder = folderWire(entries, { name: 'notes.txt' });
+    const a = bytesOf(3);
+    const { files, saved, transport } = library(keepingFolder(folder, entries, [{ file: wire(a, { name: 'notes.txt' }), bytes: a }]));
+    await settle();
+    const going = files.downloadMany(['f1', 'gone', folder.id], 'hatchling-chosen.zip');
+    assert.deepEqual([files.downloading('f1'), files.downloading(folder.id), files.downloadProgress()], [true, true, { done: 0, total: 2 }]);
+    assert.deepEqual(await files.downloadMany(['f1'], 'x.zip'), { ok: false, message: 'A download is under way. Try again when it’s done.' });
+    const result = await going;
+    assert.equal(result.ok, true, result.message);
+    assert.match(result.message, /^Gave your browser hatchling-chosen\.zip, 2 files,/u);
+    assert.deepEqual(transport.actions('begin_file_out').map(action => [action.id, action.file]), [['f1', undefined], [folder.id, 0]]);
+    const zip = unzipped(saved[0][0]);
+    assert.deepEqual([...zip.keys()], ['notes.txt', 'notes-2.txt/', 'notes-2.txt/inner.txt']);
+    assert.equal(saved[0][1], 'hatchling-chosen.zip');
+    // Nothing listed among them: said, nothing asked.
+    assert.deepEqual(await files.downloadMany(['gone'], 'x.zip'), { ok: false, message: 'Nothing chosen is in Hatchling’s Library now. Refresh it, then choose again.' });
+    const blind = library(keepingFolder(folder, entries), { digest: null });
+    await settle();
+    assert.match((await blind.files.downloadMany([folder.id], 'x.zip')).message, /^This page can’t check a file’s hash/u);
+    assert.match((await blind.files.download(folder.id)).message, /^This page can’t check a file’s hash/u);
+    // Download all takes the folders too.
+    const all = library(keepingFolder(folder, entries, [{ file: wire(a, { name: 'notes.txt' }), bytes: a }]));
+    await settle();
+    assert.match((await all.files.downloadAll()).message, /^Gave your browser hatchling-library\.zip, 2 files,/u);
+    // A file in the choice that fails names itself.
+    const failing = library(keepingFolder(folder, entries, [{ file: wire(a, { sha256: sha(bytesOf(9)) }), bytes: a }]));
+    await settle();
+    assert.deepEqual(await failing.files.downloadMany(['f1'], 'x.zip'), { ok: false, message: 'report.pdf: The file didn’t arrive whole. Nothing was saved. Try again.' });
+});
+test('the items chosen are those the Library was last listed with; removing one lets it go', async () => {
+    const a = bytesOf(3);
+    const { files } = library(keeping([{ file: wire(a), bytes: a }, { file: wire(a, { id: 'f2', name: 'b.txt' }), bytes: a }]));
+    assert.deepEqual([...files.chosen()], []);
+    await settle();
+    files.choose('f2', true);
+    files.choose('f1', true);
+    files.choose('nowhere', true);
+    assert.deepEqual([...files.chosen()], ['f2', 'f1']);
+    files.choose('f2', false);
+    assert.deepEqual([...files.chosen()], ['f1']);
+    assert.equal((await files.remove('f1')).ok, true);
+    assert.deepEqual([...files.chosen()], []);
+    files.choose('f1', true);
+    assert.deepEqual([...files.chosen()], []);
+    // Removed, then listed again: not chosen, though it once was.
+    const relisting = library((action) => action.action === 'remove_library_file' ? { result: 'library_file_removed', id: action.id } : action.action === 'list_library' ? { result: 'library', files: [wire(a)], folders: [], removed: [], standing: STANDING } : undefined);
+    await settle();
+    relisting.files.choose('f1', true);
+    assert.equal((await relisting.files.remove('f1')).ok, true);
+    await relisting.files.refresh();
+    assert.deepEqual([...relisting.files.chosen()], []);
+});
+test('a folder\'s paths are held to the broker\'s rules here, each one refused for the right reason', () => {
+    assert.equal(folderPathsRefused(['index.html', 'a/b/c.txt', '.github/workflows/ci.yml', 'with space.txt', '-dash', 'a/b/d']), null);
+    const refused = [
+        [['a//b'], 'a step of a path is empty, . or ..'],
+        [['/abs'], 'a step of a path is empty, . or ..'],
+        [['a/./b'], 'a step of a path is empty, . or ..'],
+        [['a/../b'], 'a step of a path is empty, . or ..'],
+        [['x'.repeat(256)], 'a name is longer than 255 bytes'],
+        [['caf\u00e9'], 'a name isn’t plain ASCII, or holds a character Windows forbids'],
+        [['tab\there'], 'a name isn’t plain ASCII, or holds a character Windows forbids'],
+        [['del\u007f'], 'a name isn’t plain ASCII, or holds a character Windows forbids'],
+        ...['<', '>', ':', '"', '\\', '|', '?', '*'].map(char => [[`a${char}b`], 'a name isn’t plain ASCII, or holds a character Windows forbids']),
+        [[' lead'], 'a name starts or ends with a space, or ends with a dot'],
+        [['trail '], 'a name starts or ends with a space, or ends with a dot'],
+        [['dot.'], 'a name starts or ends with a space, or ends with a dot'],
+        ...['con', 'PRN', 'aux.txt', 'nul .txt', 'COM1', 'lpt9.tar.gz', 'conin$', 'CONOUT$.log', 'clock$'].map(name => [[`d/${name}`], 'a name is one Windows keeps for a device']),
+        ...['desktop.ini', 'x.lnk', 'x.URL', 'a.library-ms', 'a.scf', 'a.theme'].map(name => [[name], 'a name is a kind of file Windows acts on when its folder is shown']),
+        [[`${'a/'.repeat(16)}b`], 'a path is more than 16 steps deep'],
+        [[Array.from({ length: 5 }, () => 'y'.repeat(250)).join('/')], 'a path is longer than 1,024 bytes'],
+        [['a.txt', 'A.TXT'], 'two paths are the same but for case'],
+        [['a', 'a/b'], 'a path is a file where another has a folder'],
+        [['x/y/z', 'X/Y'], 'a path is a file where another has a folder'],
+    ];
+    for (const [paths, why] of refused)
+        assert.equal(folderPathsRefused(paths), why, JSON.stringify(paths));
+    // At the bounds, kept.
+    assert.equal(folderPathsRefused([`${'a/'.repeat(15)}b`, 'x'.repeat(255), 'com10', 'lpt', 'conin', 'nul_x']), null);
+    // A path of 1,024 bytes is kept, one of 1,025 isn't.
+    const at = (length) => [...Array.from({ length: 4 }, () => 'p'.repeat(250)), 'q'.repeat(length - 1004)].join('/');
+    assert.equal(at(1024).length, 1024);
+    assert.equal(folderPathsRefused([at(1024)]), null);
+    assert.equal(folderPathsRefused([at(1025)]), 'a path is longer than 1,024 bytes');
+    assert.equal(leftOutWords({ links: 0, mounts: 0, others: 0 }), '');
+    assert.equal(leftOutWords({ links: 1, mounts: 2, others: 0 }), 'Left out when it was given: 1 link, 2 other drives.');
+});
+test('the Library is grouped by conversation, the open one first, then newest; by reply in the order given, none last', () => {
+    const file = (id, conversation, reply, hour) => ({ id, name: `${id}.txt`, bytes: 1, sha256: 'ab', keptAt: `2026-11-18T0${hour}:00:00Z`, reply, conversation });
+    const groups = libraryGroups([file('a', 1, 'r1', 3), file('b', 2, null, 0), file('c', 2, 'r2', 2), file('d', 3, 'r3', 1), file('e', 2, 'r3', 4), file('f', 2, 'r2', 5)], [], 2);
+    assert.deepEqual(groups.map(group => [group.conversation, group.open, group.replies.map(reply => [reply.reply, reply.items.map(item => item.file.id)])]), [
+        [2, true, [['r2', ['c', 'f']], ['r3', ['e']], [null, ['b']]]],
+        [3, false, [['r3', ['d']]]],
+        [1, false, [['r1', ['a']]]],
+    ]);
+    assert.deepEqual(libraryGroups([], [], 1), []);
+});
+test('a folder\'s download counts each of its files done, so the owner sees it go', async () => {
+    const entries = [{ path: 'a.txt', bytes: bytesOf(1) }, { path: 'b/c.txt', bytes: bytesOf(2) }, { path: 'd.txt', bytes: bytesOf(3) }];
+    const folder = folderWire(entries);
+    const transport = new FakeTransport();
+    transport.respond = keepingFolder(folder, entries);
+    const client = new LiveClient(transport, 'test-ui', () => undefined);
+    const counts = [];
+    let files;
+    let serial = 0;
+    files = new LiveAgentFiles(client, () => counts.push(files?.downloadProgress() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => sha(bytes), wait: 1000 });
+    client.connect();
+    transport.open();
+    transport.deliver(SAMPLE_WELCOME);
+    await settle();
+    counts.length = 0;
+    assert.equal((await files.download(folder.id)).ok, true);
+    const seen = counts.filter(count => count !== null).map(count => `${count.done}/${count.total}`);
+    assert.deepEqual([...new Set(seen)], ['0/3', '1/3', '2/3', '3/3']);
+    assert.equal(counts.at(-1), null);
+});
+test('a git repository is seen in a .git, whatever its case, or bare, by its HEAD, objects and refs', () => {
+    assert.equal(holdsGit(['site/.git/config']), true);
+    assert.equal(holdsGit(['site/.GIT/HEAD']), true);
+    assert.equal(holdsGit(['.git']), true);
+    assert.equal(holdsGit(['repo.git/HEAD', 'repo.git/objects/ab/cdef', 'repo.git/refs/heads/main']), true);
+    assert.equal(holdsGit(['HEAD', 'objects/pack/p.pack', 'refs/tags/v1']), true);
+    // Not one without all three, nor with them in different folders.
+    assert.equal(holdsGit(['a/HEAD', 'a/objects/x']), false);
+    assert.equal(holdsGit(['a/HEAD', 'a/refs/x']), false);
+    assert.equal(holdsGit(['a/HEAD', 'b/objects/x', 'b/refs/x']), false);
+    assert.equal(holdsGit(['a/AHEAD', 'a/objects/x', 'a/refs/x']), false);
+    // A name that only ends in HEAD isn't one, even beside objects and refs that would make it one.
+    assert.equal(holdsGit(['xHEAD', 'xobjects/a', 'xrefs/b']), false);
+    assert.equal(holdsGit(['site/git/x', 'site/.gitignore', 'notes.git']), false);
+});
+test('a path is said to be long from 200 bytes, as the .zip has it', async () => {
+    const said = async (length) => {
+        const path = `${'d'.repeat(100)}/${'e'.repeat(length - 'site/'.length - 101)}`;
+        const entries = [{ path, bytes: bytesOf(1) }];
+        const folder = folderWire(entries);
+        const { files } = library(keepingFolder(folder, entries));
+        await settle();
+        return (await files.download(folder.id)).message;
+    };
+    assert.doesNotMatch(await said(199), /long/u);
+    assert.match(await said(200), /1 path in it is long/u);
+});
+test('a folder\'s files keep when the folder was kept; an item asked twice is saved once', async () => {
+    const entries = [{ path: 'a/b.txt', bytes: bytesOf(2) }];
+    const folder = folderWire(entries, { kept_at: '2026-11-18T09:30:00Z' });
+    const a = bytesOf(3);
+    const { files, saved } = library(keepingFolder(folder, entries, [{ file: wire(a), bytes: a }]));
+    await settle();
+    assert.equal((await files.downloadMany([folder.id, 'f1', folder.id, 'f1'], 'x.zip')).ok, true);
+    const zip = saved[0][0];
+    const { dosTime } = await import('../../dist/app/adapters/live/zip.js');
+    const [time, date] = dosTime('2026-11-18T09:30:00Z');
+    const local = zip.indexOf(Buffer.from('site/a/b.txt')) - 30;
+    assert.deepEqual([zip.readUInt16LE(local + 10), zip.readUInt16LE(local + 12)], [time, date]);
+    assert.deepEqual([...unzipped(zip).keys()], ['site/', 'site/a/', 'site/a/b.txt', 'report.pdf']);
+});
+test('a folder removed here reads as removed in the chat at once, before the list is read again', async () => {
+    const entries = [{ path: 'a.txt', bytes: bytesOf(1) }];
+    const folder = folderWire(entries);
+    // The list read after still holds it, as a list read before the removal landed would.
+    const { files } = library((action) => {
+        if (action.action === 'remove_library_file')
+            return { result: 'library_file_removed', id: action.id };
+        if (action.action === 'list_library')
+            return { result: 'library', files: [], folders: [folder], removed: [], standing: STANDING };
+        return undefined;
+    });
+    await settle();
+    files.observeFolder({ kind: 'folder_offered', chat_id: 'local', message_id: 'fold-1', folder });
+    await settle();
+    assert.equal(files.offeredFolder('fold-1').removed, false);
+    assert.equal((await files.remove(folder.id)).ok, true);
+    assert.equal(files.offeredFolder('fold-1').removed, true);
 });

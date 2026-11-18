@@ -128,3 +128,6 @@
 }
 body.has-browser-session .chat-notices { margin-top: 75px; }
 body.has-browser-session .has-chat-notice .chat-scroll { padding-top: 20px; }
+.given-files-group { margin: 14px 0 2px; font-size: calc(14px * var(--ui-scale, 1)); font-weight: 600; }
+.given-files-reply { margin: 8px 0 0; }
+.given-file-choose { flex: 0 0 auto; }
