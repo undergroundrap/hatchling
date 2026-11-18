@@ -1343,6 +1343,17 @@ fn a_list_that_disagrees_with_its_item_reads_as_damaged() {
         assert_eq!(library.list_of(&id), Ok(ListOut::Damaged), "{case}");
         assert_eq!(library.read_out_in(&id, 0), Ok(ReadOut::Damaged), "{case}");
     }
+    // A file of a folder past a file's bound, though the folder's within
+    // its own: a download would hold more than one file may be.
+    let past = vec![entry("a", FILE_BYTES + 1), entry("b", 1)];
+    let bytes = serde_json::to_vec(&past).unwrap();
+    Library::put(&vault(), &list_chunk_name(&id, 0), bytes.clone()).unwrap();
+    library.pretend_index(&vec![KeptItem {
+        id: id.clone(),
+        sha256: hex(&Sha256::digest(&bytes)),
+        ..item(ItemKind::Folder, 2, FILE_BYTES + 2)
+    }]);
+    assert_eq!(library.list_of(&id), Ok(ListOut::Damaged));
     // A list that would be the folder's, padded past the most a list may
     // be (JSON takes the spaces), to its hash: never read whole.
     let mut padded = serde_json::to_vec(&vec![entry("a", 2), entry("b", 2)]).unwrap();
@@ -1700,7 +1711,7 @@ fn the_largest_index_and_list_fit_where_they_are_kept() {
         chunks: chunks_of(FOLDER_BYTES),
         list_chunks: LIST_CHUNKS,
         kept_at: "t".repeat(KEPT_AT_BYTES),
-        conversation: u64::MAX,
+        conversation: CONVERSATIONS,
         reply: String::from(REPLY),
         left_out: LeftOut {
             links: u32::MAX,
@@ -1866,5 +1877,116 @@ fn a_secrets_store_still_logs_every_write_and_removal() {
         info.iter()
             .any(|line| line.contains("removed secret") && line.contains("loud-entry")),
         "{logged}"
+    );
+}
+
+/// A folder's file past a file's bound is never kept, though the folder is
+/// within its own.
+#[test]
+fn a_folder_with_a_file_past_a_files_bound_isnt_kept() {
+    let (config, _scratch, key) = kept("file-past");
+    let library = Library::of(&config, &key).unwrap();
+    let conversation = library.conversation().unwrap();
+    let big = vec![0_u8; usize::try_from(FILE_BYTES).unwrap() + 1];
+    let claim = Claim::folder(2, FILE_BYTES + 2);
+    let spent = library.spend(&claim, conversation).unwrap().unwrap();
+    let kept = library.keep_folder_spent(
+        "f",
+        &[("a", big.as_slice()), ("b", b"x")],
+        LeftOut::default(),
+        "now",
+        spent,
+        REPLY,
+    );
+    assert_eq!(
+        kept,
+        Err(String::from("a file in a folder is larger than 8 MiB"))
+    );
+    assert!(library.items().unwrap().is_empty());
+    // A file of exactly the bound is kept, and read back.
+    let most = vec![7_u8; usize::try_from(FILE_BYTES).unwrap()];
+    let claim = Claim::folder(1, FILE_BYTES);
+    let spent = library.spend(&claim, conversation).unwrap().unwrap();
+    let kept = library
+        .keep_folder_spent(
+            "f",
+            &[("a", most.as_slice())],
+            LeftOut::default(),
+            "now",
+            spent,
+            REPLY,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        library.read_out_in(&kept.id, 0),
+        Ok(ReadOut::Whole(Zeroizing::new(most)))
+    );
+}
+
+/// A conversation's number stays one a JSON number holds: the last is
+/// never passed, never wrapped to 0, and a state or an item past it is
+/// damage.
+#[test]
+fn a_conversations_number_is_held_under_two_to_the_fifty_third() {
+    let (config, _scratch, key) = kept("conversations");
+    let library = Library::of(&config, &key).unwrap();
+    assert_eq!(CONVERSATIONS, 9_007_199_254_740_991);
+    leave_state(
+        &library,
+        &State {
+            conversation: CONVERSATIONS - 1,
+            ..State::default()
+        },
+    );
+    library.new_conversation().unwrap();
+    assert_eq!(library.conversation(), Ok(CONVERSATIONS));
+    let refused = Err(String::from(
+        "the Library has numbered all the conversations it can",
+    ));
+    assert_eq!(library.new_conversation(), refused);
+    assert_eq!(library.regroup(), refused);
+    assert_eq!(library.conversation(), Ok(CONVERSATIONS));
+    leave_state(
+        &library,
+        &State {
+            conversation: CONVERSATIONS + 1,
+            ..State::default()
+        },
+    );
+    assert!(library.conversation().is_err());
+    leave_state(&library, &State::default());
+    library.pretend_index(&vec![KeptItem {
+        conversation: CONVERSATIONS + 1,
+        ..item(ItemKind::File, 1, 1)
+    }]);
+    assert!(library.items().is_err());
+    library.pretend_index(&vec![KeptItem {
+        id: "e".repeat(64),
+        conversation: CONVERSATIONS,
+        ..item(ItemKind::File, 1, 1)
+    }]);
+    assert_eq!(library.items().unwrap().len(), 1);
+}
+
+/// The shelf is the items and the open conversation's standing as they
+/// were at one moment.
+#[test]
+fn the_shelf_is_the_items_and_the_standing_at_once() {
+    let (config, _scratch, key) = kept("shelf");
+    let library = Library::of(&config, &key).unwrap();
+    let a = keep(&library, "a.txt", b"abc");
+    library.new_conversation().unwrap();
+    let b = keep(&library, "b.txt", b"de");
+    library.turn_off().unwrap();
+    assert_eq!(
+        library.shelf().unwrap(),
+        Shelf {
+            items: vec![a, b],
+            handed: 1,
+            off: true,
+            read: 2,
+            conversation: 1,
+        }
     );
 }

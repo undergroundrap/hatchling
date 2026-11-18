@@ -54,7 +54,7 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use hatchling_artifact::SecretSet;
-use hatchling_core::ui::{FileOffered, FileWithheld, LibraryFile, UiEventBody};
+use hatchling_core::ui::{FileOffered, FileWithheld, UiEventBody};
 use hatchling_core::{ActivityEvent, CellId, FileOutEnded, RoomResult, SubagentEvent};
 use hatchling_scheduler::Timestamp;
 use hatchling_vault::OpensStores;
@@ -476,13 +476,21 @@ impl<'k> Handing<'k> {
         }
     }
 
-    /// The folder was kept: Activity keeps it, and the agent is told of
-    /// it. The owner's app reads it from the Library.
+    /// The folder was kept: Activity keeps it with its count of files,
+    /// every app is told to read the Library again, and the agent is told
+    /// of it.
     fn folder_offered(&self, kept: crate::library::KeptItem) -> RoomResult {
-        self.record(Some(&kept.name), kept.bytes, FileOutEnded::Offered);
+        let files = u32::try_from(kept.files).unwrap_or(u32::MAX);
+        self.record(
+            Some(&kept.name),
+            kept.bytes,
+            Some(files),
+            FileOutEnded::Offered,
+        );
+        crate::app_stream::stream(self.config).event(UiEventBody::LibraryChanged {});
         RoomResult::FolderHandedOver {
             name: kept.name,
-            files: u32::try_from(kept.files).unwrap_or(u32::MAX),
+            files,
             bytes: kept.bytes,
             left_out: kept.left_out,
         }
@@ -513,13 +521,9 @@ impl<'k> Handing<'k> {
 
     /// The file was kept: the owner is told of it, and the agent.
     fn offered(&self, kept: crate::library::KeptItem) -> RoomResult {
-        let file = LibraryFile {
-            id: kept.id,
-            name: kept.name.clone(),
-            bytes: kept.bytes,
-            sha256: kept.sha256,
-            kept_at: kept.kept_at,
-        };
+        let name = kept.name.clone();
+        let bytes = kept.bytes;
+        let file = crate::api_ops::shown(kept);
         self.tell(|message_id| {
             UiEventBody::FileOffered(FileOffered {
                 chat_id: String::from(LOCAL_CHAT),
@@ -527,11 +531,8 @@ impl<'k> Handing<'k> {
                 file: file.clone(),
             })
         });
-        self.record(Some(&kept.name), kept.bytes, FileOutEnded::Offered);
-        RoomResult::HandedOver {
-            name: kept.name,
-            bytes: kept.bytes,
-        }
+        self.record(Some(&name), bytes, None, FileOutEnded::Offered);
+        RoomResult::HandedOver { name, bytes }
     }
 
     fn refused_kept(&self, name: &str, size: u64, refused: Refused) -> RoomResult {
@@ -550,7 +551,7 @@ impl<'k> Handing<'k> {
 
     /// Keeps how a file out ended in Activity: the broker's name, its
     /// size, and how. Past [`RECORDED_MAX`] lines a session, nothing more.
-    fn record(&self, name: Option<&str>, bytes: u64, ended: FileOutEnded) {
+    fn record(&self, name: Option<&str>, bytes: u64, files: Option<u32>, ended: FileOutEnded) {
         if self.recorded.get() >= RECORDED_MAX {
             return;
         }
@@ -566,6 +567,7 @@ impl<'k> Handing<'k> {
                 name: name.map(str::to_owned),
                 bytes,
                 ended,
+                files,
             },
         };
         crate::subagent_ops::record(
@@ -584,7 +586,7 @@ impl<'k> Handing<'k> {
         ended: FileOutEnded,
         reason: &str,
     ) -> RoomResult {
-        self.record(name, bytes, ended);
+        self.record(name, bytes, None, ended);
         RoomResult::NotHandedOver {
             reason: reason.to_owned(),
         }

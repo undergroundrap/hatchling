@@ -360,6 +360,13 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                         "const": "file_out",
                         "type": "string"
                     },
+                    "files": {
+                        "minimum": 0,
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
                     "name": {
                         "type": [
                             "string",
@@ -644,6 +651,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "remove_library_file",
+                "type": "string"
+            },
+            {
+                "const": "list_folder",
                 "type": "string"
             }
         ]
@@ -1782,6 +1793,42 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "refusal"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "not_a_folder",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "a_folder",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "refusal": {
+                        "const": "out_of_range",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "refusal"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -1848,6 +1895,26 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         "required": [
             "chat_id",
             "message_id"
+        ],
+        "type": "object"
+    },
+    "FolderEntry": {
+        "properties": {
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "path": {
+                "type": "string"
+            },
+            "sha256": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "path",
+            "bytes",
+            "sha256"
         ],
         "type": "object"
     },
@@ -2392,9 +2459,36 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
+    "LeftOut": {
+        "additionalProperties": false,
+        "properties": {
+            "links": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "mounts": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "others": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "links",
+            "mounts",
+            "others"
+        ],
+        "type": "object"
+    },
     "LibraryFile": {
         "properties": {
             "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "conversation": {
                 "minimum": 0,
                 "type": "integer"
             },
@@ -2407,6 +2501,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "name": {
                 "type": "string"
             },
+            "reply": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
             "sha256": {
                 "type": "string"
             }
@@ -2416,7 +2516,56 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "name",
             "bytes",
             "sha256",
-            "kept_at"
+            "kept_at",
+            "conversation"
+        ],
+        "type": "object"
+    },
+    "LibraryFolder": {
+        "properties": {
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "conversation": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "files": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "id": {
+                "type": "string"
+            },
+            "kept_at": {
+                "type": "string"
+            },
+            "left_out": {
+                "$ref": "#/$defs/LeftOut"
+            },
+            "name": {
+                "type": "string"
+            },
+            "reply": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "sha256": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "id",
+            "name",
+            "files",
+            "bytes",
+            "sha256",
+            "kept_at",
+            "conversation",
+            "left_out"
         ],
         "type": "object"
     },
@@ -2430,11 +2579,23 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "minimum": 0,
                 "type": "integer"
             },
+            "conversation": {
+                "minimum": 0,
+                "type": "integer"
+            },
             "file_limit": {
                 "minimum": 0,
                 "type": "integer"
             },
             "files": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "files_in_all": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "files_in_all_limit": {
                 "minimum": 0,
                 "type": "integer"
             },
@@ -2448,6 +2609,14 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             "off": {
                 "type": "boolean"
+            },
+            "read": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "read_limit": {
+                "minimum": 0,
+                "type": "integer"
             }
         },
         "required": [
@@ -2457,7 +2626,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "byte_limit",
             "given",
             "given_limit",
-            "off"
+            "off",
+            "files_in_all",
+            "files_in_all_limit",
+            "read",
+            "read_limit",
+            "conversation"
         ],
         "type": "object"
     },
@@ -5253,6 +5427,13 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                         "const": "begin_file_out",
                         "type": "string"
                     },
+                    "file": {
+                        "minimum": 0,
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
                     "id": {
                         "type": "string"
                     }
@@ -5260,6 +5441,27 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "action",
                     "id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
+                        "const": "list_folder",
+                        "type": "string"
+                    },
+                    "from": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "id",
+                    "from"
                 ],
                 "type": "object"
             },
@@ -6014,6 +6216,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                         },
                         "type": "array"
                     },
+                    "folders": {
+                        "items": {
+                            "$ref": "#/$defs/LibraryFolder"
+                        },
+                        "type": "array"
+                    },
                     "result": {
                         "const": "library",
                         "type": "string"
@@ -6025,7 +6233,84 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "files",
+                    "folders",
                     "standing"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "entries": {
+                        "items": {
+                            "$ref": "#/$defs/FolderEntry"
+                        },
+                        "type": "array"
+                    },
+                    "from": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "folder",
+                        "type": "string"
+                    },
+                    "total": {
+                        "minimum": 0,
+                        "type": "integer"
+                    }
+                },
+                "required": [
+                    "result",
+                    "id",
+                    "from",
+                    "total",
+                    "entries"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "bytes": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "download_id": {
+                        "type": "string"
+                    },
+                    "file": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "id": {
+                        "type": "string"
+                    },
+                    "parts": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "path": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "folder_file_out_begun",
+                        "type": "string"
+                    },
+                    "sha256": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "download_id",
+                    "id",
+                    "file",
+                    "path",
+                    "bytes",
+                    "sha256",
+                    "parts"
                 ],
                 "type": "object"
             },

@@ -37,16 +37,16 @@ const settle = async () => {
 };
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const bytesOf = (length) => Uint8Array.from({ length }, (_, at) => at % 251);
-const STANDING = { files: 1, file_limit: 64, bytes: 3, byte_limit: 268435456, given: 1, given_limit: 16, off: false };
+const STANDING = { files: 1, file_limit: 64, bytes: 3, byte_limit: 268435456, given: 1, given_limit: 16, off: false, files_in_all: 1, files_in_all_limit: 4096, read: 3, read_limit: 134217728, conversation: 1 };
 /** A file as the wire says it. */
-const wire = (bytes, fields = {}) => ({ id: 'f1', name: 'report.pdf', bytes: bytes.length, sha256: sha(bytes), kept_at: '2026-11-17T00:00:00Z', ...fields });
+const wire = (bytes, fields = {}) => ({ id: 'f1', name: 'report.pdf', bytes: bytes.length, sha256: sha(bytes), kept_at: '2026-11-17T00:00:00Z', conversation: 1, ...fields });
 /** A broker keeping `files` (each `{ file, bytes }`), answering as the Library does. */
 function keeping(files, fields = {}) {
     let held = [...files];
     let begun = held[0];
     return (action) => {
         switch (action.action) {
-            case 'list_library': return { result: 'library', files: held.map(entry => entry.file), standing: STANDING };
+            case 'list_library': return { result: 'library', folders: [], files: held.map(entry => entry.file), standing: STANDING };
             case 'begin_file_out': {
                 const found = held.find(entry => entry.file.id === action.id);
                 if (found === undefined)
@@ -137,7 +137,7 @@ test('a broker that says more than its bounds, or another file, is never downloa
     const begun = async (fields, known = true) => {
         const { files, saved } = library((action) => {
             if (action.action === 'list_library')
-                return known ? { result: 'library', files: [wire(bytes)], standing: STANDING } : { result: 'library', files: [], standing: STANDING };
+                return known ? { result: 'library', folders: [], files: [wire(bytes)], standing: STANDING } : { result: 'library', folders: [], files: [], standing: STANDING };
             if (action.action === 'begin_file_out')
                 return { result: 'file_out_begun', download_id: 'out-1', file: wire(bytes), parts: 1, ...fields };
             return keeping([{ file: wire(bytes), bytes }])(action);
@@ -160,7 +160,7 @@ test('a broker that says more than its bounds, or another file, is never downloa
 test('a part out of step, too large, past the file or not base64 saves nothing', async () => {
     const bytes = bytesOf(PART_BYTES + 3);
     const ended = async (part, file = wire(bytes)) => {
-        const { files, saved } = library((action) => action.action === 'list_library' ? { result: 'library', files: [], standing: STANDING } : keeping([{ file, bytes }], { part })(action), { wait: 20 });
+        const { files, saved } = library((action) => action.action === 'list_library' ? { result: 'library', folders: [], files: [], standing: STANDING } : keeping([{ file, bytes }], { part })(action), { wait: 20 });
         const result = await files.download('f1');
         return [result.ok, saved.length, result.message];
     };
@@ -189,10 +189,12 @@ test('the Library is read when the connection opens, and said as the broker answ
         return files.current();
     };
     const bytes = bytesOf(3);
-    assert.deepEqual(await listed({ result: 'library', files: [wire(bytes), wire(bytes, { id: 'f2', name: '.hidden' })], standing: { ...STANDING, off: true } }), {
+    assert.deepEqual(await listed({ result: 'library', folders: [], files: [wire(bytes), wire(bytes, { id: 'f2', name: '.hidden' })], standing: { ...STANDING, off: true } }), {
         kind: 'read',
         files: [{ id: 'f1', name: 'report.pdf', bytes: 3, sha256: sha(bytes), keptAt: '2026-11-17T00:00:00Z' }],
-        standing: { files: 1, fileLimit: 64, bytes: 3, byteLimit: 268435456, given: 1, givenLimit: 16, off: true },
+        folders: [],
+        unnamed: [{ id: 'f2', bytes: 3, removable: false }],
+        standing: { files: 1, fileLimit: 64, bytes: 3, byteLimit: 268435456, given: 1, givenLimit: 16, off: true, filesInAll: 1, filesInAllLimit: 4096, read: 3, readLimit: 134217728 },
     });
     assert.deepEqual(await listed({ result: 'refused', reason: 'not_granted' }), { kind: 'failed', detail: 'This connection may not read Hatchling’s Library.' });
     assert.deepEqual(await listed({ result: 'inbox', files: [] }), { kind: 'failed', detail: 'Hatchling answered with something else.' });
@@ -328,7 +330,7 @@ test('a download is held to the hash a message said, where the list has no word 
     assert.equal(files.offered('file-a').removed, false, 'a file read as removed with no list to say so');
     assert.deepEqual([(await files.download('f1')).message, saved.length], ['Hatchling answered with something else. Nothing was saved.', 0]);
     // The same hash as the message's: saved.
-    const same = library((action) => action.action === 'list_library' ? { result: 'library', files: [], standing: STANDING } : begun(action));
+    const same = library((action) => action.action === 'list_library' ? { result: 'library', folders: [], files: [], standing: STANDING } : begun(action));
     await settle();
     same.files.observe({ kind: 'file_offered', chat_id: 'local', message_id: 'file-a', file: wire(bytes) });
     assert.equal((await same.files.download('f1')).ok, true);
@@ -379,7 +381,7 @@ test('a list answer older than one already taken changes nothing', async () => {
     const newer = files.refresh();
     await settle();
     const [, first, second] = asked;
-    const listing = (listed) => ({ result: 'library', files: listed, standing: STANDING });
+    const listing = (listed) => ({ result: 'library', folders: [], files: listed, standing: STANDING });
     transport.deliver({ type: 'action_result', request_id: second, result: listing([wire(bytes)]) });
     await newer;
     transport.deliver({ type: 'action_result', request_id: first, result: listing([]) });
@@ -402,13 +404,13 @@ test('a part larger than a part, or a file short of its length, saves nothing, w
     // The whole file in the first part, and nothing in the second: right
     // length and hash, but a part past the bound.
     const whole = bytesOf(PART_BYTES + 1);
-    const big = library((action) => action.action === 'list_library' ? { result: 'library', files: [], standing: STANDING }
+    const big = library((action) => action.action === 'list_library' ? { result: 'library', folders: [], files: [], standing: STANDING }
         : keeping([{ file: wire(whole), bytes: whole }], { part: (asked) => ({ data: asked.seq === 0 ? Buffer.from(whole).toString('base64') : '' }) })(action));
     assert.deepEqual([(await big.files.download('f1')).message, big.saved.length], ['The file didn’t arrive whole. Nothing was saved. Try again.', 0]);
     // A file ending in zeros, its tail never sent: the hash would match.
     const zeros = new Uint8Array(PART_BYTES + 3);
     zeros.set(bytesOf(PART_BYTES));
-    const short = library((action) => action.action === 'list_library' ? { result: 'library', files: [], standing: STANDING }
+    const short = library((action) => action.action === 'list_library' ? { result: 'library', folders: [], files: [], standing: STANDING }
         : keeping([{ file: wire(zeros), bytes: zeros }], { part: (asked) => (asked.seq === 1 ? { data: '' } : {}) })(action));
     assert.deepEqual([(await short.files.download('f1')).message, short.saved.length], ['The file didn’t arrive whole. Nothing was saved. Try again.', 0]);
 });
@@ -508,4 +510,57 @@ test('a download of every file that fails anywhere saves nothing, and says which
     const one = busy.files.download('f1');
     assert.deepEqual(await busy.files.downloadAll(), { ok: false, message: 'A download is under way. Try again when it’s done.' });
     await one;
+});
+test('a folder is listed by its name and counts; an item whose name or counts the broker never gives is listed by its size alone, by an id that can be one', async () => {
+    const folder = (fields) => ({ id: 'd'.repeat(64), name: 'site', files: 3, bytes: 4096, sha256: 'ab', kept_at: '2026-11-18T00:00:00Z', conversation: 1, left_out: { links: 0, mounts: 0, others: 0 }, ...fields });
+    const bytes = bytesOf(3);
+    const answer = {
+        result: 'library',
+        files: [wire(bytes), wire(bytes, { id: 'a'.repeat(64), name: 'CON.txt' }), wire(bytes, { id: 'not-an-id', name: '.hidden' }), wire(bytes, { id: '1'.repeat(64), name: 'big.bin', bytes: 8 * 1024 * 1024 + 1 })],
+        folders: [
+            folder({}),
+            folder({ id: 'b'.repeat(64), name: '../up' }),
+            folder({ id: 'c'.repeat(64), files: 0 }),
+            folder({ id: 'e'.repeat(64), files: 513 }),
+            folder({ id: 'f'.repeat(64), bytes: 32 * 1024 * 1024 + 1 }),
+            folder({ id: '0'.repeat(64), name: 'one', files: 1, bytes: 32 * 1024 * 1024 }),
+            folder({ id: '2'.repeat(64), name: 'most', files: 512 }),
+        ],
+        standing: STANDING,
+    };
+    const { files } = library((action) => action.action === 'list_library' ? answer : undefined);
+    await settle();
+    const state = files.current();
+    assert.equal(state.kind, 'read');
+    assert.deepEqual(state.files.map(file => file.id), ['f1']);
+    assert.deepEqual(state.folders, [
+        { id: 'd'.repeat(64), name: 'site', files: 3, bytes: 4096, keptAt: '2026-11-18T00:00:00Z' },
+        { id: '0'.repeat(64), name: 'one', files: 1, bytes: 32 * 1024 * 1024, keptAt: '2026-11-18T00:00:00Z' },
+        { id: '2'.repeat(64), name: 'most', files: 512, bytes: 4096, keptAt: '2026-11-18T00:00:00Z' },
+    ]);
+    // Every item it can't name is shown; one whose id the broker never gives can't be removed from here.
+    assert.deepEqual(state.unnamed, [
+        { id: 'a'.repeat(64), bytes: 3, removable: true },
+        { id: 'not-an-id', bytes: 3, removable: false },
+        { id: '1'.repeat(64), bytes: 8 * 1024 * 1024 + 1, removable: true },
+        { id: 'b'.repeat(64), bytes: 4096, removable: true },
+        { id: 'c'.repeat(64), bytes: 4096, removable: true },
+        { id: 'e'.repeat(64), bytes: 4096, removable: true },
+        { id: 'f'.repeat(64), bytes: 32 * 1024 * 1024 + 1, removable: true },
+    ]);
+    assert.deepEqual(state.standing, { files: 1, fileLimit: 64, bytes: 3, byteLimit: 268435456, given: 1, givenLimit: 16, off: false, filesInAll: 1, filesInAllLimit: 4096, read: 3, readLimit: 134217728 });
+});
+test('a folder asked for as a file, or a place it doesn\'t hold, is said and saves nothing', async () => {
+    const bytes = bytesOf(3);
+    for (const [refusal, said] of [
+        ['a_folder', 'It is a folder: downloading a folder comes in a later version of Hatchling.'],
+        ['not_a_folder', 'Hatchling answered for a file as if it were a folder.'],
+        ['out_of_range', 'Hatchling answered for a file its folder doesn’t hold.'],
+    ]) {
+        const { files, saved } = library((action) => action.action === 'begin_file_out' ? { result: 'file_out_refused', reason: { refusal } } : keeping([{ file: wire(bytes), bytes }])(action));
+        await settle();
+        const result = await files.download('f1');
+        assert.deepEqual([result.ok, saved.length], [false, 0]);
+        assert.match(result.message, new RegExp(said.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+    }
 });

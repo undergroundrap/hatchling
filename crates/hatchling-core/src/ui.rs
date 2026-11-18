@@ -59,8 +59,9 @@ pub mod surfaces;
 pub use api::{ApiOutcome, ApiRequest, ApiToken};
 pub use control::{Actor, Control, Handoff};
 pub use files::{
-    FILE_IN_BYTES, FILE_IN_NAME_BYTES, FILE_IN_PART_BYTES, FileIn, FileInRefusal, FileOffered,
-    FileOutRefusal, FileWithheld, InboxFile, LibraryFile, LibraryStanding,
+    FILE_IN_BYTES, FILE_IN_NAME_BYTES, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal,
+    FileOffered, FileOutRefusal, FileWithheld, FolderEntry, InboxFile, LibraryFile, LibraryFolder,
+    LibraryStanding,
 };
 pub use surfaces::{
     AgentState, ArtifactBody, ArtifactRefusal, ArtifactRevision, BrowserAction, BrowserFrame,
@@ -80,7 +81,11 @@ pub use surfaces::{
 /// `file_withheld` events, and `file_out` activity.
 /// 7: the Library in the app (WO-041): its list, a file read out in
 /// parts, removal, the `library_changed` event, and when a file was kept.
-pub const UI_SCHEMA_VERSION: u16 = 7;
+/// 8: the Library's folders (WO-043): listed with every item's
+/// conversation and reply, a folder's list in pages, a file of a folder
+/// read out, the conversation's bytes read and files in all, and a
+/// folder's count of files in Activity.
+pub const UI_SCHEMA_VERSION: u16 = 8;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -1681,8 +1686,19 @@ pub enum UiAction {
     /// Begin reading a file out of the Library (v7): the owner's alone,
     /// one at a time a connection. Its parts are asked in order.
     BeginFileOut {
-        /// The Library's id for it.
+        /// The Library's id for it, or for the folder it is in.
         id: String,
+        /// Its place in the folder's list, from 0 (v8): a folder's file
+        /// only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<u32>,
+    },
+    /// Read a page of a folder's list (v8): the owner's alone.
+    ListFolder {
+        /// The Library's id for the folder.
+        id: String,
+        /// The place of the page's first entry, from 0.
+        from: u32,
     },
     /// Read one part of the file being read out (v7), in order from 0,
     /// each at most [`FILE_IN_PART_BYTES`].
@@ -1933,12 +1949,45 @@ pub enum UiActionResult {
         /// Its name, as it was.
         name: String,
     },
-    /// The Library's files, newest first, and its standing (v7).
+    /// The Library's files and folders, each newest first, and its
+    /// standing (v7; folders v8).
     Library {
         /// Its files.
         files: Vec<LibraryFile>,
+        /// Its folders (v8).
+        folders: Vec<LibraryFolder>,
         /// Its use, and the open conversation's.
         standing: LibraryStanding,
+    },
+    /// A page of a folder's list (v8): at most [`FOLDER_PAGE`] entries,
+    /// read back whole and to the folder's hash.
+    Folder {
+        /// The folder.
+        id: String,
+        /// The place of the first entry.
+        from: u32,
+        /// How many files the folder holds.
+        total: u32,
+        /// The page's entries, in the list's order.
+        entries: Vec<FolderEntry>,
+    },
+    /// A file of a folder is ready to be read out (v8), read back whole and
+    /// to its own hash. Its parts are asked as a file's are.
+    FolderFileOutBegun {
+        /// The download: its parts are asked by it.
+        download_id: String,
+        /// The folder.
+        id: String,
+        /// Its place in the folder's list.
+        file: u32,
+        /// Its path in the folder.
+        path: String,
+        /// Its length, in bytes.
+        bytes: u64,
+        /// Its SHA-256, in lowercase hex.
+        sha256: String,
+        /// How many parts it is, each [`FILE_IN_PART_BYTES`] but the last.
+        parts: u32,
     },
     /// A file is ready to be read out of the Library (v7), read back
     /// whole and to its hash.
@@ -2154,11 +2203,23 @@ mod tests {
             name: name.map(str::to_owned),
             bytes: 9,
             ended,
+            files: None,
         };
         pinned(
             &event(out(Some("report.pdf"), FileOutEnded::Offered)),
             &json!({"event_id": "run-1:3", "ts": "2026-10-07T02:00:00Z", "run_id": "run-1",
                 "event": "file_out", "name": "report.pdf", "bytes": 9, "ended": "offered"}),
+        );
+        // A folder kept says its count of files (v8).
+        pinned(
+            &event(SubagentEvent::FileOut {
+                name: Some(String::from("site")),
+                bytes: 9,
+                ended: FileOutEnded::Offered,
+                files: Some(3),
+            }),
+            &json!({"event_id": "run-1:3", "ts": "2026-10-07T02:00:00Z", "run_id": "run-1",
+                "event": "file_out", "name": "site", "bytes": 9, "ended": "offered", "files": 3}),
         );
         for (ended, word, state) in [
             (FileOutEnded::Offered, "offered", ActivityState::Success),
@@ -2187,6 +2248,8 @@ mod tests {
             bytes: 9,
             sha256: s("ab"),
             kept_at: s("2026-11-17T00:00:00Z"),
+            conversation: 4,
+            reply: Some(s("run-1")),
         };
         pinned(
             &UiEventBody::FileOffered(FileOffered {
@@ -2196,7 +2259,7 @@ mod tests {
             }),
             &json!({"kind": "file_offered", "chat_id": "local", "message_id": "file-1",
                 "file": {"id": "f1", "name": "report.pdf", "bytes": 9, "sha256": "ab",
-                    "kept_at": "2026-11-17T00:00:00Z"}}),
+                    "kept_at": "2026-11-17T00:00:00Z", "conversation": 4, "reply": "run-1"}}),
         );
         for (name, expected) in [
             (
@@ -2218,7 +2281,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 7);
+        assert_eq!(UI_SCHEMA_VERSION, 8);
     }
 
     #[test]
@@ -2226,8 +2289,25 @@ mod tests {
         for (action, expected) in [
             (UiAction::ListLibrary {}, json!({"action": "list_library"})),
             (
-                UiAction::BeginFileOut { id: s("f1") },
+                UiAction::BeginFileOut {
+                    id: s("f1"),
+                    file: None,
+                },
                 json!({"action": "begin_file_out", "id": "f1"}),
+            ),
+            (
+                UiAction::BeginFileOut {
+                    id: s("d1"),
+                    file: Some(3),
+                },
+                json!({"action": "begin_file_out", "id": "d1", "file": 3}),
+            ),
+            (
+                UiAction::ListFolder {
+                    id: s("d1"),
+                    from: 32,
+                },
+                json!({"action": "list_folder", "id": "d1", "from": 32}),
             ),
             (
                 UiAction::FileOutPart {
@@ -2249,27 +2329,12 @@ mod tests {
             bytes: 9,
             sha256: s("ab"),
             kept_at: s("2026-11-17T00:00:00Z"),
+            conversation: 2,
+            reply: Some(s("run-1")),
         };
         let shown = json!({"id": "f1", "name": "report.pdf", "bytes": 9, "sha256": "ab",
-            "kept_at": "2026-11-17T00:00:00Z"});
+            "kept_at": "2026-11-17T00:00:00Z", "conversation": 2, "reply": "run-1"});
         for (result, expected) in [
-            (
-                UiActionResult::Library {
-                    files: vec![file.clone()],
-                    standing: LibraryStanding {
-                        files: 1,
-                        file_limit: 64,
-                        bytes: 9,
-                        byte_limit: 268_435_456,
-                        given: 1,
-                        given_limit: 16,
-                        off: false,
-                    },
-                },
-                json!({"result": "library", "files": [shown], "standing": {"files": 1,
-                    "file_limit": 64, "bytes": 9, "byte_limit": 268_435_456, "given": 1,
-                    "given_limit": 16, "off": false}}),
-            ),
             (
                 UiActionResult::FileOutBegun {
                     download_id: s("out-1"),
@@ -2298,6 +2363,9 @@ mod tests {
             (FileOutRefusal::Damaged, "damaged"),
             (FileOutRefusal::Busy, "busy"),
             (FileOutRefusal::UnknownDownload, "unknown_download"),
+            (FileOutRefusal::NotAFolder, "not_a_folder"),
+            (FileOutRefusal::AFolder, "a_folder"),
+            (FileOutRefusal::OutOfRange, "out_of_range"),
             (FileOutRefusal::OutOfStep, "out_of_step"),
         ] {
             pinned(
@@ -2792,6 +2860,154 @@ mod tests {
             },
             &json!({"result": "refused", "reason": "not_connected"}),
         );
+    }
+
+    /// A page of a folder's list, and a file of a folder begun, have their
+    /// wire form (v8).
+    #[test]
+    fn a_folders_page_and_file_have_their_wire_form() {
+        let file = LibraryFile {
+            id: s("f1"),
+            name: s("report.pdf"),
+            bytes: 9,
+            sha256: s("ab"),
+            kept_at: s("2026-11-17T00:00:00Z"),
+            conversation: 2,
+            reply: Some(s("run-1")),
+        };
+        let shown = json!({"id": "f1", "name": "report.pdf", "bytes": 9, "sha256": "ab",
+            "kept_at": "2026-11-17T00:00:00Z", "conversation": 2, "reply": "run-1"});
+        let folder = LibraryFolder {
+            id: s("d1"),
+            name: s("site"),
+            files: 2,
+            bytes: 7,
+            sha256: s("cd"),
+            kept_at: s("2026-11-18T00:00:00Z"),
+            conversation: 3,
+            reply: None,
+            left_out: crate::LeftOut {
+                links: 1,
+                mounts: 0,
+                others: 0,
+            },
+        };
+        let (result, expected) = (
+            UiActionResult::Library {
+                files: vec![file],
+                folders: vec![folder],
+                standing: LibraryStanding {
+                    files: 2,
+                    file_limit: 64,
+                    bytes: 16,
+                    byte_limit: 268_435_456,
+                    given: 1,
+                    given_limit: 16,
+                    off: false,
+                    files_in_all: 3,
+                    files_in_all_limit: 4096,
+                    read: 16,
+                    read_limit: 134_217_728,
+                    conversation: 3,
+                },
+            },
+            json!({"result": "library", "files": [shown], "folders": [{"id": "d1",
+                    "name": "site", "files": 2, "bytes": 7, "sha256": "cd",
+                    "kept_at": "2026-11-18T00:00:00Z", "conversation": 3,
+                    "left_out": {"links": 1, "mounts": 0, "others": 0}}],
+                    "standing": {"files": 2, "file_limit": 64, "bytes": 16,
+                    "byte_limit": 268_435_456, "given": 1, "given_limit": 16, "off": false,
+                    "files_in_all": 3, "files_in_all_limit": 4096, "read": 16,
+                    "read_limit": 134_217_728, "conversation": 3}}),
+        );
+        pinned(&result, &expected);
+        pinned(
+            &UiActionResult::Folder {
+                id: s("d1"),
+                from: 0,
+                total: 2,
+                entries: vec![FolderEntry {
+                    path: s("css/a.css"),
+                    bytes: 4,
+                    sha256: s("ef"),
+                }],
+            },
+            &json!({"result": "folder", "id": "d1", "from": 0, "total": 2,
+                "entries": [{"path": "css/a.css", "bytes": 4, "sha256": "ef"}]}),
+        );
+        pinned(
+            &UiActionResult::FolderFileOutBegun {
+                download_id: s("out-2"),
+                id: s("d1"),
+                file: 1,
+                path: s("css/a.css"),
+                bytes: 4,
+                sha256: s("ef"),
+                parts: 1,
+            },
+            &json!({"result": "folder_file_out_begun", "download_id": "out-2", "id": "d1",
+                "file": 1, "path": "css/a.css", "bytes": 4, "sha256": "ef", "parts": 1}),
+        );
+    }
+
+    /// A page of a folder's list of the longest paths, and a Library of
+    /// the most folders said at their longest, each fit one frame (v8).
+    #[test]
+    fn the_largest_folder_page_and_library_fit_one_frame() {
+        let entry = FolderEntry {
+            path: "p".repeat(1024),
+            bytes: u64::MAX,
+            sha256: "f".repeat(64),
+        };
+        let page = UiResponse::ActionResult {
+            request_id: s("request-1"),
+            result: UiActionResult::Folder {
+                id: "f".repeat(64),
+                from: u32::MAX,
+                total: u32::MAX,
+                entries: vec![entry; usize::try_from(FOLDER_PAGE).unwrap()],
+            },
+        };
+        assert!(crate::fits_one_frame(&page));
+        let folder = LibraryFolder {
+            id: "f".repeat(64),
+            name: "n".repeat(64),
+            files: u32::MAX,
+            bytes: u64::MAX,
+            sha256: "f".repeat(64),
+            // A time the index can hold that JSON says twice as long.
+            kept_at: "\"".repeat(40),
+            conversation: (1 << 53) - 1,
+            reply: Some(format!("run-{}", "f".repeat(24))),
+            left_out: crate::LeftOut {
+                links: u32::MAX,
+                mounts: u32::MAX,
+                others: u32::MAX,
+            },
+        };
+        let standing = LibraryStanding {
+            files: u32::MAX,
+            file_limit: u32::MAX,
+            bytes: u64::MAX,
+            byte_limit: u64::MAX,
+            given: u32::MAX,
+            given_limit: u32::MAX,
+            off: false,
+            files_in_all: u32::MAX,
+            files_in_all_limit: u32::MAX,
+            read: u64::MAX,
+            read_limit: u64::MAX,
+            conversation: (1 << 53) - 1,
+        };
+        let library = UiResponse::ActionResult {
+            request_id: s("request-1"),
+            result: UiActionResult::Library {
+                files: Vec::new(),
+                folders: vec![folder; 64],
+                standing,
+            },
+        };
+        assert!(crate::fits_one_frame(&library));
     }
 
     fn s(text: &str) -> String {

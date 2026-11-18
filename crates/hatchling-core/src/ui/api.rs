@@ -133,6 +133,8 @@ pub enum ApiRequest {
     FileOutPart,
     /// [`UiAction::RemoveLibraryFile`].
     RemoveLibraryFile,
+    /// [`UiAction::ListFolder`] (v8).
+    ListFolder,
 }
 
 impl ApiRequest {
@@ -189,6 +191,7 @@ impl ApiRequest {
             UiAction::BeginFileOut { .. } => Self::BeginFileOut,
             UiAction::FileOutPart { .. } => Self::FileOutPart,
             UiAction::RemoveLibraryFile { .. } => Self::RemoveLibraryFile,
+            UiAction::ListFolder { .. } => Self::ListFolder,
         }
     }
 }
@@ -438,8 +441,15 @@ mod tests {
             ),
             (action(UiAction::ListLibrary {}), ApiRequest::ListLibrary),
             (
-                action(UiAction::BeginFileOut { id: id() }),
+                action(UiAction::BeginFileOut {
+                    id: id(),
+                    file: None,
+                }),
                 ApiRequest::BeginFileOut,
+            ),
+            (
+                action(UiAction::ListFolder { id: id(), from: 0 }),
+                ApiRequest::ListFolder,
             ),
             (
                 action(UiAction::FileOutPart {

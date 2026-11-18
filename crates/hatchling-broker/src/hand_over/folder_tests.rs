@@ -139,13 +139,16 @@ fn a_folder_is_walked_read_checked_once_and_kept_as_one_item() {
     }
     assert_eq!(library.standing().unwrap(), (1, false));
     assert_eq!(library.read_so_far().unwrap(), 16);
-    // The list the app has today shows files only.
+    // The list of files has none; every app is told to read the Library
+    // again, and Activity counts its files.
     assert!(library.files().unwrap().is_empty());
-    assert!(install.events().is_empty());
+    assert_eq!(install.events(), [UiEventBody::LibraryChanged {}]);
     assert_eq!(
         install.crossings(),
         [(Some(String::from("site")), 16, FileOutEnded::Offered)]
     );
+    let activity = std::fs::read_to_string(install.config.scheduler.activity_log()).unwrap();
+    assert!(activity.contains(r#""files":3"#), "{activity}");
 }
 
 /// What is refused before the walk reads nothing, lists nothing, spends

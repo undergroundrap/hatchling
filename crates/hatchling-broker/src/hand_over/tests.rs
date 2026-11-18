@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use hatchling_core::room::{End, Found, JobId, Page, Stream};
-use hatchling_core::ui::UiEvent;
+use hatchling_core::ui::{LibraryFile, UiEvent};
 use hatchling_vault::MasterKey;
 
 use super::*;
@@ -153,7 +153,10 @@ impl Install {
             .lines()
             .filter_map(|line| serde_json::from_str::<ActivityEvent>(line).ok())
             .filter_map(|event| {
-                if let SubagentEvent::FileOut { name, bytes, ended } = event.kind {
+                if let SubagentEvent::FileOut {
+                    name, bytes, ended, ..
+                } = event.kind
+                {
                     Some((name, bytes, ended))
                 } else {
                     None
@@ -230,6 +233,8 @@ fn a_file_is_kept_offered_and_kept_in_activity() {
             bytes: 10,
             sha256: file.sha256.clone(),
             kept_at: file.kept_at.clone(),
+            conversation: file.conversation,
+            reply: Some(install.cell.as_str().to_owned()),
         }
     );
     assert_eq!(

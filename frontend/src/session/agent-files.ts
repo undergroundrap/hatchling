@@ -15,8 +15,30 @@ export interface AgentFile {
     /** When it was kept, as RFC 3339. */
     readonly keptAt: string;
 }
+/** A folder the Library keeps (WO-043), as the broker lists it. */
+export interface AgentFolder {
+    readonly id: string;
+    /** The broker's name for it: plain ASCII, made from the folder's own. */
+    readonly name: string;
+    /** How many files it holds. */
+    readonly files: number;
+    readonly bytes: number;
+    /** When it was kept, as RFC 3339. */
+    readonly keptAt: string;
+}
+/**
+ * An item the Library keeps whose name, or size, isn't one the broker
+ * gives: it is counted, so it is shown, by its size alone, to be removed.
+ */
+export interface AgentUnnamed {
+    readonly id: string;
+    readonly bytes: number;
+    /** Whether its id is one the broker gives, so it can be removed from here. */
+    readonly removable: boolean;
+}
 /** The Library's use against its bounds, and the open conversation's. */
 export interface AgentFilesStanding {
+    /** Items: files and folders, a folder one. */
     readonly files: number;
     readonly fileLimit: number;
     readonly bytes: number;
@@ -26,6 +48,12 @@ export interface AgentFilesStanding {
     readonly givenLimit: number;
     /** Giving files is off for the open conversation: one held a secret. */
     readonly off: boolean;
+    /** Files in all, each of a folder's counted. */
+    readonly filesInAll: number;
+    readonly filesInAllLimit: number;
+    /** What the open conversation has read out of the agent's computer, in bytes. */
+    readonly read: number;
+    readonly readLimit: number;
 }
 /** The Library as last read. */
 export type AgentFilesState = {
@@ -37,6 +65,10 @@ export type AgentFilesState = {
     readonly kind: 'read';
     /** Newest first. */
     readonly files: readonly AgentFile[];
+    /** Newest first. */
+    readonly folders: readonly AgentFolder[];
+    /** Items it can't name, newest first. */
+    readonly unnamed: readonly AgentUnnamed[];
     readonly standing: AgentFilesStanding;
 };
 /** A file a chat message showed as given, and whether it was removed since. */
@@ -60,7 +92,7 @@ export interface AgentFilesPort {
     download(id: string): Promise<CommandResult>;
     /** Reads every file out of the Library, checks each, and saves them as one .zip. */
     downloadAll(): Promise<CommandResult>;
-    /** Removes the file `id` from the Library. */
+    /** Removes the item `id`, a file or a folder, from the Library. */
     remove(id: string): Promise<CommandResult>;
 }
 /** What opening a file of a kind can do, when it can do more than show itself. */

@@ -444,6 +444,10 @@ pub enum SubagentEvent {
         bytes: u64,
         /// How it ended.
         ended: FileOutEnded,
+        /// A folder's count of files, once it is kept (v8, WO-043): none
+        /// for a file.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        files: Option<u32>,
     },
 }
 

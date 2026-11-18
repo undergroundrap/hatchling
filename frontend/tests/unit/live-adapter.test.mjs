@@ -437,7 +437,7 @@ test('files sent into the agent\'s inbox are a thread of their own: a row per fi
 test('files the agent gave are a thread of their own: a row per file by the broker\'s name, and how each ended', () => {
     const { transport, adapter } = connected();
     const states = { offered: 'success', withheld: 'failed', unchecked: 'interrupted', refused: 'failed' };
-    const file = (seq, id, ended, name, bytes) => sampleEvent(seq, seq, { kind: 'activity', state: states[ended], event: { event: 'file_out', event_id: `session-1:file-out-${id}`, run_id: 'session-1', ts: sampleTime(seq), ...(name === null ? {} : { name }), bytes, ended } });
+    const file = (seq, id, ended, name, bytes, files = null) => sampleEvent(seq, seq, { kind: 'activity', state: states[ended], event: { event: 'file_out', event_id: `session-1:file-out-${id}`, run_id: 'session-1', ts: sampleTime(seq), ...(name === null ? {} : { name }), bytes, ended, ...(files === null ? {} : { files }) } });
     replay(transport, [
         file(1, 1, 'offered', 'report.pdf', 2048),
         file(2, 2, 'withheld', null, 12),
@@ -465,7 +465,7 @@ test('files the agent gave are a thread of their own: a row per file by the brok
 });
 test('a file the agent gave, or that was withheld, is the app\'s own notice by the broker\'s name, shown only when it is one', () => {
     const { transport, adapter } = connected();
-    const file = (fields) => ({ id: 'f1', name: 'report.pdf', bytes: 2048, sha256: 'ab', kept_at: '2026-11-17T00:00:00Z', ...fields });
+    const file = (fields) => ({ id: 'f1', name: 'report.pdf', bytes: 2048, sha256: 'ab', kept_at: '2026-11-17T00:00:00Z', conversation: 1, ...fields });
     replay(transport, [
         sampleEvent(1, 1, { kind: 'file_offered', chat_id: 'local', message_id: 'file-a', file: file({}) }),
         sampleEvent(2, 2, { kind: 'file_offered', chat_id: 'local', message_id: 'file-b', file: file({ name: '../‮exe.txt <b>' }) }),
@@ -1575,4 +1575,24 @@ test('approvals history: what was decided before the connection, as it was decid
     answer(other.transport, otherAsked.request_id, { result: 'refused', reason: 'not_granted' });
     await flush();
     assert.deepEqual(other.adapter.taskApprovals.getSnapshot(), []);
+});
+test('a folder the agent gave is a row of its own, by its name, its files and its size', () => {
+    const { transport, adapter } = connected();
+    const states = { offered: 'success', refused: 'failed' };
+    const out = (seq, ended, name, bytes, files) => sampleEvent(seq, seq, { kind: 'activity', state: states[ended], event: { event: 'file_out', event_id: `session-1:file-out-${seq}`, run_id: 'session-1', ts: sampleTime(seq), ...(name === null ? {} : { name }), bytes, ended, ...(files === null ? {} : { files }) } });
+    replay(transport, [
+        out(1, 'offered', 'site', 4096, 3),
+        out(2, 'offered', '../x', 10, 1),
+        out(3, 'offered', null, 10, 2),
+        // Only a folder kept says its files.
+        out(4, 'refused', 'site', 4096, 3),
+    ]);
+    const rows = adapter.getSnapshot().threads[0].lanes[0].rows;
+    assert.deepEqual(rows.map(row => [row.title, row.subtitle, row.status, row.icon]), [
+        ['Gave you a folder', 'site, 3 files, 4 KB', 'success', 'file'],
+        ['Gave you a folder', 'A folder of 1 file, 10 bytes', 'success', 'file'],
+        ['Gave you a folder', 'A folder of 2 files, 10 bytes', 'success', 'file'],
+        ['A file wasn’t given', 'site, 4 KB', 'failed', 'warning'],
+    ]);
+    assert.equal(rows[0].report, 'site, 3 files, 4 KB. Hatchling keeps it for you in its Library.');
 });

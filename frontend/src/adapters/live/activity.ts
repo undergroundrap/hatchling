@@ -114,6 +114,8 @@ interface Given {
     readonly name: string | null;
     readonly bytes: number;
     readonly ended: FileOutEnded;
+    /** A folder's count of files, once kept; none for a file. */
+    readonly files: number | null;
 }
 /** The files the agent began giving the owner, one thread per run. */
 interface Handed {
@@ -329,6 +331,8 @@ const GIVEN_ENDINGS: Readonly<Record<FileOutEnded, {
     unchecked: { status: 'interrupted', icon: 'warning', title: 'A file couldn’t be checked', said: 'It couldn’t be checked for the secrets Hatchling keeps, so it wasn’t given, and nothing was turned off.' },
     refused: { status: 'failed', icon: 'warning', title: 'A file wasn’t given', said: 'Hatchling didn’t give it, and told the agent why.' },
 };
+/** A folder the agent gave the owner, kept. */
+const GIVEN_FOLDER = { status: 'success', icon: 'file', title: 'Gave you a folder', said: 'Hatchling keeps it for you in its Library.' } as const;
 const FILE_ENDINGS: Readonly<Record<FileInEnded, {
     readonly status: Verdict;
     readonly icon: ActionIcon;
@@ -380,9 +384,10 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     list_inbox: 'Listed the agent’s inbox',
     remove_inbox_file: 'Removed a file from the agent’s inbox',
     list_library: 'Listed the Library',
-    begin_file_out: 'Began downloading a file from the Library',
-    file_out_part: 'Downloaded part of a file from the Library',
-    remove_library_file: 'Removed a file from the Library',
+    begin_file_out: 'Began downloading from the Library',
+    file_out_part: 'Downloaded part of a download from the Library',
+    remove_library_file: 'Removed an item from the Library',
+    list_folder: 'Read a folder’s list in the Library',
 };
 const FAILURES: Readonly<Record<ChildFailure, string>> = {
     timeout: 'Ran out of time',
@@ -545,9 +550,12 @@ function crossingRow(laneId: string, crossing: Crossing): ActivityRow {
     return { id: crossing.id, workId: crossing.id, laneId, title: end.title, subtitle: named, icon: end.icon, report: `${named}. ${end.said}${where}`, startedAt: crossing.at, endedAt: crossing.at, durationMs: null, outputFailed: end.status === 'failed', status: end.status, phase: 'action' };
 }
 function givenRow(laneId: string, given: Given): ActivityRow {
-    const end = GIVEN_ENDINGS[given.ended];
+    // A folder kept says so, with its count of files.
+    const folder = given.files !== null && given.ended === 'offered';
+    const end = folder ? GIVEN_FOLDER : GIVEN_ENDINGS[given.ended];
     // A name is shown only when it is one the broker gives.
-    const named = given.name === null || !isLibraryName(given.name) ? `A file of ${size(given.bytes)}` : `${given.name}, ${size(given.bytes)}`;
+    const what = folder ? `A folder of ${count(given.files ?? 0, 'file', 'files')}, ${size(given.bytes)}` : `A file of ${size(given.bytes)}`;
+    const named = given.name === null || !isLibraryName(given.name) ? what : folder ? `${given.name}, ${count(given.files ?? 0, 'file', 'files')}, ${size(given.bytes)}` : `${given.name}, ${size(given.bytes)}`;
     return { id: given.id, workId: given.id, laneId, title: end.title, subtitle: named, icon: end.icon, report: `${named}. ${end.said}`, startedAt: given.at, endedAt: given.at, durationMs: null, outputFailed: end.status === 'failed', status: end.status, phase: 'action' };
 }
 function projectHanded(handed: Handed): ActivityThread {
@@ -662,7 +670,7 @@ export class ActivityBook {
             if (handed.given.some(given => given.id === event.event_id))
                 return;
             handed.lastAt = event.ts;
-            handed.given.push({ id: event.event_id, at: event.ts, name: event.name ?? null, bytes: event.bytes, ended: event.ended });
+            handed.given.push({ id: event.event_id, at: event.ts, name: event.name ?? null, bytes: event.bytes, ended: event.ended, files: event.files ?? null });
             return;
         }
         if (event.event === 'api_call') {
