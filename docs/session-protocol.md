@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v32 (current). This doc is the human-readable reference
+**Status:** v33 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -666,6 +666,40 @@ which shows a card kept from a chat with its run's own account.
   - `NotHandedOver { reason }`: nothing was given, and why, in words for
     the agent: refused, withheld, not checked, too large, or a Library or
     a conversation that holds as many as it may.
+
+## v33 — Giving the owner a folder
+
+- **`RoomOp::HandOverFolder { path }`**: a folder in the agent's
+  computer given to the owner as one item (WO-043), offered to the model
+  as `give_folder` where `give_file` is. `path` is `/workspace` itself
+  or a folder under it, absolute or taken under it, with no empty, `.`
+  or `..` step. Refused before anything is read as a file is, and when
+  the folder's own name can't be one.
+- **Walked first**, by the Room's listings, a folder at a time, before
+  anything is spent or read: at most 256 folders, its own among them,
+  512 files, 8 MiB a file, 32 MiB in all, 16 steps deep, and each path,
+  with the folder's own, at most 1024 bytes. The walk and the reads have
+  5 minutes, checked before each ask of the Room, so the last ask can run
+  past them by its own time. A walk refused spends nothing, as a Room op
+  refused doesn't. `inbox` at the workspace, and a folder given in it,
+  are never walked. Links, other mounts (the workspace's inbox, by its name
+  too) and devices, pipes and sockets are left out and counted, never
+  opened. A name that isn't printable ASCII without `< > : " \ | ? *`,
+  starts or ends with a space, ends with a dot, is a name Windows keeps
+  for a device or acts on when its folder is shown, at any depth, or is
+  another's in its folder but for case, refuses the folder; so does a
+  folder that isn't the one its parent listed. The words never name the
+  path.
+- **Spent as walked**, a hand-over and its listed bytes, before any file
+  is read; then each file is read as a file is, and held at once to its
+  listed length: one that isn't refuses the folder, spent.
+- **Checked as one**: its name alone, then its paths and every file's
+  bytes back to back in one text, through both checks (a scan and a
+  check line each). A secret anywhere withholds all of it, as a file's,
+  and turns giving off for the conversation.
+- **`RoomResult`** gains `FolderHandedOver { name, files, bytes,
+  left_out }`, with `left_out` (`LeftOut`) counting `links`, `mounts`
+  and `others`; a refusal is `NotHandedOver { reason }`.
 
 ## Device handshake
 

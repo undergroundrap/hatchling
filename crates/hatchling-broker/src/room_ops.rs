@@ -57,6 +57,8 @@ pub(crate) trait Rooms {
     fn change(&self, change: &RoomChange) -> Result<RoomChanged, String>;
     /// As [`crate::spawner::Spawner::room_take`].
     fn take(&self, path: &str) -> Result<Vec<u8>, String>;
+    /// As [`crate::spawner::Spawner::room_list`].
+    fn list(&self, path: &str) -> Result<crate::spawner::Listing, String>;
 }
 
 impl Rooms for crate::spawner::Spawner {
@@ -90,6 +92,10 @@ impl Rooms for crate::spawner::Spawner {
 
     fn take(&self, path: &str) -> Result<Vec<u8>, String> {
         self.room_take(path)
+    }
+
+    fn list(&self, path: &str) -> Result<crate::spawner::Listing, String> {
+        self.room_list(path)
     }
 }
 
@@ -208,7 +214,7 @@ impl<'r> RoomSession<'r> {
                 RoomResult::NoSearch { reason }
             } else if matches!(op, RoomOp::Write { .. } | RoomOp::Edit { .. }) {
                 RoomResult::NoChange { reason }
-            } else if matches!(op, RoomOp::HandOver { .. }) {
+            } else if matches!(op, RoomOp::HandOver { .. } | RoomOp::HandOverFolder { .. }) {
                 RoomResult::NotHandedOver { reason }
             } else {
                 RoomResult::Failed { reason, job: None }
@@ -291,13 +297,22 @@ impl<'r> RoomSession<'r> {
                 },
             ),
             RoomOp::Write { .. } | RoomOp::Edit { .. } => changed(rooms, op),
-            RoomOp::HandOver { path } => self.handing.as_ref().map_or_else(
-                || RoomResult::NotHandedOver {
-                    reason: String::from(crate::hand_over::OFF_HERE),
-                },
-                |handing| handing.hand(rooms, path),
-            ),
+            RoomOp::HandOver { path } => self.hand(|handing| handing.hand(rooms, path)),
+            RoomOp::HandOverFolder { path } => {
+                self.hand(|handing| handing.hand_folder(rooms, path))
+            }
         }
+    }
+
+    /// What `hand` gives, through this session's way to hand the owner
+    /// something: none where the operator gave the broker no Library.
+    fn hand(&self, hand: impl FnOnce(&crate::hand_over::Handing<'r>) -> RoomResult) -> RoomResult {
+        self.handing.as_ref().map_or_else(
+            || RoomResult::NotHandedOver {
+                reason: String::from(crate::hand_over::OFF_HERE),
+            },
+            hand,
+        )
     }
 
     /// The next name this session gives a command, while it has one.
@@ -445,7 +460,8 @@ fn change_of(op: &RoomOp) -> Option<RoomChange> {
         | RoomOp::Stop { .. }
         | RoomOp::Read { .. }
         | RoomOp::Search { .. }
-        | RoomOp::HandOver { .. } => None,
+        | RoomOp::HandOver { .. }
+        | RoomOp::HandOverFolder { .. } => None,
     }
 }
 

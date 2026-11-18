@@ -19,20 +19,20 @@ type Open = fn(&str) -> Option<bool>;
 
 /// A Room that hands back one file, or why not, and says what it was
 /// asked for.
-struct Room {
+pub(super) struct Room {
     file: Result<Vec<u8>, String>,
     asked: RefCell<Vec<String>>,
 }
 
 impl Room {
-    const fn with(file: Result<Vec<u8>, String>) -> Self {
+    pub(super) const fn with(file: Result<Vec<u8>, String>) -> Self {
         Self {
             file,
             asked: RefCell::new(Vec::new()),
         }
     }
 
-    fn asked(&self) -> Vec<String> {
+    pub(super) fn asked(&self) -> Vec<String> {
         self.asked.borrow().clone()
     }
 }
@@ -63,13 +63,16 @@ impl Rooms for Room {
         self.asked.borrow_mut().push(path.to_owned());
         self.file.clone()
     }
+    fn list(&self, _: &str) -> Result<crate::spawner::Listing, String> {
+        unreachable!("a file out lists no folder")
+    }
 }
 
 /// Checks that answer for the name and for anything else as told.
-struct Says {
-    name: Vec<u8>,
-    for_name: Result<bool, String>,
-    for_file: Result<bool, String>,
+pub(super) struct Says {
+    pub(super) name: Vec<u8>,
+    pub(super) for_name: Result<bool, String>,
+    pub(super) for_file: Result<bool, String>,
 }
 
 impl Checks for Says {
@@ -84,15 +87,15 @@ impl Checks for Says {
 
 /// A scratch install: a Library, schedules for the Activity log, and a
 /// vault of its own, so its app stream is its own.
-struct Install {
-    config: Config,
-    key: MasterKey,
+pub(super) struct Install {
+    pub(super) config: Config,
+    pub(super) key: MasterKey,
     bus: Arc<Bus>,
-    cell: CellId,
+    pub(super) cell: CellId,
     _scratch: crate::api_auth::tests::Scratch,
 }
 
-fn install(name: &str) -> Install {
+pub(super) fn install(name: &str) -> Install {
     let scratch = crate::api_auth::tests::scratch(&format!("hand-over-{name}"));
     let mut config = crate::api_auth::tests::owner_config(None);
     config.scheduler.root = scratch.0.join("schedules");
@@ -113,7 +116,7 @@ impl Install {
     /// A way to hand a file over for the run of `cell`, a chat's run in
     /// its open conversation as `open` says, its file and its name
     /// checked as `checks` says.
-    fn handing<'k>(
+    pub(super) fn handing<'k>(
         &'k self,
         cell: Option<&'k CellId>,
         open: fn(&str) -> Option<bool>,
@@ -127,14 +130,15 @@ impl Install {
             open,
             checks: Box::new(checks),
             recorded: Cell::new(0),
+            folder_time: FOLDER_TIME,
         }
     }
 
-    fn library(&self) -> Library<'_> {
+    pub(super) fn library(&self) -> Library<'_> {
         Library::of(&self.config, &self.key).unwrap()
     }
 
-    fn events(&self) -> Vec<UiEventBody> {
+    pub(super) fn events(&self) -> Vec<UiEventBody> {
         self.bus
             .after(None)
             .into_iter()
@@ -143,7 +147,7 @@ impl Install {
     }
 
     /// What Activity kept of each file out, in order.
-    fn crossings(&self) -> Vec<(Option<String>, u64, FileOutEnded)> {
+    pub(super) fn crossings(&self) -> Vec<(Option<String>, u64, FileOutEnded)> {
         std::fs::read_to_string(self.config.scheduler.activity_log())
             .unwrap_or_default()
             .lines()
@@ -159,7 +163,7 @@ impl Install {
     }
 }
 
-fn clear(name: &str) -> Says {
+pub(super) fn clear(name: &str) -> Says {
     Says {
         name: name.as_bytes().to_vec(),
         for_name: Ok(false),
@@ -171,7 +175,7 @@ fn clear(name: &str) -> Says {
     clippy::unnecessary_wraps,
     reason = "it stands in for the chat's word, which may be none"
 )]
-const fn chat(_: &str) -> Option<bool> {
+pub(super) const fn chat(_: &str) -> Option<bool> {
     Some(true)
 }
 
@@ -786,6 +790,9 @@ impl Rooms for Bumping<'_> {
     fn take(&self, path: &str) -> Result<Vec<u8>, String> {
         self.library.new_conversation().unwrap();
         self.room.take(path)
+    }
+    fn list(&self, path: &str) -> Result<crate::spawner::Listing, String> {
+        self.room.list(path)
     }
 }
 

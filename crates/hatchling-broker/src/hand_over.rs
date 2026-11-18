@@ -26,8 +26,32 @@
 //! - **Kept, then offered.** The Library keeps it ([`crate::library`]);
 //!   the owner's app is told of it, and Activity keeps how it ended, the
 //!   broker's name and its size: never its path or what it holds.
+//!
+//! A folder (`give_folder`, WO-043) is handed over the same way, as one:
+//!
+//! - **Walked before anything is read** ([`crate::folder_walk`]): its
+//!   names held to the owner's computer's rules and its size to the
+//!   bounds, by the Room's listings, before anything is spent. What isn't
+//!   a file or a folder is left out, and counted.
+//! - **Spent as the walk found it**, files and bytes, before any file is
+//!   read; then each file is read whole and held at once to the length
+//!   its listing said: a folder that changed is refused whole, and what a
+//!   file read past its listed length counts toward the conversation's
+//!   bytes too. Its paths are checked with it, counted only as one of the
+//!   conversation's hand-overs.
+//! - **Checked as one**: its own name alone, then every path and every
+//!   byte of its files, back to back, in one text, so a secret split
+//!   across two files is found. That text is the only copy: what is kept
+//!   is what was checked. A value shorter than a check looks for inside a
+//!   text ([`crate::held_check::MIN_SCAN_BYTES`]) is found only as a whole
+//!   text: a file that is exactly a short secret is found by `give_file`,
+//!   not in a folder.
+//! - **Kept as one item**, with what was left out. Nothing tells the
+//!   owner's app of it yet: it reads it from the Library.
 
 use std::cell::Cell;
+use std::ops::Range;
+use std::time::{Duration, Instant};
 
 use hatchling_artifact::SecretSet;
 use hatchling_core::ui::{FileOffered, FileWithheld, LibraryFile, UiEventBody};
@@ -37,6 +61,7 @@ use hatchling_vault::OpensStores;
 
 use crate::Config;
 use crate::api_ops::LOCAL_CHAT;
+use crate::folder_walk::{CHANGED, TOO_SLOW, Walked};
 use crate::held_check::CheckFor;
 use crate::library::{Claim, Library, Refused};
 use crate::room_ops::Rooms;
@@ -92,6 +117,25 @@ pub(crate) const UNCHECKED: &str =
 
 /// Said of a file the Library couldn't keep.
 pub(crate) const NOT_KEPT: &str = "the Library couldn't keep it";
+
+/// Said of the workspace's inbox, or a folder in it, asked to be given.
+pub(crate) const THE_INBOX: &str =
+    "the workspace's inbox holds what the owner gave you: it isn't given back";
+
+/// How long a folder may take to give: its walk and its reads.
+pub(crate) const FOLDER_TIME: Duration = Duration::from_secs(5 * 60);
+
+/// What a folder is checked as, at most: its paths, each of at most
+/// 1024 bytes with a newline, one more newline, and its files' bytes.
+#[allow(
+    dead_code,
+    reason = "used by the assertion below and a test, which Rust 1.85 doesn't count"
+)]
+const FOLDER_CHECK_BYTES: u64 =
+    crate::library::FOLDER_FILES * (1024 + 1) + 1 + crate::library::FOLDER_BYTES;
+
+/// A folder is checked whole, in one check.
+const _: () = assert!(FOLDER_CHECK_BYTES <= crate::held_check::MAX_CHECK_BYTES);
 
 /// The most `file_out` lines one session writes to Activity: a session
 /// that asks over and over is the Room's, and fills no log.
@@ -203,6 +247,8 @@ pub(crate) struct Handing<'k> {
     checks: Box<dyn Checks + 'k>,
     /// How many lines it has written to Activity.
     recorded: Cell<u32>,
+    /// How long a folder may take to give.
+    folder_time: Duration,
 }
 
 impl<'k> Handing<'k> {
@@ -226,6 +272,7 @@ impl<'k> Handing<'k> {
             open: crate::follow_ups::open_for,
             checks: Box::new(Held { config, keys, cell }),
             recorded: Cell::new(0),
+            folder_time: FOLDER_TIME,
         }
     }
 
@@ -318,6 +365,126 @@ impl<'k> Handing<'k> {
                 tracing::warn!(%error, "the Library couldn't keep a file out");
                 self.ended(Some(&name), size, FileOutEnded::Refused, NOT_KEPT)
             }
+        }
+    }
+
+    /// Hands over the folder at `path` in the Room's workspace, walked and
+    /// read out through `rooms`.
+    pub(crate) fn hand_folder(&self, rooms: &dyn Rooms, path: &str) -> RoomResult {
+        let Some(library) = Library::of(self.config, self.keys) else {
+            return unread(OFF_HERE);
+        };
+        let Some(cell) = self.cell else {
+            return unread(NOT_THE_CHAT);
+        };
+        let conversation = match library.conversation() {
+            Ok(conversation) => conversation,
+            Err(error) => {
+                tracing::warn!(%error, "the Library couldn't be read for a folder out");
+                return unread(NOT_KEPT);
+            }
+        };
+        match self.open_now(cell) {
+            None => return unread(NOT_THE_CHAT),
+            Some(false) => return unread(STALE),
+            Some(true) => {}
+        }
+        match library.refuses(&Claim::folder(1, 0)) {
+            Ok(None) => {}
+            Ok(Some(refused)) => return unread(refused.words()),
+            Err(error) => {
+                tracing::warn!(%error, "the Library couldn't be read for a folder out");
+                return unread(NOT_KEPT);
+            }
+        }
+        let root = crate::room_ops::placed(path);
+        if let Err(why) = hatchling_core::room::check_list(&root, b"") {
+            return unread(why);
+        }
+        // The owner's, whatever its listings say: never walked.
+        let inbox = format!("{}/inbox", hatchling_core::room::WORKSPACE);
+        if root == inbox || root.starts_with(&format!("{inbox}/")) {
+            return unread(THE_INBOX);
+        }
+        let name = match name_of(&root) {
+            Ok(name) => name,
+            Err(why) => return unread(why),
+        };
+        let until = Instant::now() + self.folder_time;
+        let walked = match crate::folder_walk::walk(rooms, &root, until) {
+            Ok(walked) => walked,
+            Err(why) => return unread(&why),
+        };
+        // A walk that ran out of time spends nothing.
+        if Instant::now() >= until {
+            return unread(TOO_SLOW);
+        }
+        let files = u64::try_from(walked.files.len()).unwrap_or(u64::MAX);
+        // Each check is a guess at a secret: one is spent before anything
+        // is read, on what the walk found.
+        let spent = match library.spend(&Claim::folder(files, walked.bytes), conversation) {
+            Ok(Ok(spent)) => spent,
+            Ok(Err(refused)) => return self.ended(None, 0, FileOutEnded::Refused, refused.words()),
+            Err(error) => {
+                tracing::warn!(%error, "the Library couldn't count a folder out");
+                return self.ended(None, 0, FileOutEnded::Refused, NOT_KEPT);
+            }
+        };
+        let (text, spans) = match read_folder(rooms, &root, &walked, until) {
+            Ok(read) => read,
+            Err(stopped) => {
+                read_past(&library, stopped.past, conversation);
+                return self.ended(None, stopped.read, FileOutEnded::Refused, &stopped.why);
+            }
+        };
+        tracing::info!(
+            files,
+            bytes = walked.bytes,
+            "a folder crossed out of the Room"
+        );
+        let name_held = self.checks.holds(name.as_bytes());
+        let folder_held = self.checks.holds(&text);
+        let held = either(name_held.clone(), folder_held);
+        // A name is shown only when it was checked and found clear.
+        let shown = (name_held == Ok(false)).then_some(name.as_str());
+        if self.open_now(cell) != Some(true) {
+            return self.ended(shown, walked.bytes, FileOutEnded::Refused, STALE);
+        }
+        match held {
+            Ok(true) => return self.withheld(&library, conversation, shown, walked.bytes),
+            Err(error) => {
+                tracing::warn!(%error, "a folder out couldn't be checked");
+                return self.ended(None, walked.bytes, FileOutEnded::Unchecked, UNCHECKED);
+            }
+            Ok(false) => {}
+        }
+        let parts: Vec<(&str, &[u8])> = walked
+            .files
+            .iter()
+            .zip(spans)
+            .map(|((path, _), span)| (path.as_str(), text.get(span).unwrap_or_default()))
+            .collect();
+        let now = Timestamp::now().to_string();
+        match library.keep_folder_spent(&name, &parts, walked.left_out, &now, spent, cell.as_str())
+        {
+            Ok(Ok(kept)) => self.folder_offered(kept),
+            Ok(Err(refused)) => self.refused_kept(&name, walked.bytes, refused),
+            Err(error) => {
+                tracing::warn!(%error, "the Library couldn't keep a folder out");
+                self.ended(Some(&name), walked.bytes, FileOutEnded::Refused, NOT_KEPT)
+            }
+        }
+    }
+
+    /// The folder was kept: Activity keeps it, and the agent is told of
+    /// it. The owner's app reads it from the Library.
+    fn folder_offered(&self, kept: crate::library::KeptItem) -> RoomResult {
+        self.record(Some(&kept.name), kept.bytes, FileOutEnded::Offered);
+        RoomResult::FolderHandedOver {
+            name: kept.name,
+            files: u32::try_from(kept.files).unwrap_or(u32::MAX),
+            bytes: kept.bytes,
+            left_out: kept.left_out,
         }
     }
 
@@ -424,6 +591,83 @@ impl<'k> Handing<'k> {
     }
 }
 
+/// A folder read: the text it is checked as and where each file is in
+/// it; or why it isn't handed over.
+type FolderRead = Result<(Vec<u8>, Vec<Range<usize>>), Unread>;
+
+/// A folder whose reads ended before it was whole.
+struct Unread {
+    /// The bytes read out of the Room.
+    read: u64,
+    /// Those read past what the folder was spent on.
+    past: u64,
+    /// Why, for the agent.
+    why: String,
+}
+
+impl Unread {
+    fn new(read: u64, past: u64, why: impl Into<String>) -> Self {
+        Self {
+            read,
+            past,
+            why: why.into(),
+        }
+    }
+}
+
+/// Reads each file `walked` found in the folder at `root` through
+/// `rooms`, before `until`, into the one text a folder is checked as: its
+/// paths, each ended by a newline, a newline, then every file's bytes,
+/// back to back. Each read is held at once to the length the walk listed.
+/// What it reads, and where each file's bytes are in it.
+///
+/// # Errors
+///
+/// How many bytes were read, and why the folder isn't handed over.
+fn read_folder(rooms: &dyn Rooms, root: &str, walked: &Walked, until: Instant) -> FolderRead {
+    let paths: usize = walked.files.iter().map(|(path, _)| path.len() + 1).sum();
+    let mut text = Vec::new();
+    // Bounded: the walk held the listed lengths to a folder's, and every
+    // read to its listed length.
+    text.try_reserve_exact(paths + 1 + usize::try_from(walked.bytes).unwrap_or(usize::MAX))
+        .map_err(|_| Unread::new(0, 0, NOT_KEPT))?;
+    for (path, _) in &walked.files {
+        text.extend_from_slice(path.as_bytes());
+        text.push(b'\n');
+    }
+    text.push(b'\n');
+    let mut spans = Vec::with_capacity(walked.files.len());
+    let mut read = 0_u64;
+    for (path, listed) in &walked.files {
+        if Instant::now() >= until {
+            return Err(Unread::new(read, 0, TOO_SLOW));
+        }
+        let bytes = rooms
+            .take(&crate::folder_walk::whole(root, path))
+            .map_err(|reason| Unread::new(read, 0, reason))?;
+        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        read = read.saturating_add(length);
+        if length != *listed {
+            return Err(Unread::new(read, length.saturating_sub(*listed), CHANGED));
+        }
+        let start = text.len();
+        text.extend_from_slice(&bytes);
+        spans.push(start..text.len());
+    }
+    Ok((text, spans))
+}
+
+/// Counts `past`, what a folder's file read past its listed length,
+/// toward `conversation`'s bytes in `library`.
+fn read_past(library: &Library<'_>, past: u64, conversation: u64) {
+    if past == 0 {
+        return;
+    }
+    if let Err(error) = library.read_more(past, conversation) {
+        tracing::warn!(%error, "the Library couldn't count a folder's read");
+    }
+}
+
 /// Nothing was given, and nothing was read: `reason` is the agent's.
 fn unread(reason: &str) -> RoomResult {
     RoomResult::NotHandedOver {
@@ -434,3 +678,7 @@ fn unread(reason: &str) -> RoomResult {
 #[cfg(test)]
 #[path = "hand_over/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "hand_over/folder_tests.rs"]
+mod folder_tests;

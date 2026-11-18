@@ -1488,6 +1488,29 @@ pub enum RoomOp {
         /// under it.
         path: String,
     },
+    /// Hand the owner a folder in the workspace (v33, WO-043): the broker
+    /// walks it, copies each file out whole, checks every path and byte,
+    /// and keeps it as one item in the Library. Links, devices, pipes,
+    /// sockets and other mounts in it are left out, and counted.
+    #[serde(rename = "hand-over-folder")]
+    HandOverFolder {
+        /// The folder, by its absolute path under the workspace (the
+        /// workspace itself among them), or a path under it.
+        path: String,
+    },
+}
+
+/// What a folder handed over left out, by kind, as its listings said.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct LeftOut {
+    /// Links.
+    pub links: u32,
+    /// Other mounts: the workspace's inbox among them.
+    pub mounts: u32,
+    /// Devices, pipes and sockets.
+    pub others: u32,
 }
 
 /// How many lines a read hands back when it names no count.
@@ -1682,6 +1705,19 @@ pub enum RoomResult {
         name: String,
         /// Its length, in bytes.
         bytes: u64,
+    },
+    /// The folder was handed over (v33): the Library keeps it as one
+    /// item, by the broker's name for it.
+    #[serde(rename = "folder-handed-over")]
+    FolderHandedOver {
+        /// The broker's name for it, as the owner is shown it.
+        name: String,
+        /// How many files it holds.
+        files: u32,
+        /// Its files' length together, in bytes.
+        bytes: u64,
+        /// What was left out of it, by kind.
+        left_out: LeftOut,
     },
     /// Nothing was handed over (v32): the reason says why, and whether
     /// handing files over is now off for the conversation.
@@ -5518,7 +5554,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 32);
+        assert_eq!(crate::PROTOCOL_VERSION, 33);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5623,7 +5659,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 32);
+        assert_eq!(crate::PROTOCOL_VERSION, 33);
     }
 
     /// A hand-over and its results go on the wire as written, and a field
@@ -5663,7 +5699,46 @@ mod room_tests {
             r#"{"kind":"room","result":"not-handed-over","reason":"withheld"}"#
         );
         assert_eq!(serde_json::from_str::<SessionResponse>(&json).unwrap(), not);
-        assert_eq!(crate::PROTOCOL_VERSION, 32);
+    }
+
+    /// A folder is asked for by its path alone, and what came of it says
+    /// its name, files, bytes and what was left out (v33).
+    #[test]
+    fn a_folder_hand_over_op_and_its_result_have_their_wire_form() {
+        let give = SessionRequest::Room(RoomOp::HandOverFolder {
+            path: String::from("site"),
+        });
+        let json = serde_json::to_string(&give).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","op":"hand-over-folder","path":"site"}"#
+        );
+        assert_eq!(asked(&json).unwrap(), give);
+        assert!(asked(r#"{"kind":"room","op":"hand-over-folder","path":"a","name":"b"}"#).is_err());
+        assert!(asked(r#"{"kind":"room","op":"hand-over-folder"}"#).is_err());
+        let handed = SessionResponse::Room(RoomResult::FolderHandedOver {
+            name: String::from("site"),
+            files: 3,
+            bytes: 9,
+            left_out: LeftOut {
+                links: 1,
+                mounts: 2,
+                others: 0,
+            },
+        });
+        let json = serde_json::to_string(&handed).unwrap();
+        assert_eq!(
+            json,
+            r#"{"kind":"room","result":"folder-handed-over","name":"site","files":3,"bytes":9,"left_out":{"links":1,"mounts":2,"others":0}}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionResponse>(&json).unwrap(),
+            handed
+        );
+        assert!(
+            serde_json::from_str::<LeftOut>(r#"{"links":0,"mounts":0,"others":0,"x":1}"#).is_err()
+        );
+        assert_eq!(crate::PROTOCOL_VERSION, 33);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5722,6 +5797,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 32);
+        assert_eq!(crate::PROTOCOL_VERSION, 33);
     }
 }

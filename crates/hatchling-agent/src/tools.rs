@@ -1654,7 +1654,7 @@ impl Tool for GiveFileTool<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Give the owner a file you made in your own computer, for them to download: a document, an image, data, a program. Give its path in /workspace: one that doesn't start with / is under /workspace. It must be a file, not a folder or a link, of at most 8 MiB; make an archive of a folder first with run. Hatchling copies it now, checks it, and offers it to the owner by a plain name made from the file's own; the reply says that name. A file that holds a secret Hatchling keeps is withheld, and giving files is then off for the rest of this conversation: never put a secret in a file you give. At most 16 files a conversation."
+        "Give the owner a file you made in your own computer, for them to download: a document, an image, data, a program. Give its path in /workspace: one that doesn't start with / is under /workspace. It must be a file, not a folder or a link, of at most 8 MiB; give a folder with give_folder. Hatchling copies it now, checks it, and offers it to the owner by a plain name made from the file's own; the reply says that name. A file that holds a secret Hatchling keeps is withheld, and giving files is then off for the rest of this conversation: never put a secret in a file you give. At most 16 files or folders a conversation."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -1673,6 +1673,53 @@ impl Tool for GiveFileTool<'_> {
 
     fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
         let op = RoomOp::HandOver {
+            path: string_argument(self.name(), &arguments, "path")?.to_owned(),
+        };
+        change_asked(self.stream, self.name(), op)
+    }
+}
+
+/// What the model is told of a folder it gave.
+const FOLDER_HANDED_OVER: &str = "the owner is offered this folder to download, by this name, from Hatchling's Library, with its files and folders as they are. It is a copy made now: changing a file after changes nothing they have. What was left out is counted by kind. Say in your answer what it is";
+
+/// Hands the owner a folder from the agent's own computer (WO-043).
+pub struct GiveFolderTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> GiveFolderTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for GiveFolderTool<'_> {
+    fn name(&self) -> &'static str {
+        "give_folder"
+    }
+
+    fn description(&self) -> &'static str {
+        "Give the owner a folder you made in your own computer, with everything in it, for them to download as it is: a project, a site, a report with its data. Give its path in /workspace: one that doesn't start with / is under /workspace, and /workspace itself is one. At most 512 files and 32 MiB in all, each file at most 16 names deep counting its own. Links, devices, pipes and other mounts in it are left out and counted. Every name in it must be plain ASCII, without < > : \" \\ | ? * or a space or dot at its end, and none a name Windows keeps for a device; two names that differ only in case refuse it. Hatchling copies every file now and checks every name and byte: if any holds a secret Hatchling keeps, nothing of it is given, and giving is then off for the rest of this conversation. Never put a secret in a folder you give. A folder counts as one of the 16 things a conversation can give."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The folder to give, for example site or /workspace/out/report."
+                }
+            },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let op = RoomOp::HandOverFolder {
             path: string_argument(self.name(), &arguments, "path")?.to_owned(),
         };
         change_asked(self.stream, self.name(), op)
@@ -1765,6 +1812,27 @@ fn optional_flag(tool: &str, arguments: &Value, key: &str) -> Result<bool, LoopE
 /// What the model is told with a program that is still running.
 const STILL_RUNNING: &str = "still running. Wait for it with run_check, or stop it with run_stop, before you answer: it is stopped when you answer, and nothing looks at it afterwards";
 
+/// What the model is told of a folder it gave: its name, files, bytes
+/// and what was left out.
+fn folder_handed_over(
+    name: &str,
+    files: u32,
+    bytes: u64,
+    left_out: hatchling_core::LeftOut,
+) -> ToolOutput {
+    ToolOutput::Ok(json!({
+        "handed_over": name,
+        "files": files,
+        "bytes": bytes,
+        "left_out": {
+            "links": left_out.links,
+            "mounts": left_out.mounts,
+            "others": left_out.others,
+        },
+        "note": FOLDER_HANDED_OVER,
+    }))
+}
+
 /// What the model is told of a Room op's result. A program that ended is
 /// told as it ended, whatever its exit code: that is the model's to read.
 fn room_output(result: RoomResult) -> ToolOutput {
@@ -1846,6 +1914,12 @@ fn room_output(result: RoomResult) -> ToolOutput {
             "bytes": bytes,
             "note": HANDED_OVER,
         })),
+        RoomResult::FolderHandedOver {
+            name,
+            files,
+            bytes,
+            left_out,
+        } => folder_handed_over(&name, files, bytes, left_out),
         RoomResult::NotHandedOver { reason } => {
             ToolOutput::Err(format!("nothing was handed over: {reason}"))
         }
@@ -4591,6 +4665,32 @@ mod tests {
         }
     }
 
+    /// The folder tool tells the model where a folder comes from, its
+    /// bounds, what is left out, what refuses it, and what a secret turns
+    /// off.
+    #[test]
+    fn the_give_folder_tools_metadata_is_stable() {
+        let (a, _b) = socket_pair();
+        let give = GiveFolderTool::new(&a);
+        assert_eq!(give.name(), "give_folder");
+        for said in [
+            "path in /workspace",
+            "/workspace itself is one",
+            "At most 512 files and 32 MiB in all, each file at most 16 names deep",
+            "Links, devices, pipes and other mounts in it are left out and counted",
+            "plain ASCII",
+            "differ only in case refuse it",
+            "giving is then off for the rest of this conversation",
+            "Never put a secret in a folder you give",
+            "one of the 16 things a conversation can give",
+        ] {
+            assert!(give.description().contains(said), "{said}");
+        }
+        let schema = give.parameters_schema();
+        assert_eq!(schema.get("required"), Some(&json!(["path"])));
+        assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
+    }
+
     /// The give tool tells the model where a file comes from, how big it
     /// may be, what is withheld and what that turns off.
     #[test]
@@ -4601,11 +4701,11 @@ mod tests {
         for said in [
             "path in /workspace",
             "at most 8 MiB",
-            "make an archive of a folder first with run",
+            "give a folder with give_folder",
             "the reply says that name",
             "giving files is then off for the rest of this conversation",
             "never put a secret in a file you give",
-            "At most 16 files a conversation.",
+            "At most 16 files or folders a conversation.",
         ] {
             assert!(give.description().contains(said), "{said}");
         }
@@ -5127,6 +5227,31 @@ mod tests {
                 reason: String::from("it was withheld")
             }),
             ToolOutput::Err(String::from("nothing was handed over: it was withheld"))
+        );
+    }
+
+    /// A folder handed over is told by its name, files, bytes and what was
+    /// left out, by kind.
+    #[test]
+    fn a_folder_handed_over_is_told_with_what_was_left_out() {
+        assert_eq!(
+            room_output(RoomResult::FolderHandedOver {
+                name: String::from("site"),
+                files: 3,
+                bytes: 10,
+                left_out: hatchling_core::LeftOut {
+                    links: 1,
+                    mounts: 2,
+                    others: 4,
+                },
+            }),
+            ToolOutput::Ok(json!({
+                "handed_over": "site",
+                "files": 3,
+                "bytes": 10,
+                "left_out": { "links": 1, "mounts": 2, "others": 4 },
+                "note": FOLDER_HANDED_OVER,
+            }))
         );
     }
 

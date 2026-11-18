@@ -81,6 +81,11 @@ mod file_in;
 mod file_out;
 #[allow(
     clippy::redundant_pub_crate,
+    reason = "a folder's hand-over reaches what a walk says"
+)]
+mod folder_walk;
+#[allow(
+    clippy::redundant_pub_crate,
     reason = "a session's Room and its tests reach what a file out says and checks"
 )]
 mod hand_over;

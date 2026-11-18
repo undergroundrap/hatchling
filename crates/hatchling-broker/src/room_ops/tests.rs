@@ -14,6 +14,7 @@ enum Asked {
     Search(RoomSearch),
     Change(RoomChange),
     Take(String),
+    List(String),
 }
 
 /// A stand-in for the spawner: it answers each ask from what it was told
@@ -140,6 +141,11 @@ impl Rooms for Fake {
     fn take(&self, path: &str) -> Result<Vec<u8>, String> {
         self.asked.borrow_mut().push(Asked::Take(path.to_owned()));
         Err(String::from("no file here"))
+    }
+
+    fn list(&self, path: &str) -> Result<crate::spawner::Listing, String> {
+        self.asked.borrow_mut().push(Asked::List(path.to_owned()));
+        Err(String::from("no folder here"))
     }
 }
 
@@ -1376,6 +1382,29 @@ fn a_file_is_handed_over_only_where_it_may_be() {
     );
     assert!(fake.asked().is_empty(), "the Room was asked for a file");
     assert_eq!(change_of(&op), None, "a file handed over is no change");
+    // A folder is refused the same ways, as nothing handed over.
+    let folder = RoomOp::HandOverFolder {
+        path: String::from("site"),
+    };
+    assert_eq!(alone.handle(&folder), refused(UNATTENDED));
+    assert_eq!(
+        nowhere.handle(&folder),
+        RoomResult::NotHandedOver {
+            reason: String::from(NO_ROOM)
+        }
+    );
+    assert_eq!(
+        unhanded.handle(&folder),
+        RoomResult::NotHandedOver {
+            reason: String::from(crate::hand_over::OFF_HERE)
+        }
+    );
+    assert!(fake.asked().is_empty(), "the Room was asked for a folder");
+    assert_eq!(
+        change_of(&folder),
+        None,
+        "a folder handed over is no change"
+    );
     // A session that hands files over asks its Handing, which says what
     // it says: here, that the session is no chat's run.
     let scratch = crate::api_auth::tests::scratch("room-ops-handing");
@@ -1393,4 +1422,36 @@ fn a_file_is_handed_over_only_where_it_may_be() {
         }
     );
     assert!(fake.asked().is_empty(), "the Room was asked for a file");
+}
+
+/// A folder asked for is the folder hand-over's, a file the file's: each
+/// asks the Room as its own does.
+#[test]
+fn a_folder_and_a_file_are_each_handed_over_as_themselves() {
+    let fake = Fake::default();
+    let scratch = crate::api_auth::tests::scratch("room-ops-folder");
+    let mut config = crate::api_auth::tests::owner_config(None);
+    config.scheduler.library = scratch.0.join("library");
+    config.vault.root = scratch.0.join("vault");
+    let key = hatchling_vault::MasterKey::generate().unwrap();
+    let cell: hatchling_core::CellId = "run-00000000000000000000d15c".parse().unwrap();
+    let hub = hatchling_channel::LocalHub::new(hatchling_channel::OutputGate::disabled());
+    crate::follow_ups::began(cell.as_str(), &hub, hub.conversation());
+    let mut session = RoomSession::over_rooms(true, Some(&fake), Some(String::from("j"))).handing(
+        crate::hand_over::Handing::new(&config, &key, true, &cell, "run-1"),
+    );
+    session.handle(&RoomOp::HandOverFolder {
+        path: String::from("site"),
+    });
+    session.handle(&RoomOp::HandOver {
+        path: String::from("a.txt"),
+    });
+    assert_eq!(
+        fake.asked(),
+        [
+            Asked::List(String::from("/workspace/site")),
+            Asked::Take(String::from("/workspace/a.txt")),
+        ]
+    );
+    let _ = crate::follow_ups::ended(cell.as_str());
 }

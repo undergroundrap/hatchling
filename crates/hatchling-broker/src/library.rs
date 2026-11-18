@@ -60,7 +60,7 @@ use std::path::Path;
 use std::sync::{Mutex, Once, PoisonError};
 
 use hatchling_core::room::TAKE_FILE_BYTES;
-use hatchling_core::{MAX_SECRET_BYTES, SecretName};
+use hatchling_core::{LeftOut, MAX_SECRET_BYTES, SecretName};
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -294,6 +294,9 @@ pub struct KeptItem {
     /// kept before items were grouped.
     #[serde(default)]
     pub reply: String,
+    /// What a folder's walk left out, by kind: nothing for a file.
+    #[serde(default)]
+    pub left_out: LeftOut,
 }
 
 /// One file of a folder, as its list says it.
@@ -492,7 +495,12 @@ fn is_item(item: &KeptItem) -> bool {
         && item.chunks == chunks_of(item.bytes);
     shaped
         && match item.kind {
-            ItemKind::File => item.files == 1 && item.list_chunks == 0 && item.bytes <= FILE_BYTES,
+            ItemKind::File => {
+                item.files == 1
+                    && item.list_chunks == 0
+                    && item.bytes <= FILE_BYTES
+                    && item.left_out == LeftOut::default()
+            }
             ItemKind::Folder => {
                 (1..=FOLDER_FILES).contains(&item.files)
                     && item.bytes <= FOLDER_BYTES
@@ -799,6 +807,23 @@ impl<'k> Library<'k> {
         })
     }
 
+    /// Counts `bytes` more read out of the Room toward `conversation`'s, up
+    /// to the most: what a folder's file read past the length it was spent
+    /// on. Nothing for a conversation no longer the open one.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read or written.
+    pub fn read_more(&self, bytes: u64, conversation: u64) -> Result<(), String> {
+        self.opened(|vault, mut state| {
+            if state.conversation != conversation {
+                return Ok(());
+            }
+            state.read = state.read.saturating_add(bytes).min(READ_PER_CONVERSATION);
+            Self::write(vault, STATE, &state)
+        })
+    }
+
     /// Keeps `bytes` as the file `name`, at `now`, spending one of the open
     /// conversation's hand-overs: the item as the index says it, or why it
     /// wasn't kept. For tests: a hand-over is spent before its file is
@@ -854,11 +879,21 @@ impl<'k> Library<'k> {
     ) -> Result<Result<KeptItem, Refused>, String> {
         let claim = Claim::file(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         let sha256 = hex(&Sha256::digest(bytes));
-        self.keeping(name, &claim, &[bytes], None, sha256, now, &spent, reply)
+        self.keeping(
+            name,
+            &claim,
+            &[bytes],
+            None,
+            LeftOut::default(),
+            sha256,
+            now,
+            &spent,
+            reply,
+        )
     }
 
-    /// Keeps `files`, each a path and its bytes, as the folder `name`, at
-    /// `now`, the hand-over `spent` in the reply `reply`: refused as
+    /// Keeps `files`, each a path and its bytes, as the folder `name`,
+    /// with what its walk `left_out`, at `now`, the hand-over `spent` in the reply `reply`: refused as
     /// [`Self::keep_spent`] is, and when its paths aren't a folder's
     /// ([`check_paths`]). Its paths are to be checked before it is spent,
     /// too, as its listing gives them: here they are checked again.
@@ -875,6 +910,7 @@ impl<'k> Library<'k> {
         &self,
         name: &str,
         files: &[(&str, &[u8])],
+        left_out: LeftOut,
         now: &str,
         spent: Spent,
         reply: &str,
@@ -902,6 +938,7 @@ impl<'k> Library<'k> {
             &claim,
             &parts,
             Some(&list),
+            left_out,
             sha256,
             now,
             &spent,
@@ -921,6 +958,7 @@ impl<'k> Library<'k> {
         claim: &Claim,
         parts: &[&[u8]],
         list: Option<&[u8]>,
+        left_out: LeftOut,
         sha256: String,
         now: &str,
         spent: &Spent,
@@ -983,6 +1021,7 @@ impl<'k> Library<'k> {
                 kept_at: now.to_owned(),
                 conversation,
                 reply: reply.to_owned(),
+                left_out,
             };
             index.push(kept.clone());
             if let Err(error) = Self::write(vault, INDEX, &index) {
@@ -1311,6 +1350,7 @@ impl<'k> Library<'k> {
                 kept_at: String::from("2026-11-17T00:00:00Z"),
                 conversation: 0,
                 reply: String::new(),
+                left_out: LeftOut::default(),
             })
             .collect();
         self.pretend_index(&index);

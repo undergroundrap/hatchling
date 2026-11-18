@@ -498,6 +498,9 @@ impl Cell<Ready> {
             && on(hatchling_core::run_tools::ToolGroup::Files)
         {
             registry.register(Box::new(crate::tools::GiveFileTool::new(self.connection())));
+            registry.register(Box::new(crate::tools::GiveFolderTool::new(
+                self.connection(),
+            )));
         }
         if on(hatchling_core::run_tools::ToolGroup::Browser) {
             registry.register(Box::new(crate::tools::BrowserOpenTool::new(
