@@ -551,11 +551,11 @@ function crossingRow(laneId: string, crossing: Crossing): ActivityRow {
 }
 function givenRow(laneId: string, given: Given): ActivityRow {
     // A folder kept says so, with its count of files.
-    const folder = given.files !== null && given.ended === 'offered';
-    const end = folder ? GIVEN_FOLDER : GIVEN_ENDINGS[given.ended];
+    const files = given.ended === 'offered' ? given.files : null;
+    const end = files === null ? GIVEN_ENDINGS[given.ended] : GIVEN_FOLDER;
+    const held = files === null ? size(given.bytes) : `${count(files, 'file', 'files')}, ${size(given.bytes)}`;
     // A name is shown only when it is one the broker gives.
-    const what = folder ? `A folder of ${count(given.files ?? 0, 'file', 'files')}, ${size(given.bytes)}` : `A file of ${size(given.bytes)}`;
-    const named = given.name === null || !isLibraryName(given.name) ? what : folder ? `${given.name}, ${count(given.files ?? 0, 'file', 'files')}, ${size(given.bytes)}` : `${given.name}, ${size(given.bytes)}`;
+    const named = given.name === null || !isLibraryName(given.name) ? `${files === null ? 'A file' : 'A folder'} of ${held}` : `${given.name}, ${held}`;
     return { id: given.id, workId: given.id, laneId, title: end.title, subtitle: named, icon: end.icon, report: `${named}. ${end.said}`, startedAt: given.at, endedAt: given.at, durationMs: null, outputFailed: end.status === 'failed', status: end.status, phase: 'action' };
 }
 function projectHanded(handed: Handed): ActivityThread {
