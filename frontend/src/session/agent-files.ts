@@ -14,6 +14,10 @@ export interface AgentFile {
     readonly sha256: string;
     /** When it was kept, as RFC 3339. */
     readonly keptAt: string;
+    /** The reply it came from, by its run's cell id; none for one kept before replies were. */
+    readonly reply: string | null;
+    /** The conversation it came from, by the Library's number. */
+    readonly conversation: number;
 }
 /** A folder the Library keeps (WO-043), as the broker lists it. */
 export interface AgentFolder {
@@ -25,6 +29,10 @@ export interface AgentFolder {
     readonly bytes: number;
     /** When it was kept, as RFC 3339. */
     readonly keptAt: string;
+    /** The reply it came from, by its run's cell id; none for one kept before replies were. */
+    readonly reply: string | null;
+    /** The conversation it came from, by the Library's number. */
+    readonly conversation: number;
 }
 /**
  * An item the Library keeps whose name, or size, isn't one the broker
@@ -36,6 +44,26 @@ export interface AgentUnnamed {
     /** Whether its id is one the broker gives, so it can be removed from here. */
     readonly removable: boolean;
 }
+/** What was removed that the open conversation gave: its chat says so. */
+export interface AgentRemoved {
+    readonly id: string;
+    readonly name: string;
+    readonly folder: boolean;
+    readonly files: number;
+    readonly bytes: number;
+    readonly reply: string;
+}
+/** What a chat shows the agent gave: a file, a folder, or one removed since. */
+export type GivenCard = {
+    readonly kind: 'file';
+    readonly file: AgentFile;
+} | {
+    readonly kind: 'folder';
+    readonly folder: AgentFolder;
+} | {
+    readonly kind: 'removed';
+    readonly removed: AgentRemoved;
+};
 /** The Library's use against its bounds, and the open conversation's. */
 export interface AgentFilesStanding {
     /** Items: files and folders, a folder one. */
@@ -54,6 +82,8 @@ export interface AgentFilesStanding {
     /** What the open conversation has read out of the agent's computer, in bytes. */
     readonly read: number;
     readonly readLimit: number;
+    /** The open conversation, by the Library's number. */
+    readonly conversation: number;
 }
 /** The Library as last read. */
 export type AgentFilesState = {
@@ -69,10 +99,16 @@ export type AgentFilesState = {
     readonly folders: readonly AgentFolder[];
     /** Items it can't name, newest first. */
     readonly unnamed: readonly AgentUnnamed[];
+    /** What was removed that the open conversation gave, oldest first. */
+    readonly removed: readonly AgentRemoved[];
     readonly standing: AgentFilesStanding;
 };
 /** A file a chat message showed as given, and whether it was removed since. */
 export interface OfferedFile extends AgentFile {
+    readonly removed: boolean;
+}
+/** A folder a chat message showed as given, and whether it was removed since. */
+export interface OfferedFolder extends AgentFolder {
     readonly removed: boolean;
 }
 export interface AgentFilesPort {
@@ -81,6 +117,12 @@ export interface AgentFilesPort {
     refresh(): Promise<void>;
     /** The file the chat's message `messageId` said the agent gave. */
     offered(messageId: string): OfferedFile | undefined;
+    /** The folder the chat's message `messageId` said the agent gave. */
+    offeredFolder(messageId: string): OfferedFolder | undefined;
+    /** What the agent gave in the reply `messageId`, by the run that wrote it: none for any other message. */
+    givenIn(messageId: string): readonly GivenCard[];
+    /** What the open conversation gave in replies the chat doesn't show. */
+    givenElsewhere(): readonly GivenCard[];
     /** Whether the file `id` is being downloaded now, alone or with every other. */
     downloading(id: string): boolean;
     /** How far every file's download, as one .zip, has got; none when none is under way. */

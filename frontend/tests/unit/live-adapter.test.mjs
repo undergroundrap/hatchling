@@ -1596,3 +1596,30 @@ test('a folder the agent gave is a row of its own, by its name, its files and it
     ]);
     assert.equal(rows[0].report, 'site, 3 files, 4 KB. Hatchling keeps it for you in its Library.');
 });
+test('a folder the agent gave is the app\'s own notice by its name, files and size, and the chat\'s runs reach the Library', async () => {
+    const { transport, adapter } = connected();
+    const folder = (fields) => ({ id: 'd'.repeat(64), name: 'site', files: 3, bytes: 4096, sha256: 'ab', kept_at: '2026-11-18T00:00:00Z', conversation: 1, left_out: { links: 0, mounts: 0, others: 0 }, ...fields });
+    replay(transport, [
+        sampleEvent(1, 1, { kind: 'chat_message', chat_id: 'local', message_id: 'msg-a', author: 'agent', text: 'Here it is.', run: 'run-000000000000000000000001' }),
+        sampleEvent(2, 2, { kind: 'folder_offered', chat_id: 'local', message_id: 'fold-a', folder: folder({}) }),
+        sampleEvent(3, 3, { kind: 'folder_offered', chat_id: 'local', message_id: 'fold-b', folder: folder({ name: '../‮x', files: 1 }) }),
+    ]);
+    const messages = adapter.getSnapshot().messages.filter(message => message.id.startsWith('fold-'));
+    assert.deepEqual(messages.map(message => [message.id, message.kind, message.text]), [
+        ['fold-a', 'notice', 'Hatchling gave you a folder: site, 3 files, 4 KB. It is kept in Hatchling’s Library.'],
+        ['fold-b', 'notice', 'Hatchling gave you a folder, 1 file, 4 KB. It is kept in Hatchling’s Library.'],
+    ]);
+    assert.equal(adapter.agentFiles.offeredFolder('fold-a').name, 'site');
+    assert.equal(adapter.agentFiles.offeredFolder('fold-b'), undefined);
+    // The chat's word on runs reaches the Library: nothing until its list is read.
+    assert.deepEqual(adapter.agentFiles.givenIn('msg-a'), []);
+    assert.deepEqual(adapter.agentFiles.givenElsewhere(), []);
+    // Then what the answer's run gave sits under it, and nothing apart.
+    const standing = { files: 1, file_limit: 64, bytes: 3, byte_limit: 268435456, given: 1, given_limit: 16, off: false, files_in_all: 1, files_in_all_limit: 4096, read: 3, read_limit: 134217728, conversation: 1 };
+    const file = { id: 'f'.repeat(64), name: 'report.pdf', bytes: 3, sha256: 'ab', kept_at: '2026-11-18T00:00:00Z', conversation: 1, reply: 'run-000000000000000000000001' };
+    for (const frame of transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'list_library'))
+        answer(transport, frame.request_id, { result: 'library', files: [file], folders: [], removed: [], standing });
+    await flush();
+    assert.deepEqual(adapter.agentFiles.givenIn('msg-a').map(card => card.kind === 'file' ? card.file.name : card.kind), ['report.pdf']);
+    assert.deepEqual(adapter.agentFiles.givenElsewhere(), []);
+});

@@ -139,10 +139,20 @@ fn a_folder_is_walked_read_checked_once_and_kept_as_one_item() {
     }
     assert_eq!(library.standing().unwrap(), (1, false));
     assert_eq!(library.read_so_far().unwrap(), 16);
-    // The list of files has none; every app is told to read the Library
-    // again, and Activity counts its files.
+    // The list of files has none; the app is told of the folder in the
+    // chat, and Activity counts its files.
     assert!(library.files().unwrap().is_empty());
-    assert_eq!(install.events(), [UiEventBody::LibraryChanged {}]);
+    let events = install.events();
+    let [UiEventBody::FolderOffered(offered)] = events.as_slice() else {
+        unreachable!("{events:?}");
+    };
+    assert_eq!(offered.chat_id, LOCAL_CHAT);
+    assert!(
+        offered.message_id.starts_with("file-"),
+        "{}",
+        offered.message_id
+    );
+    assert_eq!(offered.folder, crate::api_ops::shown_folder(item.clone()));
     assert_eq!(
         install.crossings(),
         [(Some(String::from("site")), 16, FileOutEnded::Offered)]

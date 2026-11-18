@@ -826,6 +826,23 @@ impl Ops<'_> {
             Some(idea) => hub.new_conversation_for(idea),
             None => hub.new_conversation(),
         };
+        // The Library is told first, in two steps (WO-041, WO-043): its
+        // next conversation with handing over off, then, once the chat has
+        // moved on, on. A new conversation it can't be told of doesn't
+        // start, or its items would be grouped with the last; while the
+        // chat moves on, no run of the last gives anything; and a step that
+        // fails leaves handing over off.
+        let library = crate::library::Library::of(self.config, self.key);
+        let begun = match &library {
+            Some(library) => match library.begin_new_conversation() {
+                Ok(number) => Some(number),
+                Err(error) => {
+                    tracing::error!(%error, "the Library couldn't be told of a new conversation");
+                    return refused(ActionRefusal::Unavailable);
+                }
+            },
+            None => None,
+        };
         // What was kept is removed before the hub moves on, so a new
         // conversation the owner is told started outlives a restart.
         match ConversationStore::of(self.config, self.key) {
@@ -837,12 +854,9 @@ impl Ops<'_> {
             }
             None => start(),
         }
-        // The new conversation hands files over again, from none (WO-041).
-        // One the Library can't be told of keeps its count and its off:
-        // that errs toward giving nothing.
-        if let Some(library) = crate::library::Library::of(self.config, self.key) {
-            if let Err(error) = library.new_conversation() {
-                tracing::error!(%error, "the Library couldn't be told of a new conversation");
+        if let (Some(library), Some(number)) = (&library, begun) {
+            if let Err(error) = library.finish_new_conversation(number) {
+                tracing::error!(%error, "handing over stays off: the Library couldn't finish a new conversation");
             }
         }
         self.bus.push(
@@ -1201,6 +1215,7 @@ impl<'a> Ops<'a> {
                 served(UiActionResult::Library {
                     files: files.into_iter().map(shown).collect(),
                     folders: folders.into_iter().map(shown_folder).collect(),
+                    removed: read.removed.into_iter().map(shown_removed).collect(),
                     standing,
                 })
             }
@@ -1467,8 +1482,21 @@ pub(crate) fn shown(file: crate::library::KeptItem) -> LibraryFile {
     }
 }
 
+/// An item removed that the open conversation gave, as the owner is
+/// shown it.
+fn shown_removed(gone: crate::library::Removed) -> hatchling_core::ui::LibraryRemoved {
+    hatchling_core::ui::LibraryRemoved {
+        id: gone.id,
+        name: gone.name,
+        folder: gone.kind == crate::library::ItemKind::Folder,
+        files: u32::try_from(gone.files).unwrap_or(u32::MAX),
+        bytes: gone.bytes,
+        reply: gone.reply,
+    }
+}
+
 /// A folder the Library keeps, as the owner is shown it.
-fn shown_folder(folder: crate::library::KeptItem) -> LibraryFolder {
+pub(crate) fn shown_folder(folder: crate::library::KeptItem) -> LibraryFolder {
     LibraryFolder {
         id: folder.id,
         name: folder.name,
@@ -3888,7 +3916,7 @@ mod tests {
             user: String::from("q0"),
             assistant: String::from("a0"),
         });
-        assert!(store.keep_if(|| true, &kept).unwrap());
+        assert!(store.keep_if(|| true, &kept, None).unwrap());
         // Giving files is off for the conversation, and it has given some.
         let library = crate::library::Library::of(&config, &key).unwrap();
         library.keep("a.txt", b"x", "now").unwrap().unwrap();
@@ -3927,6 +3955,17 @@ mod tests {
             chats(&bus),
             [(ChatAuthor::System, String::from(NEW_CONVERSATION))]
         );
+        // A Library that can't be told refuses the new conversation: the
+        // chat stays where it was, so nothing given after is grouped with
+        // the last (WO-043).
+        crate::library::tests::damage_state(&library);
+        let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
+        assert_eq!(
+            ops.handle(&owner, &new, &mut Replies::default()).1,
+            ApiOutcome::Refused
+        );
+        assert_eq!(hub.conversation(), 1);
+        assert_eq!(chats(&bus).len(), 1);
     }
 
     /// An install with a Library (WO-041), for the owner's app.
@@ -4056,6 +4095,7 @@ mod tests {
                 files,
                 folders,
                 standing,
+                ..
             },
             ApiOutcome::Served,
         ) = ask(UiAction::ListLibrary {})
@@ -4168,6 +4208,44 @@ mod tests {
             .map(|listed| (listed.name.as_str(), listed.conversation))
             .collect();
         assert_eq!(said, [("b.txt", 1), ("a.txt", 0)]);
+    }
+
+    /// What the open conversation gave and was removed is listed, so its
+    /// chat says so after a restart; an item another conversation gave
+    /// isn't.
+    #[test]
+    fn what_the_open_conversation_gave_and_was_removed_is_listed() {
+        let shelf = Shelf::new("api-library-removed");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let old = shelf.keep("old.txt", b"x");
+        shelf.library().new_conversation().unwrap();
+        let gone = shelf.keep("gone.txt", b"abc");
+        let mut replies = connection(crate::file_out::own());
+        let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
+        for id in [&old.id, &gone.id] {
+            let remove = UiAction::RemoveLibraryFile { id: id.clone() };
+            assert!(matches!(
+                ask(remove).0,
+                UiActionResult::LibraryFileRemoved { .. }
+            ));
+        }
+        let (UiActionResult::Library { removed, .. }, ApiOutcome::Served) =
+            ask(UiAction::ListLibrary {})
+        else {
+            unreachable!("not listed");
+        };
+        assert_eq!(
+            removed,
+            [hatchling_core::ui::LibraryRemoved {
+                id: gone.id,
+                name: String::from("gone.txt"),
+                folder: false,
+                files: 1,
+                bytes: 3,
+                reply: String::from(crate::library::tests::REPLY),
+            }]
+        );
     }
 
     /// A file of a folder is read out by its place, to its own hash; and
@@ -4320,6 +4398,7 @@ mod tests {
         let library = UiActionResult::Library {
             files: Vec::new(),
             folders: vec![folder; LIBRARY_ITEMS],
+            removed: Vec::new(),
             standing: LibraryStanding {
                 files: u32::MAX,
                 file_limit: u32::MAX,

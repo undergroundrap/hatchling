@@ -128,7 +128,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#inbox = new LiveInbox(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.inbox = this.#inbox;
-        this.#agentFiles = new LiveAgentFiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.#agentFiles = new LiveAgentFiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`, { runs: { of: id => this.#chats.runOf(id), shown: () => this.#chats.runsShown() } });
         this.agentFiles = this.#agentFiles;
         this.chatSession = new LiveChatSession(this.#client, this.#chats, artifactId => this.#surfaces.shelf.latest(artifactId));
         this.#snapshot = this.#build();
@@ -277,8 +277,11 @@ export class LiveAdapter implements ProtocolAdapter {
         if (reply.kind !== 'answered')
             return { ok: false, message: reply.detail };
         const result = reply.result;
-        if (result.result === 'conversation_started')
+        if (result.result === 'conversation_started') {
+            // A new conversation clears what the last gave and was removed.
+            void this.#agentFiles.refresh();
             return { ok: true, message: 'New conversation started.' };
+        }
         if (result.result === 'refused')
             return { ok: false, message: NOT_STARTED[result.reason] };
         return { ok: false, message: 'Hatchling answered with something else, so the new conversation is not confirmed.' };
@@ -355,6 +358,10 @@ export class LiveAdapter implements ProtocolAdapter {
                 return undefined;
             case 'file_withheld':
                 this.#chats.fileWithheld(body, event.ts);
+                return undefined;
+            case 'folder_offered':
+                this.#chats.folderOffered(body, event.ts);
+                this.#agentFiles.observeFolder(body);
                 return undefined;
             case 'library_changed':
                 void this.#agentFiles.refresh();

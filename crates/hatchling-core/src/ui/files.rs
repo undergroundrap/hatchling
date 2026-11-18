@@ -129,6 +129,38 @@ pub struct LibraryFolder {
     pub left_out: crate::LeftOut,
 }
 
+/// An item removed from the Library that the open conversation gave (v8,
+/// WO-043): its chat says so, after a restart too.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct LibraryRemoved {
+    /// The broker's id for it, as it was.
+    pub id: String,
+    /// The broker's name for it.
+    pub name: String,
+    /// Whether it was a folder.
+    pub folder: bool,
+    /// How many files it was.
+    pub files: u32,
+    /// Its bytes, all its files' together.
+    pub bytes: u64,
+    /// The reply it came from: the chat run's cell id.
+    pub reply: String,
+}
+
+/// The agent handed the owner a folder (v8, WO-043): it is kept in the
+/// Library.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FolderOffered {
+    /// The chat it was handed over in.
+    pub chat_id: String,
+    /// Its place in the chat: the broker's.
+    pub message_id: String,
+    /// The folder.
+    pub folder: LibraryFolder,
+}
+
 /// One file of a folder in the Library (v8), as its list says it.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

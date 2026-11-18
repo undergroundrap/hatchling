@@ -350,6 +350,13 @@ too. Its name is checked alone, and its paths and every byte of its
 files as one text, which is the only copy and what is kept. A walk isn't
 a snapshot: what changes in a folder already listed can be missed.
 
+The chat places what a reply gave under it by the run that answered it,
+the broker's word on both sides: the conversation store keeps that run
+with the exchange, sealed, and the Library each item's. What the open
+conversation gave and was removed is kept with the Library's state, so
+its chat says so after a restart; an item kept before replies were is
+never placed.
+
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
 together, takes each kept piece only at the length the supervisor said it

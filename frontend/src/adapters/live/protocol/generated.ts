@@ -1687,6 +1687,24 @@ export type FolderEntry = {
     readonly sha256: string;
 };
 /**
+ * The agent handed the owner a folder (v8, WO-043): it is kept in the
+ * Library.
+ */
+export type FolderOffered = {
+    /**
+     * The chat it was handed over in.
+     */
+    readonly chat_id: string;
+    /**
+     * The folder.
+     */
+    readonly folder: LibraryFolder;
+    /**
+     * Its place in the chat: the broker's.
+     */
+    readonly message_id: string;
+};
+/**
  * An operation on the owner's goals, from their app: the same goals the
  * agent reads in a chat and a feed.
  */
@@ -2193,6 +2211,36 @@ export type LibraryFolder = {
      * the JSON of its entries, each its path, length and SHA-256.
      */
     readonly sha256: string;
+};
+/**
+ * An item removed from the Library that the open conversation gave (v8,
+ * WO-043): its chat says so, after a restart too.
+ */
+export type LibraryRemoved = {
+    /**
+     * Its bytes, all its files' together.
+     */
+    readonly bytes: number;
+    /**
+     * How many files it was.
+     */
+    readonly files: number;
+    /**
+     * Whether it was a folder.
+     */
+    readonly folder: boolean;
+    /**
+     * The broker's id for it, as it was.
+     */
+    readonly id: string;
+    /**
+     * The broker's name for it.
+     */
+    readonly name: string;
+    /**
+     * The reply it came from: the chat run's cell id.
+     */
+    readonly reply: string;
 };
 /**
  * The Library's use against its bounds, and the open conversation's
@@ -5725,6 +5773,11 @@ export type UiActionResult = {
      * Its folders (v8).
      */
     readonly folders: readonly (LibraryFolder)[];
+    /**
+     * What was removed that the open conversation gave, oldest first
+     * (v8): its chat says so.
+     */
+    readonly removed: readonly (LibraryRemoved)[];
     readonly result: 'library';
     /**
      * Its use, and the open conversation's.
@@ -5941,6 +5994,8 @@ export type UiEventBody = {
     readonly kind: 'file_offered';
 } | FileWithheld & {
     readonly kind: 'file_withheld';
+} | FolderOffered & {
+    readonly kind: 'folder_offered';
 } | {
     readonly kind: 'library_changed';
 } | {

@@ -22,7 +22,7 @@ class FakeElement extends FakeNode {
 }
 globalThis.Node = FakeNode;
 globalThis.document = { createElement: tag => new FakeElement(tag), createElementNS: (namespace, tag) => new FakeElement(tag), createTextNode: data => new FakeText(data) };
-const { offeredFileDetail } = await import('../../dist/app/features/chat/file-out.js');
+const { offeredFileDetail, offeredFolderDetail, givenInReply, givenElsewhere } = await import('../../dist/app/features/chat/file-out.js');
 const { liveAgentFiles } = await import('../../dist/app/features/settings/live-agent-files.js');
 const text = (node) => node instanceof FakeText ? node.data : node.childNodes.map(text).join('');
 const find = (node, predicate) => {
@@ -47,6 +47,9 @@ function stand(overrides = {}) {
         current: () => ({ kind: 'read', files: [FILE], folders: [], unnamed: [], standing: STANDING }),
         refresh: () => { asked.push(['refresh']); return Promise.resolve(); },
         offered: id => id === 'file-a' ? { ...FILE, removed: false } : undefined,
+        offeredFolder: () => undefined,
+        givenIn: () => [],
+        givenElsewhere: () => [],
         downloading: () => false,
         downloadingAll: () => null,
         download: id => { asked.push(['download', id]); return Promise.resolve({ ok: true, message: 'Saved report.pdf, 2 KB.' }); },
@@ -213,4 +216,40 @@ test('Settings says nothing yet only when the Library holds no file, folder or i
     assert.match(said({}), /Nothing yet/u);
     assert.doesNotMatch(said({ folders: [{ id: 'd'.repeat(64), name: 'site', files: 1, bytes: 1, keptAt: '2026-11-18T00:00:00Z' }] }), /Nothing yet/u);
     assert.doesNotMatch(said({ unnamed: [{ id: 'c'.repeat(64), bytes: 1, removable: true }] }), /Nothing yet/u);
+});
+const folderOf = { id: 'd'.repeat(64), name: 'site', files: 3, bytes: 4096, keptAt: '2026-11-18T00:00:00Z', reply: 'run-1', conversation: 1 };
+const cards = [
+    { kind: 'folder', folder: folderOf },
+    { kind: 'file', file: { ...FILE, reply: 'run-1', conversation: 1 } },
+    { kind: 'removed', removed: { id: 'e'.repeat(64), name: 'gone.txt', folder: false, files: 1, bytes: 2, reply: 'run-1' } },
+    { kind: 'removed', removed: { id: 'c'.repeat(64), name: 'away', folder: true, files: 1, bytes: 9, reply: 'run-1' } },
+];
+test('an answer shows what its run gave: a file with Download, a folder by its files, and one removed since', async () => {
+    const port = stand({ givenIn: id => id === 'm1' ? cards : [] });
+    const ctx = context(port);
+    const answer = { id: 'm1', kind: 'text', role: 'agent', text: 'Here.' };
+    const shown = givenInReply(ctx, answer);
+    assert.equal(text(shown), 'site · a folder of 3 files, 4 KB. From the agent’s computer. Downloading a folder comes in a later version of Hatchling.report.pdf · 2 KB. From the agent’s computer. Made by the agent: open it only if you trust what it made. Downloadgone.txt · Removed from Hatchling’s Library since.away · a folder of 1 file. Removed from Hatchling’s Library since.');
+    buttonNamed(shown, 'Download').fire('click');
+    await flush();
+    assert.deepEqual(port.asked, [['download', 'f1']]);
+    // Nothing under the owner's words, another answer, or with no Library.
+    assert.equal(givenInReply(ctx, { ...answer, role: 'user' }), null);
+    assert.equal(givenInReply(ctx, { ...answer, id: 'm2' }), null);
+    assert.equal(givenInReply(context(undefined), answer), null);
+});
+test('what the conversation gave under no reply shown sits apart, under none', () => {
+    const block = givenElsewhere(context(stand({ givenElsewhere: () => cards.slice(0, 1) })));
+    assert.equal(text(block), 'Given in this conversation, not under a reply shown here.site · a folder of 3 files, 4 KB. From the agent’s computer. Downloading a folder comes in a later version of Hatchling.');
+    assert.equal(givenElsewhere(context(stand())), null);
+    assert.equal(givenElsewhere(context(undefined)), null);
+});
+test('the chat\'s notice of a folder given says its files, or that it was removed since', () => {
+    const port = stand({ offeredFolder: id => id === 'fold-a' ? { ...folderOf, removed: false } : id === 'fold-b' ? { ...folderOf, removed: true } : undefined });
+    const ctx = context(port);
+    assert.equal(text(offeredFolderDetail(ctx, notice('fold-a'))), 'From the agent’s computer: 3 files. Downloading a folder comes in a later version of Hatchling.');
+    assert.equal(text(offeredFolderDetail(ctx, notice('fold-b'))), 'Removed from Hatchling’s Library since.');
+    assert.equal(offeredFolderDetail(ctx, notice('fold-c')), null);
+    assert.equal(offeredFolderDetail(ctx, { id: 'fold-a', kind: 'error', text: 'x' }), null);
+    assert.equal(offeredFolderDetail(context(undefined), notice('fold-a')), null);
 });

@@ -66,6 +66,7 @@ Each slice's record, as it lands.
 - Slice 2, the Library's items, groups, bounds and log: [library-items.md](../evidence/library-items.md).
 - Slice 3, the folder hand-over and `give_folder`: [give-folder.md](../evidence/give-folder.md).
 - Slice 4, the Library's folders through the local API (UI v8): [library-api.md](../evidence/library-api.md).
+- Slice 5, the chat's cards across a restart: [chat-cards.md](../evidence/chat-cards.md).
 
 ## Notes
 

@@ -111,6 +111,7 @@ export class Surfaces {
             case 'attachment':
             case 'file_in':
             case 'file_offered':
+            case 'folder_offered':
             case 'file_withheld':
             case 'library_changed':
                 return undefined;
