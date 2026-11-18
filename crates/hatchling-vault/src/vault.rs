@@ -260,15 +260,21 @@ impl Vault {
     /// Returns [`Error::NotFound`] if no secret is stored under `name`,
     /// or [`Error::Io`].
     pub fn remove(&self, name: &SecretName) -> Result<(), Error> {
+        self.remove_unlogged(name)?;
+        tracing::info!(secret_name = name.as_str(), "removed secret");
+        Ok(())
+    }
+
+    /// [`remove`](Self::remove), logged by the caller: for a sealed store
+    /// that writes many entries for one thing, and logs the thing.
+    pub(crate) fn remove_unlogged(&self, name: &SecretName) -> Result<(), Error> {
         std::fs::remove_file(self.path(name)).map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 Error::NotFound { name: name.clone() }
             } else {
                 Error::Io { source }
             }
-        })?;
-        tracing::info!(secret_name = name.as_str(), "removed secret");
-        Ok(())
+        })
     }
 
     /// Whether a secret is stored under `name`. Informational only —

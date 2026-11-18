@@ -1183,13 +1183,20 @@ impl<'a> Ops<'a> {
             return refused(ActionRefusal::BadRequest);
         }
         let read = library
-            .files()
-            .and_then(|files| library.standing().map(|standing| (files, standing)));
+            .items()
+            .and_then(|items| library.standing().map(|standing| (items, standing)));
         match read {
-            Ok((files, (given, off))) => served(UiActionResult::Library {
-                standing: standing(&files, given, off),
+            Ok((items, (given, off))) => served(UiActionResult::Library {
+                // Its use counts every item, a folder too, which this
+                // version of the API doesn't list (WO-043).
+                standing: standing(&items, given, off),
                 // Newest first: the index keeps them oldest first.
-                files: files.into_iter().rev().map(shown).collect(),
+                files: items
+                    .into_iter()
+                    .rev()
+                    .filter(|item| item.kind == crate::library::ItemKind::File)
+                    .map(shown)
+                    .collect(),
             }),
             Err(error) => unreadable(error),
         }
@@ -1335,7 +1342,7 @@ fn plain(said: &str) -> String {
 const INBOX_FAILED: &str = "the agent's inbox couldn't be reached: Hatchling's log says why";
 
 /// A file the Library keeps, as the owner is shown it.
-fn shown(file: crate::library::KeptFile) -> LibraryFile {
+fn shown(file: crate::library::KeptItem) -> LibraryFile {
     LibraryFile {
         id: file.id,
         name: file.name,
@@ -1345,16 +1352,17 @@ fn shown(file: crate::library::KeptFile) -> LibraryFile {
     }
 }
 
-/// The Library's use of `files` against its bounds, and the open
-/// conversation's `given` and `off`.
-fn standing(files: &[crate::library::KeptFile], given: u32, off: bool) -> LibraryStanding {
-    use crate::library::{HANDED_PER_CONVERSATION, LIBRARY_BYTES, LIBRARY_FILES};
+/// The Library's use by `items` against its bounds, and the open
+/// conversation's `given` and `off`: each item counted, as the Library
+/// counts it against its most.
+fn standing(items: &[crate::library::KeptItem], given: u32, off: bool) -> LibraryStanding {
+    use crate::library::{HANDED_PER_CONVERSATION, LIBRARY_BYTES, LIBRARY_ITEMS};
     LibraryStanding {
-        files: u32::try_from(files.len()).unwrap_or(u32::MAX),
-        file_limit: u32::try_from(LIBRARY_FILES).unwrap_or(u32::MAX),
-        bytes: files
+        files: u32::try_from(items.len()).unwrap_or(u32::MAX),
+        file_limit: u32::try_from(LIBRARY_ITEMS).unwrap_or(u32::MAX),
+        bytes: items
             .iter()
-            .fold(0_u64, |held, file| held.saturating_add(file.bytes)),
+            .fold(0_u64, |held, item| held.saturating_add(item.bytes)),
         byte_limit: LIBRARY_BYTES,
         given,
         given_limit: HANDED_PER_CONVERSATION,
@@ -3815,7 +3823,7 @@ mod tests {
             crate::library::Library::of(&self.config, &self.key).unwrap()
         }
 
-        fn keep(&self, name: &str, bytes: &[u8]) -> crate::library::KeptFile {
+        fn keep(&self, name: &str, bytes: &[u8]) -> crate::library::KeptItem {
             self.library()
                 .keep(name, bytes, "2026-11-17T00:00:00Z")
                 .unwrap()
@@ -3861,6 +3869,56 @@ mod tests {
     /// The Library, as the owner's app reads it (WO-041): listed newest
     /// first with its use, and a file read out in order whole, from one
     /// copy let go after its last part.
+    /// A folder the Library keeps counts in its use, as the Library counts
+    /// it against its most, but this version of the API lists and serves
+    /// files only (WO-043 lists folders later).
+    #[test]
+    fn a_folder_counts_in_the_librarys_use_and_isnt_listed_yet() {
+        let shelf = Shelf::new("api-library-folder");
+        let ops = shelf.ops();
+        let owner = caller(&[local_send()]);
+        let file = shelf.keep("a.txt", b"abc");
+        let library = shelf.library();
+        let conversation = library.conversation().unwrap();
+        let claim = crate::library::Claim::folder(2, 7);
+        let spent = library.spend(&claim, conversation).unwrap().unwrap();
+        let folder = library
+            .keep_folder_spent(
+                "site",
+                &[("index.html", b"<p>".as_slice()), ("a/b.css", b"b {}")],
+                "now",
+                spent,
+                crate::library::tests::REPLY,
+            )
+            .unwrap()
+            .unwrap();
+        let mut replies = connection(crate::file_out::own());
+        let mut ask = |action: UiAction| ops.handle(&owner, &action, &mut replies);
+        let (UiActionResult::Library { files, standing }, ApiOutcome::Served) =
+            ask(UiAction::ListLibrary {})
+        else {
+            unreachable!("not listed");
+        };
+        let ids: Vec<&str> = files.iter().map(|listed| listed.id.as_str()).collect();
+        assert_eq!(ids, [file.id.as_str()]);
+        assert_eq!((standing.files, standing.bytes, standing.given), (2, 10, 2));
+        // Not served as a file, and removed as an item.
+        assert_eq!(
+            ask(UiAction::BeginFileOut {
+                id: folder.id.clone()
+            }),
+            not_out(FileOutRefusal::Gone)
+        );
+        assert!(matches!(
+            ask(UiAction::RemoveLibraryFile { id: folder.id }),
+            (
+                UiActionResult::LibraryFileRemoved { .. },
+                ApiOutcome::Served
+            )
+        ));
+        assert_eq!(shelf.library().items().unwrap().len(), 1);
+    }
+
     #[test]
     fn the_library_is_listed_and_a_file_read_out_whole_in_order() {
         use base64::Engine as _;

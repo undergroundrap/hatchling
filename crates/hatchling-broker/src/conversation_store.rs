@@ -78,6 +78,17 @@ const fn slot(number: u64) -> u64 {
     number % SLOTS
 }
 
+/// Whether the chat goes on with a conversation from before the broker
+/// started, as `resumed` says: one kept with something in it. With none
+/// kept, or none read, the chat's conversation is a new one.
+#[must_use]
+pub fn goes_on(resumed: Option<&Resumed>) -> bool {
+    matches!(
+        resumed,
+        Some(Resumed::Kept(kept)) if !kept.exchanges.is_empty() || !kept.earlier.is_empty()
+    )
+}
+
 /// What the broker found kept when it started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Resumed {

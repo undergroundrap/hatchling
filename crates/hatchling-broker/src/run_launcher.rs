@@ -2354,6 +2354,9 @@ mod tests {
         assert!(a.starts_with("run-"));
         assert!(a.parse::<CellId>().is_ok(), "{a}");
         assert_eq!(RUN_TOKEN_LEN, 28);
+        // A run's cell id is the reply the Library groups what it hands
+        // over by (WO-043): one it would refuse would give nothing.
+        assert!(crate::library::is_reply(&a), "{a}");
     }
 
     #[test]

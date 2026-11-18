@@ -38,7 +38,7 @@ use hatchling_vault::OpensStores;
 use crate::Config;
 use crate::api_ops::LOCAL_CHAT;
 use crate::held_check::CheckFor;
-use crate::library::{Library, Refused};
+use crate::library::{Claim, Library, Refused};
 use crate::room_ops::Rooms;
 
 /// What the scan of a file out is recorded as: a gate's scan.
@@ -171,7 +171,7 @@ pub(crate) fn name_of(path: &str) -> Result<String, &'static str> {
 /// Whether `name` is a file Windows acts on when its folder is shown,
 /// whatever its case: `desktop.ini`, or one with an extension in
 /// [`REACHING`].
-fn reaches_out(name: &str) -> bool {
+pub(crate) fn reaches_out(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower == "desktop.ini"
         || lower
@@ -180,7 +180,7 @@ fn reaches_out(name: &str) -> bool {
 }
 
 /// Whether `stem` is a name Windows keeps for a device, whatever its case.
-fn is_reserved(stem: &str) -> bool {
+pub(crate) fn is_reserved(stem: &str) -> bool {
     let upper = stem.to_ascii_uppercase();
     let numbered = |prefix: &str| {
         upper
@@ -262,7 +262,7 @@ impl<'k> Handing<'k> {
             Some(false) => return unread(STALE),
             Some(true) => {}
         }
-        match library.refuses(0) {
+        match library.refuses(&Claim::file(0)) {
             Ok(None) => {}
             Ok(Some(refused)) => return unread(refused.words()),
             Err(error) => {
@@ -282,8 +282,8 @@ impl<'k> Handing<'k> {
         tracing::info!(bytes = size, "a file crossed out of the Room");
         // Each check is a guess at a secret: one is spent before it is made,
         // and a file the Library couldn't keep is never checked.
-        match library.spend(size, conversation) {
-            Ok(Ok(())) => {}
+        let spent = match library.spend(&Claim::file(size), conversation) {
+            Ok(Ok(spent)) => spent,
             Ok(Err(refused)) => {
                 return self.ended(None, size, FileOutEnded::Refused, refused.words());
             }
@@ -291,7 +291,7 @@ impl<'k> Handing<'k> {
                 tracing::warn!(%error, "the Library couldn't count a file out");
                 return self.ended(None, size, FileOutEnded::Refused, NOT_KEPT);
             }
-        }
+        };
         let name_held = self.checks.holds(name.as_bytes());
         let file_held = self.checks.holds(&bytes);
         let held = either(name_held.clone(), file_held);
@@ -310,7 +310,8 @@ impl<'k> Handing<'k> {
             }
             Ok(false) => {}
         }
-        match library.keep_spent(&name, &bytes, &Timestamp::now().to_string(), conversation) {
+        let now = Timestamp::now().to_string();
+        match library.keep_spent(&name, &bytes, &now, spent, cell.as_str()) {
             Ok(Ok(kept)) => self.offered(kept),
             Ok(Err(refused)) => self.refused_kept(&name, size, refused),
             Err(error) => {
@@ -344,7 +345,7 @@ impl<'k> Handing<'k> {
     }
 
     /// The file was kept: the owner is told of it, and the agent.
-    fn offered(&self, kept: crate::library::KeptFile) -> RoomResult {
+    fn offered(&self, kept: crate::library::KeptItem) -> RoomResult {
         let file = LibraryFile {
             id: kept.id,
             name: kept.name.clone(),
