@@ -317,6 +317,23 @@ owner can see what left the agent's computer. Never what it held, or its
 path. The model is offered the tool only in a chat with its computer,
 where the operator gave the broker a Library.
 
+The Library keeps items: a file, or a folder of files (WO-043; nothing
+gives a folder yet). A folder's files are kept back to back with a list
+of each one's path, length and SHA-256, sealed, its hash in the index;
+each file is read back only to its own hash, and the list only to the
+index's and as the folder can be (its lengths and count the item's, its
+paths the broker's rules'). Each item is grouped by the conversation it
+came from, the Library's own number for it, and the reply, the chat
+run's cell id: both the broker's, never the Room's word. A hand-over is
+spent, sealed, before anything is checked, and the keep takes what the
+spend gave: it keeps only what was spent, once. Besides its 16
+hand-overs, a conversation reads at most 128 MiB out of the Room: a file
+counts once it is read, kept or not, so reads the Library refuses end at
+that bound, refused before reading; a folder counts as its listing says,
+before it is read, every bound checked first. A restart gives none of
+it back: a conversation the chat doesn't resume is grouped apart, and its
+count, bytes and off are kept until the owner starts a new one.
+
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true
 together, takes each kept piece only at the length the supervisor said it

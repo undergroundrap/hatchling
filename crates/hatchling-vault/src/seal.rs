@@ -930,9 +930,23 @@ impl<'a> SealedVault<'a> {
     /// key and a fresh nonce cannot fail) or [`Error::Io`] on
     /// filesystem failure.
     pub fn store(&self, name: &SecretName, secret: &Secret) -> Result<(), Error> {
+        self.store_quietly(name, secret)?;
+        tracing::info!(secret_name = name.as_str(), "stored sealed secret");
+        Ok(())
+    }
+
+    /// [`store`](Self::store), logged at debug: for a store that keeps one
+    /// thing as many entries (the Library's chunks), whose caller logs the
+    /// thing once. Never for a store of secrets, whose every write is
+    /// logged.
+    ///
+    /// # Errors
+    ///
+    /// As [`store`](Self::store).
+    pub fn store_quietly(&self, name: &SecretName, secret: &Secret) -> Result<(), Error> {
         let envelope = seal_envelope(self.key.key(), self.store, name, secret.as_bytes())?;
         self.vault.store_raw(name, &envelope)?;
-        tracing::info!(secret_name = name.as_str(), "stored sealed secret");
+        tracing::debug!(secret_name = name.as_str(), "stored sealed entry");
         Ok(())
     }
 
@@ -963,6 +977,19 @@ impl<'a> SealedVault<'a> {
     /// or [`Error::Io`].
     pub fn remove(&self, name: &SecretName) -> Result<(), Error> {
         self.vault.remove(name)
+    }
+
+    /// [`remove`](Self::remove), logged at debug: as
+    /// [`store_quietly`](Self::store_quietly), never for a store of
+    /// secrets.
+    ///
+    /// # Errors
+    ///
+    /// As [`remove`](Self::remove).
+    pub fn remove_quietly(&self, name: &SecretName) -> Result<(), Error> {
+        self.vault.remove_unlogged(name)?;
+        tracing::debug!(secret_name = name.as_str(), "removed sealed entry");
+        Ok(())
     }
 
     /// Whether a secret is stored under `name`. Informational only —
@@ -1852,6 +1879,30 @@ mod tests {
                 skipped: 3
             }
         );
+    }
+
+    /// What is stored quietly is stored, sealed, as any write is; what is
+    /// removed quietly is gone, and one not there is said not to be.
+    #[test]
+    fn a_quiet_store_and_removal_do_what_the_loud_ones_do() {
+        let dir = test_dir("quiet");
+        let key = test_key();
+        let vault = SealedVault::open_in(&dir, &key, Store::LIBRARY).unwrap();
+        let name = secret_name("chunk-0");
+        vault.store_quietly(&name, &secret(b"bytes")).unwrap();
+        assert_eq!(vault.fetch(&name).unwrap().as_bytes(), b"bytes");
+        let on_disk = std::fs::read(dir.join("chunk-0")).unwrap();
+        assert!(
+            !on_disk.windows(5).any(|window| window == b"bytes"),
+            "stored quietly, but not sealed"
+        );
+        vault.remove_quietly(&name).unwrap();
+        assert!(matches!(vault.fetch(&name), Err(Error::NotFound { .. })));
+        assert!(!vault.exists(&name));
+        assert!(matches!(
+            vault.remove_quietly(&name),
+            Err(Error::NotFound { .. })
+        ));
     }
 
     #[test]

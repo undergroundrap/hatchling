@@ -1,39 +1,63 @@
-//! The Library (WO-041): the files the agent hands its owner, sealed in a
-//! store of its own (`HATCHLING_LIBRARY_DIR`).
+//! The Library (WO-041, WO-043): what the agent hands its owner, sealed in
+//! a store of its own (`HATCHLING_LIBRARY_DIR`).
 //!
-//! - **A file is kept whole, in pieces.** A sealed entry holds at most
-//!   [`CHUNK_BYTES`], so a file is kept as its chunks, in order, each an
-//!   entry of its own, and the index names it: its id, its name, its
-//!   length, its SHA-256 and how many chunks it is. The id is the broker's,
-//!   random, so no two files share a chunk's name. A file is read back only
-//!   whole, and only if its chunks come to its hash: a store that was torn
-//!   or tampered with reads as an error, never as other bytes.
-//! - **Bounded, and nothing is evicted.** At most [`LIBRARY_FILES`] files
-//!   and [`LIBRARY_BYTES`] in all, each at most [`FILE_BYTES`]. A full
-//!   Library refuses a file; the owner removes files.
-//! - **The open conversation's count, and its off.** At most
-//!   [`HANDED_PER_CONVERSATION`] files are handed over in one conversation,
-//!   and a file found to hold a secret turns handing files over off for
-//!   it. Both are kept here, sealed, so a restart keeps them, and only the
-//!   owner's new conversation clears them.
-//! - **A hand-over is spent before its file is checked** ([`Library::spend`]):
-//!   each check is a guess at a secret, so every one is counted, sealed,
-//!   whatever comes of it, and one the Library has no room for is refused
-//!   first. A hand-over belongs to the conversation it began in, by a
-//!   number the Library gives each: one begun before the owner's new
-//!   conversation is neither counted, kept nor turns giving off there.
-//! - **A crash leaves nothing half done.** Before a file is written, or
-//!   removed, what is about to happen is written (`pending`), so a crash
-//!   never gives a hand-over back. Every
-//!   operation first finishes or undoes what a crash left: a keep whose
-//!   file the index names is done, any other is undone; a removal is
-//!   always finished.
+//! - **An item is a file, or a folder of files.** Its bytes are kept back
+//!   to back, in chunks of at most [`CHUNK_BYTES`], each an entry of its
+//!   own; a folder's list of its files (each path, length and SHA-256, in
+//!   the order of its bytes) is kept as chunks beside them. The index
+//!   names each item: its id, kind, name, length, count of files, hash
+//!   (a file's, or a folder's list's), how many chunks of each, when it was
+//!   kept, and the conversation and reply it came from. The id is the
+//!   broker's, random, so no two items share a chunk's name. A file is read
+//!   back only whole, and only to its hash; a folder's list only to its
+//!   hash, and each of its files only to its own: a store that was torn or
+//!   tampered with reads as damaged, never as other bytes.
+//! - **Grouped by the broker.** The conversation an item came from is the
+//!   Library's own number for it, and the reply the chat run's cell id:
+//!   both set by the broker, sealed in the index, never taken from what the
+//!   Room handed over.
+//! - **Bounded, and nothing is evicted.** At most [`LIBRARY_ITEMS`] items,
+//!   [`LIBRARY_BYTES`] and [`LIBRARY_FILES`] files in all; a file at most
+//!   [`FILE_BYTES`]; a folder at most [`FOLDER_BYTES`], [`FOLDER_FILES`]
+//!   files and [`FOLDER_DEPTH`] steps deep, its paths the broker's rules'
+//!   ([`check_paths`]). A full Library refuses an item; the owner removes
+//!   items. A folder's list isn't counted in the bytes: at most
+//!   [`LIST_CHUNKS`] chunks of it an item.
+//! - **The open conversation's count, its bytes, and its off.** At most
+//!   [`HANDED_PER_CONVERSATION`] hand-overs in one conversation, and
+//!   [`READ_PER_CONVERSATION`] read out of the Room; a hand-over found to
+//!   hold a secret turns handing over off for it. All kept here, sealed, so
+//!   a restart keeps them, and only the owner's new conversation clears
+//!   them: a conversation the chat doesn't resume after a restart is
+//!   grouped apart ([`at_start`]), and gets nothing back.
+//! - **Spent before it is checked** ([`Library::spend`]): each check is a
+//!   guess at a secret, so every one is counted, sealed, whatever comes of
+//!   it, and one the Library has no room for is refused first. A file is
+//!   spent once it is read, and every byte read counts, refused or not, so
+//!   a loop of reads the Library refuses ends at the conversation's bytes;
+//!   a folder is spent before it is read, its files and bytes as its
+//!   listing says them. A hand-over belongs to the conversation it began
+//!   in, by a number the Library gives each: one begun before a new
+//!   conversation is neither counted, kept nor turns giving off there. A
+//!   keep takes the [`Spent`] its spend gave, and keeps only what was
+//!   spent.
+//! - **A crash leaves nothing half done.** Before an item is written, or
+//!   removed, what is about to happen is written (`pending`): its two runs
+//!   of chunks, known before anything is written, so undoing it never reads
+//!   a list that may be torn. Every operation first finishes or undoes
+//!   what a crash left: a keep whose item the index names is done, any
+//!   other is undone; a removal is always finished.
+//! - **Quiet.** The chunks are written and removed without a log line
+//!   each ([`SealedVault::store_quietly`]); the Library logs each item kept,
+//!   removed or undone once, by its id, kind, files and bytes, never its
+//!   name or a path, which came from the agent.
 //!
 //! Every operation holds one lock for the process, so nothing here is
 //! seen half done by another.
 
+use std::collections::HashSet;
 use std::path::Path;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, Once, PoisonError};
 
 use hatchling_core::room::TAKE_FILE_BYTES;
 use hatchling_core::{MAX_SECRET_BYTES, SecretName};
@@ -44,23 +68,58 @@ use zeroize::Zeroizing;
 
 use crate::Config;
 
-/// The most files the Library keeps.
-pub const LIBRARY_FILES: usize = 64;
+/// The most items the Library keeps.
+pub const LIBRARY_ITEMS: usize = 64;
 
 /// The most the Library keeps in all, in bytes.
 pub const LIBRARY_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The most files handed over in one conversation.
+/// The most files the Library keeps in all, a folder's each counted.
+pub const LIBRARY_FILES: u64 = 4096;
+
+/// The most hand-overs in one conversation.
 pub const HANDED_PER_CONVERSATION: u32 = 16;
 
-/// The most of a file one entry keeps: a sealed entry's most.
+/// The most read out of the Room in one conversation, in bytes.
+pub const READ_PER_CONVERSATION: u64 = 128 * 1024 * 1024;
+
+/// The most of an item one entry keeps: a sealed entry's most.
 pub const CHUNK_BYTES: usize = MAX_SECRET_BYTES;
 
 /// The longest file the Library keeps: the longest the Room hands back.
 pub const FILE_BYTES: u64 = TAKE_FILE_BYTES;
 
-/// The longest a file's name may be, in bytes.
+/// The most a folder keeps in all, in bytes.
+pub const FOLDER_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The most files a folder keeps.
+pub const FOLDER_FILES: u64 = 512;
+
+/// The most steps a path in a folder has.
+pub const FOLDER_DEPTH: usize = 16;
+
+/// The longest a path in a folder may be, in bytes.
+pub const PATH_BYTES: usize = 1024;
+
+/// The longest one step of a path in a folder may be, in bytes.
+pub const STEP_BYTES: usize = 255;
+
+/// The longest an item's name may be, in bytes.
 pub const NAME_BYTES: usize = 64;
+
+/// The most a folder's list is, as JSON: [`FOLDER_FILES`] of the longest
+/// paths ([`PATH_BYTES`]), each with the most said of it (128 bytes).
+const LIST_BYTES: u64 = FOLDER_FILES * (1024 + 128) + 2;
+
+/// The most chunks a folder's list is kept in: [`LIST_BYTES`] in chunks of
+/// [`CHUNK_BYTES`].
+pub const LIST_CHUNKS: u64 = LIST_BYTES.div_ceil(32 * 1024);
+
+/// The longest an item's time of keeping may be, in bytes.
+const KEPT_AT_BYTES: usize = 40;
+
+/// A run's cell id: `run-` and 24 lowercase hex digits.
+const RUN_ID_BYTES: usize = 4 + 24;
 
 /// The index's entry name.
 const INDEX: &str = "library-index";
@@ -71,7 +130,7 @@ const STATE: &str = "library-state";
 /// Serializes every operation within a broker.
 static LIBRARY: Mutex<()> = Mutex::new(());
 
-/// Whether `name` is one the Library keeps a file by: 1 to [`NAME_BYTES`]
+/// Whether `name` is one the Library keeps an item by: 1 to [`NAME_BYTES`]
 /// ASCII letters, digits, `.`, `_` or `-`, not starting with a dot.
 #[must_use]
 pub fn is_name(name: &str) -> bool {
@@ -83,7 +142,104 @@ pub fn is_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
-/// A file read back for the owner (WO-041, slice 4).
+/// Whether `reply` is one an item may name: none (an item kept before
+/// items were grouped), or a run's cell id.
+pub(crate) fn is_reply(reply: &str) -> bool {
+    reply.is_empty()
+        || (reply.len() == RUN_ID_BYTES
+            && reply.strip_prefix("run-").is_some_and(|hex| {
+                hex.bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }))
+}
+
+/// Why one step of a path in a folder isn't one the Library keeps, if it
+/// isn't: printable ASCII but `< > : " \ | ? *`, not empty, `.` or `..`,
+/// no space at either end, no dot at its end, at most [`STEP_BYTES`], and
+/// no name Windows keeps for a device or acts on when its folder is shown.
+fn step_refused(step: &str) -> Option<&'static str> {
+    if step.is_empty() || step == "." || step == ".." {
+        return Some("a path in a folder has a step that is empty, . or ..");
+    }
+    if step.len() > STEP_BYTES {
+        return Some("a name in a folder is longer than 255 bytes");
+    }
+    let plain = step.bytes().all(|byte| {
+        (b' '..=b'~').contains(&byte)
+            && !matches!(byte, b'<' | b'>' | b':' | b'"' | b'\\' | b'|' | b'?' | b'*')
+    });
+    if !plain {
+        return Some("a name in a folder isn't plain ASCII, or holds a character Windows forbids");
+    }
+    if step.starts_with(' ') || step.ends_with(' ') || step.ends_with('.') {
+        return Some("a name in a folder starts or ends with a space, or ends with a dot");
+    }
+    let before_dot = step.split('.').next().unwrap_or_default();
+    if crate::hand_over::is_reserved(before_dot.trim_end()) {
+        return Some("a name in a folder is one Windows keeps for a device");
+    }
+    if crate::hand_over::reaches_out(step) {
+        return Some(
+            "a name in a folder is a kind of file Windows acts on when its folder is shown",
+        );
+    }
+    None
+}
+
+/// Whether `paths` can be a folder's, as the broker keeps one.
+///
+/// Each is a relative path of at most [`PATH_BYTES`] and [`FOLDER_DEPTH`]
+/// steps, each step one the Library keeps; no two are the same but for
+/// case; and none is a file where another has a folder.
+///
+/// # Errors
+///
+/// Which rule one broke: never the path, which came from the agent.
+pub fn check_paths<'p>(paths: impl IntoIterator<Item = &'p str>) -> Result<(), &'static str> {
+    let mut seen = HashSet::new();
+    let mut lowered = Vec::new();
+    for path in paths {
+        if path.len() > PATH_BYTES {
+            return Err("a path in a folder is longer than 1024 bytes");
+        }
+        let steps: Vec<&str> = path.split('/').collect();
+        if steps.len() > FOLDER_DEPTH {
+            return Err("a path in a folder is more than 16 steps deep");
+        }
+        if let Some(why) = steps.iter().find_map(|step| step_refused(step)) {
+            return Err(why);
+        }
+        let lower = path.to_ascii_lowercase();
+        if !seen.insert(lower.clone()) {
+            return Err("two paths in a folder are the same but for case");
+        }
+        lowered.push(lower);
+    }
+    // A file named where another path has a folder: each folder a path
+    // is in, up to each of its slashes.
+    for path in &lowered {
+        for (slash, _) in path.match_indices('/') {
+            let folder = path.get(..slash).unwrap_or_default();
+            if seen.contains(folder) {
+                return Err("a path in a folder is a file where another has a folder");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// What an item is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ItemKind {
+    /// A file.
+    #[default]
+    File,
+    /// A folder of files.
+    Folder,
+}
+
+/// An item read back for the owner.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReadOut {
     /// The file, whole, to its hash: wiped when dropped.
@@ -95,36 +251,127 @@ pub enum ReadOut {
     Damaged,
 }
 
-/// A file the Library keeps, as its index says it.
+/// A folder's list read back.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ListOut {
+    /// Its files, in the order of its bytes, to the list's hash.
+    Whole(Vec<FolderFile>),
+    /// The Library keeps no such folder.
+    Gone,
+    /// The list doesn't come to its hash, or isn't one a folder can have.
+    Damaged,
+}
+
+/// An item the Library keeps, as its index says it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct KeptFile {
+pub struct KeptItem {
     /// The broker's id for it: random hex.
     pub id: String,
+    /// What it is: a file, kept before items had kinds, unless it says.
+    #[serde(default)]
+    pub kind: ItemKind,
     /// Its name, as the broker made it.
     pub name: String,
+    /// Its length, all its files' together, in bytes.
+    pub bytes: u64,
+    /// How many files it is.
+    #[serde(default = "one")]
+    pub files: u64,
+    /// A file's SHA-256, or a folder's list's, in lowercase hex.
+    pub sha256: String,
+    /// How many chunks its bytes are kept in.
+    pub chunks: u64,
+    /// How many chunks a folder's list is kept in: none for a file.
+    #[serde(default)]
+    pub list_chunks: u64,
+    /// When it was kept.
+    pub kept_at: String,
+    /// The conversation it came from, by the Library's number.
+    #[serde(default)]
+    pub conversation: u64,
+    /// The reply it came from: the chat run's cell id; none for an item
+    /// kept before items were grouped.
+    #[serde(default)]
+    pub reply: String,
+}
+
+/// One file of a folder, as its list says it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FolderFile {
+    /// Its path in the folder, as the broker took it.
+    pub path: String,
     /// Its length, in bytes.
     pub bytes: u64,
     /// Its SHA-256, in lowercase hex.
     pub sha256: String,
-    /// How many chunks it is kept in.
-    pub chunks: u64,
-    /// When it was kept.
-    pub kept_at: String,
 }
 
-/// Why a file wasn't kept.
+const fn one() -> u64 {
+    1
+}
+
+/// What a hand-over asks of the Library: a file, or a folder, of `files`
+/// files and `bytes` in all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Claim {
+    /// What it is.
+    pub kind: ItemKind,
+    /// How many files.
+    pub files: u64,
+    /// How many bytes, all its files' together.
+    pub bytes: u64,
+}
+
+impl Claim {
+    /// A file of `bytes`.
+    #[must_use]
+    pub const fn file(bytes: u64) -> Self {
+        Self {
+            kind: ItemKind::File,
+            files: 1,
+            bytes,
+        }
+    }
+
+    /// A folder of `files` files and `bytes` in all.
+    #[must_use]
+    pub const fn folder(files: u64, bytes: u64) -> Self {
+        Self {
+            kind: ItemKind::Folder,
+            files,
+            bytes,
+        }
+    }
+}
+
+/// A hand-over spent: on what, and in which conversation. Only
+/// [`Library::spend`] makes one, and a keep takes it, once: it can't be
+/// copied, so no spend keeps twice.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Spent {
+    claim: Claim,
+    conversation: u64,
+}
+
+/// Why an item wasn't kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
-    /// Handing files over is off for this conversation: a file was found
-    /// to hold a secret.
+    /// Handing over is off for this conversation: something handed over
+    /// was found to hold a secret.
     Off,
-    /// This conversation has handed over as many files as it may.
+    /// This conversation has handed over as many times as it may.
     Spent,
-    /// The Library holds as many files, or as many bytes, as it may.
+    /// This conversation has read as much out of the Room as it may.
+    ReadOut,
+    /// The Library holds as many items, bytes or files as it may.
     Full,
     /// The file is longer than the Library keeps.
     TooLarge,
+    /// The folder is larger, or holds more files, than the Library keeps,
+    /// or none.
+    FolderTooLarge,
     /// The owner started a new conversation since the hand-over began.
     Stale,
 }
@@ -135,15 +382,21 @@ impl Refused {
     pub const fn words(self) -> &'static str {
         match self {
             Self::Off => {
-                "handing files over is off for this conversation: a file was found to hold a secret Hatchling keeps. A new conversation turns it back on"
+                "handing over is off for this conversation: something was found to hold a secret Hatchling keeps. A new conversation turns it back on"
             }
             Self::Spent => {
-                "this conversation has handed over 16 files, the most one may: a new conversation may hand over more"
+                "this conversation has handed over 16 times, the most one may: a new conversation may hand over more"
+            }
+            Self::ReadOut => {
+                "this conversation has read 128 MiB out of the agent's computer, the most one may: a new conversation may read more"
             }
             Self::Full => {
-                "the Library is full (64 files, or 256 MiB in all): the owner removes files from it"
+                "the Library is full (64 items, 256 MiB or 4096 files in all): the owner removes items from it"
             }
             Self::TooLarge => "the file is larger than 8 MiB, the most a file handed over may be",
+            Self::FolderTooLarge => {
+                "the folder is larger than 32 MiB, or holds more than 512 files, the most a folder handed over may, or holds none"
+            }
             Self::Stale => {
                 "the owner started a new conversation since this reply began: nothing from it is given"
             }
@@ -151,13 +404,15 @@ impl Refused {
     }
 }
 
-/// What is about to be done to a file: written before it is done.
+/// What is about to be done to an item: written before it is done.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Pending {
     op: Op,
     id: String,
     chunks: u64,
+    #[serde(default)]
+    list_chunks: u64,
 }
 
 /// Which change a pending one is.
@@ -169,7 +424,7 @@ enum Op {
 }
 
 /// The Library's state: what is about to be done, and the open
-/// conversation's number, count and off.
+/// conversation's number, count, bytes read and off.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
@@ -181,21 +436,35 @@ struct State {
     /// the first.
     #[serde(default)]
     conversation: u64,
+    /// The bytes the open conversation has read out of the Room.
+    #[serde(default)]
+    read: u64,
 }
 
-/// How many chunks a file of `bytes` is kept in.
+/// How many chunks `bytes` are kept in.
 fn chunks_of(bytes: u64) -> u64 {
     bytes.div_ceil(u64::try_from(CHUNK_BYTES).unwrap_or(u64::MAX))
 }
 
-/// The entry name of chunk `chunk` of file `id`.
+/// The entry name of chunk `chunk` of item `id`'s bytes.
 fn chunk_name(id: &str, chunk: u64) -> String {
     format!("library-{id}-{chunk}")
+}
+
+/// The entry name of chunk `chunk` of folder `id`'s list.
+fn list_chunk_name(id: &str, chunk: u64) -> String {
+    format!("library-{id}-l{chunk}")
 }
 
 /// `bytes` as lowercase hex.
 fn hex(bytes: &[u8]) -> String {
     crate::approval::hex_token("", bytes)
+}
+
+/// Whether `kept_at` can be a time an item was kept: at most
+/// [`KEPT_AT_BYTES`] of printable ASCII, so the index's length is known.
+fn is_kept_at(kept_at: &str) -> bool {
+    kept_at.len() <= KEPT_AT_BYTES && kept_at.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
 /// Whether `id` is one the broker gives: 64 lowercase hex digits.
@@ -204,6 +473,63 @@ fn is_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Whether `hash` is a SHA-256 in lowercase hex.
+fn is_hash(hash: &str) -> bool {
+    is_id(hash)
+}
+
+/// Whether `item` can be one an index names: an id the broker gives, a
+/// name the Library keeps, a hash, a time and a reply of their shapes, and
+/// within its kind's bounds, its chunks those its lengths are kept in.
+fn is_item(item: &KeptItem) -> bool {
+    let shaped = is_id(&item.id)
+        && is_name(&item.name)
+        && is_hash(&item.sha256)
+        && is_kept_at(&item.kept_at)
+        && is_reply(&item.reply)
+        && item.chunks == chunks_of(item.bytes);
+    shaped
+        && match item.kind {
+            ItemKind::File => item.files == 1 && item.list_chunks == 0 && item.bytes <= FILE_BYTES,
+            ItemKind::Folder => {
+                (1..=FOLDER_FILES).contains(&item.files)
+                    && item.bytes <= FOLDER_BYTES
+                    && (1..=LIST_CHUNKS).contains(&item.list_chunks)
+            }
+        }
+}
+
+/// What `index` holds in all: its bytes and its files.
+fn held(index: &[KeptItem]) -> (u64, u64) {
+    index.iter().fold((0_u64, 0_u64), |(bytes, files), item| {
+        (
+            bytes.saturating_add(item.bytes),
+            files.saturating_add(item.files),
+        )
+    })
+}
+
+/// Writes `parts`, back to back, as the chunks of item `id`'s bytes,
+/// each named by `name`: every chunk whole but the last.
+fn put_run(
+    vault: &SealedVault<'_>,
+    id: &str,
+    parts: &[&[u8]],
+    name: fn(&str, u64) -> String,
+) -> Result<(), String> {
+    // As many chunks as the bytes are kept in, each taken in turn from
+    // the parts as one run: nothing here can go round for ever.
+    let total = parts.iter().fold(0_u64, |all, part| {
+        all.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX))
+    });
+    let mut bytes = parts.iter().flat_map(|part| part.iter().copied());
+    for chunk in 0..chunks_of(total) {
+        let piece: Vec<u8> = bytes.by_ref().take(CHUNK_BYTES).collect();
+        Library::put(vault, &name(id, chunk), piece)?;
+    }
+    Ok(())
 }
 
 /// The Library's sealed store.
@@ -256,10 +582,6 @@ impl<'k> Library<'k> {
     fn write<T: Serialize>(vault: &SealedVault<'_>, entry: &str, value: &T) -> Result<(), String> {
         let bytes = serde_json::to_vec(value)
             .map_err(|error| format!("the Library's {entry} doesn't encode: {error}"))?;
-        Self::put(vault, entry, bytes)
-    }
-
-    fn put(vault: &SealedVault<'_>, entry: &str, bytes: Vec<u8>) -> Result<(), String> {
         let secret = Secret::new(bytes)
             .map_err(|error| format!("the Library's {entry} can't be kept: {error}"))?;
         vault
@@ -267,18 +589,25 @@ impl<'k> Library<'k> {
             .map_err(|error| format!("the Library's {entry} can't be written: {error}"))
     }
 
-    /// The index, held to what one can be: at most [`LIBRARY_FILES`] files,
-    /// each with an id the broker gives, a name the Library keeps, at most
-    /// [`FILE_BYTES`] and the chunks that length is kept in.
-    fn index(vault: &SealedVault<'_>) -> Result<Vec<KeptFile>, String> {
-        let index: Vec<KeptFile> = Self::read(vault, INDEX)?.unwrap_or_default();
-        let sound = index.len() <= LIBRARY_FILES
-            && index.iter().all(|file| {
-                is_id(&file.id)
-                    && is_name(&file.name)
-                    && file.bytes <= FILE_BYTES
-                    && file.chunks == chunks_of(file.bytes)
-            });
+    /// Writes one chunk, quietly: the item is logged once, not each chunk.
+    fn put(vault: &SealedVault<'_>, entry: &str, bytes: Vec<u8>) -> Result<(), String> {
+        let secret = Secret::new(bytes)
+            .map_err(|error| format!("the Library's chunk can't be kept: {error}"))?;
+        vault
+            .store_quietly(&Self::name(entry)?, &secret)
+            .map_err(|error| format!("the Library's chunk can't be written: {error}"))
+    }
+
+    /// The index, held to what one can be: at most [`LIBRARY_ITEMS`] items,
+    /// each one an index can name ([`is_item`]), within the Library's
+    /// bytes and files in all.
+    fn index(vault: &SealedVault<'_>) -> Result<Vec<KeptItem>, String> {
+        let index: Vec<KeptItem> = Self::read(vault, INDEX)?.unwrap_or_default();
+        let (bytes, files) = held(&index);
+        let sound = index.len() <= LIBRARY_ITEMS
+            && index.iter().all(is_item)
+            && bytes <= LIBRARY_BYTES
+            && files <= LIBRARY_FILES;
         if !sound {
             return Err(String::from(
                 "the Library's index holds what an index can't",
@@ -290,8 +619,11 @@ impl<'k> Library<'k> {
     fn state(vault: &SealedVault<'_>) -> Result<State, String> {
         let state: State = Self::read(vault, STATE)?.unwrap_or_default();
         if state.handed > HANDED_PER_CONVERSATION
+            || state.read > READ_PER_CONVERSATION
             || state.pending.as_ref().is_some_and(|pending| {
-                !is_id(&pending.id) || pending.chunks > chunks_of(FILE_BYTES)
+                !is_id(&pending.id)
+                    || pending.chunks > chunks_of(FOLDER_BYTES)
+                    || pending.list_chunks > LIST_CHUNKS
             })
         {
             return Err(String::from("the Library's state holds what a state can't"));
@@ -299,13 +631,22 @@ impl<'k> Library<'k> {
         Ok(state)
     }
 
-    /// Removes chunks `0..chunks` of file `id`: one already gone is gone.
-    fn remove_chunks(vault: &SealedVault<'_>, id: &str, chunks: u64) -> Result<(), String> {
-        for chunk in 0..chunks {
-            match vault.remove(&Self::name(&chunk_name(id, chunk))?) {
+    /// Removes chunks `0..chunks` of item `id`'s bytes and `0..list_chunks`
+    /// of its list, quietly: one already gone is gone.
+    fn remove_chunks(
+        vault: &SealedVault<'_>,
+        id: &str,
+        chunks: u64,
+        list_chunks: u64,
+    ) -> Result<(), String> {
+        let names = (0..chunks)
+            .map(|chunk| chunk_name(id, chunk))
+            .chain((0..list_chunks).map(|chunk| list_chunk_name(id, chunk)));
+        for name in names {
+            match vault.remove_quietly(&Self::name(&name)?) {
                 Ok(()) | Err(hatchling_vault::Error::NotFound { .. }) => {}
                 Err(error) => {
-                    return Err(format!("the Library's file can't be removed: {error}"));
+                    return Err(format!("the Library's item can't be removed: {error}"));
                 }
             }
         }
@@ -313,7 +654,7 @@ impl<'k> Library<'k> {
     }
 
     /// Finishes or undoes what a crash, or a failed write, left half done:
-    /// a keep whose file the index names is done; any other keep is
+    /// a keep whose item the index names is done; any other keep is
     /// undone, its chunks removed; a removal is finished. The state then
     /// has nothing pending.
     fn recover(vault: &SealedVault<'_>) -> Result<State, String> {
@@ -322,16 +663,20 @@ impl<'k> Library<'k> {
             return Ok(state);
         };
         let mut index = Self::index(vault)?;
-        let named = index.iter().any(|file| file.id == pending.id);
+        let named = index.iter().any(|item| item.id == pending.id);
         match pending.op {
             Op::Keep if named => {}
-            Op::Keep => Self::remove_chunks(vault, &pending.id, pending.chunks)?,
+            Op::Keep => {
+                Self::remove_chunks(vault, &pending.id, pending.chunks, pending.list_chunks)?;
+                tracing::info!(item = %pending.id, "the Library undid an item a keep left half done");
+            }
             Op::Remove => {
                 if named {
-                    index.retain(|file| file.id != pending.id);
+                    index.retain(|item| item.id != pending.id);
                     Self::write(vault, INDEX, &index)?;
                 }
-                Self::remove_chunks(vault, &pending.id, pending.chunks)?;
+                Self::remove_chunks(vault, &pending.id, pending.chunks, pending.list_chunks)?;
+                tracing::info!(item = %pending.id, "the Library finished removing an item");
             }
         }
         Self::write(vault, STATE, &state)?;
@@ -349,28 +694,45 @@ impl<'k> Library<'k> {
         then(&vault, state)
     }
 
-    /// Why a file of `bytes` wouldn't be kept now, if it wouldn't: what is
-    /// asked before a file is read out of the Room. [`Self::spend`] asks
-    /// again, with its length.
+    /// Why `claim` wouldn't be kept now, if it wouldn't: what is asked
+    /// before anything is read out of the Room (a file's length isn't
+    /// known yet, so it is asked as of none). [`Self::spend`] asks again.
     ///
     /// # Errors
     ///
     /// When the Library can't be read.
-    pub fn refuses(&self, bytes: u64) -> Result<Option<Refused>, String> {
-        self.opened(|vault, state| Ok(Self::refusal(&Self::index(vault)?, &state, bytes)))
+    pub fn refuses(&self, claim: &Claim) -> Result<Option<Refused>, String> {
+        self.opened(|vault, state| Ok(Self::refusal(&Self::index(vault)?, &state, claim, false)))
     }
 
-    fn refusal(index: &[KeptFile], state: &State, bytes: u64) -> Option<Refused> {
-        let held = index
-            .iter()
-            .fold(0_u64, |held, file| held.saturating_add(file.bytes));
-        if bytes > FILE_BYTES {
-            Some(Refused::TooLarge)
+    /// Why `claim` wouldn't be kept, by `index` and `state`. Once `spent`,
+    /// its hand-over and its bytes are counted already: it is held to every
+    /// other bound.
+    fn refusal(index: &[KeptItem], state: &State, claim: &Claim, spent: bool) -> Option<Refused> {
+        let (bytes, files) = held(index);
+        let too_large = match claim.kind {
+            ItemKind::File => (claim.bytes > FILE_BYTES).then_some(Refused::TooLarge),
+            ItemKind::Folder => {
+                (claim.bytes > FOLDER_BYTES || claim.files > FOLDER_FILES || claim.files == 0)
+                    .then_some(Refused::FolderTooLarge)
+            }
+        };
+        if too_large.is_some() {
+            too_large
         } else if state.off {
             Some(Refused::Off)
-        } else if state.handed >= HANDED_PER_CONVERSATION {
+        } else if !spent && state.handed >= HANDED_PER_CONVERSATION {
             Some(Refused::Spent)
-        } else if index.len() >= LIBRARY_FILES || held.saturating_add(bytes) > LIBRARY_BYTES {
+        } else if !spent
+            && (state.read >= READ_PER_CONVERSATION
+                || state.read.saturating_add(claim.bytes) > READ_PER_CONVERSATION)
+        {
+            Some(Refused::ReadOut)
+        } else if index.len() >= LIBRARY_ITEMS
+            || bytes >= LIBRARY_BYTES
+            || bytes.saturating_add(claim.bytes) > LIBRARY_BYTES
+            || files.saturating_add(claim.files) > LIBRARY_FILES
+        {
             Some(Refused::Full)
         } else {
             None
@@ -378,7 +740,7 @@ impl<'k> Library<'k> {
     }
 
     /// The open conversation's number: a hand-over is held to it from
-    /// before its file is read until it is kept.
+    /// before anything is read until it is kept.
     ///
     /// # Errors
     ///
@@ -387,33 +749,60 @@ impl<'k> Library<'k> {
         self.opened(|_, state| Ok(state.conversation))
     }
 
-    /// Spends one of `conversation`'s hand-overs on a file of `bytes`, sealed,
-    /// before the file is checked for secrets: each check is a guess at a
-    /// secret, and every one is counted, whatever comes of it. Refused, and
-    /// nothing spent, when the file wouldn't be kept, or the conversation
-    /// is no longer the open one.
+    /// Spends one of `conversation`'s hand-overs on `claim`, sealed, before
+    /// it is checked for secrets: each check is a guess at a secret, and
+    /// every one is counted, whatever comes of it. Refused, and no
+    /// hand-over spent, when it wouldn't be kept, or the conversation is no
+    /// longer the open one.
+    ///
+    /// A file is spent once it is read: its bytes count toward the
+    /// conversation's, refused or not (all but a stale one's), up to the
+    /// most. A folder is spent before it is read, its bytes as its listing
+    /// says them, and counted only when it is spent.
+    ///
+    /// What it gives is what the keep takes: it keeps only what was spent.
     ///
     /// # Errors
     ///
     /// When the Library can't be read or written.
-    pub fn spend(&self, bytes: u64, conversation: u64) -> Result<Result<(), Refused>, String> {
+    pub fn spend(
+        &self,
+        claim: &Claim,
+        conversation: u64,
+    ) -> Result<Result<Spent, Refused>, String> {
         self.opened(|vault, mut state| {
             if state.conversation != conversation {
                 return Ok(Err(Refused::Stale));
             }
-            if let Some(refused) = Self::refusal(&Self::index(vault)?, &state, bytes) {
-                return Ok(Err(refused));
+            let refused = Self::refusal(&Self::index(vault)?, &state, claim, false);
+            let read = state
+                .read
+                .saturating_add(claim.bytes)
+                .min(READ_PER_CONVERSATION);
+            match (refused, claim.kind) {
+                (Some(refused), ItemKind::File) => {
+                    state.read = read;
+                    Self::write(vault, STATE, &state)?;
+                    Ok(Err(refused))
+                }
+                (Some(refused), ItemKind::Folder) => Ok(Err(refused)),
+                (None, _) => {
+                    state.read = read;
+                    state.handed = state.handed.saturating_add(1);
+                    Self::write(vault, STATE, &state)?;
+                    Ok(Ok(Spent {
+                        claim: *claim,
+                        conversation,
+                    }))
+                }
             }
-            state.handed = state.handed.saturating_add(1);
-            Self::write(vault, STATE, &state)?;
-            Ok(Ok(()))
         })
     }
 
     /// Keeps `bytes` as the file `name`, at `now`, spending one of the open
-    /// conversation's hand-overs: the file as the index says it, or why it
-    /// wasn't kept. Its hash is of these bytes. For tests: a hand-over is
-    /// spent before its file is checked, and kept with [`Self::keep_spent`].
+    /// conversation's hand-overs: the item as the index says it, or why it
+    /// wasn't kept. For tests: a hand-over is spent before its file is
+    /// checked, and kept with [`Self::keep_spent`].
     ///
     /// # Errors
     ///
@@ -424,93 +813,194 @@ impl<'k> Library<'k> {
         name: &str,
         bytes: &[u8],
         now: &str,
-    ) -> Result<Result<KeptFile, Refused>, String> {
-        self.keeping(name, bytes, now, None)
+    ) -> Result<Result<KeptItem, Refused>, String> {
+        if !is_name(name) {
+            return Err(String::from(
+                "the Library doesn't keep an item by that name",
+            ));
+        }
+        let conversation = self.conversation()?;
+        let claim = Claim::file(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        let spent = match self.spend(&claim, conversation)? {
+            Ok(spent) => spent,
+            Err(refused) => return Ok(Err(refused)),
+        };
+        self.keep_spent(name, bytes, now, spent, tests::REPLY)
     }
 
-    /// Keeps `bytes` as the file `name`, at `now`, a hand-over of
-    /// `conversation` already spent: refused when the conversation is no
-    /// longer the open one, giving was turned off since, or the Library
-    /// has no room.
+    /// Keeps `bytes` as the file `name`, at `now`, the hand-over `spent` in
+    /// the reply `reply`: refused when the conversation it was spent in is
+    /// no longer the open one, handing over was turned off since, or the
+    /// Library has no room.
     ///
     /// # Errors
     ///
-    /// When `name` isn't one the Library keeps a file by, or the Library
-    /// can't be read or written before the file is in its index. A keep
-    /// that fails part way is undone by the next operation, and its
-    /// hand-over stays spent; one whose file is in the index is kept,
-    /// whatever fails after.
+    /// When `name` isn't one the Library keeps an item by, `reply` isn't a
+    /// run's cell id, what is kept isn't what was spent, or the Library
+    /// can't be read or written before the item is in its index. A keep that fails part way is undone by the
+    /// next operation, and its hand-over stays spent; one whose item is in
+    /// the index is kept, whatever fails after.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "a spend's receipt is taken, so one spend keeps once"
+    )]
     pub fn keep_spent(
         &self,
         name: &str,
         bytes: &[u8],
         now: &str,
-        conversation: u64,
-    ) -> Result<Result<KeptFile, Refused>, String> {
-        self.keeping(name, bytes, now, Some(conversation))
+        spent: Spent,
+        reply: &str,
+    ) -> Result<Result<KeptItem, Refused>, String> {
+        let claim = Claim::file(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        let sha256 = hex(&Sha256::digest(bytes));
+        self.keeping(name, &claim, &[bytes], None, sha256, now, &spent, reply)
     }
 
-    /// [`Self::keep`], spending a hand-over, or, with the `spent`
-    /// conversation, [`Self::keep_spent`].
+    /// Keeps `files`, each a path and its bytes, as the folder `name`, at
+    /// `now`, the hand-over `spent` in the reply `reply`: refused as
+    /// [`Self::keep_spent`] is, and when its paths aren't a folder's
+    /// ([`check_paths`]). Its paths are to be checked before it is spent,
+    /// too, as its listing gives them: here they are checked again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::keep_spent`], and which rule a path broke: never the
+    /// path.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "a spend's receipt is taken, so one spend keeps once"
+    )]
+    pub fn keep_folder_spent(
+        &self,
+        name: &str,
+        files: &[(&str, &[u8])],
+        now: &str,
+        spent: Spent,
+        reply: &str,
+    ) -> Result<Result<KeptItem, Refused>, String> {
+        check_paths(files.iter().map(|(path, _)| *path)).map_err(String::from)?;
+        let list: Vec<FolderFile> = files
+            .iter()
+            .map(|(path, bytes)| FolderFile {
+                path: (*path).to_owned(),
+                bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                sha256: hex(&Sha256::digest(bytes)),
+            })
+            .collect();
+        let claim = Claim::folder(
+            u64::try_from(list.len()).unwrap_or(u64::MAX),
+            list.iter()
+                .fold(0_u64, |all, file| all.saturating_add(file.bytes)),
+        );
+        let list = serde_json::to_vec(&list)
+            .map_err(|error| format!("the Library's list doesn't encode: {error}"))?;
+        let sha256 = hex(&Sha256::digest(&list));
+        let parts: Vec<&[u8]> = files.iter().map(|(_, bytes)| *bytes).collect();
+        self.keeping(
+            name,
+            &claim,
+            &parts,
+            Some(&list),
+            sha256,
+            now,
+            &spent,
+            reply,
+        )
+    }
+
+    /// [`Self::keep_spent`] and [`Self::keep_folder_spent`]: `parts`, back
+    /// to back, kept as the item `claim` says, with a folder's `list`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "what an item is kept as, each the broker's"
+    )]
     fn keeping(
         &self,
         name: &str,
-        bytes: &[u8],
+        claim: &Claim,
+        parts: &[&[u8]],
+        list: Option<&[u8]>,
+        sha256: String,
         now: &str,
-        spent: Option<u64>,
-    ) -> Result<Result<KeptFile, Refused>, String> {
+        spent: &Spent,
+        reply: &str,
+    ) -> Result<Result<KeptItem, Refused>, String> {
+        let Spent {
+            claim: spent_on,
+            conversation,
+        } = *spent;
+        if spent_on != *claim {
+            return Err(String::from("what is kept isn't what was spent"));
+        }
         if !is_name(name) {
-            return Err(format!(
-                "the Library doesn't keep a file by the name {name:?}"
+            return Err(String::from(
+                "the Library doesn't keep an item by that name",
             ));
         }
-        let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        // An item kept now names its reply: none is only an old one's.
+        if reply.is_empty() || !is_reply(reply) || !is_kept_at(now) {
+            return Err(String::from(
+                "the Library is told of a reply, or a time, that can't be one",
+            ));
+        }
+        let list_bytes = list.map_or(0, <[u8]>::len);
+        if u64::try_from(list_bytes).unwrap_or(u64::MAX) > LIST_BYTES {
+            return Err(String::from("the folder's list is longer than one may be"));
+        }
         let id = crate::approval::random_hex("")
-            .map_err(|error| format!("the Library can't name a file: {error}"))?;
+            .map_err(|error| format!("the Library can't name an item: {error}"))?;
         self.opened(|vault, mut state| {
             let mut index = Self::index(vault)?;
-            if spent.is_some_and(|conversation| conversation != state.conversation) {
+            if conversation != state.conversation {
                 return Ok(Err(Refused::Stale));
             }
-            // A hand-over already spent is held to every bound but the count.
-            let counted = State {
-                handed: if spent.is_some() { 0 } else { state.handed },
-                ..state.clone()
-            };
-            if let Some(refused) = Self::refusal(&index, &counted, length) {
+            if let Some(refused) = Self::refusal(&index, &state, claim, true) {
                 return Ok(Err(refused));
             }
-            let chunks = chunks_of(length);
+            let chunks = chunks_of(claim.bytes);
+            let list_chunks = chunks_of(u64::try_from(list_bytes).unwrap_or(u64::MAX));
             state.pending = Some(Pending {
                 op: Op::Keep,
                 id: id.clone(),
                 chunks,
+                list_chunks,
             });
-            if spent.is_none() {
-                state.handed = state.handed.saturating_add(1);
-            }
             Self::write(vault, STATE, &state)?;
-            for (chunk, piece) in (0_u64..).zip(bytes.chunks(CHUNK_BYTES)) {
-                Self::put(vault, &chunk_name(&id, chunk), piece.to_vec())?;
+            put_run(vault, &id, parts, chunk_name)?;
+            if let Some(list) = list {
+                put_run(vault, &id, &[list], list_chunk_name)?;
             }
-            let kept = KeptFile {
+            let kept = KeptItem {
                 id,
+                kind: claim.kind,
                 name: name.to_owned(),
-                bytes: length,
-                sha256: hex(&Sha256::digest(bytes)),
+                bytes: claim.bytes,
+                files: claim.files,
+                sha256,
                 chunks,
+                list_chunks,
                 kept_at: now.to_owned(),
+                conversation,
+                reply: reply.to_owned(),
             };
             index.push(kept.clone());
             if let Err(error) = Self::write(vault, INDEX, &index) {
                 // A write can fail after its rename: what the index says
-                // now is whether the file was kept.
+                // now is whether the item was kept.
                 let named = Self::index(vault)
-                    .is_ok_and(|index| index.iter().any(|file| file.id == kept.id));
+                    .is_ok_and(|index| index.iter().any(|item| item.id == kept.id));
                 if !named {
                     return Err(error);
                 }
             }
+            tracing::info!(
+                item = %kept.id,
+                kind = ?kept.kind,
+                files = kept.files,
+                bytes = kept.bytes,
+                "the Library kept an item"
+            );
             // Kept. What is left pending, if this write fails, the next
             // operation finishes.
             state.pending = None;
@@ -519,8 +1009,8 @@ impl<'k> Library<'k> {
         })
     }
 
-    /// Turns handing files over off for `conversation`: nothing, when the
-    /// owner has started a new one since, which an old run's file doesn't
+    /// Turns handing over off for `conversation`: nothing, when the owner
+    /// has started a new one since, which an old run's hand-over doesn't
     /// turn off.
     ///
     /// # Errors
@@ -536,14 +1026,14 @@ impl<'k> Library<'k> {
         })
     }
 
-    /// Turns handing files over off for the open conversation.
+    /// Turns handing over off for the open conversation.
     #[cfg(test)]
     pub(crate) fn turn_off(&self) -> Result<(), String> {
         self.turn_off_in(self.conversation()?)
     }
 
-    /// The owner started a new conversation: its count starts again, and
-    /// handing files over is on.
+    /// A new conversation started: its count and bytes start again, and
+    /// handing over is on.
     ///
     /// # Errors
     ///
@@ -551,14 +1041,29 @@ impl<'k> Library<'k> {
     pub fn new_conversation(&self) -> Result<(), String> {
         self.opened(|vault, mut state| {
             state.handed = 0;
+            state.read = 0;
             state.off = false;
             state.conversation = state.conversation.wrapping_add(1);
             Self::write(vault, STATE, &state)
         })
     }
 
-    /// The open conversation's count of files handed over, and whether
-    /// handing files over is off for it.
+    /// The conversation the chat started without the owner (a restart's):
+    /// its items are grouped apart, by the next number, and nothing else
+    /// changes. A hand-over begun before it is stale.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read or written.
+    pub fn regroup(&self) -> Result<(), String> {
+        self.opened(|vault, mut state| {
+            state.conversation = state.conversation.wrapping_add(1);
+            Self::write(vault, STATE, &state)
+        })
+    }
+
+    /// The open conversation's count of hand-overs, and whether handing
+    /// over is off for it.
     ///
     /// # Errors
     ///
@@ -567,13 +1072,33 @@ impl<'k> Library<'k> {
         self.opened(|_, state| Ok((state.handed, state.off)))
     }
 
-    /// The files the Library keeps, oldest first.
+    /// What the open conversation has read out of the Room, in bytes.
     ///
     /// # Errors
     ///
     /// When the Library can't be read.
-    pub fn files(&self) -> Result<Vec<KeptFile>, String> {
+    pub fn read_so_far(&self) -> Result<u64, String> {
+        self.opened(|_, state| Ok(state.read))
+    }
+
+    /// The items the Library keeps, oldest first.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn items(&self) -> Result<Vec<KeptItem>, String> {
         self.opened(|vault, _| Self::index(vault))
+    }
+
+    /// The files the Library keeps, oldest first: its items that are files.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn files(&self) -> Result<Vec<KeptItem>, String> {
+        let mut items = self.items()?;
+        items.retain(|item| item.kind == ItemKind::File);
+        Ok(items)
     }
 
     /// The file `id`, whole, as it was kept; `None` when the Library keeps
@@ -591,8 +1116,47 @@ impl<'k> Library<'k> {
         }
     }
 
+    /// Reads `bytes` of item `id`'s bytes from byte `from`, named by
+    /// `name`, chunk by chunk, never grown past `bytes`: `None` when a
+    /// chunk can't be read, or holds less than its place. A chunk holding
+    /// more is read only to its place; the hashes say whether it was
+    /// whole.
+    fn read_run(
+        vault: &SealedVault<'_>,
+        id: &str,
+        from: u64,
+        bytes: u64,
+        name: fn(&str, u64) -> String,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+        let chunk_bytes = u64::try_from(CHUNK_BYTES).unwrap_or(u64::MAX);
+        let mut out = Zeroizing::new(Vec::with_capacity(usize::try_from(bytes).unwrap_or(0)));
+        let mut at = from;
+        let end = from.saturating_add(bytes);
+        while at < end {
+            let chunk = at / chunk_bytes;
+            let Ok(secret) = vault.fetch(&Self::name(&name(id, chunk))?) else {
+                return Ok(None);
+            };
+            let start = usize::try_from(at - chunk * chunk_bytes).unwrap_or(usize::MAX);
+            let want = usize::try_from((end - at).min(chunk_bytes)).unwrap_or(usize::MAX);
+            let Some(piece) = secret
+                .as_bytes()
+                .get(start..)
+                .map(|rest| rest.get(..want.min(rest.len())).unwrap_or(rest))
+            else {
+                return Ok(None);
+            };
+            if piece.is_empty() {
+                return Ok(None);
+            }
+            out.extend_from_slice(piece);
+            at = at.saturating_add(u64::try_from(piece.len()).unwrap_or(u64::MAX));
+        }
+        Ok(Some(out))
+    }
+
     /// The file `id`, whole, as it was kept; or that the Library keeps no
-    /// such file, or that its copy is damaged.
+    /// such file (a folder is no file), or that its copy is damaged.
     ///
     /// # Errors
     ///
@@ -600,58 +1164,176 @@ impl<'k> Library<'k> {
     pub fn read_out(&self, id: &str) -> Result<ReadOut, String> {
         self.opened(|vault, _| {
             let index = Self::index(vault)?;
-            let Some(file) = index.iter().find(|file| file.id == id) else {
+            let Some(file) = index
+                .iter()
+                .find(|item| item.id == id && item.kind == ItemKind::File)
+            else {
                 return Ok(ReadOut::Gone);
             };
-            // Never grown past the length the index says, so no copy of it
-            // is left behind unwiped.
-            let length = usize::try_from(file.bytes).unwrap_or(0);
-            let mut bytes = Zeroizing::new(Vec::with_capacity(length));
-            for chunk in 0..file.chunks {
-                let Ok(secret) = vault.fetch(&Self::name(&chunk_name(&file.id, chunk))?) else {
-                    return Ok(ReadOut::Damaged);
-                };
-                if bytes.len().saturating_add(secret.as_bytes().len()) > length {
-                    return Ok(ReadOut::Damaged);
-                }
-                bytes.extend_from_slice(secret.as_bytes());
-            }
-            // The hash is the index's, sealed: chunks of another file, cut
-            // short or out of order come to another hash. No more than the
-            // index's chunks are read, each at most a sealed entry's most.
-            if hex(&Sha256::digest(&bytes)) != file.sha256 {
-                return Ok(ReadOut::Damaged);
-            }
-            Ok(ReadOut::Whole(bytes))
+            // The hash is the index's, sealed: chunks of another item, cut
+            // short or out of order come to another hash.
+            Ok(
+                match Self::read_run(vault, &file.id, 0, file.bytes, chunk_name)? {
+                    Some(bytes) if hex(&Sha256::digest(&*bytes)) == file.sha256 => {
+                        ReadOut::Whole(bytes)
+                    }
+                    _ => ReadOut::Damaged,
+                },
+            )
         })
     }
 
-    /// Writes an index of files of `lengths`, by its own word: none of
+    /// Folder `item`'s list, to the index's hash of it, as its files can
+    /// be: their lengths come to the item's, their count is its, and their
+    /// paths a folder's.
+    fn list_in(vault: &SealedVault<'_>, item: &KeptItem) -> Result<ListOut, String> {
+        let most = item
+            .list_chunks
+            .saturating_mul(u64::try_from(CHUNK_BYTES).unwrap_or(u64::MAX))
+            .min(LIST_BYTES);
+        let Some(bytes) = Self::read_run_whole(vault, &item.id, item.list_chunks, most)? else {
+            return Ok(ListOut::Damaged);
+        };
+        if hex(&Sha256::digest(&*bytes)) != item.sha256 {
+            return Ok(ListOut::Damaged);
+        }
+        let Ok(files) = serde_json::from_slice::<Vec<FolderFile>>(&bytes) else {
+            return Ok(ListOut::Damaged);
+        };
+        let total = files
+            .iter()
+            .try_fold(0_u64, |all, file| all.checked_add(file.bytes));
+        let sound = total == Some(item.bytes)
+            && u64::try_from(files.len()).ok() == Some(item.files)
+            && files.iter().all(|file| is_hash(&file.sha256))
+            && check_paths(files.iter().map(|file| file.path.as_str())).is_ok();
+        Ok(if sound {
+            ListOut::Whole(files)
+        } else {
+            ListOut::Damaged
+        })
+    }
+
+    /// The `chunks` chunks of item `id`'s list, whole, at most `most`
+    /// bytes: `None` when one can't be read or they come to more.
+    fn read_run_whole(
+        vault: &SealedVault<'_>,
+        id: &str,
+        chunks: u64,
+        most: u64,
+    ) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+        let mut out = Zeroizing::new(Vec::new());
+        for chunk in 0..chunks {
+            let Ok(secret) = vault.fetch(&Self::name(&list_chunk_name(id, chunk))?) else {
+                return Ok(None);
+            };
+            if u64::try_from(out.len().saturating_add(secret.as_bytes().len())).unwrap_or(u64::MAX)
+                > most
+            {
+                return Ok(None);
+            }
+            out.extend_from_slice(secret.as_bytes());
+        }
+        Ok(Some(out))
+    }
+
+    /// Folder `id`'s list of its files; or that the Library keeps no such
+    /// folder, or that its list is damaged.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn list_of(&self, id: &str) -> Result<ListOut, String> {
+        self.opened(|vault, _| {
+            let index = Self::index(vault)?;
+            index
+                .iter()
+                .find(|item| item.id == id && item.kind == ItemKind::Folder)
+                .map_or(Ok(ListOut::Gone), |folder| Self::list_in(vault, folder))
+        })
+    }
+
+    /// File `n` of folder `id`, counted from 0, whole, to its own hash; or
+    /// that the Library keeps no such folder or file, or that it, or the
+    /// folder's list, is damaged.
+    ///
+    /// # Errors
+    ///
+    /// When the Library can't be read.
+    pub fn read_out_in(&self, id: &str, n: usize) -> Result<ReadOut, String> {
+        self.opened(|vault, _| {
+            let index = Self::index(vault)?;
+            let Some(folder) = index
+                .iter()
+                .find(|item| item.id == id && item.kind == ItemKind::Folder)
+            else {
+                return Ok(ReadOut::Gone);
+            };
+            let files = match Self::list_in(vault, folder)? {
+                ListOut::Whole(files) => files,
+                ListOut::Gone => return Ok(ReadOut::Gone),
+                ListOut::Damaged => return Ok(ReadOut::Damaged),
+            };
+            let Some(file) = files.get(n) else {
+                return Ok(ReadOut::Gone);
+            };
+            let from = files
+                .iter()
+                .take(n)
+                .fold(0_u64, |at, before| at.saturating_add(before.bytes));
+            Ok(
+                match Self::read_run(vault, &folder.id, from, file.bytes, chunk_name)? {
+                    Some(bytes) if hex(&Sha256::digest(&*bytes)) == file.sha256 => {
+                        ReadOut::Whole(bytes)
+                    }
+                    _ => ReadOut::Damaged,
+                },
+            )
+        })
+    }
+
+    /// Writes an index of file items of `lengths`, by its own word: none of
     /// their bytes are kept. For a Library near its bounds.
     #[cfg(test)]
     pub(crate) fn pretend_held(&self, lengths: &[u64]) {
-        let vault = self.vault().unwrap_or_else(|error| unreachable!("{error}"));
-        let index: Vec<KeptFile> = lengths
+        let index: Vec<KeptItem> = lengths
             .iter()
             .enumerate()
-            .map(|(at, &bytes)| KeptFile {
+            .map(|(at, &bytes)| KeptItem {
                 id: format!("{at:064x}"),
+                kind: ItemKind::File,
                 name: format!("held-{at}.bin"),
                 bytes,
-                sha256: String::new(),
+                files: 1,
+                sha256: format!("{:064x}", 0),
                 chunks: chunks_of(bytes),
+                list_chunks: 0,
                 kept_at: String::from("2026-11-17T00:00:00Z"),
+                conversation: 0,
+                reply: String::new(),
             })
             .collect();
-        Self::write(&vault, INDEX, &index).unwrap_or_else(|error| unreachable!("{error}"));
+        self.pretend_index(&index);
     }
 
-    /// Puts junk of the same length in place of the first chunk of the
-    /// file `id`: it reads back damaged.
+    /// Writes `index` as the Library's, by its own word.
     #[cfg(test)]
-    pub(crate) fn damage(&self, id: &str) {
+    pub(crate) fn pretend_index<T: Serialize>(&self, index: &T) {
         let vault = self.vault().unwrap_or_else(|error| unreachable!("{error}"));
-        let name = Self::name(&chunk_name(id, 0)).unwrap_or_else(|error| unreachable!("{error}"));
+        Self::write(&vault, INDEX, index).unwrap_or_else(|error| unreachable!("{error}"));
+    }
+
+    /// Puts junk of the same length in place of chunk `chunk` of item
+    /// `id`'s bytes, or of its list when `list`: it reads back damaged.
+    #[cfg(test)]
+    pub(crate) fn damage_chunk(&self, id: &str, chunk: u64, list: bool) {
+        let vault = self.vault().unwrap_or_else(|error| unreachable!("{error}"));
+        let raw = if list {
+            list_chunk_name(id, chunk)
+        } else {
+            chunk_name(id, chunk)
+        };
+        let name = Self::name(&raw).unwrap_or_else(|error| unreachable!("{error}"));
         let kept = vault
             .fetch(&name)
             .unwrap_or_else(|error| unreachable!("{error}"));
@@ -664,23 +1346,30 @@ impl<'k> Library<'k> {
             .unwrap_or_else(|error| unreachable!("{error}"));
     }
 
-    /// Removes the file `id`: whether the Library kept it.
+    /// Puts junk in place of the first chunk of the file `id`.
+    #[cfg(test)]
+    pub(crate) fn damage(&self, id: &str) {
+        self.damage_chunk(id, 0, false);
+    }
+
+    /// Removes the item `id`: whether the Library kept it.
     ///
     /// # Errors
     ///
     /// When the Library can't be read, or the removal can't be written
-    /// as pending. Once it is, the file is removed: what fails after, the
+    /// as pending. Once it is, the item is removed: what fails after, the
     /// next operation finishes.
     pub fn remove(&self, id: &str) -> Result<bool, String> {
         self.opened(|vault, mut state| {
             let mut index = Self::index(vault)?;
-            let Some(file) = index.iter().find(|file| file.id == id).cloned() else {
+            let Some(item) = index.iter().find(|item| item.id == id).cloned() else {
                 return Ok(false);
             };
             let pending = Pending {
                 op: Op::Remove,
-                id: file.id.clone(),
-                chunks: file.chunks,
+                id: item.id.clone(),
+                chunks: item.chunks,
+                list_chunks: item.list_chunks,
             };
             state.pending = Some(pending.clone());
             if let Err(error) = Self::write(vault, STATE, &state) {
@@ -693,18 +1382,48 @@ impl<'k> Library<'k> {
             }
             // From here the removal is made: what this doesn't finish, the
             // next operation does.
-            index.retain(|kept| kept.id != file.id);
+            index.retain(|kept| kept.id != item.id);
             if Self::write(vault, INDEX, &index).is_ok()
-                && Self::remove_chunks(vault, &file.id, file.chunks).is_ok()
+                && Self::remove_chunks(vault, &item.id, item.chunks, item.list_chunks).is_ok()
             {
                 state.pending = None;
                 let _ = Self::write(vault, STATE, &state);
             }
+            tracing::info!(
+                item = %item.id,
+                kind = ?item.kind,
+                files = item.files,
+                bytes = item.bytes,
+                "the Library removed an item"
+            );
             Ok(true)
         })
     }
 }
 
+/// Groups what is handed over from now apart, at the broker's start: once
+/// for each `once`, which the broker keeps for its life.
+///
+/// Unless the conversation kept from before is `resumed`: one the chat
+/// doesn't resume is a new one to the owner, and its items aren't grouped
+/// with the last. Its count, its bytes and its off are carried: only the
+/// owner's new conversation clears them, never a restart.
+pub fn at_start(once: &Once, config: &Config, keys: &dyn OpensStores, resumed: bool) {
+    once.call_once(|| start_unless(config, keys, resumed));
+}
+
+/// [`at_start`]'s work, each time it is asked.
+fn start_unless(config: &Config, keys: &dyn OpensStores, resumed: bool) {
+    if resumed {
+        return;
+    }
+    if let Some(library) = Library::of(config, keys) {
+        if let Err(error) = library.regroup() {
+            tracing::error!(%error, "the Library couldn't group a new conversation apart");
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "library/tests.rs"]
-mod tests;
+pub(crate) mod tests;

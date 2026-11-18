@@ -63,6 +63,7 @@ Each slice's record, as it lands.
 
 - Slice 0, a hand-over spent before its file is checked ([#504](https://github.com/undergroundrap/hatchling/issues/504)): [hand-over-count.md](../evidence/hand-over-count.md).
 - Slice 1, the Room lists a folder: [room-list-wire.md](../evidence/room-list-wire.md).
+- Slice 2, the Library's items, groups, bounds and log: [library-items.md](../evidence/library-items.md).
 
 ## Notes
 

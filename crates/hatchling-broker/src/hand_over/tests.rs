@@ -104,7 +104,7 @@ fn install(name: &str) -> Install {
         config,
         key: MasterKey::generate().unwrap(),
         bus,
-        cell: "cell-handing".parse().unwrap(),
+        cell: "run-0123456789abcdef01234567".parse().unwrap(),
         _scratch: scratch,
     }
 }
@@ -197,6 +197,15 @@ fn a_file_is_kept_offered_and_kept_in_activity() {
     assert_eq!(
         install.library().fetch(&file.id).unwrap(),
         Some(b"the report".to_vec())
+    );
+    // Grouped by the broker: the open conversation, and the chat run's
+    // cell, never what the Room said.
+    assert_eq!(
+        (file.conversation, file.reply.as_str()),
+        (
+            install.library().conversation().unwrap(),
+            install.cell.as_str()
+        )
     );
     assert_eq!(install.library().standing().unwrap(), (1, false));
     let events = install.events();

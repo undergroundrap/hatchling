@@ -218,8 +218,23 @@ impl Api {
         }
         // The conversation the chat resumes is shown first (WO-026).
         let kept = hub.and_then(|_| crate::conversation_store::ConversationStore::of(config, key));
-        if let Some(store) = kept {
-            crate::conversation_store::show(&self.bus, crate::conversation_store::at_start(&store));
+        let resumed = kept
+            .as_ref()
+            .map(|store| crate::conversation_store::at_start(store));
+        if let Some(resumed) = resumed {
+            crate::conversation_store::show(&self.bus, resumed);
+        }
+        // A conversation the chat doesn't resume is a new one to the
+        // Library too, so what was handed over before isn't grouped with it
+        // (WO-043).
+        if hub.is_some() {
+            static LIBRARY_START: std::sync::Once = std::sync::Once::new();
+            crate::library::at_start(
+                &LIBRARY_START,
+                config,
+                key,
+                crate::conversation_store::goes_on(resumed),
+            );
         }
         // What the owner is asked to approve, and what they decided, go
         // out on this stream (WO-027).
