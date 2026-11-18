@@ -1,195 +1,207 @@
-# Evidence: the Library on the local API (WO-041, slice 4, the broker's side)
+# Evidence: the Library's folders through the local API (WO-043, slice 4)
 
-What was tested, how, and what came back, for the local API's Library:
-the list, a file read out in parts, and removal, the owner's alone; and
-the hand-over's refusal of files Windows acts on when their folder is
-shown. The app's card, its Library in Settings, its download and the
-packaged install turning the Library on are the next change.
+What was tested, how, and what came back, for UI schema v8: the
+Library's list carries folders and every item's group, a folder's list
+is read in pages, a file of a folder is read out, a folder is removed,
+and the app lists folders and every item it can't name, each to be
+removed. Downloading a folder as one `.zip` is slice 6. Slices 3 and 4
+ship in one release.
 
 | | |
 |---|---|
-| Base commit | `0446aff2` (`feat(broker): the agent hands the owner a file, checked, into the Library (WO-041) (#495)`) |
-| Tested tree | `dde9a010171118bcde73cad72efed7f69c82f0ce` |
-| Date | 2026-11-17 (UTC) |
-| Machine | x86_64, Ubuntu 26.04.1, kernel 6.6.87.2 (WSL2), 28 processors, in a sandbox; the app's tests on Windows 11 |
-| Toolchains | Rust 1.85.0 (minimum) and 1.98.1 (pinned), cargo-mutants 27.1.0, Node for the app |
+| Base commit | `15576030` (`feat(broker): the agent gives the owner a whole folder (WO-043) (#512)`) |
+| Tested tree | `7492573397d4157463059fcb6caef68cdba68209` (the gate); the breaks and the rerun of `api_ops.rs`'s mutants on `6fafa27a`, which differs only in `docs/arch/protocol.md`'s version; the full mutation on `fab9a94e`, before `api_ops.rs`'s hold and check became one function and two tests were split |
+| Date | 2026-11-18 (UTC) |
+| Machine | x86_64, Ubuntu 26.04.1, kernel 6.6.87.2 (WSL2), 28 processors, in a sandbox; the app's checks on Windows 11, Node, from Git Bash |
+| Toolchains | Rust 1.85.0 (minimum) and 1.98.1 (pinned), cargo-mutants 27.1.0 |
 
 This record was added after the runs, in its own commit. It changes no
 code: the tested tree is the tree of the commit before it.
 
 ## What changed
 
-- **UI schema v7.** Owner-only actions, each its own audit kind:
-  `list_library` (answered `library`: the files newest first, and the
-  Library's `standing` against its bounds and the open conversation's),
-  `begin_file_out` and `file_out_part` (answered `file_out_begun` and
-  `file_out_part_read`), and `remove_library_file` (answered
-  `library_file_removed`, and every app told by `library_changed`).
-  `FileOutRefusal`: `gone`, `damaged`, `busy`, `unknown_download`,
-  `out_of_step`. `LibraryFile` gains `kept_at`.
-- **The held copy** (`file_out.rs`). A file is read back whole and to
-  its hash once (`Library::read_out`, which tells a file gone from one
-  damaged, built in a buffer wiped when dropped and never grown past the
-  index's length), and held while its parts are asked in order. At most
-  two copies at once in the broker; one a connection. A copy goes after
-  its last part, when its connection begins another download or ends,
-  when its file is removed, and a minute after its last part was asked,
-  by a sweeper that looks every five seconds. A busy broker refuses
-  before it reads anything.
-- **The audit trail** keeps a download's beginning and a removal, one
-  line each, and no line for a part answered.
-- **The hand-over** refuses `desktop.ini` and names ending `.url`,
-  `.website`, `.scf`, `.lnk`, `.pif`, `.library-ms`, `.search-ms`,
-  `.searchconnector-ms`, `.theme`, `.themepack` and `.deskthemepack`,
-  whatever their case: such a file can name a share on another machine,
-  which Windows connects to, with the owner's sign-in, when the folder it
-  was saved in is opened. The agent is told to give an archive instead.
-- **The app** knows the new events and results, and ignores them until
-  the next change; its hello is v7.
-- docs/local-api.md, the protocol pages, the example client, the
+- **The wire** (`hatchling-core`, UI v8):
+  - `list_library` answers `folders` beside `files`. Each item says its
+    `conversation` and `reply`; a folder says its count of `files`, its
+    list's `sha256` and what was `left_out`.
+  - The standing adds `files_in_all` (of 4096), `read` (of 128 MiB) and
+    the open `conversation`.
+  - `list_folder { id, from }` answers `folder` with at most 32
+    `entries`.
+  - `begin_file_out { id, file }` answers `folder_file_out_begun` for a
+    folder's file.
+  - The refusals add `not_a_folder`, `a_folder` and `out_of_range`.
+  - Activity's `file_out` adds a folder's `files`.
+- **The broker**:
+  - **One read at one moment.** The list, the standing and the bytes read
+    come from one read of the Library (`Library::shelf`). A folder's file
+    comes with its list entry, the list read once (`Library::entry_out`).
+  - **Download order.** A download lets the connection's last one go
+    before anything else, refused or not. Then a busy broker reads
+    nothing.
+  - **Checked before any read.** A folder's file is asked for by its
+    place, checked against the folder's count before anything is read.
+  - **No copy of a removed item.** A copy is held under its item's id and
+    let go if the item was removed while it was read.
+  - **A kept folder** tells every app `library_changed`, and its Activity
+    line carries its count of files.
+- **The Library**:
+  - **8 MiB per file.** Each file of a folder is held to a file's 8 MiB,
+    at the keep and when its list is read back. A forged list's 32 MiB
+    file can't make a download hold more than one file may.
+  - **The conversation's number** is held at or under 2^53 - 1 in the
+    state and the index. Past it, a new conversation is refused, never
+    wrapped, so two conversations never share a number.
+- **The app**:
+  - **Settings' Library** lists folders by name, files and size, with
+    Remove. It lists every item it can't name, a file past 8 MiB among
+    them, by its size alone, so nothing the Library counts is out of
+    sight. Remove is offered only for an id the broker gives.
+  - **The standing's words** count items and files in all, hand-overs,
+    and the conversation's bytes read.
+  - **Download all** says it takes the files, not the folders.
+  - **Activity** says a folder the agent gave, with its files.
+- **Untouched:** the frozen adapter contract (`src/protocol/*`,
+  `PROTOCOL-LOCK.json`). The app's seam check says so.
+- **Docs:** `docs/local-api.md`, `docs/arch/distribution.md` and the
   changelog.
 
 ## Before the code, and after it
 
-The design was written first, as a proposal checked against the code by
-an independent review, which changed it: a domain refusal that keeps
-`damaged` apart from `gone`; the audit's parts exempt; when a file was
-kept, and the newest first; a file of no bytes as no parts; the held
-copy's bounds; the Windows folder-view names refused rather than
-flagged; the Library's use shown against its bounds.
+The design was reviewed independently before any code, and the diff
+again before the runs. Neither found a path or name reaching the app or
+the disk unchecked.
 
-A second independent review, of this diff, before the runs below, found:
+From the design review, four serious findings, all taken:
 
-- **The held copy wasn't let go after a minute.** It was let go only
-  when another download began or its connection ended, and a connection
-  can last days; nor did removing a file let go of a copy being read.
-  Now a sweeper lets go of an idle copy, and a removal lets go of its
-  file's copies.
-- **Two guards had no test that failed without them**: a part asked on
-  another connection with the first's real id, and a connection's next
-  download letting go of its last. Each has one now.
-- **The tests shared the broker's holder at its bound.** Each now holds
-  its downloads apart.
-- **Plaintext outside the wiped copy**: the read built a plain buffer,
-  dropped unwiped when damaged, and could grow past its length. Now it is
-  wiped, and refused as damaged before it would grow.
-- **The file was read before the room check.** Now a busy broker reads
-  nothing.
-- **Three more Windows names**: `.website`, `.pif`, `.deskthemepack`.
-- **Docs**: a minute's hold was claimed before it was true; a part after
-  the last is `unknown_download`, not `out_of_step`; `unavailable` for a
-  Library that can't be read; the 16 MiB bound as a number; the wiping
-  claim narrowed to the held copy.
+- **No 8 MiB bound per file of a folder:** added at the keep and at the
+  list's read.
+- **An item the app can't name** would be counted and shown nowhere: it
+  is listed by its size, to be removed.
+- **The conversation's number** had no bound and wrapped: bounded, and
+  refused past it.
+- **The audit** is a line a call: kept so, never a path or a name; the
+  threat model's "a line a folder" is corrected.
 
-Left as they are, and said: the audit trail records that a download or a
-removal was made, never which file; the vault logs each chunk it reads as
-a line of its own (256 for an 8 MiB file), a decision for the next
-change.
+From the diff review, no blocking defect; taken:
+
+- one lock for a folder file's entry and bytes;
+- a copy begun as its item was removed let go;
+- the last download let go first, as the docs say;
+- every item shown in the app, removable only by an id the broker gives;
+- Activity's words;
+- tests for each guard a one-line change would have broken unseen;
+- the design note's "saturate" corrected to "refuse".
 
 ## Tests
 
-- **The held copy** (`file_out::tests`): a file read out in order whole
-  and let go after its last part; parts whole but the last, 256 for
-  8 MiB; a file of no bytes is no parts and holds nothing; a part out of
-  order lets the copy go; two at once, the third busy, still busy just at
-  the minute, room once one is idle; a part keeps a copy from going idle;
-  a sweep lets go of idle copies alone; the sweeper itself lets go of a
-  copy left idle, with no other call; a download let go, or its file
-  removed, is let go.
-- **The actions** (`api_ops::tests`): the list newest first, with its
-  standing, and a file read out whole in order and let go after its last
-  part; a file of no bytes; one gone; a damaged file said damaged, a
-  removed one gone, every app told once, and a copy being read let go
-  with its file; a download is its connection's, and its next lets go of
-  its last; past the bound, busy, until one ends; nobody but the owner
-  lists, reads out or removes, a caller holding grants among them; no
-  Library, `unavailable` for each; a connection that ends lets go of its
-  download.
-- **The audit** (`api::tests`): a download's beginning is a line, a part
-  answered isn't, a part refused is.
-- **The Library** (`library::tests`): a damaged file reads out damaged,
-  not gone; one not kept, gone.
-- **The names** (`hand_over::tests`): every Windows folder-view name, in
-  any case, refused; names that only contain one of them, given.
-- **The wire** (`ui::tests`): every action, result, refusal and the
-  event in their wire form; the schema the app is generated from,
-  checked.
+- **The API** (`api_ops::tests`):
+  - a folder listed with its group and counts, its list in pages, a
+    file of a folder read out by its place to its own hash, every
+    refusal;
+  - the standing and each item's conversation;
+  - a folder removed with a copy of its file let go;
+  - an old item listed with no reply;
+  - busy reads nothing, for a damaged file and a damaged folder's file;
+  - a copy of an item removed while it was read let go;
+  - the largest folder (512 files) read whole through the API, every
+    page and every file to its hash;
+  - the largest page and list in one frame, by the Library's own bounds.
+- **The Library** (`library::tests`):
+  - a list with a file past 8 MiB reads as damaged;
+  - a folder with one isn't kept, and one of exactly 8 MiB is, and reads
+    back;
+  - the conversation's bound in the state and the index, and no wrap;
+  - the shelf.
+- **The wire** (`ui::tests`): the new results, actions and events; the
+  largest page and list fit one frame.
+- **The app**: 571, 238 and 16 tests. Among them:
+  - folders and items it can't name read from the list, each bound at
+    its edge;
+  - Settings' rows and their confirms;
+  - "Nothing yet" only with nothing at all;
+  - the standing's words;
+  - Activity's folder line.
+
+  The live adapter keeps 100% coverage.
 
 ## Breaks by hand
 
-**25 breaks, 0 survived.** Each named its tests, and each of those had to
-fail; the tests passed before and after them. A build that failed would
-have been counted on its own, never as caught: none did. Each break, by
-its name:
+**28 in the broker and the core, 0 survived; 7 in the app, 0 survived.**
 
-- `idle-at-the-bound`.
-- `copies-never-go-idle`.
-- `one-more-copy-is-held`.
-- `there-is-always-room`.
-- `the-last-part-is-kept`.
-- `parts-in-any-order`.
-- `no-sweeper`.
-- `the-sweep-sweeps-nothing`.
-- `the-sweeper-never-sweeps`.
-- `a-removed-file-stays-held`.
-- `a-part-keeps-nothing-fresh`.
-- `any-connection-reads-a-download`.
-- `the-next-keeps-the-last`.
-- `a-removal-keeps-the-copy`.
-- `a-removal-tells-nobody`.
-- `anyone-reads-the-library`.
-- `a-closed-connection-keeps-its-copy`.
-- `damaged-is-said-gone`.
-- `the-list-is-oldest-first`.
-- `parts-are-audited`.
-- `a-damaged-copy-reads-as-gone`.
-- `desktop-ini-is-given`.
-- `names-that-reach-out-are-given`.
-- `reaching-names-by-case`.
-- `website-is-given`.
+- **The broker and the core:**
+  - a page past 32;
+  - a page from past the end;
+  - a file's list asked;
+  - a longer page said;
+  - any place read;
+  - a file's place ignored;
+  - a folder read as its first file;
+  - another entry said;
+  - the first file read;
+  - a removed folder's copy kept;
+  - folders unlisted;
+  - an empty reply said;
+  - the reads, the files in all, the standing's or an item's
+    conversation, or a folder's left-out unsaid;
+  - a listed or a kept file of any size;
+  - a state or an item of any conversation;
+  - conversations wrapping;
+  - a shelf of another moment;
+  - a folder kept silently, or its files unsaid;
+  - a removed item's copy held;
+  - a busy broker reading;
+  - the last download held past a refusal.
+- **The app:**
+  - an unnamed item dropped;
+  - any id removable;
+  - a folder's name unchecked;
+  - a folder of any count;
+  - a file of any size;
+  - a stuck item removable;
+  - "Nothing yet" over folders.
 
-An earlier run had one survive: the owner's check, tested with a caller
-holding no grants at all, which the API refuses before the Library is
-reached. The test now uses a caller holding grants who isn't the owner.
-The run on the tested tree is the one counted.
-
-Two guards are kept that no answer shows, and so no test or break
-reaches: the room check before a file is read (a busy broker is refused
-the same either way; the check saves the read), and the read refused as
-damaged before it would grow past its length (the hash would refuse it
-too; the check keeps an unwiped copy from being left behind).
+The first runs found three broker breaks whose named tests didn't fail,
+each caught by another (the frame tests, the folder test). The 512-file
+test now holds each file's path and hash to its entry. Two app breaks
+left a constant unused and didn't build. Each was rewritten so it
+builds, and is caught.
 
 ## Mutation
 
-Every mutant on the lines this change adds or changes, crate by crate,
-each with its unmutated baseline first, only that crate's own tests run,
-on the tested tree.
+Every mutant on the lines this change adds or changes, each crate with
+its unmutated baseline first, its own library tests run:
 
 | Crate | Mutants | Caught | Missed | Timeouts | Unviable |
 |---|---|---|---|---|---|
-| hatchling-core | 1 | 0 | 0 | 0 | 1 |
-| hatchling-broker | 71 | 55 | 0 | 0 | 16 |
+| `hatchling-core` | 1 | 0 | 0 | 0 | 1 |
+| `hatchling-broker` | 68 | 50 | 2 | 0 | 16 |
+| `hatchling-broker`, `api_ops.rs` again | 25 | 18 | 0 | 0 | 7 |
 
-Every unviable mutant is a function's answer replaced with its type's
-default, which has none. A run on the tree before the tested one missed
-one: the sweeper's thread replaced with nothing, where the test only
-looked that it was started. The test above watches it let a copy go.
+Unviable is an answer replaced with a default its type has none of. The
+broker's full run missed two: the check that lets go a copy of an item
+removed while it was read, at its two call sites. A removal can't be
+made to land in that instant from one thread, so the call sites were
+untestable. The hold and the check are now one function, `hold`, which
+a test calls with a removed item: the copy is let go and the answer is
+`gone`. The run after it, of every mutant in `api_ops.rs`, the only file
+changed since, is the last row.
 
 ## The gate
 
 On the tested tree, on Rust 1.85.0 and then 1.98.1, the build cache
 cleared between: formatting, clippy with `-D warnings` (and with every
-feature), the build, the whole workspace's tests (135 binaries, 4103
-passed, 0 failed, on each), the seed check, the protocol schema and the
-repository's audit: every step exit 0. The app's check (`npm run check`):
-531, 207 and 16 tests passed, 0 failed.
+feature), the build, the whole workspace's tests, the seed check, the
+protocol schema and the repository's audit: every step exit 0, and on
+each toolchain 135 test binaries, 4197 tests passed, 0 failed, 0
+ignored. The 28 lines of its log that say "skipped" are test names, as
+before. The mutant lists on the tested tree: 1 for the core, 62 for the
+broker (the full run's 68 less the guards `hold` took in).
 
-## What wasn't tried
+The first run of the gate failed on one thing: `docs/arch/protocol.md`
+still said the local API was v7, which the audit holds to the code.
 
-- **A download through the app**, or on an install: the next change's,
-  with its acceptance on a real install.
-- **The sweeper over a broker's life**: it was shown to let a copy go
-  with short times in a test; the broker's minute and five seconds weren't
-  waited out.
-- **Memory**: the bound (two copies of at most 8 MiB) is the code's, not
-  measured.
+The app's checks, on its final code with the protocol schema regenerated
+and its types generated from it: 571, 238 and 16 tests passed, none
+failed, no lint or design error, and the seam check: the frozen
+contract's four files unchanged.
