@@ -4,11 +4,11 @@
 // it, or anything of it shown in the page.
 import type { AppContext } from '../../app/context.js';
 import type { DeepReadonly, Message } from '../../protocol/models.js';
-import type { AgentFilesPort, GivenCard, OfferedFile } from '../../session/agent-files.js';
+import type { AgentFilesPort, AgentFolder, GivenCard } from '../../session/agent-files.js';
 import { h } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button } from '../../components/ui.js';
-import { caution } from '../../session/agent-files.js';
+import { caution, leftOutWords } from '../../session/agent-files.js';
 import { sizeWords } from '../../session/inbox.js';
 /** Downloads `file`, and says how it went. */
 export function downloadFile(ctx: AppContext, port: AgentFilesPort, file: {
@@ -16,11 +16,18 @@ export function downloadFile(ctx: AppContext, port: AgentFilesPort, file: {
 }): void {
     void port.download(file.id).then(result => ctx.toast(result.message, !result.ok));
 }
-/** The download, or that one is under way. */
-function downloadButton(ctx: AppContext, port: AgentFilesPort, file: OfferedFile): HTMLElement {
-    if (port.downloading(file.id))
+/** The download of the item `item`, labelled `label`, or that one is under way. */
+function downloadButton(ctx: AppContext, port: AgentFilesPort, item: {
+    readonly id: string;
+}, label = 'Download'): HTMLElement {
+    if (port.downloading(item.id))
         return h('span', { class: 'given-file-count', role: 'status' }, 'Downloading…');
-    return button('Download', () => downloadFile(ctx, port, file), { variant: 'link' });
+    return button(label, () => downloadFile(ctx, port, item), { variant: 'link' });
+}
+/** What the chat says of a folder the agent gave: its files, what its walk left out, and Download as one .zip. */
+function folderWords(ctx: AppContext, port: AgentFilesPort, folder: AgentFolder): (HTMLElement | string)[] {
+    const leftOut = leftOutWords(folder.leftOut);
+    return [`From the agent’s computer: ${filesWords(folder.files)}, ${sizeWords(folder.bytes)}.${leftOut === '' ? '' : ` ${leftOut}`} `, downloadButton(ctx, port, folder, 'Download as .zip')];
 }
 /**
  * What the chat shows beside the broker's word that the agent gave a file:
@@ -46,9 +53,9 @@ function filesWords(files: number): string {
 function givenCard(ctx: AppContext, port: AgentFilesPort, card: GivenCard): HTMLElement {
     switch (card.kind) {
         case 'file':
-            return h('p', { class: 'given-file-detail' }, h('code', { class: 'given-file-inbox-name' }, card.file.name), ` · ${sizeWords(card.file.bytes)}. From the agent’s computer. ${caution(card.file.name)} `, downloadButton(ctx, port, { ...card.file, removed: false }));
+            return h('p', { class: 'given-file-detail' }, h('code', { class: 'given-file-inbox-name' }, card.file.name), ` · ${sizeWords(card.file.bytes)}. From the agent’s computer. ${caution(card.file.name)} `, downloadButton(ctx, port, card.file));
         case 'folder':
-            return h('p', { class: 'given-file-detail' }, h('code', { class: 'given-file-inbox-name' }, card.folder.name), ` · a folder of ${filesWords(card.folder.files)}, ${sizeWords(card.folder.bytes)}. From the agent’s computer. Downloading a folder comes in a later version of Hatchling.`);
+            return h('p', { class: 'given-file-detail' }, h('code', { class: 'given-file-inbox-name' }, card.folder.name), ' · a folder. ', ...folderWords(ctx, port, card.folder));
         case 'removed':
             return h('p', { class: 'given-file-detail' }, h('code', { class: 'given-file-inbox-name' }, card.removed.name), card.removed.folder ? ` · a folder of ${filesWords(card.removed.files)}. Removed from Hatchling’s Library since.` : ' · Removed from Hatchling’s Library since.');
     }
@@ -91,5 +98,5 @@ export function offeredFolderDetail(ctx: AppContext, message: DeepReadonly<Messa
         return null;
     if (folder.removed)
         return h('p', { class: 'given-file-detail' }, 'Removed from Hatchling’s Library since.');
-    return h('p', { class: 'given-file-detail' }, `From the agent’s computer: ${filesWords(folder.files)}. Downloading a folder comes in a later version of Hatchling.`);
+    return h('p', { class: 'given-file-detail' }, ...folderWords(ctx, port, folder));
 }

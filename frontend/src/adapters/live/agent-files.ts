@@ -7,11 +7,12 @@
 import type { LiveClient } from './client.js';
 import type { ActionRefusal, FileOutRefusal, UiAction, UiActionResult, UiEventBody } from './protocol/generated.js';
 import type { CommandResult } from '../../protocol/models.js';
-import type { AgentFile, AgentFilesPort, AgentFilesState, AgentFolder, GivenCard, OfferedFile, OfferedFolder } from '../../session/agent-files.js';
-import { isGivenName, runs } from '../../session/agent-files.js';
+import type { AgentFile, AgentFilesPort, AgentFilesState, AgentFolder, GivenCard, LibraryItem, OfferedFile, OfferedFolder } from '../../session/agent-files.js';
+import { folderPathsRefused, isGivenName, itemId, itemName, leftOutWords, runs } from '../../session/agent-files.js';
 import { sizeWords } from '../../session/inbox.js';
 import { within } from './inbox.js';
-import { zipStored } from './zip.js';
+import type { ZipEntry } from './zip.js';
+import { named, zipStored } from './zip.js';
 /** The stream's word that the agent gave a file. */
 export type FileOffered = Extract<UiEventBody, {
     kind: 'file_offered';
@@ -45,17 +46,52 @@ const NOTHING_SAVED = 'Nothing was saved.';
 const UNEXPECTED = `Hatchling answered with something else. ${NOTHING_SAVED}`;
 const NOT_WHOLE = `The file didn’t arrive whole. ${NOTHING_SAVED} Try again.`;
 const NO_DIGEST = `This page can’t check a file’s hash, so it can’t download one. ${NOTHING_SAVED} Open Hatchling at its own address.`;
-/** Saves `bytes` as a file named `name`. */
-export type Saver = (bytes: Uint8Array, name: string) => void;
+const NOT_LISTED = `Hatchling’s list of its files doesn’t match the folder. ${NOTHING_SAVED}`;
+/**
+ * Whether `paths` hold a git repository git would find: a `.git` anywhere,
+ * or a folder holding `HEAD` with files under its `objects/` and `refs/`,
+ * as a bare one has. Either way git run there reads its settings and hooks.
+ */
+export function holdsGit(paths: readonly string[]): boolean {
+    const lower = paths.map(path => path.toLowerCase());
+    if (lower.some(path => path.split('/').includes('.git')))
+        return true;
+    return lower
+        .filter(path => path === 'head' || path.endsWith('/head'))
+        .map(head => head.slice(0, -'head'.length))
+        .some(folder => lower.some(path => path.startsWith(`${folder}objects/`)) && lower.some(path => path.startsWith(`${folder}refs/`)));
+}
+/**
+ * What the owner is told of a .zip saved: its name, files and size; what
+ * opening its files can do, by each one's extension; a git repository in
+ * it, which git acts on; paths too long for Windows' Explorer to unpack far down; and what
+ * each folder's walk left out.
+ */
+function savedWords(name: string, entries: readonly ZipEntry[], size: number, leftOut: readonly string[]): string {
+    const running = entries.filter(entry => runs(entry.name) !== null).length;
+    const caution = running === 0
+        ? 'The agent made them: open them only if you trust them.'
+        : `${running} of them can run something when opened: open them only if you trust what the agent made.`;
+    const git = holdsGit(entries.map(entry => entry.name))
+        ? ' It holds a git repository: git run in it can run that repository’s hooks and settings, so look at them before you use git there.'
+        : '';
+    const long = entries.filter(entry => entry.name.length >= LONG_PATH).length;
+    const far = long === 0 ? '' : ` ${long === 1 ? '1 path in it is' : `${long} paths in it are`} long: unpack it near the top of a drive, or Windows’ Explorer may not unpack ${long === 1 ? 'it' : 'them'}.`;
+    const files = entries.length === 1 ? '1 file' : `${entries.length} files`;
+    return [`Gave your browser ${name}, ${files}, ${sizeWords(size)}, to save. ${caution}${git}${far}`, ...leftOut].join(' ');
+}
+/** Saves `parts`, one after another, as one file named `name`. */
+export type Saver = (parts: readonly Uint8Array[], name: string) => void;
 /** The SHA-256 of `bytes`, in lowercase hex. */
 export type Digest = (bytes: Uint8Array) => Promise<string>;
 /**
- * Saves `bytes` as a download named `name`, typed as bytes whatever the name
- * says, so the browser never opens it. The address is let go a minute later:
- * letting go at once can cancel the save.
+ * Saves `parts` as one download named `name`, typed as bytes whatever the
+ * name says, so the browser never opens it; never put together in the page
+ * first. The address is let go a minute later: letting go at once can
+ * cancel the save.
  */
-export function saveBytes(bytes: Uint8Array, name: string): void {
-    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+export function saveBytes(parts: readonly Uint8Array[], name: string): void {
+    const url = URL.createObjectURL(new Blob([...parts], { type: 'application/octet-stream' }));
     const link = document.createElement('a');
     link.setAttribute('href', url);
     link.setAttribute('download', name);
@@ -79,7 +115,7 @@ const OUT_REFUSED: Readonly<Record<FileOutRefusal['refusal'], string>> = {
     unknown_download: NOT_WHOLE,
     out_of_step: NOT_WHOLE,
     not_a_folder: 'Hatchling answered for a file as if it were a folder.',
-    a_folder: 'It is a folder: downloading a folder comes in a later version of Hatchling.',
+    a_folder: 'Hatchling answered for a folder as if it were a file.',
     out_of_range: 'Hatchling answered for a file its folder doesn’t hold.',
 };
 /** Why the API refused, before the broker read anything, for each thing asked. */
@@ -119,11 +155,29 @@ function keptFolder(folder: {
     readonly name: string;
     readonly files: number;
     readonly bytes: number;
+    readonly sha256: string;
     readonly kept_at: string;
     readonly conversation: number;
     readonly reply?: string | null;
+    readonly left_out: {
+        readonly links: number;
+        readonly mounts: number;
+        readonly others: number;
+    };
 }): AgentFolder {
-    return { id: folder.id, name: folder.name, files: folder.files, bytes: folder.bytes, keptAt: folder.kept_at, reply: folder.reply ?? null, conversation: folder.conversation };
+    const { links, mounts, others } = folder.left_out;
+    return { id: folder.id, name: folder.name, files: folder.files, bytes: folder.bytes, sha256: folder.sha256, leftOut: { links, mounts, others }, keptAt: folder.kept_at, reply: folder.reply ?? null, conversation: folder.conversation };
+}
+/** How many entries a page of a folder's list holds, but the last. */
+const FOLDER_PAGE = 32;
+/** A SHA-256 as the broker gives one: 64 lowercase hex digits. */
+const SHA256 = /^[0-9a-f]{64}$/u;
+/** Paths at least this long can be more than Windows' Explorer unpacks, with the folder it unpacks into. */
+const LONG_PATH = 200;
+/** What a download saves of one file: its name and bytes. */
+interface Read {
+    readonly name: string;
+    readonly bytes: Uint8Array;
 }
 /** An id the broker gives an item: 64 lowercase hex digits. */
 const ITEM_ID = /^[0-9a-f]{64}$/u;
@@ -178,6 +232,8 @@ export class LiveAgentFiles implements AgentFilesPort {
     readonly #offeredFolders = new Map<string, OfferedDir>();
     readonly #runs: ChatRuns;
     readonly #downloading = new Set<string>();
+    /** The items the owner has chosen to download together. */
+    readonly #chosen = new Set<string>();
     /** How far every file's download has got, while it runs. */
     #progress: {
         readonly done: number;
@@ -288,11 +344,29 @@ export class LiveAgentFiles implements AgentFilesPort {
     downloading(id: string): boolean {
         return this.#downloading.has(id) || this.#downloading.has(ALL);
     }
-    downloadingAll(): {
+    downloadProgress(): {
         readonly done: number;
         readonly total: number;
     } | null {
         return this.#progress;
+    }
+    chosen(): ReadonlySet<string> {
+        const listed = new Set(this.#items().map(itemId));
+        return new Set([...this.#chosen].filter(id => listed.has(id)));
+    }
+    choose(id: string, on: boolean): void {
+        if (on)
+            this.#chosen.add(id);
+        else
+            this.#chosen.delete(id);
+        this.#changed();
+    }
+    /** Every item the Library was last listed with: folders, then files, each newest first. */
+    #items(): LibraryItem[] {
+        const state = this.#state;
+        if (state.kind !== 'read')
+            return [];
+        return [...state.folders.map((folder): LibraryItem => ({ kind: 'folder', folder })), ...state.files.map((file): LibraryItem => ({ kind: 'file', file }))];
     }
     async refresh(): Promise<void> {
         const read = ++this.#reads;
@@ -324,8 +398,9 @@ export class LiveAgentFiles implements AgentFilesPort {
         this.#changed();
     }
     /**
-     * Downloads one file at a time: the broker holds one download a
-     * connection, and a second would let the first go.
+     * Downloads one item: a file as itself, a folder as one .zip. One
+     * download at a time: the broker holds one a connection, and a second
+     * would let the first go.
      */
     async download(id: string): Promise<CommandResult> {
         if (this.#downloading.has(id))
@@ -335,6 +410,9 @@ export class LiveAgentFiles implements AgentFilesPort {
         const digest = this.#digest;
         if (digest === null)
             return { ok: false, message: NO_DIGEST };
+        const folder = this.#folder(id);
+        if (folder !== undefined)
+            return this.#archive([{ kind: 'folder', folder }], `${folder.name}.zip`, id, digest);
         this.#downloading.add(id);
         this.#changed();
         // Whatever throws on the way, nothing was saved, and the owner is told.
@@ -343,18 +421,40 @@ export class LiveAgentFiles implements AgentFilesPort {
         this.#changed();
         return result;
     }
+    /** The folder `id`, as the list or a message of the stream said it. */
+    #folder(id: string): AgentFolder | undefined {
+        const state = this.#state;
+        return (state.kind === 'read' ? state.folders.find(folder => folder.id === id) : undefined)
+            ?? [...this.#offeredFolders.values()].find(folder => folder.id === id);
+    }
     /** Reads the file `id`, checked, and gives the browser it to save. */
     async #saveOne(id: string, digest: Digest): Promise<CommandResult> {
         const read = await this.#read(id, digest);
         if (!('bytes' in read))
             return read;
-        this.#save(read.bytes, read.name);
+        this.#save([read.bytes], read.name);
         return { ok: true, message: `Gave your browser ${read.name}, ${sizeWords(read.bytes.length)}, to save. The agent made it: open it only if you trust it.` };
     }
     /**
-     * Downloads every file the Library was last listed with, as one .zip:
-     * each read out and checked against its hash as a download is, one at
-     * a time, then saved once. Any that fails saves nothing.
+     * Downloads the items `ids`, of those the Library was last listed with,
+     * in that order, as one .zip named `name`. Any that fails saves nothing.
+     */
+    async downloadMany(ids: readonly string[], name: string): Promise<CommandResult> {
+        if (this.#downloading.size > 0)
+            return { ok: false, message: 'A download is under way. Try again when it’s done.' };
+        const digest = this.#digest;
+        if (digest === null)
+            return { ok: false, message: NO_DIGEST };
+        const listed = this.#items();
+        const items = [...new Set(ids)].flatMap(id => listed.filter(item => itemId(item) === id));
+        if (items.length === 0)
+            return { ok: false, message: 'Nothing chosen is in Hatchling’s Library now. Refresh it, then choose again.' };
+        return this.#archive(items, name, ALL, digest);
+    }
+    /**
+     * Downloads every item the Library was last listed with, as one .zip:
+     * each file read out and checked against its hash as a download is, one
+     * at a time, then saved once. Any that fails saves nothing.
      */
     async downloadAll(): Promise<CommandResult> {
         if (this.#downloading.size > 0)
@@ -362,40 +462,115 @@ export class LiveAgentFiles implements AgentFilesPort {
         const digest = this.#digest;
         if (digest === null)
             return { ok: false, message: NO_DIGEST };
-        const state = this.#state;
-        if (state.kind !== 'read')
+        if (this.#state.kind !== 'read')
             return { ok: false, message: 'Hatchling’s Library hasn’t been read yet. Refresh it, then try again.' };
-        if (state.files.length === 0)
-            return { ok: false, message: 'Hatchling’s Library holds no files to download.' };
-        const files = state.files;
-        this.#downloading.add(ALL);
-        this.#progress = { done: 0, total: files.length };
+        const items = this.#items();
+        if (items.length === 0)
+            return { ok: false, message: 'Hatchling’s Library holds nothing to download.' };
+        return this.#archive(items, ALL_NAME, ALL, digest);
+    }
+    /** Downloads `items` as one .zip named `name`, held under `marker` while it runs, its files counted as they come. */
+    async #archive(items: readonly LibraryItem[], name: string, marker: string, digest: Digest): Promise<CommandResult> {
+        const total = items.reduce((all, item) => all + (item.kind === 'file' ? 1 : item.folder.files), 0);
+        let done = 0;
+        const tick = (): void => {
+            this.#progress = { done: ++done, total };
+            this.#changed();
+        };
+        this.#downloading.add(marker);
+        this.#progress = { done, total };
         this.#changed();
         // Whatever throws on the way, nothing was saved, and the owner is told.
-        const result = await this.#saveAll(files, digest).catch((): CommandResult => ({ ok: false, message: `The files couldn’t be put together, perhaps for want of memory. ${NOTHING_SAVED} Download them one at a time.` }));
-        this.#downloading.delete(ALL);
+        const result = await this.#saveArchive(items, name, digest, tick).catch((): CommandResult => ({ ok: false, message: `The files couldn’t be put together: too many for one .zip, or too much for this page’s memory. ${NOTHING_SAVED} Choose fewer, or download them one at a time.` }));
+        this.#downloading.delete(marker);
         this.#progress = null;
         this.#changed();
         return result;
     }
-    /** Reads each of `files`, checked, one at a time, and gives the browser them as one .zip. */
-    async #saveAll(files: readonly AgentFile[], digest: Digest): Promise<CommandResult> {
-        const entries = [];
-        for (const file of files) {
-            const read = await this.#read(file.id, digest);
-            if (!('bytes' in read))
-                return { ok: false, message: `${file.name}: ${read.message}` };
-            entries.push({ name: read.name, bytes: read.bytes, at: file.keptAt });
-            this.#progress = { done: entries.length, total: files.length };
-            this.#changed();
+    /**
+     * Reads each of `items`, checked, one file at a time, and gives the
+     * browser them as one .zip: each file by its name, each folder's files
+     * under the folder's name, the names at the top made distinct; `tick`
+     * as each file is read.
+     */
+    async #saveArchive(items: readonly LibraryItem[], name: string, digest: Digest, tick: () => void): Promise<CommandResult> {
+        const entries: ZipEntry[] = [];
+        const leftOut: string[] = [];
+        for (const { item, name: top } of named(items, itemName)) {
+            if (item.kind === 'file') {
+                const read = await this.#read(item.file.id, digest);
+                if (!('bytes' in read))
+                    return { ok: false, message: `${item.file.name}: ${read.message}` };
+                entries.push({ name: top, bytes: read.bytes, at: item.file.keptAt });
+                tick();
+                continue;
+            }
+            const read = await this.#readFolder(item.folder, digest, tick);
+            if (!Array.isArray(read))
+                return { ok: false, message: `${item.folder.name}: ${read.message}` };
+            entries.push(...read.map(file => ({ name: `${top}/${file.name}`, bytes: file.bytes, at: item.folder.keptAt })));
+            const words = leftOutWords(item.folder.leftOut);
+            if (words !== '')
+                leftOut.push(`${item.folder.name}: ${words}`);
         }
         const zip = zipStored(entries);
-        this.#save(zip, ALL_NAME);
-        const running = entries.filter(entry => runs(entry.name) !== null).length;
-        const caution = running === 0
-            ? 'The agent made them: open them only if you trust them.'
-            : `${running} of them can run something when opened, as Settings says of each: open them only if you trust what the agent made.`;
-        return { ok: true, message: `Gave your browser ${ALL_NAME}, ${entries.length} files, ${sizeWords(zip.length)}, to save. ${caution}` };
+        this.#save(zip, name);
+        return { ok: true, message: savedWords(name, entries, zip.reduce((all, part) => all + part.length, 0), leftOut) };
+    }
+    /**
+     * Reads the folder `folder` out of the Library: its list, page by page,
+     * held to the folder the list said, every path checked here and the
+     * whole list to its hash; then each file, held to its entry and checked
+     * against its hash, `tick` as each is. Each file's name is its path in
+     * the folder.
+     */
+    async #readFolder(folder: AgentFolder, digest: Digest, tick: () => void): Promise<Read[] | CommandResult> {
+        const list: {
+            readonly path: string;
+            readonly bytes: number;
+            readonly sha256: string;
+        }[] = [];
+        while (list.length < folder.files) {
+            const from = list.length;
+            const page = await this.#step({ action: 'list_folder', id: folder.id, from });
+            if (typeof page === 'string')
+                return { ok: false, message: page };
+            if (page.result !== 'folder')
+                return this.#refused(page);
+            const size = Math.min(FOLDER_PAGE, folder.files - from);
+            if (page.id !== folder.id || page.from !== from || page.total !== folder.files || page.entries.length !== size)
+                return { ok: false, message: UNEXPECTED };
+            list.push(...page.entries.map(entry => ({ path: entry.path, bytes: entry.bytes, sha256: entry.sha256 })));
+        }
+        const why = folderPathsRefused(list.map(entry => entry.path));
+        if (why !== null)
+            return { ok: false, message: `A path in it isn’t one Hatchling keeps (${why}). ${NOTHING_SAVED}` };
+        // Each entry's length is a whole number of bytes: the wire's checks
+        // hold that. The list as the Library keeps it, and hashes it: its entries' JSON,
+        // each its path, length and hash, in that order. Its paths are plain
+        // ASCII without " or \, so this is the Library's own bytes.
+        const sized = list.every(entry => SHA256.test(entry.sha256) && entry.bytes <= FILE_OUT_BYTES)
+            && list.reduce((all, entry) => all + entry.bytes, 0) === folder.bytes;
+        if (!sized || await digest(new TextEncoder().encode(JSON.stringify(list))) !== folder.sha256)
+            return { ok: false, message: NOT_LISTED };
+        const read: Read[] = [];
+        for (const [file, entry] of list.entries()) {
+            const begun = await this.#step({ action: 'begin_file_out', id: folder.id, file });
+            if (typeof begun === 'string')
+                return { ok: false, message: begun };
+            if (begun.result !== 'folder_file_out_begun')
+                return this.#refused(begun);
+            const bounded = begun.id === folder.id && begun.file === file && begun.path === entry.path && begun.bytes === entry.bytes
+                && begun.sha256 === entry.sha256 && begun.parts === Math.ceil(entry.bytes / PART_BYTES);
+            if (!bounded)
+                return { ok: false, message: UNEXPECTED };
+            const bytes = await this.#parts(begun.download_id, entry.bytes, entry.sha256, begun.parts, digest);
+            if (!(bytes instanceof Uint8Array))
+                return bytes;
+            read.push({ name: entry.path, bytes });
+            tick();
+        }
+        return read;
     }
     /** The hash this app was told for the file `id`, by its list or a message. */
     #known(id: string): string | undefined {
@@ -408,10 +583,7 @@ export class LiveAgentFiles implements AgentFilesPort {
      * every bound the broker said and checked against its hash; or how it
      * ended without them.
      */
-    async #read(id: string, digest: Digest): Promise<{
-        readonly name: string;
-        readonly bytes: Uint8Array;
-    } | CommandResult> {
+    async #read(id: string, digest: Digest): Promise<Read | CommandResult> {
         const begun = await this.#step({ action: 'begin_file_out', id });
         if (typeof begun === 'string')
             return { ok: false, message: begun };
@@ -425,7 +597,16 @@ export class LiveAgentFiles implements AgentFilesPort {
             && parts === Math.ceil(file.bytes / PART_BYTES) && (known === undefined || known === file.sha256);
         if (!bounded)
             return { ok: false, message: UNEXPECTED };
-        const bytes = new Uint8Array(file.bytes);
+        const bytes = await this.#parts(downloadId, file.bytes, file.sha256, parts, digest);
+        return bytes instanceof Uint8Array ? { name: file.name, bytes } : bytes;
+    }
+    /**
+     * Reads the `parts` of the download `downloadId`, in order, held to
+     * `length` bytes, and checks the whole against `sha256`: the bytes, or
+     * how it ended without them.
+     */
+    async #parts(downloadId: string, length: number, sha256: string, parts: number, digest: Digest): Promise<Uint8Array | CommandResult> {
+        const bytes = new Uint8Array(length);
         let at = 0;
         for (let seq = 0; seq < parts; seq++) {
             const read = await this.#step({ action: 'file_out_part', download_id: downloadId, seq });
@@ -434,14 +615,14 @@ export class LiveAgentFiles implements AgentFilesPort {
             if (read.result !== 'file_out_part_read')
                 return this.#refused(read);
             const part = read.download_id === downloadId && read.seq === seq ? decoded(read.data) : null;
-            if (part === null || part.length > PART_BYTES || at + part.length > file.bytes)
+            if (part === null || part.length > PART_BYTES || at + part.length > length)
                 return { ok: false, message: NOT_WHOLE };
             bytes.set(part, at);
             at += part.length;
         }
-        if (at !== file.bytes || await digest(bytes) !== file.sha256)
+        if (at !== length || await digest(bytes) !== sha256)
             return { ok: false, message: NOT_WHOLE };
-        return { name: file.name, bytes };
+        return bytes;
     }
     /** Asks `action`: its answer, or what to say when there was none. */
     async #step(action: UiAction): Promise<UiActionResult | string> {
@@ -468,6 +649,12 @@ export class LiveAgentFiles implements AgentFilesPort {
             return { ok: false, message: reply.detail };
         const result = reply.result;
         const removed = result.result === 'library_file_removed' || (result.result === 'file_out_refused' && result.reason.refusal === 'gone');
+        if (removed)
+            this.#chosen.delete(id);
+        if (removed)
+            for (const [messageId, folder] of this.#offeredFolders)
+                if (folder.id === id)
+                    this.#offeredFolders.set(messageId, { ...folder, removed: true });
         if (removed)
             for (const [messageId, file] of this.#offered)
                 if (file.id === id)

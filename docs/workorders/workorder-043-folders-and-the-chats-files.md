@@ -67,6 +67,7 @@ Each slice's record, as it lands.
 - Slice 3, the folder hand-over and `give_folder`: [give-folder.md](../evidence/give-folder.md).
 - Slice 4, the Library's folders through the local API (UI v8): [library-api.md](../evidence/library-api.md).
 - Slice 5, the chat's cards across a restart: [chat-cards.md](../evidence/chat-cards.md).
+- Slice 6, groups and choosing in the app, as one `.zip` (`.tar` and `.tar.gz` split to [#515](https://github.com/undergroundrap/hatchling/issues/515)): [library-choosing.md](../evidence/library-choosing.md).
 
 ## Notes
 
