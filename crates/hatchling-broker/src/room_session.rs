@@ -46,9 +46,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hatchling_core::room::{
-    Ask, Captured, Edited, End, Ended, Found, JobId, NoEdit, NoPage, NoSearch, NoTake, NoWrite,
-    Page, RUNNING_MAX, Say, Stream, Took, Wrote, check_edit, check_page, check_search, check_take,
-    check_write,
+    Ask, Captured, Edited, End, Ended, Found, JobId, Listed, NoEdit, NoList, NoPage, NoSearch,
+    NoTake, NoWrite, Page, RUNNING_MAX, Say, Stream, Took, Wrote, check_edit, check_list,
+    check_page, check_search, check_take, check_write,
 };
 
 use crate::room_disk::{InboxAnswer, InboxOp, RoomDiskOp, RoomDiskStatus};
@@ -80,6 +80,8 @@ const BAD_FOUND: &str = "the Room supervisor sent what a search found that can't
 const BAD_WROTE: &str = "the Room supervisor said it wrote a file in a way it can't have";
 const BAD_EDITED: &str = "the Room supervisor said it made an edit in a way it can't have";
 const BAD_TOOK: &str = "the Room supervisor sent a piece of a file that can't be the one asked for";
+const BAD_LISTED: &str =
+    "the Room supervisor sent a page of a folder that can't be the one asked for";
 /// Said after why a session ended, to whoever asked for a change the
 /// supervisor had been given and hadn't answered.
 const UNHEARD: &str =
@@ -115,6 +117,9 @@ pub(crate) type SearchReply = Result<Found, String>;
 
 /// What asking for a piece of a file to hand over comes to.
 pub(crate) type TakeReply = Result<Took, String>;
+
+/// What asking for a page of a folder to hand over comes to.
+pub(crate) type ListReply = Result<Listed, String>;
 
 /// What one search of the Room's files asks for, as its caller gave it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -290,6 +295,25 @@ fn no_take(why: NoTake) -> String {
         }
         NoTake::Changed => "the file changed while it was read: hand it over once it is done",
         NoTake::Failed => "the Room couldn't read that file",
+    })
+}
+
+/// Why the supervisor handed back no page of a folder, in words for
+/// whoever asked. None names a name the folder holds.
+fn no_list(why: NoList) -> String {
+    String::from(match why {
+        NoList::NoSuchFolder => "the Room has no such folder",
+        NoList::Denied => "the Room's user may not read that folder, or what is in it",
+        NoList::NotAFolder => "that is a file or a special file, not a folder",
+        NoList::Link => {
+            "that path has a link in it, and no link is followed: hand over the folder itself"
+        }
+        NoList::Outside => {
+            "that path leads out of the workspace, or onto another file system: only a folder in the workspace is handed over"
+        }
+        NoList::TooMany => "that folder holds more than 1024 names, the most one handed over may",
+        NoList::Changed => "the folder changed while it was read: hand it over once it is done",
+        NoList::Failed => "the Room couldn't read that folder",
     })
 }
 
@@ -475,6 +499,14 @@ pub(crate) enum Message {
         requester: UnixStream,
         reply: Sender<TakeReply>,
     },
+    /// Hand back a page of a folder in the workspace, after the name
+    /// `after`, for the connection at `requester`.
+    List {
+        path: String,
+        after: Vec<u8>,
+        requester: UnixStream,
+        reply: Sender<ListReply>,
+    },
     /// Say whether the installed Room works.
     Probe { reply: Sender<Result<(), String>> },
     /// Do this to the room disk.
@@ -604,6 +636,8 @@ enum Asking {
     Change,
     /// The piece of a file the first connection waiting for one wants.
     Take,
+    /// The page of a folder the first connection waiting for one wants.
+    List,
 }
 
 /// A job's end as the supervisor said it, while its kept output is
@@ -675,6 +709,14 @@ struct Taker {
     reply: Sender<TakeReply>,
 }
 
+/// A connection waiting for a page of a folder to hand over.
+struct Lister {
+    path: String,
+    after: Vec<u8>,
+    requester: UnixStream,
+    reply: Sender<ListReply>,
+}
+
 /// An answer kept until the Room is down.
 enum Owed {
     /// How a job came out, or why it isn't known.
@@ -687,6 +729,8 @@ enum Owed {
     Change(Sender<ChangeReply>, String),
     /// Why there is no piece of a file.
     Take(Sender<TakeReply>, String),
+    /// Why there is no page of a folder.
+    List(Sender<ListReply>, String),
 }
 
 impl Owed {
@@ -708,6 +752,9 @@ impl Owed {
             Self::Take(reply, reason) => {
                 let _ = reply.send(Err(reason));
             }
+            Self::List(reply, reason) => {
+                let _ = reply.send(Err(reason));
+            }
         }
     }
 
@@ -727,6 +774,9 @@ impl Owed {
                 let _ = reply.send(Err(reason.to_owned()));
             }
             Self::Take(reply, _) => {
+                let _ = reply.send(Err(reason.to_owned()));
+            }
+            Self::List(reply, _) => {
                 let _ = reply.send(Err(reason.to_owned()));
             }
         }
@@ -820,6 +870,12 @@ pub(crate) struct Kept<D, P> {
     /// Who is told of the piece the supervisor has been asked for, and the
     /// byte it was asked from.
     taking: Option<(Sender<TakeReply>, u64)>,
+    /// The connections waiting for a page of a folder that hasn't been
+    /// asked for.
+    listers: VecDeque<Lister>,
+    /// Who is told of the page the supervisor has been asked for, and the
+    /// name it was asked after.
+    listing: Option<(Sender<ListReply>, Vec<u8>)>,
     /// What is still to be asked of the supervisor.
     asks: VecDeque<Asking>,
     /// What it has been asked and hasn't answered: its nonce, and when.
@@ -859,6 +915,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             changing: None,
             takers: VecDeque::new(),
             taking: None,
+            listers: VecDeque::new(),
+            listing: None,
             asks: VecDeque::new(),
             asked: None,
             probes: Vec::new(),
@@ -869,13 +927,14 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
     }
 
     /// Whether anything waits for a Room: a job, a page, a search, a
-    /// change or a piece of a file.
+    /// change, a piece of a file or a page of a folder.
     fn wanted(&self) -> bool {
         !self.flights.is_empty()
             || !self.readers.is_empty()
             || !self.seekers.is_empty()
             || !self.changers.is_empty()
             || !self.takers.is_empty()
+            || !self.listers.is_empty()
     }
 
     /// How a job that is over came out.
@@ -892,11 +951,16 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             || !self.seekers.is_empty()
             || !self.changers.is_empty()
             || !self.takers.is_empty()
+            || !self.listers.is_empty()
             || self.asked.is_some()
     }
 
     /// Takes what has been asked of the session so far. `Err` is why it
     /// ends.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm for each message a session takes"
+    )]
     fn intake(&mut self) -> Result<(), String> {
         while let Ok(message) = self.seat.inbox.try_recv() {
             match message {
@@ -978,6 +1042,20 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                         reply,
                     });
                     self.asks.push_back(Asking::Take);
+                }
+                Message::List {
+                    path,
+                    after,
+                    requester,
+                    reply,
+                } => {
+                    self.listers.push_back(Lister {
+                        path,
+                        after,
+                        requester,
+                        reply,
+                    });
+                    self.asks.push_back(Asking::List);
                 }
                 Message::Probe { reply } => self.probes.push(reply),
                 Message::Disk {
@@ -1189,6 +1267,19 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
         }
     }
 
+    /// Lets go of every caller waiting for a page of a folder that has
+    /// gone: nothing is read for nobody.
+    fn unlisted(&mut self) {
+        let (staying, gone): (VecDeque<Lister>, VecDeque<Lister>) =
+            std::mem::take(&mut self.listers)
+                .into_iter()
+                .partition(|lister| quiet(&lister.requester));
+        self.listers = staying;
+        for lister in gone {
+            let _ = lister.reply.send(Err(String::from(REQUESTER_GONE)));
+        }
+    }
+
     /// Sends the supervisor the next thing to ask, when it isn't still
     /// answering the last. One ask is with the supervisor at a time, so
     /// its socket has room for a whole one: a supervisor that can't take
@@ -1263,6 +1354,18 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                             nonce: nonce.clone(),
                             path: taker.path,
                             at: taker.at,
+                        }
+                    })
+                }
+                // Nor is any of a folder read for one.
+                Asking::List => {
+                    self.unlisted();
+                    self.listers.pop_front().map(|lister| {
+                        self.listing = Some((lister.reply, lister.after.clone()));
+                        Ask::List {
+                            nonce: nonce.clone(),
+                            path: lister.path,
+                            after: lister.after,
                         }
                     })
                 }
@@ -1543,6 +1646,8 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             (Asking::Change, said) => self.changed(said),
             (Asking::Take, Say::Took { took, .. }) => self.took(Ok(took)),
             (Asking::Take, Say::NoTake { why, .. }) => self.took(Err(why)),
+            (Asking::List, Say::Listed { listed, .. }) => self.listed(Ok(listed)),
+            (Asking::List, Say::NoList { why, .. }) => self.listed(Err(why)),
             _ => Err(String::from(OUT_OF_TURN)),
         }
     }
@@ -1560,6 +1665,26 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
         }
         if let Some((reply, _)) = self.taking.take() {
             let _ = reply.send(said.map_err(no_take));
+        }
+        Ok(())
+    }
+
+    /// Takes the supervisor's answer to the page of a folder it was asked
+    /// for, holds it to the name it was asked after, and tells whoever
+    /// waits. A page that can't be the one asked for ends the session, and
+    /// whoever waits is told why once the Room is down.
+    fn listed(&mut self, said: Result<Listed, NoList>) -> Result<(), String> {
+        let Some((_, after)) = self.listing.as_ref() else {
+            return Err(String::from(OUT_OF_TURN));
+        };
+        if said
+            .as_ref()
+            .is_ok_and(|listed| listed.check(after).is_err())
+        {
+            return Err(String::from(BAD_LISTED));
+        }
+        if let Some((reply, _)) = self.listing.take() {
+            let _ = reply.send(said.map_err(no_list));
         }
         Ok(())
     }
@@ -1777,6 +1902,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                 Message::Take { reply, .. } => {
                     let _ = reply.send(Err(held(reason)));
                 }
+                Message::List { reply, .. } => {
+                    let _ = reply.send(Err(held(reason)));
+                }
                 Message::Probe { reply } => {
                     let _ = reply.send(Err(held(reason)));
                 }
@@ -1831,6 +1959,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
             for taker in self.takers.drain(..) {
                 let _ = taker.reply.send(Err(reason.clone()));
             }
+            for lister in self.listers.drain(..) {
+                let _ = lister.reply.send(Err(reason.clone()));
+            }
             while let Ok(message) = self.seat.inbox.try_recv() {
                 match message {
                     Message::Run { reply, .. } => {
@@ -1846,6 +1977,9 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Kept<D
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Take { reply, .. } => {
+                        let _ = reply.send(Err(reason.clone()));
+                    }
+                    Message::List { reply, .. } => {
                         let _ = reply.send(Err(reason.clone()));
                     }
                     Message::Job { .. }
@@ -1876,6 +2010,7 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Sessio
         self.unsought();
         self.unchanged();
         self.untaken();
+        self.unlisted();
         if asked && !self.wanted() {
             return Err(String::from(REQUESTER_GONE));
         }
@@ -1929,6 +2064,12 @@ impl<D: FnMut(RoomDiskOp) -> DiskReply, P: FnMut(&InboxOp) -> InboxReply> Sessio
         let taking = self.taking.take().map(|(reply, _)| reply);
         for reply in taking.into_iter().chain(untaken) {
             self.owed.push(Owed::Take(reply, reason.clone()));
+        }
+        // Nor is a page of a folder.
+        let unlisted = self.listers.drain(..).map(|lister| lister.reply);
+        let listing = self.listing.take().map(|(reply, _)| reply);
+        for reply in listing.into_iter().chain(unlisted) {
+            self.owed.push(Owed::List(reply, reason.clone()));
         }
     }
 
@@ -2147,6 +2288,22 @@ impl Sessions {
             Ok(Message::Take {
                 path: path.to_owned(),
                 at,
+                requester: requester.try_clone().map_err(|error| error.to_string())?,
+                reply,
+            })
+        };
+        self.ask_or_start(&message, || None)
+    }
+
+    /// Hands back a page of the folder at `path` in the kept Room's
+    /// workspace, after the name `after`, for the connection at
+    /// `requester`. A session is started when there is none.
+    pub(crate) fn list(&self, path: &str, after: &[u8], requester: &UnixStream) -> ListReply {
+        check_list(path, after)?;
+        let message = |reply: Sender<ListReply>| -> Result<Message, String> {
+            Ok(Message::List {
+                path: path.to_owned(),
+                after: after.to_vec(),
                 requester: requester.try_clone().map_err(|error| error.to_string())?,
                 reply,
             })

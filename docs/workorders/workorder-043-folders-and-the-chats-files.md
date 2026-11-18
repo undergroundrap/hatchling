@@ -62,6 +62,7 @@ From an independent threat model of this work order and the code (2026-11-17), a
 Each slice's record, as it lands.
 
 - Slice 0, a hand-over spent before its file is checked ([#504](https://github.com/undergroundrap/hatchling/issues/504)): [hand-over-count.md](../evidence/hand-over-count.md).
+- Slice 1, the Room lists a folder: [room-list-wire.md](../evidence/room-list-wire.md).
 
 ## Notes
 

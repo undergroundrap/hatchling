@@ -8,7 +8,10 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use hatchling_core::framing::read_frame;
-use hatchling_core::room::{Edited, JOBS_DIR, NoEdit, NoTake, NoWrite, TAKE_BYTES, Took, Wrote};
+use hatchling_core::room::{
+    Edited, JOBS_DIR, Kind, LIST_FOLDER_NAMES, LIST_PAGE, Listed, NoEdit, NoList, NoTake, NoWrite,
+    TAKE_BYTES, Took, Wrote,
+};
 
 use super::*;
 
@@ -1523,4 +1526,558 @@ fn a_real_file_says_when_it_changed_and_which_file_it_is() {
     let replaced = bench.take(&in_room("made.txt"), 0).unwrap();
     assert_eq!(replaced.size, first.size);
     assert_ne!(replaced.ino, first.ino, "another file has the same inode");
+}
+
+impl Bench {
+    /// A page of the folder at the Room's `path` after `after`, or why
+    /// none.
+    fn list(&mut self, path: &str, after: &[u8]) -> std::result::Result<Listed, NoList> {
+        let ask = Ask::List {
+            nonce: self.nonce(),
+            path: path.to_owned(),
+            after: after.to_vec(),
+        };
+        let said = self.ask(&ask);
+        if let Say::Listed { listed, .. } = said {
+            return Ok(listed);
+        }
+        let Say::NoList { why, .. } = said else {
+            unreachable!("{said:?} isn't what a listing is answered with");
+        };
+        Err(why)
+    }
+
+    /// Every name of the folder at the Room's `path`, page by page, and
+    /// how many pages it took.
+    fn list_whole(&mut self, path: &str) -> (Vec<hatchling_core::room::Entry>, usize) {
+        let mut entries: Vec<hatchling_core::room::Entry> = Vec::new();
+        let mut pages = 0;
+        loop {
+            let after = entries
+                .last()
+                .map(|entry| entry.name.clone())
+                .unwrap_or_default();
+            let page = self.list(path, &after).unwrap();
+            assert!(page.check(&after).is_ok(), "{page:?}");
+            pages += 1;
+            let done = page.entries.len() < LIST_PAGE;
+            let total = page.total;
+            entries.extend(page.entries);
+            if done || entries.len() == usize::try_from(total).unwrap() {
+                return (entries, pages);
+            }
+        }
+    }
+}
+
+/// A folder in the workspace is listed page by page, in the order of its
+/// names' bytes, each with what it is, following no link.
+#[test]
+fn a_folder_is_listed_page_by_page_with_what_each_name_is() {
+    use std::os::unix::fs::MetadataExt as _;
+    let mut bench = Bench::new("list");
+    let workspace = workspace(&bench);
+    let site = workspace.join("site");
+    std::fs::create_dir(&site).unwrap();
+    std::fs::write(site.join("index.html"), b"<p>hi</p>\n").unwrap();
+    std::fs::write(site.join("Empty"), b"").unwrap();
+    std::fs::create_dir(site.join("css")).unwrap();
+    std::fs::write(site.join(".gitignore"), b"target\n").unwrap();
+    std::os::unix::fs::symlink(bench.dir.join("outside.txt"), site.join("away")).unwrap();
+    rustix::fs::mknodat(
+        rustix::fs::CWD,
+        site.join("pipe"),
+        rustix::fs::FileType::Fifo,
+        Mode::from_raw_mode(0o600),
+        0,
+    )
+    .unwrap();
+    let page = bench.list(&in_room("site"), b"").unwrap();
+    assert!(page.check(b"").is_ok());
+    let meta = |name: &str| std::fs::symlink_metadata(site.join(name)).unwrap();
+    assert_eq!(
+        (page.ino, page.total),
+        (std::fs::metadata(&site).unwrap().ino(), 6)
+    );
+    let said: Vec<(&[u8], Kind, u64, u64)> = page
+        .entries
+        .iter()
+        .map(|entry| (entry.name.as_slice(), entry.kind, entry.ino, entry.size))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (&b".gitignore"[..], Kind::File, meta(".gitignore").ino(), 7),
+            (b"Empty", Kind::File, meta("Empty").ino(), 0),
+            (b"away", Kind::Link, 0, 0),
+            (b"css", Kind::Folder, meta("css").ino(), 0),
+            (b"index.html", Kind::File, meta("index.html").ino(), 10),
+            (b"pipe", Kind::Other, 0, 0),
+        ]
+    );
+    // The page goes on after a name, there or gone, and after the last
+    // there is nothing.
+    let rest = bench.list(&in_room("site"), b"css").unwrap();
+    assert_eq!(rest.entries.len(), 2);
+    assert_eq!(rest.entries.first().unwrap().name, b"index.html");
+    let after_gone = bench.list(&in_room("site"), b"b-gone").unwrap();
+    assert_eq!(after_gone.entries.first().unwrap().name, b"css");
+    assert!(
+        bench
+            .list(&in_room("site"), b"zz")
+            .unwrap()
+            .entries
+            .is_empty()
+    );
+    // An empty folder is a page of nothing.
+    std::fs::create_dir(site.join("css/empty")).unwrap();
+    let empty = bench.list(&in_room("site/css/empty"), b"").unwrap();
+    assert_eq!((empty.total, empty.entries.len()), (0, 0));
+    // Listing starts no job, and is still answered while one runs.
+    bench.shell("sleeper", "sleep 30");
+    assert_eq!(bench.list(&in_room("site"), b"").unwrap().total, 6);
+    assert!(matches!(bench.stop("sleeper"), Say::Stopping { .. }));
+    bench.ended("sleeper");
+}
+
+/// Names are bytes, in the order of their bytes: any a folder can hold,
+/// whatever the text, up to the longest.
+#[test]
+fn a_folders_names_are_its_bytes_in_their_order() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut bench = Bench::new("list-names");
+    let workspace = workspace(&bench);
+    let names = workspace.join("names");
+    std::fs::create_dir(&names).unwrap();
+    let longest = vec![b'n'; 255];
+    let odd: [&[u8]; 6] = [b"B", b"a", b"\xff\xfe", b"line\nbreak", b" lead", &longest];
+    for name in odd {
+        std::fs::write(names.join(std::ffi::OsStr::from_bytes(name)), b"x").unwrap();
+    }
+    let page = bench.list(&in_room("names"), b"").unwrap();
+    let mut sorted: Vec<&[u8]> = odd.to_vec();
+    sorted.sort_unstable();
+    let said: Vec<&[u8]> = page
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_slice())
+        .collect();
+    assert_eq!(said, sorted);
+    assert_eq!(said.first(), Some(&&b" lead"[..]));
+    assert!(
+        said.iter().position(|name| *name == b"B") < said.iter().position(|name| *name == b"a")
+    );
+}
+
+/// A folder of many names comes back in whole pages, the last short, and
+/// one of more names than may be listed is refused.
+#[test]
+fn a_big_folder_comes_back_in_whole_pages_up_to_the_bound() {
+    let mut bench = Bench::new("list-many");
+    let workspace = workspace(&bench);
+    let make = |folder: &str, count: usize| {
+        let at = workspace.join(folder);
+        std::fs::create_dir(&at).unwrap();
+        for number in 0..count {
+            std::fs::write(at.join(format!("{number:05}")), b"").unwrap();
+        }
+    };
+    let most = usize::try_from(LIST_FOLDER_NAMES).unwrap();
+    make("some", 2 * LIST_PAGE + 2);
+    make("whole", 2 * LIST_PAGE);
+    make("most", most);
+    make("over", most + 1);
+    let (some, pages) = bench.list_whole(&in_room("some"));
+    assert_eq!((some.len(), pages), (2 * LIST_PAGE + 2, 3));
+    assert!(
+        some.windows(2)
+            .all(|pair| pair.first().map(|one| &one.name) < pair.get(1).map(|two| &two.name))
+    );
+    let first = bench.list(&in_room("some"), b"").unwrap();
+    assert_eq!(first.entries.len(), LIST_PAGE);
+    assert_eq!(first.total, u32::try_from(2 * LIST_PAGE + 2).unwrap());
+    let (whole, pages) = bench.list_whole(&in_room("whole"));
+    assert_eq!((whole.len(), pages), (2 * LIST_PAGE, 2));
+    let (all, _) = bench.list_whole(&in_room("most"));
+    assert_eq!(all.len(), most);
+    assert_eq!(bench.list(&in_room("over"), b""), Err(NoList::TooMany));
+}
+
+/// No folder is listed through a link, out of the workspace, or that
+/// isn't one, and none of it ends the supervisor.
+#[test]
+fn a_folder_is_listed_only_beneath_the_workspace_through_no_link() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let mut bench = Bench::new("list-refused");
+    let workspace = workspace(&bench);
+    std::fs::create_dir(bench.dir.join("outside")).unwrap();
+    std::fs::create_dir_all(workspace.join("dir/inner")).unwrap();
+    std::fs::write(workspace.join("notes.txt"), b"notes\n").unwrap();
+    assert_eq!(bench.list(&in_room("none"), b""), Err(NoList::NoSuchFolder));
+    for not_one in ["notes.txt", "notes.txt/under"] {
+        assert_eq!(
+            bench.list(&in_room(not_one), b""),
+            Err(NoList::NotAFolder),
+            "{not_one}"
+        );
+    }
+    let link =
+        |name: &str, to: &Path| std::os::unix::fs::symlink(to, workspace.join(name)).unwrap();
+    link("to-outside", &bench.dir.join("outside"));
+    link("to-dir", &workspace.join("dir"));
+    link("loop", &workspace.join("loop"));
+    for linked in ["to-outside", "to-dir", "to-dir/inner", "loop"] {
+        assert_eq!(
+            bench.list(&in_room(linked), b""),
+            Err(NoList::Link),
+            "{linked}"
+        );
+    }
+    for outside in [
+        in_room(".."),
+        in_room("dir/../.."),
+        String::from("/session"),
+        String::from("/workspaces/dir"),
+        String::from("/workspaces"),
+    ] {
+        assert_eq!(bench.list(&outside, b""), Err(NoList::Outside), "{outside}");
+    }
+    // The workspace itself is a folder beneath itself.
+    let root = bench.list(WORKSPACE, b"").unwrap();
+    let names: Vec<&[u8]> = root
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_slice())
+        .collect();
+    assert_eq!(
+        names,
+        [&b"dir"[..], b"loop", b"notes.txt", b"to-dir", b"to-outside"]
+    );
+    // A folder whose names can be read but not looked at, where there is
+    // such a thing: root looks at what it likes.
+    let closed = workspace.join("closed");
+    std::fs::create_dir(&closed).unwrap();
+    std::fs::write(closed.join("a"), b"a").unwrap();
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let said = bench.list(&in_room("closed"), b"");
+    std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if rustix::process::geteuid().is_root() {
+        assert!(said.is_ok());
+    } else {
+        assert_eq!(said, Err(NoList::Denied));
+    }
+    // A workspace that isn't there: nothing is opened.
+    std::fs::remove_dir_all(&workspace).unwrap();
+    assert_eq!(bench.list(&in_room("dir"), b""), Err(NoList::Failed));
+    // None of it ended the supervisor.
+    std::fs::create_dir_all(workspace.join("back")).unwrap();
+    assert_eq!(bench.list(&in_room("back"), b"").unwrap().total, 0);
+}
+
+#[test]
+fn why_a_folder_is_not_listed_is_said_from_the_kernels_word() {
+    for (errno, why) in [
+        (Errno::NOENT, NoList::NoSuchFolder),
+        (Errno::NOTDIR, NoList::NotAFolder),
+        (Errno::ACCESS, NoList::Denied),
+        (Errno::PERM, NoList::Denied),
+        (Errno::LOOP, NoList::Link),
+        (Errno::XDEV, NoList::Outside),
+        (Errno::IO, NoList::Failed),
+        (Errno::AGAIN, NoList::Failed),
+    ] {
+        assert_eq!(list::not_opened(errno), why, "{errno:?}");
+    }
+    for (errno, why) in [
+        (Errno::NOENT, NoList::Changed),
+        (Errno::ACCESS, NoList::Denied),
+        (Errno::PERM, NoList::Denied),
+        (Errno::NOTDIR, NoList::Failed),
+        (Errno::IO, NoList::Failed),
+    ] {
+        assert_eq!(list::not_read(errno), why, "{errno:?}");
+    }
+}
+
+/// What the kernel says of a folder or a name is taken only when it said
+/// all that was asked, and a mode is what it says.
+#[test]
+fn what_the_kernel_says_of_a_name_is_taken_only_whole() {
+    use rustix::fs::StatxFlags;
+    let seen = StatxFlags::INO
+        .union(StatxFlags::CTIME)
+        .union(StatxFlags::MNT_ID)
+        .bits();
+    assert_eq!(
+        list::seen_from(seen, 3, 2, 5, 9),
+        Ok(list::Seen {
+            ino: 3,
+            changed: 2_000_000_005,
+            mount: 9
+        })
+    );
+    for missing in [StatxFlags::INO, StatxFlags::CTIME, StatxFlags::MNT_ID] {
+        assert_eq!(
+            list::seen_from(seen & !missing.bits(), 3, 2, 5, 9),
+            Err(NoList::Failed),
+            "{missing:?}"
+        );
+    }
+    let looked = StatxFlags::TYPE
+        .union(StatxFlags::INO)
+        .union(StatxFlags::SIZE)
+        .union(StatxFlags::MNT_ID)
+        .bits();
+    assert_eq!(
+        list::looked_from(looked | StatxFlags::BLOCKS.bits(), 0o100_644, 4, 10, 9),
+        Ok(list::Looked {
+            kind: Kind::File,
+            ino: 4,
+            size: 10,
+            mount: 9
+        })
+    );
+    for missing in [
+        StatxFlags::TYPE,
+        StatxFlags::INO,
+        StatxFlags::SIZE,
+        StatxFlags::MNT_ID,
+    ] {
+        assert_eq!(
+            list::looked_from(looked & !missing.bits(), 0o100_644, 4, 10, 9),
+            Err(NoList::Failed),
+            "{missing:?}"
+        );
+    }
+    for (mode, kind) in [
+        (0o100_644, Kind::File),
+        (0o040_755, Kind::Folder),
+        (0o120_777, Kind::Link),
+        (0o010_600, Kind::Other),
+        (0o020_600, Kind::Other),
+        (0o060_600, Kind::Other),
+        (0o140_600, Kind::Other),
+    ] {
+        assert_eq!(list::kind_of(mode), kind, "{mode:o}");
+    }
+    assert_eq!(list::nanos(-1, 5), 5);
+    assert_eq!(list::nanos(i64::MAX, 5), u64::MAX);
+}
+
+/// A folder as a stand-in: what it is said to be at each look, its names
+/// at each read of them, and what each name is.
+struct Held {
+    seen: Vec<std::result::Result<list::Seen, NoList>>,
+    looked_at: std::cell::Cell<usize>,
+    names: Vec<std::result::Result<Vec<Vec<u8>>, NoList>>,
+    read: usize,
+    looks: BTreeMap<Vec<u8>, std::result::Result<list::Looked, NoList>>,
+    asked: std::cell::RefCell<Vec<Vec<u8>>>,
+}
+
+const HELD_SEEN: list::Seen = list::Seen {
+    ino: 2,
+    changed: 3,
+    mount: 1,
+};
+
+impl Held {
+    /// A folder of files named `names`, the same at every look.
+    fn of(names: &[&[u8]]) -> Self {
+        let names: Vec<Vec<u8>> = names.iter().map(|name| name.to_vec()).collect();
+        let looks = names
+            .iter()
+            .enumerate()
+            .map(|(at, name)| {
+                let looked = list::Looked {
+                    kind: Kind::File,
+                    ino: 100 + u64::try_from(at).unwrap(),
+                    size: 1,
+                    mount: 1,
+                };
+                (name.clone(), Ok(looked))
+            })
+            .collect();
+        Self {
+            seen: vec![Ok(HELD_SEEN)],
+            looked_at: std::cell::Cell::new(0),
+            names: vec![Ok(names)],
+            read: 0,
+            looks,
+            asked: std::cell::RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl list::Folder for Held {
+    fn seen(&self) -> std::result::Result<list::Seen, NoList> {
+        let look = self.looked_at.get();
+        self.looked_at.set(look + 1);
+        *self.seen.get(look).or_else(|| self.seen.last()).unwrap()
+    }
+
+    fn names(&mut self) -> std::result::Result<Vec<Vec<u8>>, NoList> {
+        let read = self.read;
+        self.read += 1;
+        self.names
+            .get(read)
+            .or_else(|| self.names.last())
+            .unwrap()
+            .clone()
+    }
+
+    fn look(&self, name: &[u8]) -> std::result::Result<list::Looked, NoList> {
+        self.asked.borrow_mut().push(name.to_vec());
+        *self.looks.get(name).unwrap()
+    }
+}
+
+/// A page is the names after the one asked from, at most a page of them,
+/// each looked at once, and the folder as it was before the page.
+#[test]
+fn a_page_is_the_names_after_the_one_asked_from() {
+    let names: Vec<Vec<u8>> = (0..2 * LIST_PAGE + 2)
+        .rev()
+        .map(|at| format!("{at:04}").into_bytes())
+        .collect();
+    let held: Vec<&[u8]> = names.iter().map(Vec::as_slice).collect();
+    let mut folder = Held::of(&held);
+    let page = list::page(&mut folder, b"").unwrap();
+    assert_eq!((page.ino, page.changed, page.total), (2, 3, 130));
+    assert_eq!(page.entries.len(), LIST_PAGE);
+    assert_eq!(page.entries.first().unwrap().name, b"0000");
+    assert_eq!(
+        folder.asked.borrow().len(),
+        LIST_PAGE,
+        "a name looked at past the page"
+    );
+    let mut folder = Held::of(&held);
+    let page = list::page(&mut folder, b"0063").unwrap();
+    assert_eq!(page.entries.first().unwrap().name, b"0064");
+    assert_eq!(page.entries.len(), LIST_PAGE);
+    let mut folder = Held::of(&held);
+    let page = list::page(&mut folder, b"0127").unwrap();
+    let last: Vec<&[u8]> = page
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_slice())
+        .collect();
+    assert_eq!(last, [b"0128", b"0129"]);
+    assert_eq!(folder.asked.borrow().len(), 2);
+}
+
+/// What is on another mount is said to be a mount, whatever it is, with
+/// no inode or length; a folder or a link has no length, and only a file
+/// or a folder an inode.
+#[test]
+fn a_name_on_another_mount_is_a_mount_whatever_it_is() {
+    let mut folder = Held::of(&[
+        b"file",
+        b"folder",
+        b"inbox",
+        b"link",
+        b"mounted-file",
+        b"pipe",
+    ]);
+    let set = |folder: &mut Held, name: &[u8], kind: Kind, mount: u64| {
+        folder.looks.insert(
+            name.to_vec(),
+            Ok(list::Looked {
+                kind,
+                ino: 7,
+                size: 9,
+                mount,
+            }),
+        );
+    };
+    set(&mut folder, b"file", Kind::File, 1);
+    set(&mut folder, b"folder", Kind::Folder, 1);
+    set(&mut folder, b"inbox", Kind::Folder, 2);
+    set(&mut folder, b"link", Kind::Link, 1);
+    set(&mut folder, b"mounted-file", Kind::File, 3);
+    set(&mut folder, b"pipe", Kind::Other, 1);
+    let page = list::page(&mut folder, b"").unwrap();
+    assert!(page.check(b"").is_ok());
+    let said: Vec<(Kind, u64, u64)> = page
+        .entries
+        .iter()
+        .map(|entry| (entry.kind, entry.ino, entry.size))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (Kind::File, 7, 9),
+            (Kind::Folder, 7, 0),
+            (Kind::Mount, 0, 0),
+            (Kind::Link, 0, 0),
+            (Kind::Mount, 0, 0),
+            (Kind::Other, 0, 0),
+        ]
+    );
+}
+
+/// A folder that changed while its page was read, by its names, its
+/// inode, its change time or its mount, is said to have changed, and so is
+/// one that names a name twice; what can't be a name isn't handed back.
+#[test]
+fn a_folder_that_changed_while_it_was_read_has_no_page() {
+    let refused_as_changed =
+        |folder: &mut Held| assert_eq!(list::page(folder, b""), Err(NoList::Changed));
+    let changes: [fn(&mut list::Seen); 3] = [
+        |seen| seen.ino += 1,
+        |seen| seen.changed += 1,
+        |seen| seen.mount += 1,
+    ];
+    for change in changes {
+        let mut folder = Held::of(&[b"a", b"b"]);
+        let mut after = HELD_SEEN;
+        change(&mut after);
+        folder.seen = vec![Ok(HELD_SEEN), Ok(after)];
+        refused_as_changed(&mut folder);
+    }
+    // Its names read again, another added, one gone, or one swapped.
+    for again in [
+        vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()],
+        vec![b"a".to_vec()],
+        vec![b"a".to_vec(), b"c".to_vec()],
+    ] {
+        let mut folder = Held::of(&[b"a", b"b"]);
+        folder.names.push(Ok(again));
+        refused_as_changed(&mut folder);
+    }
+    // The same names read again, in another order, is the same folder.
+    let mut folder = Held::of(&[b"a", b"b"]);
+    folder.names.push(Ok(vec![b"b".to_vec(), b"a".to_vec()]));
+    assert!(list::page(&mut folder, b"").is_ok());
+    // A name read twice in one read.
+    let mut folder = Held::of(&[b"a", b"b"]);
+    folder.names = vec![Ok(vec![b"b".to_vec(), b"a".to_vec(), b"b".to_vec()])];
+    refused_as_changed(&mut folder);
+    // A name gone before it is looked at, and one the user may not look
+    // at, are said as they are.
+    let mut folder = Held::of(&[b"a", b"b"]);
+    folder.looks.insert(b"b".to_vec(), Err(NoList::Changed));
+    refused_as_changed(&mut folder);
+    let mut folder = Held::of(&[b"a", b"b"]);
+    folder.looks.insert(b"a".to_vec(), Err(NoList::Denied));
+    assert_eq!(list::page(&mut folder, b""), Err(NoList::Denied));
+    // What can't be a name, before or after the page asked for.
+    for bad in [&b"a/b"[..], b"", b".", &[b'n'; 256]] {
+        let mut folder = Held::of(&[b"m", bad]);
+        assert_eq!(
+            list::page(&mut folder, b"z"),
+            Err(NoList::Failed),
+            "{bad:?}"
+        );
+    }
+    // Too many names, at the first read or the second, and a look at the
+    // folder that fails, before the page or after it.
+    for at in [0, 1] {
+        let mut folder = Held::of(&[b"a"]);
+        folder.names.insert(at, Err(NoList::TooMany));
+        assert_eq!(list::page(&mut folder, b""), Err(NoList::TooMany), "{at}");
+        let mut folder = Held::of(&[b"a"]);
+        folder.seen.insert(at, Err(NoList::Failed));
+        assert_eq!(list::page(&mut folder, b""), Err(NoList::Failed), "{at}");
+    }
 }

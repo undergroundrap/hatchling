@@ -779,6 +779,146 @@ fn check_room_inbox(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
     Ok(())
 }
 
+/// A folder in the workspace is listed whole by the Room's supervisor,
+/// under the Room's filter and as its user, a page at a time, each name
+/// with what it is, following no link, up to the bound and no further.
+/// The inbox, a mount of its own, is seen as one in the workspace, and
+/// isn't listed itself. No job is started for it, and the Room goes on.
+fn check_room_list(spawner: &Spawner, place: &Place) -> Result<(), Failed> {
+    use hatchling_core::room::{Kind, LIST_FOLDER_NAMES, LIST_PAGE};
+    let workspace = place.disk.mount_point().join("workspace");
+    let listed = workspace.join("listed");
+    let folder = |path: &Path| -> Result<(), Failed> {
+        std::fs::create_dir(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+        Ok(())
+    };
+    let made = |path: &Path, bytes: &[u8]| -> Result<(), Failed> {
+        std::fs::write(path, bytes)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))?;
+        Ok(())
+    };
+    folder(&listed)?;
+    folder(&listed.join("css"))?;
+    made(&listed.join("index.html"), b"<p>hi</p>\n")?;
+    made(&listed.join(".gitignore"), b"target\n")?;
+    std::os::unix::fs::symlink("/etc/hostname", listed.join("away"))?;
+    let fifo = Command::new("mkfifo").arg(listed.join("pipe")).status()?;
+    assert!(fifo.success(), "the test's pipe wasn't made");
+    let listing = spawner.room_list("/workspace/listed")?;
+    let said: Vec<(String, Kind, u64)> = listing
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                String::from_utf8_lossy(&entry.name).into_owned(),
+                entry.kind,
+                entry.size,
+            )
+        })
+        .collect();
+    let want = |name: &str, kind: Kind, size: u64| (String::from(name), kind, size);
+    assert_eq!(
+        said,
+        [
+            want(".gitignore", Kind::File, 7),
+            want("away", Kind::Link, 0),
+            want("css", Kind::Folder, 0),
+            want("index.html", Kind::File, 10),
+            want("pipe", Kind::Other, 0),
+        ]
+    );
+    assert_eq!(listing.ino, std::fs::metadata(&listed)?.ino());
+    let index = listing
+        .entries
+        .iter()
+        .find(|entry| entry.name == b"index.html")
+        .ok_or("no index.html")?;
+    assert_eq!(
+        index.ino,
+        std::fs::metadata(listed.join("index.html"))?.ino()
+    );
+    // Many names come back in whole pages, the most there may be too, and
+    // one more is refused.
+    let many = |name: &str, count: usize| -> Result<(), Failed> {
+        let at = listed.join(name);
+        folder(&at)?;
+        for number in 0..count {
+            made(&at.join(format!("{number:05}")), b"")?;
+        }
+        Ok(())
+    };
+    let most = usize::try_from(LIST_FOLDER_NAMES)?;
+    many("some", 2 * LIST_PAGE + 2)?;
+    many("most", most)?;
+    many("over", most + 1)?;
+    assert_eq!(
+        spawner.room_list("/workspace/listed/some")?.entries.len(),
+        2 * LIST_PAGE + 2
+    );
+    assert_eq!(
+        spawner.room_list("/workspace/listed/most")?.entries.len(),
+        most
+    );
+    check_room_list_refused(spawner, &listed)?;
+    std::fs::remove_dir_all(&listed)?;
+    Ok(())
+}
+
+/// What a listing refuses in the folder `listed`, made by
+/// [`check_room_list`]: more names than may be listed, a link, what isn't
+/// a folder, and the inbox; and the workspace itself, the inbox seen in it
+/// as a mount of its own.
+fn check_room_list_refused(spawner: &Spawner, listed: &Path) -> Result<(), Failed> {
+    use hatchling_core::room::Kind;
+    let refused = |path: &str| -> Result<String, Failed> {
+        Ok(spawner
+            .room_list(path)
+            .err()
+            .ok_or_else(|| format!("{path} was listed"))?)
+    };
+    let over = refused("/workspace/listed/over")?;
+    assert!(over.contains("more than 1024 names"), "{over}");
+    // No link is followed, and a file or a pipe isn't a folder.
+    std::os::unix::fs::symlink(".", listed.join("here"))?;
+    for linked in ["here", "here/css"] {
+        let said = refused(&format!("/workspace/listed/{linked}"))?;
+        assert!(said.contains("no link is followed"), "{linked}: {said}");
+    }
+    for not_one in ["index.html", "pipe"] {
+        let said = refused(&format!("/workspace/listed/{not_one}"))?;
+        assert!(said.contains("not a folder"), "{not_one}: {said}");
+    }
+    assert_eq!(
+        refused("/workspace/listed/absent")?,
+        "the Room has no such folder"
+    );
+    // The workspace itself is listed, its inbox a mount of its own: seen
+    // as one, and never listed.
+    let name = spawner.room_inbox_put("given.txt", b"from the owner")?;
+    let root = spawner.room_list("/workspace")?;
+    let kind_of = |name: &[u8]| {
+        root.entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| (entry.kind, entry.ino, entry.size))
+    };
+    assert_eq!(kind_of(b"inbox"), Some((Kind::Mount, 0, 0)));
+    assert_eq!(
+        kind_of(b"listed"),
+        Some((Kind::Folder, std::fs::metadata(listed)?.ino(), 0))
+    );
+    let inbox = refused("/workspace/inbox")?;
+    assert!(inbox.contains("out of the workspace"), "{inbox}");
+    spawner.room_inbox_remove(&name)?;
+    let image = refused("/etc")?;
+    assert!(image.contains("from the workspace"), "{image}");
+    // None of it started a job, and the Room it was read in goes on.
+    let same = foreground(spawner, &["kept"])?;
+    assert_eq!(exit_code(&same)?, 0, "a folder listed ended the Room");
+    Ok(())
+}
+
 /// A file in the workspace is handed back whole by the Room's supervisor,
 /// under the Room's filter and as its user, a piece at a time, byte for
 /// byte, up to the bound and no further. Nothing is handed back through a
@@ -1666,6 +1806,7 @@ fn check_room_foreground(
     check_room_change(spawner)?;
     check_room_inbox(spawner, place)?;
     check_room_take(spawner, place)?;
+    check_room_list(spawner, place)?;
 
     // Closing the disk ends the Room first: nothing of it is left, and
     // the next job starts another, with scratch of its own. A page starts

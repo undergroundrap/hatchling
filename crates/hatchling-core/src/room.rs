@@ -45,11 +45,20 @@
 //! together, and holds the file to being the same one, the same length,
 //! from its first piece to its last.
 //!
+//! And it may ask what one folder in the workspace holds, for a folder to
+//! be handed to the owner ([`Ask::List`], WO-043): a page of at most
+//! [`LIST_PAGE`] of its names, in the order of their bytes, after a name
+//! it names, each with what it is. The supervisor opens the folder as it
+//! opens a file to take, and keeps nothing between pages: the spawner puts
+//! them together, and holds the folder to being the same one from its
+//! first page to its last. What a listing says a thing is, is never
+//! trusted on its own: a file in it is read by a take, which decides.
+//!
 //! The supervisor runs in the Room, as the Room's user: everything it says
 //! is untrusted. [`Captured::check`], [`Ended::check`], [`Page::check`],
 //! [`Found::check`], [`Wrote::check`], [`Edited::check`],
-//! [`NoEdit::check`] and [`Took::check`] are what the spawner holds its
-//! words to; unknown fields never decode.
+//! [`NoEdit::check`], [`Took::check`] and [`Listed::check`] are what the
+//! spawner holds its words to; unknown fields never decode.
 
 use std::fmt;
 use std::str::FromStr;
@@ -131,6 +140,16 @@ pub const TAKE_BYTES: usize = 32 * 1024;
 
 /// The longest a file may be to be taken out of the Room, in bytes.
 pub const TAKE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// The most names one page of a folder's listing holds.
+pub const LIST_PAGE: usize = 64;
+
+/// The most names a folder may hold to be listed.
+pub const LIST_FOLDER_NAMES: u32 = 1024;
+
+/// The longest a name in a folder may be, in bytes: the kernel's own
+/// bound.
+pub const NAME_BYTES: usize = 255;
 
 /// Where a job starts when its caller names no directory.
 pub const WORKSPACE: &str = "/workspace";
@@ -442,6 +461,58 @@ pub fn check_take(path: &str, at: u64) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Whether `name` can be a name in a folder: 1 to [`NAME_BYTES`] bytes,
+/// neither `/` nor NUL among them, and not `.` or `..`.
+#[must_use]
+pub fn is_name(name: &[u8]) -> bool {
+    (1..=NAME_BYTES).contains(&name.len())
+        && !name.iter().any(|&byte| byte == b'/' || byte == 0)
+        && name != b"."
+        && name != b".."
+}
+
+/// Whether a page of a folder may be asked to be listed.
+///
+/// It may of the workspace itself, or of a folder named by an absolute
+/// path of at most [`PATH_BYTES`] beneath [`WORKSPACE`], none of its steps
+/// empty, `.` or `..`, after `after`, a name or none.
+///
+/// The supervisor opens the folder beneath the workspace itself, through
+/// no link and onto no other file system: that is what keeps a listing in
+/// the workspace. This only refuses what no folder handed over is named
+/// by.
+///
+/// # Errors
+///
+/// Why it may not.
+pub fn check_list(path: &str, after: &[u8]) -> Result<(), &'static str> {
+    if !path.starts_with('/') {
+        return Err("a Room folder is named by its absolute path");
+    }
+    if path.len() > PATH_BYTES || path.contains('\0') {
+        return Err("a Room folder's path is invalid or too long");
+    }
+    if !after.is_empty() && !is_name(after) {
+        return Err("a listing goes on after a name, and this can't be one");
+    }
+    if path == WORKSPACE {
+        return Ok(());
+    }
+    let Some(inner) = path
+        .strip_prefix(WORKSPACE)
+        .and_then(|rest| rest.strip_prefix('/'))
+    else {
+        return Err("a folder is handed over from the workspace: its path starts with /workspace/");
+    };
+    if inner
+        .split('/')
+        .any(|step| step.is_empty() || step == "." || step == "..")
+    {
+        return Err("a folder's path has a step that is empty, . or ..");
+    }
+    Ok(())
+}
+
 /// What the spawner asks the supervisor. Each carries a nonce the answer
 /// must echo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -551,6 +622,18 @@ pub enum Ask {
         /// The first byte wanted, counted from 0.
         at: u64,
     },
+    /// Hand back a page of what the folder at `path` in the workspace
+    /// holds: at most [`LIST_PAGE`] of its names after `after`, in the
+    /// order of their bytes.
+    List {
+        /// Echoed by the answer.
+        nonce: String,
+        /// The folder's absolute path in the Room, under the workspace.
+        path: String,
+        /// The last name of the page before; empty for the first page.
+        #[serde(with = "b64")]
+        after: Vec<u8>,
+    },
 }
 
 impl Ask {
@@ -565,7 +648,8 @@ impl Ask {
             | Self::Search { nonce, .. }
             | Self::Write { nonce, .. }
             | Self::Edit { nonce, .. }
-            | Self::Take { nonce, .. } => nonce,
+            | Self::Take { nonce, .. }
+            | Self::List { nonce, .. } => nonce,
         }
     }
 }
@@ -877,6 +961,124 @@ impl Took {
     }
 }
 
+/// Why the supervisor handed back no page of a folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NoList {
+    /// There is no folder at that path.
+    NoSuchFolder,
+    /// The Room's user may not read it, or what is in it.
+    Denied,
+    /// It is a file, or something else that isn't a folder.
+    NotAFolder,
+    /// The path has a link in it: none is followed.
+    Link,
+    /// The path leads out of the workspace, or onto another file system.
+    Outside,
+    /// It holds more than [`LIST_FOLDER_NAMES`] names.
+    TooMany,
+    /// It changed while the page was read.
+    Changed,
+    /// It couldn't be read.
+    Failed,
+}
+
+/// What a name in a folder is, as the supervisor saw it, following no
+/// link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    /// A regular file.
+    File,
+    /// A folder.
+    Folder,
+    /// A link.
+    Link,
+    /// The root of another mount: what is there isn't the workspace's.
+    Mount,
+    /// A device, a pipe or a socket.
+    Other,
+}
+
+/// A name in a folder, and what it is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Entry {
+    /// Its name, as the folder holds it.
+    #[serde(with = "b64")]
+    pub name: Vec<u8>,
+    /// What it is.
+    pub kind: Kind,
+    /// Its inode number: of a file or a folder only, else 0.
+    pub ino: u64,
+    /// Its length in bytes: of a file only, else 0.
+    pub size: u64,
+}
+
+/// A page of a folder's listing, as the supervisor read it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Listed {
+    /// The folder's inode number.
+    pub ino: u64,
+    /// When the folder last changed, in nanoseconds since the epoch.
+    pub changed: u64,
+    /// How many names the folder holds.
+    pub total: u32,
+    /// The names after the one asked from, in the order of their bytes.
+    pub entries: Vec<Entry>,
+}
+
+impl Listed {
+    /// Whether this can be a page of a folder after `after`: no more than
+    /// [`LIST_PAGE`] names, of a folder of no more than
+    /// [`LIST_FOLDER_NAMES`], each a name, each after the one before it
+    /// and the first after `after`, and an inode or a length only where
+    /// one is said.
+    ///
+    /// # Errors
+    ///
+    /// What is wrong with it.
+    pub fn check(&self, after: &[u8]) -> Result<(), &'static str> {
+        if self.total > LIST_FOLDER_NAMES {
+            return Err("a folder is said to hold more names than one listed may");
+        }
+        let held = usize::try_from(self.total).unwrap_or(usize::MAX);
+        if self.entries.len() > LIST_PAGE || self.entries.len() > held {
+            return Err("a page of a folder holds too many names");
+        }
+        check_entries(&self.entries, after)
+    }
+}
+
+/// Whether `entries` can be names of a folder after `after`, in order:
+/// each a name, each after the one before it and the first after `after`,
+/// and an inode or a length only where one is said.
+///
+/// # Errors
+///
+/// What is wrong with them.
+pub fn check_entries(entries: &[Entry], after: &[u8]) -> Result<(), &'static str> {
+    let mut before = after;
+    for entry in entries {
+        if !is_name(&entry.name) {
+            return Err("a page of a folder holds what can't be a name");
+        }
+        if entry.name.as_slice() <= before {
+            return Err("a page of a folder's names aren't in order, or go back");
+        }
+        before = &entry.name;
+        let has_ino = matches!(entry.kind, Kind::File | Kind::Folder);
+        if !has_ino && entry.ino != 0 {
+            return Err("a page of a folder gives an inode to what has none here");
+        }
+        if entry.kind != Kind::File && entry.size != 0 {
+            return Err("a page of a folder gives a length to what isn't a file");
+        }
+    }
+    Ok(())
+}
+
 /// What the supervisor says. All but [`Say::Ended`] answer an [`Ask`],
 /// and echo its nonce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -983,6 +1185,20 @@ pub enum Say {
         /// Why not.
         why: NoTake,
     },
+    /// A page of a folder's listing.
+    Listed {
+        /// The ask's nonce.
+        nonce: String,
+        /// The page.
+        listed: Listed,
+    },
+    /// No page of the folder was handed back.
+    NoList {
+        /// The ask's nonce.
+        nonce: String,
+        /// Why not.
+        why: NoList,
+    },
     /// A job has ended. Said once for each job that was started, unasked.
     Ended {
         /// The job's name.
@@ -1015,7 +1231,9 @@ impl Say {
             | Self::Edited { nonce, .. }
             | Self::NoEdit { nonce, .. }
             | Self::Took { nonce, .. }
-            | Self::NoTake { nonce, .. } => Some(nonce),
+            | Self::NoTake { nonce, .. }
+            | Self::Listed { nonce, .. }
+            | Self::NoList { nonce, .. } => Some(nonce),
             Self::Ended { .. } => None,
         }
     }
@@ -2219,6 +2437,282 @@ mod tests {
                 took.bytes.len(),
                 took.size
             );
+        }
+    }
+
+    fn entry(name: &[u8], kind: Kind) -> Entry {
+        let (ino, size) = match kind {
+            Kind::File => (7, 3),
+            Kind::Folder => (8, 0),
+            Kind::Link | Kind::Mount | Kind::Other => (0, 0),
+        };
+        Entry {
+            name: name.to_vec(),
+            kind,
+            ino,
+            size,
+        }
+    }
+
+    /// A name is what a folder can hold: 1 to 255 bytes, any but `/` and
+    /// NUL, and neither `.` nor `..`.
+    #[test]
+    fn a_name_is_what_a_folder_can_hold() {
+        assert_eq!((LIST_PAGE, LIST_FOLDER_NAMES, NAME_BYTES), (64, 1024, 255));
+        let longest = vec![b'a'; NAME_BYTES];
+        for good in [
+            &b"a"[..],
+            b"...",
+            b".a",
+            b"a b",
+            b"\xff\xfe",
+            b"line\nbreak",
+            b"\\",
+            &longest,
+        ] {
+            assert!(is_name(good), "{good:?}");
+        }
+        let longer = vec![b'a'; NAME_BYTES + 1];
+        for bad in [&b""[..], b".", b"..", b"a/b", b"/", b"a\0", &longer] {
+            assert!(!is_name(bad), "{bad:?}");
+        }
+    }
+
+    /// A folder is listed from beneath the workspace, by a path with no
+    /// empty, `.` or `..` step, after a name or from its start.
+    #[test]
+    fn a_listing_is_of_a_folder_in_the_workspace() {
+        let deepest = format!("/workspace/{}", "\u{1}".repeat(PATH_BYTES - 11));
+        assert_eq!(deepest.len(), PATH_BYTES);
+        for good in [
+            WORKSPACE,
+            "/workspace/a",
+            "/workspace/out/site",
+            "/workspace/.git",
+            &deepest,
+        ] {
+            assert!(check_list(good, b"").is_ok(), "{good:?}");
+            assert!(check_list(good, b"z").is_ok(), "{good:?}");
+        }
+        let too_deep = format!("{deepest}d");
+        for (path, why) in [
+            ("workspace/a", "absolute"),
+            ("", "absolute"),
+            ("/workspace/a\0", "invalid or too long"),
+            (too_deep.as_str(), "invalid or too long"),
+            ("/workspaces/a", "from the workspace"),
+            ("/workspaces", "from the workspace"),
+            ("/etc", "from the workspace"),
+            ("/workspace/", "empty, . or .."),
+            ("/workspace/out/", "empty, . or .."),
+            ("/workspace//out", "empty, . or .."),
+            ("/workspace/.", "empty, . or .."),
+            ("/workspace/./out", "empty, . or .."),
+            ("/workspace/..", "empty, . or .."),
+            ("/workspace/out/../..", "empty, . or .."),
+        ] {
+            let said = check_list(path, b"").unwrap_err();
+            assert!(said.contains(why), "{path:?}: {said}");
+        }
+        for after in [&b"."[..], b"..", b"a/b", b"a\0"] {
+            for path in [WORKSPACE, "/workspace/a"] {
+                let said = check_list(path, after).unwrap_err();
+                assert!(said.contains("can't be one"), "{path} {after:?}: {said}");
+            }
+        }
+    }
+
+    /// The most a listing may carry, asked or answered, fits one frame: a
+    /// full page of the longest names, each with the most it can say.
+    #[test]
+    fn the_most_a_listing_carries_fits_one_frame() {
+        let deepest = format!("/workspace/{}", "\u{1}".repeat(PATH_BYTES - 11));
+        let most = Ask::List {
+            nonce: "f".repeat(64),
+            path: deepest,
+            after: vec![0xff; NAME_BYTES],
+        };
+        assert!(crate::fits_one_frame(&most));
+        let most = Say::Listed {
+            nonce: "f".repeat(64),
+            listed: Listed {
+                ino: u64::MAX,
+                changed: u64::MAX,
+                total: u32::MAX,
+                entries: (0..LIST_PAGE)
+                    .map(|_| Entry {
+                        name: vec![0xff; NAME_BYTES],
+                        kind: Kind::Folder,
+                        ino: u64::MAX,
+                        size: u64::MAX,
+                    })
+                    .collect(),
+            },
+        };
+        assert!(crate::fits_one_frame(&most));
+    }
+
+    /// A listing, and what is said of it, go on the wire as they are
+    /// written here, each with its nonce, and a field, a kind or a reason
+    /// that isn't named never decodes.
+    #[test]
+    fn a_listing_and_its_answers_have_their_wire_form() {
+        let list = Ask::List {
+            nonce: String::from("n5"),
+            path: String::from("/workspace/site"),
+            after: b"a\xff".to_vec(),
+        };
+        let json = serde_json::to_string(&list).unwrap();
+        assert_eq!(
+            json,
+            r#"{"ask":"list","nonce":"n5","path":"/workspace/site","after":"Yf8="}"#
+        );
+        assert_eq!(serde_json::from_str::<Ask>(&json).unwrap(), list);
+        assert_eq!(list.nonce(), "n5");
+        assert!(
+            serde_json::from_str::<Ask>(&json.replace("\"after\"", "\"deep\":true,\"after\""))
+                .is_err()
+        );
+        let said = |say: &Say, written: &str| {
+            let json = serde_json::to_string(say).unwrap();
+            assert_eq!(json, written);
+            assert_eq!(serde_json::from_str::<Say>(&json).unwrap(), *say);
+            assert_eq!(say.nonce(), Some("n5"));
+        };
+        said(
+            &Say::Listed {
+                nonce: String::from("n5"),
+                listed: Listed {
+                    ino: 4,
+                    changed: 1_700_000_000_000_000_001,
+                    total: 5,
+                    entries: vec![
+                        entry(b"a", Kind::File),
+                        entry(b"b", Kind::Folder),
+                        entry(b"c", Kind::Link),
+                        entry(b"d", Kind::Mount),
+                        entry(b"e", Kind::Other),
+                    ],
+                },
+            },
+            concat!(
+                r#"{"say":"listed","nonce":"n5","listed":{"ino":4,"changed":1700000000000000001,"total":5,"entries":["#,
+                r#"{"name":"YQ==","kind":"file","ino":7,"size":3},"#,
+                r#"{"name":"Yg==","kind":"folder","ino":8,"size":0},"#,
+                r#"{"name":"Yw==","kind":"link","ino":0,"size":0},"#,
+                r#"{"name":"ZA==","kind":"mount","ino":0,"size":0},"#,
+                r#"{"name":"ZQ==","kind":"other","ino":0,"size":0}]}}"#,
+            ),
+        );
+        for (why, word) in [
+            (NoList::NoSuchFolder, "no-such-folder"),
+            (NoList::Denied, "denied"),
+            (NoList::NotAFolder, "not-a-folder"),
+            (NoList::Link, "link"),
+            (NoList::Outside, "outside"),
+            (NoList::TooMany, "too-many"),
+            (NoList::Changed, "changed"),
+            (NoList::Failed, "failed"),
+        ] {
+            said(
+                &Say::NoList {
+                    nonce: String::from("n5"),
+                    why,
+                },
+                &format!(r#"{{"say":"no-list","nonce":"n5","why":"{word}"}}"#),
+            );
+        }
+        for unknown in [
+            r#"{"say":"listed","nonce":"n5","listed":{"ino":1,"changed":0,"total":0,"entries":[],"more":true}}"#,
+            r#"{"say":"listed","nonce":"n5","listed":{"ino":1,"changed":0,"entries":[]}}"#,
+            r#"{"say":"listed","nonce":"n5","listed":{"ino":1,"changed":0,"total":1,"entries":[{"name":"YQ==","kind":"file","ino":1,"size":1,"mode":420}]}}"#,
+            r#"{"say":"listed","nonce":"n5","listed":{"ino":1,"changed":0,"total":1,"entries":[{"name":"YQ==","kind":"socket","ino":0,"size":0}]}}"#,
+            r#"{"say":"listed","nonce":"n5","listed":{"ino":1,"changed":0,"total":1,"entries":[{"name":"YQ==","kind":"file","ino":1,"size":-1}]}}"#,
+            r#"{"say":"no-list","nonce":"n5","why":"gone"}"#,
+        ] {
+            assert!(serde_json::from_str::<Say>(unknown).is_err(), "{unknown}");
+        }
+    }
+
+    /// A page of a folder is held to what a page after the name asked
+    /// from can be.
+    #[test]
+    fn a_page_of_a_folder_is_held_to_where_it_was_asked() {
+        let page = |total: u32, entries: Vec<Entry>| Listed {
+            ino: 1,
+            changed: 2,
+            total,
+            entries,
+        };
+        let names = |count: usize| -> Vec<Entry> {
+            (0..count)
+                .map(|at| entry(format!("{at:04}").as_bytes(), Kind::File))
+                .collect()
+        };
+        // Whole pages, the last short, an empty folder, and the most.
+        assert_eq!(page(0, Vec::new()).check(b""), Ok(()));
+        assert_eq!(page(LIST_FOLDER_NAMES, names(LIST_PAGE)).check(b""), Ok(()));
+        assert_eq!(page(3, names(3)).check(b""), Ok(()));
+        let rest = names(3).get(1..).unwrap().to_vec();
+        assert_eq!(page(3, rest).check(b"0000"), Ok(()));
+        // Every kind, as it may be said.
+        let kinds = vec![
+            entry(b"A", Kind::Mount),
+            entry(b"B", Kind::Other),
+            entry(b"a", Kind::Folder),
+            entry(b"b", Kind::Link),
+            entry(b"c", Kind::File),
+        ];
+        assert_eq!(page(5, kinds).check(b""), Ok(()));
+        let refused = |listed: Listed, after: &[u8], why: &str| {
+            let said = listed.check(after).unwrap_err();
+            assert!(said.contains(why), "{said}");
+        };
+        refused(page(LIST_FOLDER_NAMES + 1, Vec::new()), b"", "more names");
+        refused(page(u32::MAX, Vec::new()), b"", "more names");
+        refused(
+            page(LIST_FOLDER_NAMES, names(LIST_PAGE + 1)),
+            b"",
+            "too many",
+        );
+        refused(page(2, names(3)), b"", "too many");
+        refused(
+            page(1, vec![entry(b"a/b", Kind::File)]),
+            b"",
+            "can't be a name",
+        );
+        refused(
+            page(1, vec![entry(b"..", Kind::Folder)]),
+            b"",
+            "can't be a name",
+        );
+        refused(
+            page(1, vec![entry(b"", Kind::File)]),
+            b"",
+            "can't be a name",
+        );
+        // Out of order, twice the same, or not after the name asked from.
+        let mut backwards = names(2);
+        backwards.reverse();
+        refused(page(2, backwards), b"", "in order");
+        refused(
+            page(2, vec![entry(b"a", Kind::File), entry(b"a", Kind::File)]),
+            b"",
+            "in order",
+        );
+        refused(page(2, names(2)), b"0000", "in order");
+        refused(page(2, names(2)), b"0001", "in order");
+        refused(page(2, names(2)), b"9", "in order");
+        // An inode or a length only where one is said.
+        for kind in [Kind::Link, Kind::Mount, Kind::Other] {
+            let mut with = entry(b"a", kind);
+            with.ino = 9;
+            refused(page(1, vec![with]), b"", "an inode");
+        }
+        for kind in [Kind::Folder, Kind::Link, Kind::Mount, Kind::Other] {
+            let mut with = entry(b"a", kind);
+            with.size = 1;
+            refused(page(1, vec![with]), b"", "a length");
         }
     }
 }

@@ -54,6 +54,12 @@ use rustix::process::{Pid, PidfdFlags, Signal, kill_process_group, pidfd_open};
     clippy::redundant_pub_crate,
     reason = "the supervisor is one program: what its parts share is the crate's"
 )]
+#[path = "hatchling-room/list.rs"]
+mod list;
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "the supervisor is one program: what its parts share is the crate's"
+)]
 #[path = "hatchling-room/search.rs"]
 mod search;
 #[allow(
@@ -591,6 +597,10 @@ impl Room<'_> {
     }
 
     /// Does what the spawner asks, and answers it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm for each ask the supervisor answers"
+    )]
     fn answer(&mut self, ask: Ask) -> Say {
         match ask {
             Ask::Start {
@@ -691,6 +701,12 @@ impl Room<'_> {
                 Ok(took) => Say::Took { nonce, took },
                 Err(why) => Say::NoTake { nonce, why },
             },
+            Ask::List { nonce, path, after } => {
+                match list::listed(&self.place.workspace, &path, &after) {
+                    Ok(listed) => Say::Listed { nonce, listed },
+                    Err(why) => Say::NoList { nonce, why },
+                }
+            }
         }
     }
 

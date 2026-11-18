@@ -17,6 +17,7 @@
 //! anything it can read into the workspace, and hand that over.
 
 use std::fs::{File, Metadata};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::Path;
 
@@ -47,13 +48,39 @@ fn changed(meta: &Metadata) -> u64 {
     seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
 }
 
-/// The file at `path`, a path in the Room under [`WORKSPACE`], opened
-/// beneath `workspace`, the directory that is the workspace here.
-fn opened(workspace: &Path, path: &str) -> Result<File, NoTake> {
+/// Why a path in the workspace wasn't opened beneath it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unopened {
+    /// The path isn't under [`WORKSPACE`].
+    Outside,
+    /// The workspace itself couldn't be opened.
+    Failed,
+    /// The kernel's word for why the path couldn't be.
+    Kernel(Errno),
+}
+
+/// What a path beneath the workspace is opened as: only ever to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Opening {
+    /// Whatever is there: whether it is a file is looked at once open.
+    Anything,
+    /// A folder, or nothing.
+    Folder,
+}
+
+/// What is at `path`, a path in the Room under [`WORKSPACE`], opened to
+/// read, without waiting, as `opening` says, beneath `workspace`, the
+/// directory that is the workspace here: no step of it a link, out of the
+/// workspace or onto another file system.
+pub(crate) fn beneath(workspace: &Path, path: &str, opening: Opening) -> Result<OwnedFd, Unopened> {
+    let with = match opening {
+        Opening::Anything => OFlags::empty(),
+        Opening::Folder => OFlags::DIRECTORY,
+    };
     let inner = path
         .strip_prefix(WORKSPACE)
         .and_then(|rest| rest.strip_prefix('/'))
-        .ok_or(NoTake::Outside)?;
+        .ok_or(Unopened::Outside)?;
     let root = rustix::fs::open(
         workspace,
         OFlags::PATH
@@ -62,21 +89,32 @@ fn opened(workspace: &Path, path: &str) -> Result<File, NoTake> {
             .union(OFlags::CLOEXEC),
         Mode::empty(),
     )
-    .map_err(|_| NoTake::Failed)?;
-    let file = rustix::fs::openat2(
+    .map_err(|_| Unopened::Failed)?;
+    rustix::fs::openat2(
         &root,
         inner,
         OFlags::RDONLY
             .union(OFlags::NONBLOCK)
             .union(OFlags::NOCTTY)
-            .union(OFlags::CLOEXEC),
+            .union(OFlags::CLOEXEC)
+            .union(with),
         Mode::empty(),
         ResolveFlags::BENEATH
             .union(ResolveFlags::NO_SYMLINKS)
             .union(ResolveFlags::NO_MAGICLINKS)
             .union(ResolveFlags::NO_XDEV),
     )
-    .map_err(not_opened)?;
+    .map_err(Unopened::Kernel)
+}
+
+/// The file at `path`, a path in the Room under [`WORKSPACE`], opened
+/// beneath `workspace`, the directory that is the workspace here.
+fn opened(workspace: &Path, path: &str) -> Result<File, NoTake> {
+    let file = beneath(workspace, path, Opening::Anything).map_err(|why| match why {
+        Unopened::Outside => NoTake::Outside,
+        Unopened::Failed => NoTake::Failed,
+        Unopened::Kernel(errno) => not_opened(errno),
+    })?;
     Ok(File::from(file))
 }
 
