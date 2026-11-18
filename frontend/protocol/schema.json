@@ -5174,6 +5174,36 @@
         }
       ]
     },
+    "LeftOut": {
+      "additionalProperties": false,
+      "description": "What a folder handed over left out, by kind, as its listings said.",
+      "properties": {
+        "links": {
+          "description": "Links.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mounts": {
+          "description": "Other mounts: the workspace's inbox among them.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "others": {
+          "description": "Devices, pipes and sockets.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "links",
+        "mounts",
+        "others"
+      ],
+      "type": "object"
+    },
     "LibraryFile": {
       "description": "A file the agent handed the owner (WO-041), as the Library keeps it.",
       "properties": {
@@ -6896,6 +6926,43 @@
             "result",
             "name",
             "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The folder was handed over (v33): the Library keeps it as one\nitem, by the broker's name for it.",
+          "properties": {
+            "bytes": {
+              "description": "Its files' length together, in bytes.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "files": {
+              "description": "How many files it holds.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "left_out": {
+              "$ref": "#/$defs/LeftOut",
+              "description": "What was left out of it, by kind."
+            },
+            "name": {
+              "description": "The broker's name for it, as the owner is shown it.",
+              "type": "string"
+            },
+            "result": {
+              "const": "folder-handed-over",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "name",
+            "files",
+            "bytes",
+            "left_out"
           ],
           "type": "object"
         },
@@ -10260,6 +10327,24 @@
                 },
                 "path": {
                   "description": "The file, by its absolute path under the workspace, or a path\nunder it.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "path"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Hand the owner a folder in the workspace (v33, WO-043): the broker\nwalks it, copies each file out whole, checks every path and byte,\nand keeps it as one item in the Library. Links, devices, pipes,\nsockets and other mounts in it are left out, and counted.",
+              "properties": {
+                "op": {
+                  "const": "hand-over-folder",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "The folder, by its absolute path under the workspace (the\nworkspace itself among them), or a path under it.",
                   "type": "string"
                 }
               },
@@ -15396,7 +15481,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 32,
+    "session_protocol": 33,
     "ui_schema_version": 7
   },
   "x-roots": {

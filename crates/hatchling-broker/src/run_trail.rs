@@ -624,7 +624,8 @@ const fn room_ending(result: &RoomResult) -> Ending {
         | RoomResult::Found { .. }
         | RoomResult::Wrote { .. }
         | RoomResult::Edited { .. }
-        | RoomResult::HandedOver { .. } => Done,
+        | RoomResult::HandedOver { .. }
+        | RoomResult::FolderHandedOver { .. } => Done,
         RoomResult::Refused { .. } | RoomResult::Unknown { .. } => Refused,
         RoomResult::Lost { .. }
         | RoomResult::Failed { .. }
@@ -1274,6 +1275,13 @@ mod tests {
             bytes: 1,
         });
         assert_eq!(ending_of(&handed), Done);
+        let folder = SessionResponse::Room(RoomResult::FolderHandedOver {
+            name: s("site"),
+            files: 2,
+            bytes: 1,
+            left_out: hatchling_core::LeftOut::default(),
+        });
+        assert_eq!(ending_of(&folder), Done);
         let unhanded = SessionResponse::Room(RoomResult::NotHandedOver { reason: s("no") });
         assert_eq!(ending_of(&unhanded), Failed);
     }

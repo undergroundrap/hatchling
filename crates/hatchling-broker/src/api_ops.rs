@@ -3886,6 +3886,7 @@ mod tests {
             .keep_folder_spent(
                 "site",
                 &[("index.html", b"<p>".as_slice()), ("a/b.css", b"b {}")],
+                hatchling_core::LeftOut::default(),
                 "now",
                 spent,
                 crate::library::tests::REPLY,

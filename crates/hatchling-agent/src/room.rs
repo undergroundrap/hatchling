@@ -56,6 +56,7 @@ impl Running {
             | RoomResult::Edited { .. }
             | RoomResult::NoChange { .. }
             | RoomResult::HandedOver { .. }
+            | RoomResult::FolderHandedOver { .. }
             | RoomResult::NotHandedOver { .. }
             | RoomResult::Failed { job: None, .. } => {}
         }
@@ -354,6 +355,12 @@ mod tests {
             RoomResult::HandedOver {
                 name: String::from("report.pdf"),
                 bytes: 9,
+            },
+            RoomResult::FolderHandedOver {
+                name: String::from("site"),
+                files: 2,
+                bytes: 9,
+                left_out: hatchling_core::LeftOut::default(),
             },
             RoomResult::NotHandedOver {
                 reason: String::from("no"),

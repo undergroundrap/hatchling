@@ -539,24 +539,37 @@ fn loop_asks_the_broker_to_write_and_edit_its_files() {
     }
 }
 
-/// The model's `give_file` reaches the broker as a Room op, offered only
-/// where the broker says files may be given: with its computer and the
-/// `files` group. Where it isn't offered, a call to it is no tool's.
+/// The model's `give_file` and `give_folder` reach the broker as Room
+/// ops, offered only where the broker says files may be given: with its
+/// computer and the `files` group. Where they aren't offered, a call to
+/// one is no tool's.
 #[test]
-fn loop_asks_the_broker_to_give_a_file_only_where_it_may() {
-    for (groups, offered) in [
-        (
-            std::collections::BTreeSet::from([ToolGroup::Room, ToolGroup::Files]),
-            true,
-        ),
-        (std::collections::BTreeSet::from([ToolGroup::Room]), false),
-        (std::collections::BTreeSet::from([ToolGroup::Files]), false),
-    ] {
+fn loop_asks_the_broker_to_give_a_file_or_folder_only_where_it_may() {
+    let cases = ["give_file", "give_folder"].into_iter().flat_map(|tool| {
+        [
+            (
+                tool,
+                std::collections::BTreeSet::from([ToolGroup::Room, ToolGroup::Files]),
+                true,
+            ),
+            (
+                tool,
+                std::collections::BTreeSet::from([ToolGroup::Room]),
+                false,
+            ),
+            (
+                tool,
+                std::collections::BTreeSet::from([ToolGroup::Files]),
+                false,
+            ),
+        ]
+    });
+    for (tool, groups, offered) in cases {
         let broker = FixtureBroker::spawn("loop-give", BrokerBehavior::Vault(Vec::new())).unwrap();
         let cell = ready_cell_offering(&broker, Some(groups.clone())).unwrap();
         let model = FakeModel::new(vec![
             ModelAction::ToolCalls(vec![ToolCall {
-                name: String::from("give_file"),
+                name: String::from(tool),
                 arguments: json!({ "path": "report.pdf" }),
             }]),
             ModelAction::Text(String::from("nothing was given")),
@@ -587,7 +600,7 @@ fn loop_asks_the_broker_to_give_a_file_only_where_it_may() {
         } else {
             // A tool it wasn't given: never asked of the broker.
             assert!(
-                told.contains("give_file") && told != unattended,
+                told.contains(tool) && told != unattended,
                 "{groups:?}: {told}"
             );
         }

@@ -262,6 +262,7 @@ fn item(kind: ItemKind, files: u64, bytes: u64) -> KeptItem {
         kept_at: String::new(),
         conversation: 0,
         reply: String::new(),
+        left_out: LeftOut::default(),
     }
 }
 
@@ -524,6 +525,14 @@ fn an_item_the_index_cant_hold_is_refused() {
             ..file.clone()
         }]);
     }
+    // A file has nothing left out: only a folder's walk leaves anything.
+    unsound(vec![KeptItem {
+        left_out: LeftOut {
+            others: 1,
+            ..LeftOut::default()
+        },
+        ..file.clone()
+    }]);
     let folder = item(ItemKind::Folder, 2, 10);
     for bad in [
         KeptItem {
@@ -998,7 +1007,14 @@ fn a_hand_over_is_spent_before_its_file_is_kept() {
         .unwrap()
         .unwrap();
     let said = library
-        .keep_folder_spent("f", &[("a", b"abc")], "now", other, REPLY)
+        .keep_folder_spent(
+            "f",
+            &[("a", b"abc")],
+            LeftOut::default(),
+            "now",
+            other,
+            REPLY,
+        )
         .unwrap_err();
     assert!(said.contains("isn't what was spent"), "{said}");
     assert!(library.files().unwrap().is_empty());
@@ -1177,7 +1193,14 @@ fn keep_folder(library: &Library<'_>, name: &str, files: &[(String, Vec<u8>)]) -
         .map(|(path, bytes)| (path.as_str(), bytes.as_slice()))
         .collect();
     library
-        .keep_folder_spent(name, &parts, "2026-11-18T00:00:00Z", spent, REPLY)
+        .keep_folder_spent(
+            name,
+            &parts,
+            LeftOut::default(),
+            "2026-11-18T00:00:00Z",
+            spent,
+            REPLY,
+        )
         .unwrap()
         .unwrap()
 }
@@ -1433,7 +1456,14 @@ fn a_folders_paths_are_held_to_the_brokers_rules() {
         .unwrap()
         .unwrap();
     let said = library
-        .keep_folder_spent("bad", &[("secret-ish/../x", b"x")], "now", spent, REPLY)
+        .keep_folder_spent(
+            "bad",
+            &[("secret-ish/../x", b"x")],
+            LeftOut::default(),
+            "now",
+            spent,
+            REPLY,
+        )
         .unwrap_err();
     assert!(said.contains("empty, . or .."), "{said}");
     assert!(!said.contains("secret-ish"), "a path was said: {said}");
@@ -1672,6 +1702,11 @@ fn the_largest_index_and_list_fit_where_they_are_kept() {
         kept_at: "t".repeat(KEPT_AT_BYTES),
         conversation: u64::MAX,
         reply: String::from(REPLY),
+        left_out: LeftOut {
+            links: u32::MAX,
+            mounts: u32::MAX,
+            others: u32::MAX,
+        },
     };
     let index = serde_json::to_vec(&vec![longest; LIBRARY_ITEMS]).unwrap();
     assert!(index.len() <= CHUNK_BYTES, "{} bytes", index.len());
@@ -1758,7 +1793,17 @@ fn a_keep_with_a_reply_a_time_or_a_list_that_cant_be_one_keeps_nothing() {
     let keeping = |list: &[u8], now: &str, reply: &str| {
         let spent = library.spend(&claim, conversation).unwrap().unwrap();
         let sha256 = hex(&Sha256::digest(list));
-        library.keeping("f", &claim, &parts, Some(list), sha256, now, &spent, reply)
+        library.keeping(
+            "f",
+            &claim,
+            &parts,
+            Some(list),
+            LeftOut::default(),
+            sha256,
+            now,
+            &spent,
+            reply,
+        )
     };
     let list = |length: u64| {
         let mut list = b"[]".to_vec();

@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 7;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 32;
+export const SESSION_PROTOCOL_VERSION = 33;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2073,6 +2073,23 @@ export type KeptResult = {
  */
 export type Key = 'enter' | 'tab' | 'escape' | 'backspace' | 'arrow_up' | 'arrow_down' | 'arrow_left' | 'arrow_right';
 /**
+ * What a folder handed over left out, by kind, as its listings said.
+ */
+export type LeftOut = {
+    /**
+     * Links.
+     */
+    readonly links: number;
+    /**
+     * Other mounts: the workspace's inbox among them.
+     */
+    readonly mounts: number;
+    /**
+     * Devices, pipes and sockets.
+     */
+    readonly others: number;
+};
+/**
  * A file the agent handed the owner (WO-041), as the Library keeps it.
  */
 export type LibraryFile = {
@@ -2827,6 +2844,24 @@ export type RoomResult = {
      */
     readonly name: string;
     readonly result: 'handed-over';
+} | {
+    /**
+     * Its files' length together, in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * How many files it holds.
+     */
+    readonly files: number;
+    /**
+     * What was left out of it, by kind.
+     */
+    readonly left_out: LeftOut;
+    /**
+     * The broker's name for it, as the owner is shown it.
+     */
+    readonly name: string;
+    readonly result: 'folder-handed-over';
 } | {
     /**
      * Why, in words for the agent.
@@ -4263,6 +4298,13 @@ export type SessionRequest = {
     /**
      * The file, by its absolute path under the workspace, or a path
      * under it.
+     */
+    readonly path: string;
+} | {
+    readonly op: 'hand-over-folder';
+    /**
+     * The folder, by its absolute path under the workspace (the
+     * workspace itself among them), or a path under it.
      */
     readonly path: string;
 }) | {

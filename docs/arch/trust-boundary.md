@@ -317,8 +317,7 @@ owner can see what left the agent's computer. Never what it held, or its
 path. The model is offered the tool only in a chat with its computer,
 where the operator gave the broker a Library.
 
-The Library keeps items: a file, or a folder of files (WO-043; nothing
-gives a folder yet). A folder's files are kept back to back with a list
+The Library keeps items: a file, or a folder of files (WO-043). A folder's files are kept back to back with a list
 of each one's path, length and SHA-256, sealed, its hash in the index;
 each file is read back only to its own hash, and the list only to the
 index's and as the folder can be (its lengths and count the item's, its
@@ -333,6 +332,23 @@ that bound, refused before reading; a folder counts as its listing says,
 before it is read, every bound checked first. A restart gives none of
 it back: a conversation the chat doesn't resume is grouped apart, and its
 count, bytes and off are kept until the owner starts a new one.
+
+A folder is given by `give_folder` (WO-043), by the same rules as a
+file and from the same Room, as one hand-over. The broker walks it with
+the spawner's listings, a folder at a time, and takes nothing a listing
+says on trust: a link, another mount (the workspace's inbox, by its
+name too) and a device, pipe or socket are left out and counted, never
+opened; a folder is held to the inode its parent listed; and folders and
+files are counted against the bounds as they are found (256 folders, 512
+files, 8 MiB a file, 32 MiB, 16 steps, 1024 bytes a whole path; 5
+minutes, checked before each ask, so the last ask can run past them). A
+folder given in the workspace's inbox is refused before it is walked. Every name is held to the owner's computer's rules there, as
+the agent's. Only then is the hand-over spent, on the listed files and
+bytes, and each file read as a file is, held at once to its listed
+length: what one reads past it counts toward the conversation's bytes
+too. Its name is checked alone, and its paths and every byte of its
+files as one text, which is the only copy and what is kept. A walk isn't
+a snapshot: what changes in a folder already listed can be missed.
 
 All of what the supervisor reports is untrusted. The spawner checks that
 an end is one a process can have and that the kept counts can be true

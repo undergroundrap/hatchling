@@ -42,7 +42,7 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
         lines.insert(
             3,
             String::from(if on(ToolGroup::Files) {
-                "- `give_file` gives the owner a file you made in /workspace, at most 8 MiB, for them to download from Hatchling's Library. A file that holds a secret Hatchling keeps is withheld, and giving files is then off for the conversation."
+                "- `give_file` gives the owner a file you made in /workspace, at most 8 MiB, for them to download from Hatchling's Library, and `give_folder` a folder, at most 512 files and 32 MiB. One that holds a secret Hatchling keeps is withheld, and giving is then off for the conversation."
             } else {
                 "- You can't give the owner a file to download on this install: say what you made and show its text instead."
             }),
@@ -140,15 +140,19 @@ mod tests {
             "{room}"
         );
         assert!(!room.contains("give_file"), "{room}");
+        assert!(!room.contains("give_folder"), "{room}");
         assert!(
             files.contains("`give_file` gives the owner a file"),
             "{files}"
         );
         assert!(files.contains("8 MiB"), "{files}");
+        assert!(files.contains("`give_folder` a folder"), "{files}");
+        assert!(files.contains("512 files and 32 MiB"), "{files}");
         assert!(files.contains("withheld"), "{files}");
         assert!(!files.contains("can't give the owner a file"), "{files}");
         // Without its computer there is nothing to give.
         assert!(!alone.contains("give_file"), "{alone}");
+        assert!(!alone.contains("give_folder"), "{alone}");
         assert!(
             alone.contains("can't read a file the owner attaches"),
             "{alone}"
