@@ -25,6 +25,21 @@ for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
         component["hashes"] = [{"alg": "SHA-256", "content": digest}]
     components.append(component)
 
+# What the static supervisor was built with (#517): not installed in the
+# image, so not its components; nested in the supervisor's, whose binary
+# holds glibc and libgcc statically.
+if len(sys.argv) > 3:
+    built_with = []
+    for line in Path(sys.argv[3]).read_text(encoding="utf-8").splitlines():
+        name, version, arch, _source = line.split("\t")
+        built_with.append({
+            "type": "library", "name": name, "version": version,
+            "purl": f"pkg:deb/debian/{name}@{quote(version, safe='')}?arch={arch}",
+            "scope": "excluded" if name.startswith(("binutils", "gcc-")) else "required",
+        })
+    supervisor, = (c for c in components if c["name"] == "hatchling-room")
+    supervisor["components"] = built_with
+
 print(json.dumps({
     "bomFormat": "CycloneDX",
     "specVersion": "1.6",

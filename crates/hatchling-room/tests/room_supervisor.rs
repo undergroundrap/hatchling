@@ -63,7 +63,12 @@ mod proof {
         let (peer, endpoint) = UnixStream::pair().unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
         let profile = SeccompProfile::room().unwrap();
-        let path = env!("CARGO_BIN_EXE_hatchling-room");
+        // The binary under proof: this build's, or the one a release ships,
+        // built in the snapshot's build root and named here (#517).
+        let named = std::env::var("HATCHLING_ROOM_SUPERVISOR_BIN").ok();
+        let path = named
+            .as_deref()
+            .unwrap_or(env!("CARGO_BIN_EXE_hatchling-room"));
         match hatchling_sys::fork().unwrap() {
             ForkResult::Parent { child } => {
                 drop(endpoint);

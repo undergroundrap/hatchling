@@ -256,12 +256,18 @@ jobs:
 
   room-supervisor:
     name: static room supervisor (${{ matrix.copy }})
-    runs-on: ubuntu-26.04
-    timeout-minutes: 20
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        copy: [a, b]
+        include:
+          - copy: a
+            runner: ubuntu-26.04
+          # Another Ubuntu on purpose, with its own compiler and C library:
+          # nothing of the machine that builds it may reach the bytes (#517).
+          - copy: b
+            runner: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -272,19 +278,30 @@ jobs:
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: 1.98.1
-      - name: Build the static room supervisor
+      - name: Install the build root's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends mmdebstrap debian-archive-keyring
+      - name: Build the static room supervisor in the snapshot's build root
         working-directory: room-supervisor-${{ matrix.copy }}
-        env:
-          CARGO_HOME: ${{ runner.temp }}/room-cargo-${{ matrix.copy }}
         run: |
           rustc -vV
-          dpkg-query -W binutils libc6-dev
-          cc --version
-          ld --version
-          for input in libc.a crt1.o Scrt1.o rcrt1.o crti.o crtn.o crtbeginS.o crtendS.o libgcc.a libgcc_eh.a; do
-            sha256sum "$(cc -print-file-name="$input")"
-          done
-          bash scripts/room-image-supervisor.sh "$RUNNER_TEMP/room-supervisor"
+          dpkg-query -W mmdebstrap debian-archive-keyring
+          cargo_home="$RUNNER_TEMP/room-cargo-${{ matrix.copy }}"
+          mkdir -p "$cargo_home"
+          sudo TMPDIR="$RUNNER_TEMP" bash scripts/room-supervisor-build.sh \
+            "$RUNNER_TEMP/room-supervisor" "$USER" "$(rustc --print sysroot)" "$cargo_home"
+          cat "$RUNNER_TEMP/room-supervisor/build-root-packages.txt"
+          cat "$RUNNER_TEMP/room-supervisor/link-args.txt"
+      - name: Prove the supervisor it ships under its filter
+        working-directory: room-supervisor-${{ matrix.copy }}
+        env:
+          HATCHLING_ROOM_SUPERVISOR_BIN: ${{ runner.temp }}/room-supervisor/hatchling-room
+        run: |
+          # AppArmor: unshare succeeds but grants nothing, as in CI's gate.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          cargo test --locked --release --target x86_64-unknown-linux-gnu -p hatchling-room \
+            --features room-supervisor --test room_supervisor
       - name: Upload only the supervisor
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
