@@ -29,6 +29,8 @@ Nothing inside can be read or changed without that, so a copy on a USB drive is 
 
 The service stops while it's copied, and starts again after. With a security key, that means unlocking it again.
 
+No broker may run beside a backup, a restore or a reset: each would copy, clear or replace stores the broker is still writing. So once the service is stopped, each checks that no broker still serves, such as one you started by hand with `sudo hatchling-broker`, and refuses if one does, changing nothing: stop it, then run the command again. None can start while one runs. `lock` refuses the same way, since a broker still running holds the vault's key.
+
 ## Restore
 
 ```bash

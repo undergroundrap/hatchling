@@ -265,7 +265,7 @@ fn run(args: &[String]) -> Result<(), Error> {
         Some("vault-keyring") => run_keyring(&config, args.get(1).map(String::as_str)),
         Some("clean") => crate::sweep::run_clean(&config, args.get(1..).unwrap_or_default()),
         Some("backup") => crate::backup::run_backup(&config, args.get(1).map(Path::new)),
-        Some("lock") => crate::backup::run_lock(),
+        Some("lock") => crate::backup::run_lock(&config),
         Some("restore") => args.get(1).map_or_else(
             || {
                 Err(Error::Usage {
