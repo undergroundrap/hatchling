@@ -471,6 +471,20 @@ fn a_name_is_the_files_own_made_plain_and_never_a_device() {
     ] {
         assert_eq!(name_of(path), Err(RESERVED), "{path:?}");
     }
+    // The console's and the clock's device names (#511) need a `$`, which a
+    // file's name never keeps: what is left is no device's.
+    for path in [
+        "CONIN$",
+        "conin$.txt",
+        "CONOUT$",
+        "Conout$.log",
+        "CLOCK$",
+        "clock$.x",
+    ] {
+        let name = name_of(path).unwrap();
+        assert!(!name.contains('$'), "{path:?} became {name:?}");
+        assert!(!is_reserved(name.split('.').next().unwrap()), "{name:?}");
+    }
     assert_eq!(name_of("notes."), Err(TRAILING_DOT));
     // A file Windows acts on when its folder is only shown: never given.
     for path in [

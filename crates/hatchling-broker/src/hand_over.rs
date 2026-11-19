@@ -223,7 +223,8 @@ pub(crate) fn reaches_out(name: &str) -> bool {
             .is_some_and(|(_, extension)| REACHING.contains(&extension))
 }
 
-/// Whether `stem` is a name Windows keeps for a device, whatever its case.
+/// Whether `stem` is a name Windows keeps for a device, whatever its case:
+/// the console's `CONIN$` and `CONOUT$`, and `CLOCK$`, too (#511).
 pub(crate) fn is_reserved(stem: &str) -> bool {
     let upper = stem.to_ascii_uppercase();
     let numbered = |prefix: &str| {
@@ -231,7 +232,11 @@ pub(crate) fn is_reserved(stem: &str) -> bool {
             .strip_prefix(prefix)
             .is_some_and(|digit| matches!(digit.as_bytes(), [b'0'..=b'9']))
     };
-    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
+    matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" | "CLOCK$"
+    ) || numbered("COM")
+        || numbered("LPT")
 }
 
 /// A session's way to hand the owner a file.

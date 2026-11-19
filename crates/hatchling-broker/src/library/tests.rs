@@ -1493,6 +1493,9 @@ fn a_folders_paths_are_held_to_the_brokers_rules() {
         (vec!["CON .txt"], "device"),
         (vec!["x/nul.txt"], "device"),
         (vec!["com1/a"], "device"),
+        (vec!["CONIN$"], "device"),
+        (vec!["a/conout$.txt"], "device"),
+        (vec!["deep/er/Clock$/x"], "device"),
         (vec!["x/Desktop.ini"], "acts on"),
         (vec!["a/b.LNK"], "acts on"),
         (vec!["a.url"], "acts on"),
@@ -2285,4 +2288,87 @@ fn a_new_conversation_is_begun_off_and_finished_on() {
     library.finish_new_conversation(begun).unwrap();
     assert_eq!(library.standing().unwrap(), (0, false));
     assert_eq!(library.read_so_far(), Ok(0));
+}
+
+/// A secret found turns handing over off even when that can't be written
+/// (#505): the conversation is off at once, and the off is written before
+/// anything else the Library does, as soon as it can be.
+#[test]
+fn off_that_cant_be_written_is_owed_and_written_first() {
+    let (config, _scratch, key) = kept("off-owed");
+    let library = Library::of(&config, &key).unwrap();
+    let conversation = library.conversation().unwrap();
+    assert_eq!(library.standing().unwrap(), (0, false));
+    fail_nth(Step::TempWrite, 0);
+    assert!(library.turn_off_in(conversation).is_err());
+    // Not written, and off all the same: a file is refused before it is read.
+    assert!(!Library::state(&library.vault().unwrap()).unwrap().off);
+    assert!(library.off_owed());
+    // The next look writes it, and it stays written: nothing is owed after,
+    // so no later look writes it again.
+    assert_eq!(library.refuses(&Claim::file(1)), Ok(Some(Refused::Off)));
+    assert!(Library::state(&library.vault().unwrap()).unwrap().off);
+    assert!(!library.off_owed());
+    assert_eq!(library.standing().unwrap(), (0, true));
+    assert_eq!(
+        library.spend(&Claim::folder(1, 1), conversation),
+        Ok(Err(Refused::Off))
+    );
+}
+
+/// An off that still can't be written is off all the same, each time.
+#[test]
+fn off_that_still_cant_be_written_stays_off() {
+    let (config, _scratch, key) = kept("off-owed-still");
+    let library = Library::of(&config, &key).unwrap();
+    let conversation = library.conversation().unwrap();
+    fail_nth(Step::TempWrite, 0);
+    assert!(library.turn_off_in(conversation).is_err());
+    for _ in 0..3 {
+        fail_nth(Step::TempWrite, 0);
+        assert_eq!(library.refuses(&Claim::file(1)), Ok(Some(Refused::Off)));
+        assert!(!Library::state(&library.vault().unwrap()).unwrap().off);
+    }
+    fail_nth(Step::Rename, 0);
+    assert_eq!(
+        library.spend(&Claim::file(1), conversation),
+        Ok(Err(Refused::Off))
+    );
+    // Written at last, by the next look.
+    assert_eq!(library.refuses(&Claim::file(1)), Ok(Some(Refused::Off)));
+    assert!(Library::state(&library.vault().unwrap()).unwrap().off);
+}
+
+/// A new conversation lets an owed off go, as it lets a written one go;
+/// and an off owed in one Library is no other's.
+#[test]
+fn a_new_conversation_lets_an_owed_off_go() {
+    let (config, _scratch, key) = kept("off-owed-new");
+    let library = Library::of(&config, &key).unwrap();
+    let (other_config, _other_scratch, other_key) = kept("off-owed-other");
+    let other = Library::of(&other_config, &other_key).unwrap();
+    let conversation = library.conversation().unwrap();
+    fail_nth(Step::TempWrite, 0);
+    assert!(library.turn_off_in(conversation).is_err());
+    assert_eq!(other.refuses(&Claim::file(1)), Ok(None));
+    library.new_conversation().unwrap();
+    assert_eq!(library.refuses(&Claim::file(1)), Ok(None));
+    assert_eq!(library.standing().unwrap(), (0, false));
+    // Owed to a conversation the owner has since left, as when the Library
+    // couldn't even be opened when the secret was found: the conversation
+    // open now isn't turned off for it, and the debt goes.
+    library.pretend_off_owed(conversation);
+    assert_eq!(library.refuses(&Claim::file(1)), Ok(None));
+    assert!(!library.off_owed(), "owed to a conversation over: let go");
+    assert!(!Library::state(&library.vault().unwrap()).unwrap().off);
+    assert_eq!(library.refuses(&Claim::file(1)), Ok(None));
+    // Still unwritten when the owner starts a new one: the new conversation
+    // isn't held off by what the last one owed.
+    let conversation = library.conversation().unwrap();
+    fail_nth(Step::TempWrite, 0);
+    assert!(library.turn_off_in(conversation).is_err());
+    fail_nth(Step::TempWrite, 0);
+    library.new_conversation().unwrap();
+    assert_eq!(library.refuses(&Claim::file(1)), Ok(None));
+    assert_eq!(library.standing().unwrap(), (0, false));
 }
