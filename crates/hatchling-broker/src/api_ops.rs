@@ -389,7 +389,12 @@ impl<'a> Ops<'a> {
         }
         let result = match what {
             Owned::Sites(op) => UiActionResult::Sites {
-                outcome: crate::site_grants::handle_site_op(self.config, self.key, op),
+                outcome: crate::site_grants::handle_site_op(
+                    self.config,
+                    self.key,
+                    op,
+                    Timestamp::now().as_second(),
+                ),
             },
             Owned::Profiles(op) => UiActionResult::Profiles {
                 outcome: crate::browser_profiles::handle_profile_op(self.config, self.key, op),
@@ -708,8 +713,9 @@ impl<'a> Ops<'a> {
         digest: &str,
         decision: Decision,
     ) -> (UiActionResult, ApiOutcome) {
-        let board = crate::approval_board::board(self.config);
-        match board.decide(
+        match crate::approval_board::decide_as_owner(
+            self.config,
+            self.key,
             confirmation_id,
             revision,
             digest,

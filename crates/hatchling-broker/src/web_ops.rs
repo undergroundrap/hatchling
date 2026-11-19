@@ -451,7 +451,7 @@ pub(crate) fn allow(
     let site = origin.to_string();
     let grants = crate::site_grants::SiteGrants::of(config, keys);
     if let Some(grants) = &grants {
-        match grants.holds(&site) {
+        match grants.holds(&site, Timestamp::now().as_second()) {
             Ok(true) => return Ok(()),
             Ok(false) => {}
             Err(error) => {
@@ -484,15 +484,10 @@ pub(crate) fn allow(
         Some(Decision::ApproveSession) => {
             web.sites.insert(origin.clone());
         }
-        Some(Decision::ApproveAlways) => {
-            web.sites.insert(origin.clone());
-            if let Some(grants) = &grants {
-                if let Err(error) = grants.allow(&site, Timestamp::now().as_second()) {
-                    tracing::error!(%error, %site, "an always-allowed site wasn't kept: this session holds it");
-                }
-            }
-        }
-        Some(Decision::Approve | Decision::Deny) | None => {}
+        // An always was kept as a grant when the owner chose it (#542): it,
+        // not this session, covers the site's other pages, so a revoke
+        // reaches this task too. The page the owner was shown is read now.
+        Some(Decision::Approve | Decision::ApproveAlways | Decision::Deny) | None => {}
     }
     Ok(())
 }
@@ -742,6 +737,11 @@ pub(crate) mod tests {
 
     /// The owner's `decision` on the request `task` has waiting for `site`.
     pub(crate) fn owner_decides(config: &Config, task: &str, site: &str, decision: Decision) {
+        assert_ne!(
+            decision,
+            Decision::ApproveAlways,
+            "an always is kept with the store's keys: owner_decides_keyed"
+        );
         let board = board(config);
         let id = board
             .approvals()
@@ -751,6 +751,33 @@ pub(crate) mod tests {
         board
             .decide(&id, 1, &digest, decision, Timestamp::now().as_second())
             .unwrap();
+    }
+
+    /// The owner's `decision` on `task`'s request to read `site`, made as
+    /// the owner makes it: kept with `keys`.
+    pub(crate) fn owner_decides_keyed(
+        config: &Config,
+        keys: &dyn OpensStores,
+        task: &str,
+        site: &str,
+        decision: Decision,
+    ) {
+        let board = board(config);
+        let id = board
+            .approvals()
+            .find_run(task, State::Pending, |run| matches!(run, crate::approval_board::Approved::Site(visit) if visit.site == site))
+            .expect("no request waits for the site");
+        let digest = board.approvals().get(&id).unwrap().digest;
+        crate::approval_board::decide_as_owner(
+            config,
+            keys,
+            &id,
+            1,
+            &digest,
+            decision,
+            Timestamp::now().as_second(),
+        )
+        .unwrap();
     }
 
     fn unattended(task: &str, fetcher: &Fetcher) -> WebSession {
@@ -1625,8 +1652,9 @@ pub(crate) mod tests {
         assert!(bounded_search(&slow, "q", Duration::from_millis(50)).is_err());
     }
 
-    /// Always: the owner's yes is kept, every session reads the site without
-    /// asking, and once the owner revokes it the next session asks again.
+    /// Always: the owner's yes is kept when they choose it (#542), every
+    /// session reads the site without asking, and once the owner revokes it
+    /// every session asks again, the one that asked included.
     /// Offered only where the broker keeps sites.
     #[test]
     fn always_is_kept_for_every_session_until_revoked() {
@@ -1645,10 +1673,19 @@ pub(crate) mod tests {
             matches!(event.body, hatchling_core::ui::UiEventBody::Confirmation(ref request) if request.always)
         });
         assert!(offered, "always offered where sites are kept");
-        owner_decides(&config, "t", "https://a.example", Decision::ApproveAlways);
+        owner_decides_keyed(
+            &config,
+            &master,
+            "t",
+            "https://a.example",
+            Decision::ApproveAlways,
+        );
         let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/one"));
         assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
-        assert!(web.holds(&origin("https://a.example/")));
+        assert!(
+            !web.holds(&origin("https://a.example/")),
+            "the session holds what the grant covers"
+        );
         let mut other = unattended("t2", &fetcher);
         let answer = handle_web_op(
             &config,
@@ -1665,7 +1702,12 @@ pub(crate) mod tests {
             site: String::from("https://a.example"),
         };
         assert_eq!(
-            crate::site_grants::handle_site_op(&config, &master, &revoke),
+            crate::site_grants::handle_site_op(
+                &config,
+                &master,
+                &revoke,
+                Timestamp::now().as_second()
+            ),
             hatchling_core::ui::SiteResult::Revoked
         );
         let mut third = unattended("t3", &fetcher);
@@ -1676,10 +1718,20 @@ pub(crate) mod tests {
             &fetch("https://a.example/two"),
         );
         assert!(waiting(&answer, "https://a.example"), "revoked: {answer:?}");
-        // The session that chose always holds it until it ends; one that
-        // read it through the kept grant asks again.
+        // The session that chose always read through the grant too. The page
+        // the owner was shown it may still read, once, by the approval it
+        // never used; nothing else of the site: it asks again, as does one
+        // that only ever read through the grant.
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/one"));
+        assert!(
+            matches!(answer, WebResult::Page { .. }),
+            "the page shown: {answer:?}"
+        );
         let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/two"));
-        assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        assert!(
+            waiting(&answer, "https://a.example"),
+            "the chooser kept it: {answer:?}"
+        );
         let answer = handle_web_op(
             &config,
             &master,
@@ -1687,6 +1739,57 @@ pub(crate) mod tests {
             &fetch("https://a.example/two"),
         );
         assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+    }
+
+    /// The owner's always is kept when they choose it (#542), not when the
+    /// session that asked comes back for the site: one that never does
+    /// still leaves it allowed for every other.
+    #[test]
+    fn an_always_is_kept_when_the_owner_chooses_it() {
+        let (mut config, scratch, master) = search_config("always-decided", None);
+        config.web.grants = scratch.0.join("sites");
+        let (fetcher, _) = scripted(vec![page("https://a.example/two", "2")]);
+        let mut web = unattended("t", &fetcher);
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/one"));
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+        owner_decides_keyed(
+            &config,
+            &master,
+            "t",
+            "https://a.example",
+            Decision::ApproveAlways,
+        );
+        let grants = crate::site_grants::SiteGrants::of(&config, &master).unwrap();
+        assert!(
+            grants
+                .holds("https://a.example", Timestamp::now().as_second())
+                .unwrap(),
+            "kept only when the session came back"
+        );
+        let mut other = unattended("t2", &fetcher);
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut other,
+            &fetch("https://a.example/two"),
+        );
+        assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        // Allowed for less than always, nothing is kept.
+        let mut once = unattended("t3", &fetcher);
+        let answer = handle_web_op(&config, &master, &mut once, &fetch("https://b.example/"));
+        assert!(waiting(&answer, "https://b.example"), "{answer:?}");
+        owner_decides_keyed(
+            &config,
+            &master,
+            "t3",
+            "https://b.example",
+            Decision::ApproveSession,
+        );
+        assert!(
+            !grants
+                .holds("https://b.example", Timestamp::now().as_second())
+                .unwrap()
+        );
     }
 
     /// Without a store for sites, always isn't offered, and the owner can't
@@ -1731,7 +1834,7 @@ pub(crate) mod tests {
         unreadable.web.grants = scratch.0.join("sites");
         crate::site_grants::SiteGrants::of(&unreadable, &master)
             .unwrap()
-            .allow("https://a.example", 1)
+            .allow("https://a.example", Timestamp::now().as_second())
             .unwrap();
         let stranger = MasterKey::generate().unwrap();
         let mut web = unattended("t", &fetcher);
