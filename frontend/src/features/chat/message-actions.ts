@@ -4,12 +4,15 @@ import { h } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button, iconButton, menu } from '../../components/ui.js';
 import { setFloatingMenuOpen } from '../../components/floating.js';
+/** The type badge a file's name gives it: its extension, upper case; none for a name without one. */
+export function extensionLabel(name: string): string | undefined {
+    return name.match(/\.([a-z0-9]{1,8})$/i)?.[1]?.toUpperCase();
+}
 export function attachmentLabel(artifact: DeepReadonly<Artifact>): string {
     if (artifact.format === 'archive')
         return 'GZ';
-    const suffix = artifact.title.match(/\.([a-z0-9]{1,8})$/i)?.[1];
     const labels: Partial<Record<ArtifactFormat, string>> = { markdown: 'MD', code: 'CODE', text: 'TXT', word: 'DOCX', spreadsheet: 'XLSX', slides: 'SLIDES' };
-    return suffix?.toUpperCase() ?? labels[artifact.format] ?? artifact.format.toUpperCase();
+    return extensionLabel(artifact.title) ?? labels[artifact.format] ?? artifact.format.toUpperCase();
 }
 export function nativeAttachment(ctx: AppContext, artifact: DeepReadonly<Artifact>): HTMLElement {
     const open = h('button', { class: 'native-file-open', type: 'button', 'aria-label': `Open ${artifact.title}` }, h('span', { class: 'native-file-glyph' }, icon('file', 32), h('small', {}, artifact.format === 'archive' ? '?' : '')), h('span', { class: 'row-copy' }, h('strong', {}, artifact.title), h('span', { class: 'native-file-type' }, attachmentLabel(artifact))));

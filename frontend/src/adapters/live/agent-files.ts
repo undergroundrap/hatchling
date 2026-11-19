@@ -354,6 +354,10 @@ export class LiveAgentFiles implements AgentFilesPort {
         const listed = new Set(this.#items().map(itemId));
         return new Set([...this.#chosen].filter(id => listed.has(id)));
     }
+    clearChosen(): void {
+        this.#chosen.clear();
+        this.#changed();
+    }
     choose(id: string, on: boolean): void {
         if (on)
             this.#chosen.add(id);
@@ -473,9 +477,10 @@ export class LiveAgentFiles implements AgentFilesPort {
     async #archive(items: readonly LibraryItem[], name: string, marker: string, digest: Digest): Promise<CommandResult> {
         const total = items.reduce((all, item) => all + (item.kind === 'file' ? 1 : item.folder.files), 0);
         let done = 0;
+        // Counted without a publish: a redraw a file would take presses
+        // away; the page reads the count where it shows it.
         const tick = (): void => {
             this.#progress = { done: ++done, total };
-            this.#changed();
         };
         this.#downloading.add(marker);
         this.#progress = { done, total };

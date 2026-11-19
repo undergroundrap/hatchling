@@ -128,6 +128,15 @@
 }
 body.has-browser-session .chat-notices { margin-top: 75px; }
 body.has-browser-session .has-chat-notice .chat-scroll { padding-top: 20px; }
-.given-files-group { margin: 14px 0 2px; font-size: calc(14px * var(--ui-scale, 1)); font-weight: 600; }
 .given-files-reply { margin: 8px 0 0; }
-.given-file-choose { flex: 0 0 auto; }
+/* The agent's files on the Library page, in the demo's cards (#523): a name
+   is shown whole, its extension too, and a can-run word stays on the card. */
+.artifact-card.given .artifact-meta strong { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+.artifact-card.given .artifact-meta .row-copy { display: grid; gap: 3px; }
+.given-thumb { gap: 6px; align-content: center; color: var(--muted); }
+.given-thumb > span { font-size: calc(11px * var(--ui-scale, 1)); font-weight: 600; letter-spacing: 0.04em; }
+.given-runs { display: inline-flex; align-items: center; gap: 4px; color: var(--danger); }
+.given-standing { margin: 4px 0 0; }
+.given-progress-count { font-variant-numeric: tabular-nums; }
+.given-selection-bar { flex-wrap: wrap; margin-top: 14px; }
+.given-details > .dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; }

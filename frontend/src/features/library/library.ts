@@ -7,7 +7,9 @@ import { canPublish } from '../../presentation/format.js';
 import { isFormat } from '../../presentation/format.js';
 import { h, valueOf } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
-import { button, emptyState, field, iconButton, markdown, menu, pill, selectField } from '../../components/ui.js';
+import { button, emptyState, field, iconButton, markdown, pill, selectField } from '../../components/ui.js';
+import { libraryCard, type CardParts } from './library-card.js';
+import { endChoosing, liveLibrary, liveLibraryActions } from './live-library.js';
 export const libraryNames: Record<LibraryFilter, string> = { all: 'All artifacts', documents: 'Documents', web: 'Web artifacts', images: 'Images', videos: 'Videos', audio: 'Podcasts & audio', system: 'System files', trash: 'Trash' };
 export function artifactIcon(format: ArtifactFormat): IconName { return format === 'image' ? 'image' : format === 'video' ? 'video' : format === 'audio' ? 'audio' : format === 'html' ? 'globe' : format === 'app' ? 'library' : 'file'; }
 function matches(item: DeepReadonly<Artifact>, filter: LibraryFilter): boolean {
@@ -56,10 +58,24 @@ export function renderLibrary(ctx: AppContext): HTMLElement {
         }
     });
     sort.append(sortSummary, sortPopover);
-    const page = h('div', { class: 'page wide-page library-page' }, h('header', { class: 'page-header' }, h('h1', {}, libraryNames[filter]), h('div', { class: 'page-actions' }, sort, ctx.state.mode === 'live' ? null : button(ctx.ui.selectionMode ? 'Done' : 'Select', () => { ctx.ui.selectionMode = !ctx.ui.selectionMode; ctx.ui.selectedArtifacts.clear(); ctx.render(); }), iconButton(ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid', ctx.ui.libraryLayout === 'grid' ? 'Switch to list view' : 'Switch to grid view', () => { ctx.ui.libraryLayout = ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid'; ctx.render(); }), ctx.state.mode === 'live' ? null : button('Create an artifact', () => ctx.createArtifact(), { icon: 'plus', variant: 'primary' }))));
+    // On a live install the page's "All" is first the files and folders the
+    // agent gave, and the header's Select chooses those.
+    const port = ctx.state.mode === 'live' && filter === 'all' ? ctx.agentFiles : undefined;
+    // Choosing the agent's files ends where they aren't shown.
+    if (ctx.state.mode === 'live' && port === undefined && ctx.agentFiles !== undefined)
+        endChoosing(ctx, ctx.agentFiles);
+    const given = port === undefined ? [] : liveLibraryActions(ctx, port);
+    const title = port === undefined ? libraryNames[filter] : 'Library';
+    const page = h('div', { class: 'page wide-page library-page' }, h('header', { class: 'page-header' }, h('h1', {}, title), h('div', { class: 'page-actions' }, sort, ...given, ctx.state.mode === 'live' ? null : button(ctx.ui.selectionMode ? 'Done' : 'Select', () => { ctx.ui.selectionMode = !ctx.ui.selectionMode; ctx.ui.selectedArtifacts.clear(); ctx.render(); }), iconButton(ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid', ctx.ui.libraryLayout === 'grid' ? 'Switch to list view' : 'Switch to grid view', () => { ctx.ui.libraryLayout = ctx.ui.libraryLayout === 'grid' ? 'list' : 'grid'; ctx.render(); }), ctx.state.mode === 'live' ? null : button('Create an artifact', () => ctx.createArtifact(), { icon: 'plus', variant: 'primary' }))));
     if (appendContentState(ctx, page, 'library'))
         return page;
-    if (ctx.ui.selectionMode)
+    if (port !== undefined) {
+        page.append(h('section', { class: 'given-library', 'aria-label': 'Files and folders the agent gave you' }, ...liveLibrary(ctx, port)));
+        // What the build store keeps follows, only when it keeps something.
+        if (items.length === 0)
+            return page;
+    }
+    if (ctx.ui.selectionMode && ctx.state.mode !== 'live')
         page.append(h('div', { class: 'selection-bar' }, `${ctx.ui.selectedArtifacts.size} selected`, button(filter === 'trash' ? 'Restore selected' : 'Move selected to Trash', () => {
             const ids = [...ctx.ui.selectedArtifacts];
             ctx.dialogs.confirm(filter === 'trash' ? 'Restore selected artifacts?' : 'Move selected artifacts to Trash?', filter === 'trash' ? 'The selected files will return to your library.' : 'These files can be restored for 30 days. Published snapshots are not changed.', () => {
@@ -73,14 +89,16 @@ export function renderLibrary(ctx: AppContext): HTMLElement {
         }, { variant: filter === 'trash' ? 'primary' : 'danger', disabled: ctx.ui.selectedArtifacts.size === 0 })));
     page.append(h('div', { class: 'section-heading library-section-label' }, h('h2', {}, filter === 'trash' ? 'Recoverable for 30 days' : libraryNames[filter]), h('span', { class: 'muted tiny' }, `${items.length} ${items.length === 1 ? 'item' : 'items'}${ctx.state.mode === 'live' ? '' : ' · sample workspace'}`)));
     if (!items.length)
-        page.append(emptyState(filter === 'trash' ? 'trash' : 'library', 'Nothing here yet.', ctx.state.mode === 'live' ? 'Hatchling can’t make files you can download yet. They’ll appear here when it can.' : 'Create an artifact using the button above.'));
+        page.append(emptyState(filter === 'trash' ? 'trash' : 'library', 'Nothing here yet.', ctx.state.mode === 'live' ? 'What Hatchling builds for you, when you approve a build, shows here.' : 'Create an artifact using the button above.'));
     else
         page.append(h('div', { class: ctx.ui.libraryLayout === 'grid' ? 'artifact-grid' : 'artifact-list' }, ...items.map((item) => artifactCard(ctx, item))));
     return page;
 }
 function artifactCard(ctx: AppContext, item: DeepReadonly<Artifact>): HTMLElement {
+    // On a live install Select chooses the agent's files, never these.
+    const selecting = ctx.ui.selectionMode && ctx.state.mode !== 'live';
     const open = (): void => {
-        if (ctx.ui.selectionMode) {
+        if (selecting) {
             if (ctx.ui.selectedArtifacts.has(item.id))
                 ctx.ui.selectedArtifacts.delete(item.id);
             else
@@ -90,24 +108,21 @@ function artifactCard(ctx: AppContext, item: DeepReadonly<Artifact>): HTMLElemen
         else
             ctx.openArtifact(item.id);
     };
-    const card = h('article', { class: `artifact-card ${ctx.ui.selectedArtifacts.has(item.id) ? 'selected' : ''}`, 'data-artifact': item.id });
-    const preview = h('button', { type: 'button', class: `artifact-preview preview-${item.format}`, 'aria-label': `Open ${item.title}` });
-    preview.addEventListener('click', open);
+    const preview: HTMLElement[] = [];
     if (item.format === 'image' && item.asset)
-        preview.append(loadingImage({ src: item.asset, alt: item.title, lazy: true, fit: 'contain', className: 'thumbnail-loading-image' }));
+        preview.push(loadingImage({ src: item.asset, alt: item.title, lazy: true, fit: 'contain', className: 'thumbnail-loading-image' }));
     else if (item.format === 'slides')
-        preview.append(h('div', { class: 'slide-thumbnail' }, h('span', {}, 'A WEEKEND, WELL SPENT'), h('strong', {}, item.slides[0]?.[0]?.text ?? item.title), h('small', {}, `${item.slides.length} editable slides`)));
+        preview.push(h('div', { class: 'slide-thumbnail' }, h('span', {}, 'A WEEKEND, WELL SPENT'), h('strong', {}, item.slides[0]?.[0]?.text ?? item.title), h('small', {}, `${item.slides.length} editable slides`)));
     else if (item.format === 'video')
-        preview.append(h('div', { class: 'video-thumb' }, loadingImage({ src: item.id === 'video' ? './media/video-poster.png' : './media/hatchling-avatar.png', alt: '', lazy: true, className: 'thumbnail-loading-image' }), icon('play', 32)));
+        preview.push(h('div', { class: 'video-thumb' }, loadingImage({ src: item.id === 'video' ? './media/video-poster.png' : './media/hatchling-avatar.png', alt: '', lazy: true, className: 'thumbnail-loading-image' }), icon('play', 32)));
     else if (item.format === 'audio')
-        preview.append(h('div', { class: 'audio-thumb' }, icon('audio', 48), h('span', {}, 'A small pause')));
+        preview.push(h('div', { class: 'audio-thumb' }, icon('audio', 48), h('span', {}, 'A small pause')));
     else if (item.format === 'app')
-        preview.append(h('div', { class: 'app-thumbnail' }, h('span', { class: 'eyebrow' }, 'A LITTLE LESS TO CARRY'), h('strong', {}, 'The packing list'), ...item.content.split('\n').slice(0, 3).map((line) => h('span', {}, icon('goal', 13), line))));
+        preview.push(h('div', { class: 'app-thumbnail' }, h('span', { class: 'eyebrow' }, 'A LITTLE LESS TO CARRY'), h('strong', {}, 'The packing list'), ...item.content.split('\n').slice(0, 3).map((line) => h('span', {}, icon('goal', 13), line))));
     else
-        preview.append(h('div', { class: 'document-thumbnail' }, markdown(item.content)));
-    const meta = h('button', { class: 'artifact-meta', type: 'button' }, h('span', { class: `artifact-type-icon ${item.format}` }, icon(artifactIcon(item.format), 23)), h('span', { class: 'row-copy' }, h('strong', {}, item.title), h('span', { class: 'muted text-small' }, `${item.format === 'markdown' ? 'Text' : item.kind === 'document' ? 'Document' : item.kind === 'page' ? 'Live page' : item.kind === 'app' ? 'Interactive app' : item.format} · ${item.pinned ? 'Pinned' : 'No recent activity'}`)));
-    meta.addEventListener('click', open);
-    card.append(preview, meta, menu(`Actions for ${item.title}`, item.trashUntil ? [
+        preview.push(h('div', { class: 'document-thumbnail' }, markdown(item.content)));
+    const sub = `${item.format === 'markdown' ? 'Text' : item.kind === 'document' ? 'Document' : item.kind === 'page' ? 'Live page' : item.kind === 'app' ? 'Interactive app' : item.format} · ${item.pinned ? 'Pinned' : 'No recent activity'}`;
+    const actions: CardParts['actions'] = item.trashUntil ? [
         { label: 'Restore', icon: 'refresh', action: () => { void ctx.run({ type: 'artifact.restore', id: item.id }); } },
     ] : [
         ...(ctx.state.mode === 'live' ? [] : [{ label: item.pinned ? 'Unpin' : 'Pin', icon: 'pin' as const, action: () => { void ctx.run({ type: 'artifact.pin', id: item.id }); } }]),
@@ -119,10 +134,8 @@ function artifactCard(ctx: AppContext, item: DeepReadonly<Artifact>): HTMLElemen
                     void ctx.run({ type: 'artifact.download', id: item.id });
             } },
         ...(ctx.state.mode === 'live' ? [] : [{ label: 'Move to Trash', icon: 'trash' as const, danger: true, action: () => ctx.dialogs.confirm('Move to Trash?', 'You can restore this artifact for 30 days. Published snapshots stay unchanged.', () => { void ctx.run({ type: 'artifact.trash', id: item.id }); }, { label: 'Move to Trash', danger: true }) }]),
-    ]));
-    if (ctx.ui.selectionMode)
-        card.append(h('span', { class: 'selection-mark', 'aria-label': ctx.ui.selectedArtifacts.has(item.id) ? 'Selected' : 'Not selected' }, ctx.ui.selectedArtifacts.has(item.id) ? icon('check', 14) : null));
-    return card;
+    ];
+    return libraryCard({ title: item.title, sub, preview, previewClass: `preview-${item.format}`, typeIcon: artifactIcon(item.format), typeClass: item.format, openLabel: `Open ${item.title}`, menuLabel: `Actions for ${item.title}`, actions, selecting, selected: selecting && ctx.ui.selectedArtifacts.has(item.id), onOpen: open, attributes: { 'data-artifact': item.id } });
 }
 export function openShare(ctx: AppContext, id: string): void {
     const item = ctx.state.artifacts.find((entry) => entry.id === id);

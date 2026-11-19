@@ -69,6 +69,7 @@ Each slice's record, as it lands.
 - Slice 5, the chat's cards across a restart: [chat-cards.md](../evidence/chat-cards.md).
 - Slice 6, groups and choosing in the app, as one `.zip` (`.tar` and `.tar.gz` split to [#515](https://github.com/undergroundrap/hatchling/issues/515)): [library-choosing.md](../evidence/library-choosing.md).
 - Found in the acceptance, a refusal said a limit was reached when an item would only pass it ([#522](https://github.com/undergroundrap/hatchling/issues/522)): [refusal-words.md](../evidence/refusal-words.md).
+- Found in the acceptance, the agent's files lived only in a Settings list that didn't update; now on the Library page ([#523](https://github.com/undergroundrap/hatchling/issues/523)): [library-page.md](../evidence/library-page.md).
 
 ## Notes
 
