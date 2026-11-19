@@ -152,6 +152,8 @@ export interface AgentFilesPort {
     chosen(): ReadonlySet<string>;
     /** Chooses the item `id`, or lets it go. */
     choose(id: string, on: boolean): void;
+    /** Lets every chosen item go, at once. */
+    clearChosen(): void;
     /** Removes the item `id`, a file or a folder, from the Library. */
     remove(id: string): Promise<CommandResult>;
 }

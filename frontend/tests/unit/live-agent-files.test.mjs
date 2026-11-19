@@ -462,7 +462,7 @@ test('every file downloads as one .zip, each checked as a download is, and saved
     await settle();
     assert.match((await plain.files.downloadAll()).message, /The agent made them: open them only if you trust them\.$/u);
 });
-test('every file\'s download counts each file done, so the owner sees it go', async () => {
+test('every file\'s download counts each file done in place, published only as it starts and ends', async () => {
     const a = bytesOf(3);
     const counts = [];
     const transport = new FakeTransport();
@@ -470,16 +470,21 @@ test('every file\'s download counts each file done, so the owner sees it go', as
     const client = new LiveClient(transport, 'test-ui', () => undefined);
     let files;
     let serial = 0;
-    files = new LiveAgentFiles(client, () => counts.push(files?.downloadProgress() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => sha(bytes), wait: 1000 });
+    const read = [];
+    files = new LiveAgentFiles(client, () => counts.push(files?.downloadProgress() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => { read.push(files?.downloadProgress() ?? null); return sha(bytes); }, wait: 1000 });
     client.connect();
     transport.open();
     transport.deliver(SAMPLE_WELCOME);
     await settle();
     counts.length = 0;
+    read.length = 0;
     await files.downloadAll();
-    const seen = counts.filter(count => count !== null).map(count => `${count.done}/${count.total}`);
-    assert.deepEqual([...new Set(seen)], ['0/2', '1/2', '2/2']);
-    assert.equal(counts.at(-1), null);
+    // A publish draws the page again: one as it starts, one as it ends,
+    // never one a file, so a redraw never takes a press away.
+    assert.deepEqual(counts.map(count => count === null ? null : `${count.done}/${count.total}`), ['0/2', null]);
+    // Between them the count goes on, for the page to read where it shows it.
+    const seen = read.filter(count => count !== null).map(count => `${count.done}/${count.total}`);
+    assert.ok(seen.includes('1/2'), `counted in place: ${seen}`);
 });
 test('a download that throws saves nothing and says so', async () => {
     const a = bytesOf(3);
@@ -832,7 +837,7 @@ test('items chosen download as one .zip, in the order asked: files by name, fold
 });
 test('the items chosen are those the Library was last listed with; removing one lets it go', async () => {
     const a = bytesOf(3);
-    const { files } = library(keeping([{ file: wire(a), bytes: a }, { file: wire(a, { id: 'f2', name: 'b.txt' }), bytes: a }]));
+    const { files, drawn } = library(keeping([{ file: wire(a), bytes: a }, { file: wire(a, { id: 'f2', name: 'b.txt' }), bytes: a }]));
     assert.deepEqual([...files.chosen()], []);
     await settle();
     files.choose('f2', true);
@@ -841,6 +846,13 @@ test('the items chosen are those the Library was last listed with; removing one 
     assert.deepEqual([...files.chosen()], ['f2', 'f1']);
     files.choose('f2', false);
     assert.deepEqual([...files.chosen()], ['f1']);
+    // Letting every one go is one change, not one a choice.
+    files.choose('f2', true);
+    const drawnBefore = drawn();
+    files.clearChosen();
+    assert.deepEqual([...files.chosen()], []);
+    assert.equal(drawn(), drawnBefore + 1);
+    files.choose('f1', true);
     assert.equal((await files.remove('f1')).ok, true);
     assert.deepEqual([...files.chosen()], []);
     files.choose('f1', true);
@@ -898,7 +910,7 @@ test('the Library is grouped by conversation, the open one first, then newest; b
     ]);
     assert.deepEqual(libraryGroups([], [], 1), []);
 });
-test('a folder\'s download counts each of its files done, so the owner sees it go', async () => {
+test('a folder\'s download counts each of its files done in place, published only as it starts and ends', async () => {
     const entries = [{ path: 'a.txt', bytes: bytesOf(1) }, { path: 'b/c.txt', bytes: bytesOf(2) }, { path: 'd.txt', bytes: bytesOf(3) }];
     const folder = folderWire(entries);
     const transport = new FakeTransport();
@@ -907,16 +919,18 @@ test('a folder\'s download counts each of its files done, so the owner sees it g
     const counts = [];
     let files;
     let serial = 0;
-    files = new LiveAgentFiles(client, () => counts.push(files?.downloadProgress() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => sha(bytes), wait: 1000 });
+    const read = [];
+    files = new LiveAgentFiles(client, () => counts.push(files?.downloadProgress() ?? null), () => `request-${++serial}`, { save: () => undefined, digest: async (bytes) => { read.push(files?.downloadProgress() ?? null); return sha(bytes); }, wait: 1000 });
     client.connect();
     transport.open();
     transport.deliver(SAMPLE_WELCOME);
     await settle();
     counts.length = 0;
+    read.length = 0;
     assert.equal((await files.download(folder.id)).ok, true);
-    const seen = counts.filter(count => count !== null).map(count => `${count.done}/${count.total}`);
-    assert.deepEqual([...new Set(seen)], ['0/3', '1/3', '2/3', '3/3']);
-    assert.equal(counts.at(-1), null);
+    assert.deepEqual(counts.map(count => count === null ? null : `${count.done}/${count.total}`), ['0/3', null]);
+    const seen = read.filter(count => count !== null).map(count => `${count.done}/${count.total}`);
+    assert.ok(seen.includes('2/3'), `counted in place: ${seen}`);
 });
 test('a git repository is seen in a .git, whatever its case, or bare, by its HEAD, objects and refs', () => {
     assert.equal(holdsGit(['site/.git/config']), true);
