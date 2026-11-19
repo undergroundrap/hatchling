@@ -97,6 +97,9 @@ struct HubState {
     /// The broker's own notes for the next run that answers the owner,
     /// each by a key it can be forgotten by, the oldest first.
     notes: VecDeque<(String, String)>,
+    /// The keys of the notes last taken, while they may be given back:
+    /// one forgotten meanwhile is gone from here too, and isn't.
+    taken: Vec<String>,
     sink: Option<(SinkId, Sink)>,
     /// Where a reply goes while no client is attached: the broker's own
     /// record of the chat, which a client reads when it connects.
@@ -225,23 +228,34 @@ impl LocalHub {
         state.notes.push_back((key, line));
     }
 
-    /// Forgets the note kept by `key`, if one is.
+    /// Forgets the note kept by `key`, if one is, and one taken by that
+    /// key, which then isn't given back.
     pub fn forget_note(&self, key: &str) {
-        self.state().notes.retain(|(held, _)| held != key);
+        let mut state = self.state();
+        state.notes.retain(|(held, _)| held != key);
+        state.taken.retain(|held| held != key);
     }
 
     /// Takes every note kept, the oldest first, by key.
     #[must_use]
     pub fn take_notes(&self) -> Vec<(String, String)> {
-        self.state().notes.drain(..).collect()
+        let mut state = self.state();
+        let taken: Vec<(String, String)> = state.notes.drain(..).collect();
+        state.taken = taken.iter().map(|(key, _)| key.clone()).collect();
+        taken
     }
 
-    /// Gives back `notes` taken for a run that didn't start, ahead of any
-    /// kept since, as [`note`](Self::note) would keep them.
+    /// Gives back `notes` taken for a run that didn't start, or that
+    /// ended without an answer (#498), ahead of any kept since, as
+    /// [`note`](Self::note) would keep them. Only those last taken come
+    /// back, and of them none forgotten since: the model isn't told of a
+    /// file no longer there.
     pub fn give_back_notes(&self, notes: Vec<(String, String)>) {
         let mut state = self.state();
+        let taken = std::mem::take(&mut state.taken);
+        let notes = notes.into_iter().filter(|(key, _)| taken.contains(key));
         let since: Vec<(String, String)> = state.notes.drain(..).collect();
-        for (key, line) in notes.into_iter().chain(since) {
+        for (key, line) in notes.chain(since) {
             state.notes.retain(|(held, _)| *held != key);
             if state.notes.len() >= MAX_NOTES {
                 state.notes.pop_front();
@@ -439,8 +453,11 @@ mod tests {
         assert_eq!(hub.take_notes(), [pair("b", "second"), pair("a", "again")]);
         assert!(hub.take_notes().is_empty(), "a note was taken twice");
         // Given back ahead of any since, and one forgotten is gone.
+        hub.note(String::from("b"), String::from("second"));
+        hub.note(String::from("c"), String::from("older"));
+        let taken = hub.take_notes();
         hub.note(String::from("c"), String::from("since"));
-        hub.give_back_notes(vec![pair("b", "second"), pair("c", "older")]);
+        hub.give_back_notes(taken);
         hub.forget_note("b");
         assert_eq!(hub.take_notes(), [pair("c", "since")]);
         for number in 0..=MAX_NOTES {
@@ -453,9 +470,10 @@ mod tests {
             Some(&pair("1", "1")),
             "the oldest wasn't the one to go"
         );
-        let full: Vec<_> = (0..MAX_NOTES)
-            .map(|n| pair(&n.to_string(), "old"))
-            .collect();
+        for number in 0..MAX_NOTES {
+            hub.note(number.to_string(), String::from("old"));
+        }
+        let full = hub.take_notes();
         hub.note(String::from("new"), String::from("new"));
         hub.give_back_notes(full);
         let kept = hub.take_notes();
@@ -464,6 +482,25 @@ mod tests {
             kept.last(),
             Some(&pair("new", "new")),
             "a note kept since was lost"
+        );
+    }
+
+    /// Notes taken for a run come back only as they were taken (#498): one
+    /// forgotten meanwhile stays gone, and one never taken never comes.
+    #[test]
+    fn only_notes_taken_and_not_forgotten_are_given_back() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        let pair = |key: &str, line: &str| (key.to_owned(), line.to_owned());
+        hub.note(String::from("a"), String::from("first"));
+        hub.note(String::from("b"), String::from("second"));
+        let taken = hub.take_notes();
+        hub.forget_note("b");
+        hub.give_back_notes(taken);
+        assert_eq!(hub.take_notes(), [pair("a", "first")]);
+        hub.give_back_notes(vec![pair("z", "never taken")]);
+        assert!(
+            hub.take_notes().is_empty(),
+            "a note never taken was given back"
         );
     }
 

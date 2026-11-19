@@ -270,9 +270,10 @@ impl<K: Keeps> Keeps for Option<K> {
 /// The chat's one run in flight, and the conversation so far.
 #[derive(Debug)]
 pub struct Chat<R, K = ()> {
-    /// The run in flight, the message it answers, and the conversation
-    /// that message was sent in.
-    running: Option<(R, String, u64)>,
+    /// The run in flight, the message it answers, the conversation that
+    /// message was sent in, and the broker's notes it was given: given
+    /// back if it ends without an answer (#498).
+    running: Option<(R, String, u64, Noted)>,
     grants: Vec<ScheduleGrant>,
     /// The conversation kept is in.
     conversation: u64,
@@ -500,13 +501,13 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             self.kept = Conversation::default();
             self.told = Told::default();
         }
-        if let Some((run, _, _)) = &mut self.running {
+        if let Some((run, _, _, _)) = &mut self.running {
             let Some(outcome) = run.poll() else {
                 return Step::Running;
             };
             let ending = run.ending();
             let cell = run.cell_id();
-            let Some((_, user, sent_in)) = self.running.take() else {
+            let Some((_, user, sent_in, given)) = self.running.take() else {
                 return Step::Idle;
             };
             // What the run was given of the owner's further messages is
@@ -523,6 +524,10 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 Ok(answer) => answer,
                 Err(reason) => {
                     tracing::warn!(reason = ?reason, "a chat run failed");
+                    // It may have failed before its model saw anything, as
+                    // when the model was still loading: its notes go to the
+                    // next run. One told twice is told of a file still there.
+                    notes.give_back(given);
                     let reached = self.reached(now);
                     let model = crate::model_choice::named(
                         self.choice.as_deref(),
@@ -614,7 +619,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 if let (Some(hub), Some(cell)) = (&self.waiting, run.cell_id()) {
                     crate::follow_ups::began(&cell, hub, sent_in);
                 }
-                self.running = Some((run, message.text, sent_in));
+                self.running = Some((run, message.text, sent_in, given));
                 Step::Started
             }
             Err(reason) => {
@@ -626,13 +631,17 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     }
 }
 
+/// The notes a run was given, each by its key, the oldest first.
+type Noted = Vec<(String, String)>;
+
 /// The broker's own notes for the next run that answers the owner
 /// (WO-041), each by its key: taken as a run starts, and given back when
-/// it doesn't.
+/// it doesn't start, or ends without an answer (#498).
 pub trait Notes {
     /// Takes every note, the oldest first.
     fn take(&self) -> Vec<(String, String)>;
-    /// Gives back `notes`, taken for a run that didn't start.
+    /// Gives back `notes`, taken for a run that didn't start or didn't
+    /// answer.
     fn give_back(&self, notes: Vec<(String, String)>);
 }
 
@@ -950,6 +959,75 @@ mod tests {
         assert_eq!(
             histories(&launches).last(),
             Some(&vec![(String::from("Read them."), String::from("Read."))])
+        );
+    }
+
+    /// A run that starts and then fails, as when the model is still
+    /// loading, gives its notes back (#498): the next run is told of the
+    /// file, once. One the owner removed while the run ran isn't, and a run
+    /// that answered keeps what it was given.
+    #[test]
+    fn a_run_that_fails_gives_its_notes_to_the_next() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        hub.note(String::from("0001-a"), String::from("[note a]"));
+        hub.note(String::from("0002-b"), String::from("[note b]"));
+        let launches = Launches::default();
+        let failing = Scripted {
+            polls: 0,
+            outcome: Err(String::from(
+                "the model endpoint failed its capability handshake",
+            )),
+        };
+        launches.outcomes.borrow_mut().extend([
+            Ok(failing),
+            Ok(answering("Found it.")),
+            Ok(answering("Next.")),
+        ]);
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]);
+        let now = Timestamp::now();
+        let step = |chat: &mut Chat<Scripted>, text: Option<&str>| {
+            chat.step_noted(
+                || text.map(|text| (message(text), 0)),
+                &hub,
+                0,
+                &launches,
+                &answers,
+                now,
+            )
+        };
+        assert_eq!(step(&mut chat, Some("Read my notes.")), Step::Started);
+        // Removed from the inbox while the run ran.
+        hub.forget_note("0002-b");
+        hub.note(String::from("0003-c"), String::from("[note c]"));
+        assert_eq!(
+            step(&mut chat, None),
+            Step::Answered,
+            "the failure wasn't said"
+        );
+        assert_eq!(step(&mut chat, Some("Again?")), Step::Started);
+        assert_eq!(step(&mut chat, None), Step::Answered);
+        assert!(
+            hub.take_notes().is_empty(),
+            "a note was kept after a run answered with it"
+        );
+        assert_eq!(
+            exchange(&mut chat, "And then?", &launches, &answers),
+            Step::Answered
+        );
+        let tasks: Vec<String> = launches
+            .requests
+            .borrow()
+            .iter()
+            .map(|request| request.task.clone())
+            .collect();
+        assert_eq!(
+            tasks,
+            [
+                "[note a]\n[note b]\n\nRead my notes.",
+                "[note a]\n[note c]\n\nAgain?",
+                "And then?"
+            ]
         );
     }
 
