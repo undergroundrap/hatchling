@@ -321,6 +321,22 @@ impl<A: Clone> Approvals<A> {
         taken
     }
 
+    /// Takes back every request approved and not yet claimed, of any task,
+    /// whose run `lapsed`: what the owner allowed they took back since, so
+    /// no session may use it. How many it took back.
+    pub fn withdraw_approved(&self, lapsed: impl Fn(&A) -> bool) -> usize {
+        let mut ledger = self.ledger();
+        let approved: Vec<String> = ledger
+            .requests
+            .values()
+            .filter(|request| request.state == State::Approved && lapsed(&request.run))
+            .map(|request| request.id.clone())
+            .collect();
+        let taken = approved.iter().filter(|id| ledger.withdraw(id)).count();
+        drop(ledger);
+        taken
+    }
+
     /// Request `id`, as it stands.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<Request<A>> {

@@ -335,6 +335,14 @@ pub struct BrowserSession {
     /// cookies are theirs, and a site can set or rotate one at any time,
     /// so every op's answer has them read and hidden, kept profile or not.
     owner_drove: bool,
+    /// Its part in the owner's revokes, from its first op.
+    reach: Option<Arc<crate::grant_reach::Reach>>,
+    /// Each site a yes gave the browser, as `host:port`, with the number of
+    /// the latest revoke that yes saw ([`crate::grant_reach`]).
+    seen: BTreeMap<String, u64>,
+    /// The sites the signed-in profile holds, which the owner keeps with
+    /// it: a site's revoke doesn't reach them.
+    kept: BTreeSet<String>,
 }
 
 /// A page's elements, by id.
@@ -436,6 +444,9 @@ impl BrowserSession {
             page: None,
             typed: Vec::new(),
             owner_drove: false,
+            reach: None,
+            seen: BTreeMap::new(),
+            kept: BTreeSet::new(),
         }
     }
 
@@ -872,9 +883,59 @@ impl BrowserSession {
     fn leave(&mut self) {
         for site in std::mem::take(&mut self.once) {
             let closed = self.sites.revoke(&site);
+            self.seen.remove(&site);
             tracing::debug!(%site, closed, "a site held once is left");
         }
         self.visit = None;
+    }
+
+    /// Lets go of every site the owner revoked since a yes gave it to the
+    /// browser, joining `config`'s revokes first if it hasn't
+    /// ([`crate::grant_reach`]). A browser on a revoked site's page is
+    /// closed, so nothing more is done on it: the site, if one was.
+    fn revokes_taken(&mut self, config: &Config) -> Option<String> {
+        if self.reach.is_none() {
+            self.reach = crate::grant_reach::join(config);
+        }
+        let revoked = self.reach.as_ref()?.take();
+        let mut closed = None;
+        for (site, number) in revoked {
+            let Ok(url) = WebUrl::parse(&site) else {
+                continue;
+            };
+            let destination = url.origin().destination();
+            if self.kept.contains(&destination) {
+                continue;
+            }
+            if self
+                .seen
+                .get(&destination)
+                .is_some_and(|held| !crate::grant_reach::reaches(*held, number))
+            {
+                continue;
+            }
+            self.seen.remove(&destination);
+            self.once.remove(&destination);
+            let _ = self.sites.revoke(&destination);
+            if self.visit.as_deref() == Some(destination.as_str()) {
+                if self.is_open() {
+                    self.end(BrowserState::Completed);
+                }
+                self.leave();
+                self.page = None;
+                self.typed.clear();
+                closed = Some(site);
+            }
+        }
+        closed
+    }
+
+    /// Has the owner's revokes reach the browser's proxy, at once, but for
+    /// the signed-in profile's sites.
+    fn watched(&self) {
+        if let Some(reach) = &self.reach {
+            reach.watch(self.sites.clone(), self.kept.clone());
+        }
     }
 
     /// The sites the session's browser may reach.
@@ -1162,6 +1223,13 @@ pub fn handle_browser_op(
     if browser.owner_stopped() {
         return BrowserResult::Stopped;
     }
+    if let Some(site) = browser.revokes_taken(config) {
+        if !matches!(op, BrowserOp::Open { .. }) {
+            return refused(&format!(
+                "the owner revoked {site}, so the browser on its page was closed: open a page to go on"
+            ));
+        }
+    }
     match browser.turn() {
         Turn::Wait => return BrowserResult::OwnerDriving,
         Turn::Resume => {
@@ -1175,6 +1243,9 @@ pub fn handle_browser_op(
     let result = answer(config, keys, web, browser, op);
     let result = browser.kept(config, keys, op, result);
     browser.report(narration, &result);
+    // A revoke made while the op ran reaches it before the next: what the
+    // browser was allowed as it did is let go now.
+    let _ = browser.revokes_taken(config);
     browser.done();
     result
 }
@@ -1416,6 +1487,7 @@ fn open(
     browser.adopt_profile();
     let switching = browser.profile != profile_id;
     let same_visit = !switching && browser.visit.as_deref() == Some(destination.as_str());
+    let mut yes = None;
     // On the site it's visiting, the browser stays: a site allowed once,
     // for the visit, isn't asked for again until it's left. A profile's
     // sites the owner allowed when they kept it.
@@ -1432,8 +1504,9 @@ fn open(
             browser.allowed_profiles.insert(profile.id.clone());
         }
     } else if !(same_visit && browser.once.contains(&destination)) {
-        if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason, true) {
-            return from_web(answer);
+        match crate::web_ops::allow(config, keys, web, &url, reason, true) {
+            Ok(seen) => yes = Some(seen),
+            Err(answer) => return from_web(answer),
         }
     }
     // Allowed: only now is the visit left, if this is another site, and
@@ -1445,15 +1518,22 @@ fn open(
         }
         browser.leave();
         browser.sites = Sites::default();
+        browser.seen.clear();
     } else if !same_visit {
         browser.leave();
     }
+    browser.kept.clear();
     if let Some(profile) = &profile {
         for site in &profile.sites {
             browser.sites.grant(site);
+            browser.kept.insert(site.clone());
         }
     }
     browser.sites.grant(&destination);
+    if let Some(seen) = yes {
+        browser.seen.insert(destination.clone(), seen);
+    }
+    browser.watched();
     if profile.is_none() && !web.holds(url.origin()) {
         browser.once.insert(destination.clone());
     }
@@ -1625,10 +1705,12 @@ fn allow_site(
     if config.web.refuses(url.origin().host()) {
         return refused("the operator refuses this site");
     }
-    if let Err(answer) = crate::web_ops::allow(config, keys, web, &url, reason, true) {
-        return from_web(answer);
-    }
+    let seen = match crate::web_ops::allow(config, keys, web, &url, reason, true) {
+        Ok(seen) => seen,
+        Err(answer) => return from_web(answer),
+    };
     browser.sites.grant(site);
+    browser.seen.insert(site.to_owned(), seen);
     if !web.holds(url.origin()) {
         browser.once.insert(site.to_owned());
     }
@@ -1838,6 +1920,9 @@ mod tests {
         finished: usize,
     }
 
+    /// What a fake does while a browser starts, once.
+    type Meanwhile = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
     /// Browsers that answer every command with a page, or break once
     /// `broken` is set. Each starts with an empty `jar`, giving it a
     /// cookie a page.
@@ -1858,6 +1943,8 @@ mod tests {
         /// Once set, a look at the page fails while the browser goes on, as
         /// a controller answers when its page is gone.
         look_fails: Arc<AtomicBool>,
+        /// Done as the next browser starts: what happens meanwhile.
+        on_start: Meanwhile,
     }
 
     impl Browsers for Fake {
@@ -1876,6 +1963,10 @@ mod tests {
             drop(log);
             self.jar.lock().unwrap().clear();
             self.filled.lock().unwrap().clear();
+            let meanwhile = self.on_start.lock().unwrap().take();
+            if let Some(meanwhile) = meanwhile {
+                meanwhile();
+            }
             Ok(Box::new(self.clone()))
         }
     }
@@ -4126,6 +4217,164 @@ mod tests {
             "held for the task, past a visit elsewhere"
         );
         assert_eq!(fake.log.lock().unwrap().started.len(), 1, "one browser");
+    }
+
+    /// A revoke reaches a running browser (WO-036). The site's tunnels are
+    /// closed at once. A site a page of the visit needed is let go, and the
+    /// visit goes on. On the revoked site's own page the browser is closed,
+    /// and nothing more is done there until the owner allows it again.
+    #[test]
+    fn a_revoke_reaches_a_running_browser() {
+        let scratch = crate::api_auth::tests::scratch("browser-revoke");
+        let mut config = web_config("browser-revoke");
+        config.web.grants = scratch.0.join("sites");
+        let keys = Arc::new(MasterKey::generate().unwrap());
+        let fake = Fake::default();
+        let revoke = |site: &str| revoke_as_owner(&config, keys.as_ref(), site);
+        let (sessions, _) = ask_keyed(
+            &config,
+            &keys,
+            session("t", &fake),
+            &open("https://a.example/"),
+        );
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &open("https://a.example/"));
+        assert_eq!(answer, page("https://a.example/"));
+        assert!(!sessions.1.sites().admit("cdn.example:443"));
+        let (sessions, _) = ask_keyed(&config, &keys, sessions, &allow("cdn.example:443"));
+        owner_decides(&config, "t", "https://cdn.example", Decision::Approve);
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &allow("cdn.example:443"));
+        assert!(
+            matches!(answer, BrowserResult::Allowed { .. }),
+            "{answer:?}"
+        );
+        // Opened as a page of its own, a page's site is put to the owner.
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &open("https://cdn.example/"));
+        let asked =
+            matches!(&answer, BrowserResult::Waiting { site, .. } if site == "https://cdn.example");
+        assert!(asked, "{answer:?}");
+        assert_eq!(sessions.1.visit.as_deref(), Some("a.example:443"));
+        let ledger = crate::approval_board::board(&config);
+        let waiting = ledger
+            .approvals()
+            .find_run("t", State::Pending, |_| true)
+            .unwrap();
+        assert!(ledger.approvals().withdraw(&waiting), "the agent moves on");
+        // A page's site: let go at once, and the visit goes on.
+        revoke("https://cdn.example");
+        assert!(!sessions.1.sites().holds("cdn.example:443"), "at once");
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &BrowserOp::Read {});
+        assert!(matches!(answer, BrowserResult::Page { .. }), "{answer:?}");
+        assert!(!sessions.1.once.contains("cdn.example:443"));
+        assert!(sessions.1.sites().holds("a.example:443"));
+        // The visit's own site: the browser on its page is closed.
+        revoke("https://a.example");
+        assert!(!sessions.1.sites().holds("a.example:443"), "at once");
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &BrowserOp::Read {});
+        let closed = matches!(&answer, BrowserResult::Refused { reason } if reason.contains("revoked https://a.example"));
+        assert!(closed, "{answer:?}");
+        assert!(!sessions.1.is_open());
+        assert_eq!(sessions.1.visit, None);
+        // Held for the task no longer: opened again, it's put to the owner.
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &open("https://a.example/"));
+        let asked =
+            matches!(&answer, BrowserResult::Waiting { site, .. } if site == "https://a.example");
+        assert!(asked, "{answer:?}");
+        assert!(!sessions.1.sites().holds("a.example:443"));
+        drop(sessions);
+    }
+
+    /// The owner revokes `site`, as Settings does.
+    fn revoke_as_owner(
+        config: &Config,
+        keys: &dyn OpensStores,
+        site: &str,
+    ) -> hatchling_core::ui::SiteResult {
+        crate::site_grants::handle_site_op(
+            config,
+            keys,
+            &hatchling_core::ui::SiteOp::Revoke {
+                site: site.to_owned(),
+            },
+            hatchling_scheduler::Timestamp::now().as_second(),
+        )
+    }
+
+    /// A revoke made while an op runs reaches the browser as the op ends:
+    /// the page it was opening is read, in flight, and the browser on it is
+    /// closed before the agent's next op.
+    #[test]
+    fn a_revoke_while_an_op_runs_reaches_the_browser_as_it_ends() {
+        let scratch = crate::api_auth::tests::scratch("browser-revoke-during");
+        let mut config = web_config("browser-revoke-during");
+        config.web.grants = scratch.0.join("sites");
+        let keys = Arc::new(MasterKey::generate().unwrap());
+        let fake = Fake::default();
+        let (sessions, _) = ask_keyed(
+            &config,
+            &keys,
+            session("t", &fake),
+            &open("https://a.example/"),
+        );
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let (during, revoking) = (config.clone(), Arc::clone(&keys));
+        *fake.on_start.lock().unwrap() = Some(Box::new(move || {
+            revoke_as_owner(&during, revoking.as_ref(), "https://a.example");
+        }));
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &open("https://a.example/"));
+        assert_eq!(answer, page("https://a.example/"), "read in flight");
+        assert!(fake.on_start.lock().unwrap().is_none(), "revoked meanwhile");
+        assert!(!sessions.1.is_open(), "closed as the op ended");
+        assert_eq!(sessions.1.visit, None);
+        assert!(!sessions.1.sites().holds("a.example:443"));
+        drop(sessions);
+    }
+
+    /// A revoke reaches what a yes before it gave the browser, never what
+    /// a yes after it gave, or a signed-in profile's site (WO-036).
+    #[test]
+    fn a_revoke_reaches_only_what_a_yes_before_it_gave() {
+        let scratch = crate::api_auth::tests::scratch("browser-revoke-order");
+        let mut config = web_config("browser-revoke-order");
+        config.web.grants = scratch.0.join("sites");
+        let mut browser = BrowserSession::new(None);
+        assert_eq!(browser.revokes_taken(&config), None, "joined");
+        for site in [
+            "before.example:443",
+            "after.example:443",
+            "signed.example:443",
+        ] {
+            browser.sites.grant(site);
+        }
+        browser.seen.insert(
+            String::from("before.example:443"),
+            crate::grant_reach::seen(),
+        );
+        browser.kept.insert(String::from("signed.example:443"));
+        browser.visit = Some(String::from("signed.example:443"));
+        for site in [
+            "https://before.example",
+            "https://after.example",
+            "https://signed.example",
+        ] {
+            crate::grant_reach::revoke(&config, site);
+        }
+        browser.seen.insert(
+            String::from("after.example:443"),
+            crate::grant_reach::seen(),
+        );
+        assert_eq!(
+            browser.revokes_taken(&config),
+            None,
+            "the profile's page stays"
+        );
+        assert!(!browser.sites.holds("before.example:443"));
+        assert!(
+            browser.sites.holds("after.example:443"),
+            "a yes after the revoke"
+        );
+        assert!(browser.sites.holds("signed.example:443"), "the profile's");
+        assert_eq!(browser.visit.as_deref(), Some("signed.example:443"));
     }
 
     fn allow(site: &str) -> BrowserOp {
