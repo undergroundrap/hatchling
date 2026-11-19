@@ -323,8 +323,10 @@ fn what_is_refused_is_said_in_order_and_at_each_bound() {
     assert_eq!(refusal(&[], &read(READ_PER_CONVERSATION - 1), 1), None);
     assert_eq!(
         refusal(&[], &read(READ_PER_CONVERSATION - 1), 2),
-        Some(Refused::ReadOut)
+        Some(Refused::ReadPast),
+        "more than is left, with some left, is past, not out"
     );
+    assert_eq!(refusal(&[], &read(READ_PER_CONVERSATION - 1), 0), None);
     assert_eq!(
         refusal(&[], &spent, 1),
         Some(Refused::Spent),
@@ -359,7 +361,11 @@ fn the_librarys_room_and_a_folders_bounds_are_held() {
         .map(|at| file(FILE_BYTES - u64::from(at == 0)))
         .collect();
     assert_eq!(refusal(&short_of, &open, 1), None);
-    assert_eq!(refusal(&short_of, &open, 2), Some(Refused::Full));
+    assert_eq!(
+        refusal(&short_of, &open, 2),
+        Some(Refused::WouldFill),
+        "a byte left, and two asked: it would fill, it isn't full"
+    );
     // By items.
     let many: Vec<KeptItem> = (0..LIBRARY_ITEMS).map(|_| file(1)).collect();
     assert_eq!(refusal(&many, &open, 1), Some(Refused::Full));
@@ -376,7 +382,7 @@ fn the_librarys_room_and_a_folders_bounds_are_held() {
     assert_eq!(refusal(&one_short, &open, 1), None);
     assert_eq!(
         Library::refusal(&one_short, &open, &Claim::folder(2, 1), false),
-        Some(Refused::Full)
+        Some(Refused::WouldFill)
     );
     // A folder: its bytes and files, at their bounds and one past, and
     // none.
@@ -387,11 +393,19 @@ fn the_librarys_room_and_a_folders_bounds_are_held() {
     assert_eq!(folder(1, FOLDER_BYTES + 1), Some(Refused::FolderTooLarge));
     assert_eq!(folder(0, 0), Some(Refused::FolderTooLarge));
     assert_eq!(folder(1, 0), None);
+}
+
+/// Each refusal is said in words of its own, and says what is true of it:
+/// a bound reached, or one this hand-over would pass.
+#[test]
+fn each_refusal_is_said_in_its_own_true_words() {
     let words = [
         Refused::Off,
         Refused::Spent,
         Refused::ReadOut,
+        Refused::ReadPast,
         Refused::Full,
+        Refused::WouldFill,
         Refused::TooLarge,
         Refused::FolderTooLarge,
         Refused::Stale,
@@ -410,6 +424,16 @@ fn the_librarys_room_and_a_folders_bounds_are_held() {
             .contains("64 items, 256 MiB or 4096 files")
     );
     assert!(Refused::Full.words().contains("removes items"));
+    assert!(Refused::ReadPast.words().contains("128 MiB in all"));
+    assert!(Refused::ReadPast.words().contains("something smaller"));
+    assert!(!Refused::ReadPast.words().contains("has read"));
+    assert!(
+        Refused::WouldFill
+            .words()
+            .contains("would take the Library past")
+    );
+    assert!(Refused::WouldFill.words().contains("something smaller"));
+    assert!(!Refused::WouldFill.words().contains("is full"));
     assert!(Refused::TooLarge.words().contains("8 MiB"));
     assert!(Refused::FolderTooLarge.words().contains("32 MiB"));
     assert!(Refused::FolderTooLarge.words().contains("512 files"));
@@ -1102,7 +1126,8 @@ fn a_hand_over_the_library_couldnt_keep_spends_nothing() {
     assert_eq!(left, 5);
     assert_eq!(
         library.spend(&Claim::file(left + 1), conversation),
-        Ok(Err(Refused::Full))
+        Ok(Err(Refused::WouldFill)),
+        "five bytes left: it isn't full, a file of six would fill it"
     );
     assert_eq!(library.standing().unwrap(), (0, false));
     assert!(matches!(
@@ -1540,6 +1565,72 @@ fn a_folder_is_spent_whole_or_not_at_all() {
     library.new_conversation().unwrap();
     assert_eq!(library.read_so_far().unwrap(), 0);
     assert_eq!(library.refuses(&Claim::file(0)), Ok(None));
+}
+
+/// A file refused once read still spends its bytes: when they take the
+/// conversation to the most it may read, the refusal says it has read
+/// out, never that something smaller may still be handed over.
+#[test]
+fn a_refused_file_that_reads_the_conversation_out_says_so() {
+    let (config, _scratch, key) = kept("read-past-file");
+    let library = Library::of(&config, &key).unwrap();
+    let conversation = library.conversation().unwrap();
+    for bytes in [FOLDER_BYTES, FOLDER_BYTES, FOLDER_BYTES, FOLDER_BYTES - 1] {
+        assert!(matches!(
+            library.spend(&Claim::folder(1, bytes), conversation),
+            Ok(Ok(_))
+        ));
+    }
+    assert_eq!(library.read_so_far().unwrap(), READ_PER_CONVERSATION - 1);
+    // A folder more than the byte left is past, and spends nothing.
+    assert_eq!(
+        library.spend(&Claim::folder(1, 2), conversation),
+        Ok(Err(Refused::ReadPast))
+    );
+    assert_eq!(library.read_so_far().unwrap(), READ_PER_CONVERSATION - 1);
+    // A file is read before it is spent: its bytes take the rest.
+    assert_eq!(library.refuses(&Claim::file(0)), Ok(None));
+    assert_eq!(
+        library.spend(&Claim::file(2), conversation),
+        Ok(Err(Refused::ReadOut))
+    );
+    assert_eq!(library.read_so_far().unwrap(), READ_PER_CONVERSATION);
+    assert_eq!(library.refuses(&Claim::file(0)), Ok(Some(Refused::ReadOut)));
+}
+
+/// A file the Library would fill past its bytes, read to the conversation's
+/// most, is said as read out: nothing smaller fits either.
+#[test]
+fn a_file_that_would_fill_and_reads_out_says_read_out() {
+    let (config, _scratch, key) = kept("would-fill-read-out");
+    let library = Library::of(&config, &key).unwrap();
+    let mut held = vec![FILE_BYTES; 31];
+    held.push(FILE_BYTES - 5);
+    library.pretend_held(&held);
+    let conversation = library.conversation().unwrap();
+    for _ in 0..15 {
+        assert_eq!(
+            library.spend(&Claim::file(FILE_BYTES), conversation),
+            Ok(Err(Refused::WouldFill))
+        );
+    }
+    assert_eq!(
+        library.read_so_far().unwrap(),
+        READ_PER_CONVERSATION - FILE_BYTES
+    );
+    // One byte short of the most: a smaller one may still be read.
+    assert_eq!(
+        library.spend(&Claim::file(FILE_BYTES - 1), conversation),
+        Ok(Err(Refused::WouldFill)),
+        "a byte left to read is not read out"
+    );
+    assert_eq!(library.read_so_far().unwrap(), READ_PER_CONVERSATION - 1);
+    assert_eq!(
+        library.spend(&Claim::file(6), conversation),
+        Ok(Err(Refused::ReadOut)),
+        "the file that reads the last byte reads the conversation out"
+    );
+    assert_eq!(library.read_so_far().unwrap(), READ_PER_CONVERSATION);
 }
 
 /// A file is spent once read, and its bytes count whatever comes of it:

@@ -383,8 +383,14 @@ pub enum Refused {
     Spent,
     /// This conversation has read as much out of the Room as it may.
     ReadOut,
+    /// This is more than this conversation may still read out of the Room;
+    /// something smaller may be.
+    ReadPast,
     /// The Library holds as many items, bytes or files as it may.
     Full,
+    /// This would take the Library past its bytes or files; something
+    /// smaller may fit.
+    WouldFill,
     /// The file is longer than the Library keeps.
     TooLarge,
     /// The folder is larger, or holds more files, than the Library keeps,
@@ -408,8 +414,14 @@ impl Refused {
             Self::ReadOut => {
                 "this conversation has read 128 MiB out of the agent's computer, the most one may: a new conversation may read more"
             }
+            Self::ReadPast => {
+                "this is more than this conversation may still read out of the agent's computer (128 MiB in all): something smaller may still be handed over, and a new conversation may read more"
+            }
             Self::Full => {
                 "the Library is full (64 items, 256 MiB or 4096 files in all): the owner removes items from it"
+            }
+            Self::WouldFill => {
+                "this would take the Library past 256 MiB or 4096 files in all: something smaller may still fit, or the owner removes items from it"
             }
             Self::TooLarge => "the file is larger than 8 MiB, the most a file handed over may be",
             Self::FolderTooLarge => {
@@ -824,17 +836,16 @@ impl<'k> Library<'k> {
             Some(Refused::Off)
         } else if !spent && state.handed >= HANDED_PER_CONVERSATION {
             Some(Refused::Spent)
-        } else if !spent
-            && (state.read >= READ_PER_CONVERSATION
-                || state.read.saturating_add(claim.bytes) > READ_PER_CONVERSATION)
-        {
+        } else if !spent && state.read >= READ_PER_CONVERSATION {
             Some(Refused::ReadOut)
-        } else if index.len() >= LIBRARY_ITEMS
-            || bytes >= LIBRARY_BYTES
-            || bytes.saturating_add(claim.bytes) > LIBRARY_BYTES
+        } else if !spent && state.read.saturating_add(claim.bytes) > READ_PER_CONVERSATION {
+            Some(Refused::ReadPast)
+        } else if index.len() >= LIBRARY_ITEMS || bytes >= LIBRARY_BYTES || files >= LIBRARY_FILES {
+            Some(Refused::Full)
+        } else if bytes.saturating_add(claim.bytes) > LIBRARY_BYTES
             || files.saturating_add(claim.files) > LIBRARY_FILES
         {
-            Some(Refused::Full)
+            Some(Refused::WouldFill)
         } else {
             None
         }
@@ -884,7 +895,11 @@ impl<'k> Library<'k> {
                 (Some(refused), ItemKind::File) => {
                     state.read = read;
                     Self::write(vault, STATE, &state)?;
-                    Ok(Err(refused))
+                    // Its bytes were read all the same: once they take the
+                    // conversation to the most, nothing smaller fits either.
+                    let spent_out = read >= READ_PER_CONVERSATION
+                        && matches!(refused, Refused::ReadPast | Refused::WouldFill);
+                    Ok(Err(if spent_out { Refused::ReadOut } else { refused }))
                 }
                 (Some(refused), ItemKind::Folder) => Ok(Err(refused)),
                 (None, _) => {
