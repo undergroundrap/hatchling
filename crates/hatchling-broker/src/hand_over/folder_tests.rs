@@ -259,7 +259,7 @@ fn a_folder_past_the_conversations_bytes_is_refused_unread() {
     assert_eq!(
         handing.hand_folder(&tree, "site"),
         RoomResult::NotHandedOver {
-            reason: String::from(Refused::ReadOut.words())
+            reason: String::from(Refused::ReadPast.words())
         }
     );
     assert!(

@@ -719,7 +719,7 @@ fn a_file_the_library_couldnt_keep_is_never_checked() {
         assert_eq!(
             handing.hand(&room, "a.txt"),
             RoomResult::NotHandedOver {
-                reason: String::from(Refused::Full.words())
+                reason: String::from(Refused::WouldFill.words())
             }
         );
     }
