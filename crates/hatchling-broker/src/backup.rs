@@ -1812,15 +1812,17 @@ mod tests {
         assert!(said.contains("still open"), "{said}");
     }
 
-    /// Lock, reset and restore are root's: run as anyone else, each is
-    /// refused before it touches the service, the room disk or a store.
+    /// Backup, lock, reset and restore are root's: run as anyone else,
+    /// each is refused before it touches the service, the room disk or a
+    /// store.
     #[test]
-    fn lock_reset_and_restore_are_roots_alone() {
+    fn backup_lock_reset_and_restore_are_roots_alone() {
         if hatchling_sys::euid() == 0 {
             return;
         }
         let config = crate::api_auth::tests::owner_config(None);
         for refused in [
+            run_backup(&config, None),
             run_lock(&config),
             run_reset(&config, &[String::from("agent"), String::from("--yes")]),
             run_restore(&config, Path::new("/nonexistent/hatchling.backup")),
