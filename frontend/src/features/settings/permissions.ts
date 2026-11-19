@@ -79,7 +79,7 @@ function websites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
 function liveWebsites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     const group = h('div', { class: 'settings-group reference-list website-permissions' });
     for (const item of ctx.state.websitePermissions) {
-        const revoke = button('Revoke', () => ctx.dialogs.confirm(`Revoke ${item.host}?`, 'The agent asks you again the next time it wants a page on this site. A task you already allowed it for keeps it until the task ends.', () => { void ctx.run({ type: 'permission.website', host: item.host, policy: 'ask' }, true).then(nav.refresh); }, { label: 'Revoke site' }), { variant: 'ghost' });
+        const revoke = button('Revoke', () => ctx.dialogs.confirm(`Revoke ${item.host}?`, 'The agent asks you again the next time it wants a page on this site, in every task, running ones included. A browser on one of its pages is closed.', () => { void ctx.run({ type: 'permission.website', host: item.host, policy: 'ask' }, true).then(nav.refresh); }, { label: 'Revoke site' }), { variant: 'ghost' });
         group.append(h('div', { class: 'reference-setting-row website-permission' }, h('span', { class: 'website-icon' }, icon('globe', 18)), h('span', { class: 'setting-row-copy' }, item.host), revoke));
     }
     const empty = h('p', { class: 'settings-note' }, 'No sites yet. When the agent asks to read a site, choose Allow always on its request to keep it here.');

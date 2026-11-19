@@ -475,13 +475,20 @@ pub fn handle_site_op(
                 })
                 .collect(),
         }),
-        SiteOp::Revoke { site } => grants.revoke(site, now).map(|revoked| {
-            if revoked {
-                SiteResult::Revoked
-            } else {
-                SiteResult::NotFound
-            }
-        }),
+        SiteOp::Revoke { site } => {
+            let revoked = grants.revoke(site, now).map(|revoked| {
+                if revoked {
+                    SiteResult::Revoked
+                } else {
+                    SiteResult::NotFound
+                }
+            });
+            // Whatever the store held, the site is let go by every running
+            // task: its approvals not yet used, the sites held for a task,
+            // and its browser (WO-036).
+            crate::grant_reach::revoke(config, site);
+            revoked
+        }
     };
     answer.unwrap_or_else(|error| {
         tracing::error!(%error, "a site operation failed");
