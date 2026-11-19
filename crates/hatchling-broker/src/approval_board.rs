@@ -194,6 +194,47 @@ pub fn board(config: &Config) -> Arc<Board> {
     )
 }
 
+/// The owner's `decision` on request `id`, decided on `config`'s board and
+/// kept as the owner's (#542).
+///
+/// It is made at the `revision` and `digest` the owner was shown, at
+/// `now`. A site the owner allows always is a grant from then, whatever
+/// becomes of the session that asked. One that can't be kept is said in
+/// the journal, and the session that asked reads only the page it was
+/// shown.
+///
+/// # Errors
+///
+/// [`DecisionRejection`], and nothing changes.
+pub fn decide_as_owner(
+    config: &Config,
+    keys: &dyn OpensStores,
+    id: &str,
+    revision: u64,
+    digest: &str,
+    decision: Decision,
+    now: i64,
+) -> Result<State, DecisionRejection> {
+    let board = board(config);
+    let decided = board.decide(id, revision, digest, decision, now)?;
+    let site = board
+        .approvals
+        .get(id)
+        .and_then(|request| match request.run() {
+            Approved::Site(visit) => Some(visit.site.clone()),
+            Approved::Activation(_)
+            | Approved::Signed(_)
+            | Approved::Memory(_)
+            | Approved::Schedule(_) => None,
+        });
+    if let Some(site) = site {
+        if let Err(error) = crate::site_grants::keep_decision(config, keys, &site, decision, now) {
+            tracing::error!(%error, %site, "the owner allowed a site always, but it couldn't be kept: the session that asked reads the page it was shown, and asks again for others");
+        }
+    }
+    Ok(decided)
+}
+
 impl Board {
     /// Sends what the board asks and decides to the owner's app on `bus`.
     pub fn attach(&self, bus: Arc<Bus>) {

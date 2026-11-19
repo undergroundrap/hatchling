@@ -2191,7 +2191,13 @@ mod tests {
             session("t", &fake),
             &open("https://a.example/"),
         );
-        owner_decides(&config, "t", "https://a.example", Decision::ApproveAlways);
+        crate::web_ops::tests::owner_decides_keyed(
+            &config,
+            keys.as_ref(),
+            "t",
+            "https://a.example",
+            Decision::ApproveAlways,
+        );
         let (sessions, answer) = ask_keyed(&config, &keys, sessions, &open("https://a.example/"));
         assert_eq!(answer, page("https://a.example/"));
         drop(sessions);
