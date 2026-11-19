@@ -292,7 +292,6 @@ impl<'k> SiteGrants<'k> {
                 return Err(format!("the sites allowed before can't be read: {error}"));
             }
         };
-        let mut moved = 0_usize;
         for site in sites {
             let Some(key) = GrantKey::site(&site.site) else {
                 tracing::warn!("a site allowed before isn't one a grant can name: it isn't kept");
@@ -312,7 +311,6 @@ impl<'k> SiteGrants<'k> {
                 scope: Scope::Always,
                 made_at: site.allowed_at.clamp(0, LATEST),
             });
-            moved += 1;
         }
         Self::write(vault, &kept)?;
         match vault.remove(&old) {
@@ -323,7 +321,7 @@ impl<'k> SiteGrants<'k> {
                 ));
             }
         }
-        tracing::info!(moved, "the sites always allowed are kept as grants now");
+        tracing::info!("the sites always allowed are kept as grants now");
         Ok(kept)
     }
 
@@ -621,6 +619,7 @@ mod tests {
         grants
             .grant(&key("https://always.example"), Scope::Always, T)
             .unwrap();
+        assert_eq!(DAY_SECS, 86_400, "a day isn't 24 hours");
         assert!(grants.covers(&day, T).unwrap());
         assert!(grants.covers(&day, T + DAY_SECS - 1).unwrap());
         assert!(!grants.covers(&day, T + DAY_SECS).unwrap(), "past its day");
@@ -721,6 +720,33 @@ mod tests {
             [(Scope::Always, T + 200)]
         );
         assert!(grants.covers(&site, T + 10 * DAY_SECS).unwrap());
+    }
+
+    /// A revoke says whether the grant was in force: one whose day ended
+    /// is removed and said not found, whatever else is in force.
+    #[test]
+    fn a_revoke_of_an_ended_grant_finds_nothing_in_force() {
+        let (config, _scratch, master) = kept("ended");
+        let grants = SiteGrants::of(&config, &master).unwrap();
+        grants
+            .grant(&key("https://day.example"), Scope::Day, T)
+            .unwrap();
+        grants.allow("https://always.example", T).unwrap();
+        assert!(!grants.revoke("https://day.example", T + DAY_SECS).unwrap());
+        assert_eq!(
+            raw(&grants)
+                .grants
+                .iter()
+                .map(|grant| grant.target.as_str())
+                .collect::<Vec<_>>(),
+            ["https://always.example"],
+            "the ended grant stayed"
+        );
+        assert!(
+            grants
+                .revoke("https://always.example", T + DAY_SECS)
+                .unwrap()
+        );
     }
 
     /// Checking writes nothing: an ended day grant is dropped by the
