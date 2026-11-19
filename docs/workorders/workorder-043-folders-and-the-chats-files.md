@@ -1,6 +1,6 @@
 # WO-043: Folders, and the chat's files: give a project back, keep it in the chat, take what you need
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-room` (the supervisor's read of a folder), `crates/hatchling-broker` (the hand-over of a folder, the Library's groups and limits), `crates/hatchling-core` (the wire), `crates/hatchling-agent` (the tool), `crates/hatchling-vault` (its log of the Library's chunks), `frontend/` (the chat's cards, the Library's groups and choosing), `docs/`
 **Issue:** [#502](https://github.com/undergroundrap/hatchling/issues/502)
 **Trust boundary:** yes (what crosses out of a cell, and the limits on it)
@@ -26,15 +26,15 @@ A folder (here) is a directory in the agent's `/workspace`, with the files and d
 
 ## Acceptance criteria
 
-- [ ] The agent gives a folder of at least 100 files in nested directories, and the owner downloads it as one `.zip` with its folders as they were, every file byte for byte.
-- [ ] A folder holding a link, a device, another mount, a path that leaves it, or a name Windows keeps or acts on when its folder is shown is refused, or that part is left out and said; each is a test.
-- [ ] A folder in which any file, or any path, holds a secret the broker keeps isn't handed over, nothing of it is kept, the owner and the agent are told without naming the secret, and giving is off for the conversation.
-- [ ] Scrolling back through a conversation, after a restart too, shows each file or folder the agent gave in it, with Download; one removed since says so.
-- [ ] The owner downloads one item, everything one reply gave, or any items they pick, as one `.zip`.
-- [ ] The limits are counted in hand-overs, and set from measurements recorded in the evidence; a full Library and a spent conversation are said to the owner and the agent.
-- [ ] Each crossing is in Activity: a folder by its name, its count of files, its size and how it ended.
-- [ ] A real install gives a folder each way with a real model.
-- [ ] Each guard is hand-broken and its test fails for the right reason.
+- [x] The agent gives a folder of at least 100 files in nested directories, and the owner downloads it as one `.zip` with its folders as they were, every file byte for byte. A 115-file nested folder and, from `qwen3.5:9b`, 127- and 111-file sites, each downloaded and read back byte for byte: [folders-acceptance.md](../evidence/folders-acceptance.md).
+- [x] A folder holding a link, a device, another mount, a path that leaves it, or a name Windows keeps or acts on when its folder is shown is refused, or that part is left out and said; each is a test. Each a test: [give-folder.md](../evidence/give-folder.md), [room-list-wire.md](../evidence/room-list-wire.md); the app's own path checks: [library-choosing.md](../evidence/library-choosing.md). On the install, a link left out and said, `CON.txt` refused: [folders-acceptance.md](../evidence/folders-acceptance.md).
+- [x] A folder in which any file, or any path, holds a secret the broker keeps isn't handed over, nothing of it is kept, the owner and the agent are told without naming the secret, and giving is off for the conversation. Proven by the hand-over's tests against a real vault: [give-folder.md](../evidence/give-folder.md); not tried on the install.
+- [x] Scrolling back through a conversation, after a restart too, shows each file or folder the agent gave in it, with Download; one removed since says so. Across a restart, by the broker's and the app's tests: [chat-cards.md](../evidence/chat-cards.md); the cards on the install: [folders-acceptance.md](../evidence/folders-acceptance.md).
+- [x] The owner downloads one item, everything one reply gave, or any items they pick, as one `.zip`. Each on the install, from the chat and from the Library page: [folders-acceptance.md](../evidence/folders-acceptance.md); [library-choosing.md](../evidence/library-choosing.md), [library-page.md](../evidence/library-page.md).
+- [x] The limits are counted in hand-overs, and set from measurements recorded in the evidence; a full Library and a spent conversation are said to the owner and the agent. Counted in hand-overs: [hand-over-count.md](../evidence/hand-over-count.md), [library-items.md](../evidence/library-items.md); measured, and each bound's words true on the install after [#522](https://github.com/undergroundrap/hatchling/issues/522): [folders-acceptance.md](../evidence/folders-acceptance.md), [refusal-words.md](../evidence/refusal-words.md).
+- [x] Each crossing is in Activity: a folder by its name, its count of files, its size and how it ended. [give-folder.md](../evidence/give-folder.md); on the install: [folders-acceptance.md](../evidence/folders-acceptance.md).
+- [x] A real install gives a folder each way with a real model. Folders from the agent's computer with `qwen3.5:9b`, on the release builds of both drills: [folders-acceptance.md](../evidence/folders-acceptance.md). A folder given to the agent is outside this work order's scope ("Not in scope"); files into the agent's computer were proven with WO-041: [files-acceptance.md](../evidence/files-acceptance.md).
+- [x] Each guard is hand-broken and its test fails for the right reason. Every slice's record, and the two fixes': none survived in the end ([hand-over-count.md](../evidence/hand-over-count.md), [room-list-wire.md](../evidence/room-list-wire.md), [library-items.md](../evidence/library-items.md), [give-folder.md](../evidence/give-folder.md), [library-api.md](../evidence/library-api.md), [chat-cards.md](../evidence/chat-cards.md), [library-choosing.md](../evidence/library-choosing.md), [refusal-words.md](../evidence/refusal-words.md), [library-page.md](../evidence/library-page.md)).
 
 ## Gates
 
@@ -69,6 +69,7 @@ Each slice's record, as it lands.
 - Slice 5, the chat's cards across a restart: [chat-cards.md](../evidence/chat-cards.md).
 - Slice 6, groups and choosing in the app, as one `.zip` (`.tar` and `.tar.gz` split to [#515](https://github.com/undergroundrap/hatchling/issues/515)): [library-choosing.md](../evidence/library-choosing.md).
 - Found in the acceptance, a refusal said a limit was reached when an item would only pass it ([#522](https://github.com/undergroundrap/hatchling/issues/522)): [refusal-words.md](../evidence/refusal-words.md).
+- The acceptance, on a real install with a real model, in two drills: [folders-acceptance.md](../evidence/folders-acceptance.md).
 - Found in the acceptance, the agent's files lived only in a Settings list that didn't update; now on the Library page ([#523](https://github.com/undergroundrap/hatchling/issues/523)): [library-page.md](../evidence/library-page.md).
 
 ## Notes
