@@ -40,7 +40,9 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend and protocol gates (the card an
 
 ## Evidence
 
-Filled in at close.
+- Slice 1, the grants kept and the owner's always kept when chosen (#542): [grants-kept.md](../evidence/grants-kept.md)
+
+The rest is filled in at close.
 
 ## Notes
 
