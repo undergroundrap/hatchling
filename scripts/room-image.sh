@@ -15,6 +15,28 @@ sbom=room-system-x86_64.sbom.json
 supervisor_path=usr/local/libexec/hatchling-room
 assets=("$image" "$hashes" "$root_hash" "$manifest" "$sbom")
 verity=(--no-superblock --format=1 --hash=sha256 --data-block-size=4096 --hash-block-size=4096)
+sources=(
+    "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/$snapshot/ trixie main"
+    "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/$snapshot/ trixie-security main"
+)
+
+# The static supervisor's C toolchain (#517): built from the same snapshot,
+# so a release's supervisor can be rebuilt byte for byte whatever machine
+# builds it. The packages its bytes come from, and the files a static link
+# takes, each pinned: a build root that differs is refused.
+toolchain_packages=$'binutils-x86-64-linux-gnu\t2.44-3\ngcc-14\t14.2.0-19\nlibc6-dev\t2.41-12+deb13u4\nlibgcc-14-dev\t14.2.0-19'
+toolchain_files() {
+    cat <<EOF
+679612af043ab6a3eb9af24136b8d0c9ba1e10114f047271386ee7fa37031326  usr/lib/x86_64-linux-gnu/libc.a
+4ca31259aee8415b60fe566c00cecfa5858f1103296b8043f175ccf2489f00ec  usr/lib/x86_64-linux-gnu/rcrt1.o
+78acef26a7007f5320c98633376f2903e33895e694fbc2b91d189b38addbca8a  usr/lib/x86_64-linux-gnu/crti.o
+121f2a5f12b13471dd8c7dabe3ff334df08540c270564d1a2b3c47ecbd8d3101  usr/lib/x86_64-linux-gnu/crtn.o
+37af2040527c75078f900a29ea4a71b22576aa5c26f1f29af7b5935cebbe571e  usr/lib/gcc/x86_64-linux-gnu/14/crtbeginS.o
+8981687575c10a2e2146947bce387769cbd118f5b8c5dda489f514dc7d2ed4c7  usr/lib/gcc/x86_64-linux-gnu/14/crtendS.o
+c53c33f587ceaf0fc9a4b6bb5c5437082068f64ac70eb3b7a0d899e7ac5ffd3d  usr/lib/gcc/x86_64-linux-gnu/14/libgcc.a
+4622efa3af50eaea4fbb4bc520ada4c88008c5343e0ad306633821fd2432102d  usr/lib/gcc/x86_64-linux-gnu/14/libgcc_eh.a
+EOF
+}
 
 die() { echo "room image: $*" >&2; exit 1; }
 digest() { sha256sum < "$1" | cut -d ' ' -f 1; }
@@ -41,6 +63,25 @@ verify() {
     # The salt is public and derived from the image to make formatting repeatable.
     salt=$(digest "$dir/$image")
     veritysetup verify "${verity[@]}" --salt "$salt" "$dir/$image" "$dir/$hashes" "$expected"
+}
+
+build_root() {
+    local root=$1 keyring=/usr/share/keyrings/debian-archive-keyring.gpg
+    [[ $(uname -m) == x86_64 && $EUID == 0 ]] || die 'build-root needs an x86_64 Linux root environment'
+    [[ ! -e $root ]] || die "the build root must be new: $root"
+    ROOM_IMAGE_SCRIPT=$(realpath -- "$0")
+    export ROOM_IMAGE_SCRIPT SOURCE_DATE_EPOCH=$epoch
+    # shellcheck disable=SC2016
+    mmdebstrap --quiet --mode=root --variant=minbase --architectures=amd64 --keyring="$keyring" \
+        --aptopt='APT::Install-Recommends "false"' --aptopt='Acquire::Retries "3"' \
+        --extract-hook='bash "$ROOM_IMAGE_SCRIPT" check-debian-indexes "$1"' \
+        --include=gcc,libc6-dev,binutils trixie "$root" "${sources[@]}"
+    local packages
+    packages=$(dpkg-query --admindir="$root/var/lib/dpkg" -W -f='${Package}\t${Version}\n' \
+        gcc-14 libgcc-14-dev libc6-dev binutils-x86-64-linux-gnu)
+    [[ $packages == "$toolchain_packages" ]] || die "the build root's C toolchain isn't the pinned one: $packages"
+    (cd "$root" && toolchain_files | sha256sum --check --strict --quiet) ||
+        die "the build root's C files aren't the pinned ones"
 }
 
 stage_supervisor() {
@@ -85,9 +126,7 @@ build() {
     mmdebstrap --mode=root --variant=minbase --architectures=amd64 --keyring="$keyring" \
         --aptopt='APT::Install-Recommends "false"' --aptopt='Acquire::Retries "3"' \
         --extract-hook='bash "$ROOM_IMAGE_SCRIPT" check-debian-indexes "$1"' \
-        --include="${packages[*]}" trixie "$root" \
-        "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/$snapshot/ trixie main" \
-        "deb [check-valid-until=no] https://snapshot.debian.org/archive/debian-security/$snapshot/ trixie-security main"
+        --include="${packages[*]}" trixie "$root" "${sources[@]}"
 
     node_archive=node-v$node_version-linux-x64.tar.xz
     download "https://nodejs.org/dist/v$node_version/$node_archive" \
@@ -126,6 +165,11 @@ build() {
     printf 'hatchling-room\t%s\tamd64\thatchling\t%s\n' "$version" \
         "$(digest "$root/$supervisor_path")" >> "$tmp/packages"
     sort -o "$tmp/packages" "$tmp/packages"
+    # What the supervisor was built with (#517): from this script's pins,
+    # never from the job that built it. Not installed in the image.
+    {
+        printf '%s\tamd64\tdebian\n' "${toolchain_packages//$'\n'/$'\tamd64\tdebian\n'}"
+    } > "$tmp/built-with"
 
     # The stock WSL kernel supports SquashFS gzip, but some versions lack zstd.
     env -u SOURCE_DATE_EPOCH mksquashfs "$root" "$out/$image" -noappend -all-root -no-xattrs \
@@ -141,13 +185,18 @@ build() {
         printf 'Hatchling room system image (x86_64)\nDebian snapshot %s\nImage SHA-256 %s\n\n' "$snapshot" "$image_digest"
         printf 'Name\tVersion\tArchitecture\tSource\tSHA-256 (when recorded)\n'
         cat "$tmp/packages"
+        printf '\nThe supervisor was built from the same snapshot with (not installed in the image):\n'
+        cat "$tmp/built-with"
+        printf '\nIts C files, SHA-256:\n'
+        toolchain_files
     } > "$out/$manifest"
-    python3 -I "$script_dir/room-image-sbom.py" "$tmp/packages" "$image_digest" > "$out/$sbom"
+    python3 -I "$script_dir/room-image-sbom.py" "$tmp/packages" "$image_digest" "$tmp/built-with" > "$out/$sbom"
 }
 
 case ${1:-} in
     build) [[ $# == 3 ]] || die 'usage: room-image.sh build NEW_DIRECTORY SUPERVISOR_BINARY'; build "$2" "$3" ;;
     check-debian-indexes) [[ $# == 2 ]] || die 'missing Debian bootstrap root'; check_debian_indexes "$2" ;;
+    build-root) [[ $# == 2 ]] || die 'usage: room-image.sh build-root NEW_DIRECTORY'; build_root "$2" ;;
     compare)
         [[ $# == 3 ]] || die 'usage: room-image.sh compare FIRST_DIRECTORY SECOND_DIRECTORY'
         for name in "${assets[@]}"; do
@@ -157,5 +206,5 @@ case ${1:-} in
         printf 'Byte-identical room image SHA-256 %s\n' "$(digest "$2/$image")"
         ;;
     verify) [[ $# == 3 ]] || die 'usage: room-image.sh verify DIRECTORY TRUSTED_ROOT_HASH'; verify "$2" "$3" ;;
-    *) die 'expected build, compare, or verify' ;;
+    *) die 'expected build, build-root, compare, or verify' ;;
 esac

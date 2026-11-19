@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Build the room image's untrusted supervisor without running Cargo as root.
+# Build the room image's untrusted supervisor without running Cargo as root,
+# with this machine's own C toolchain: a development build, for CI's tests
+# and local proofs. A release's supervisor is built by
+# room-supervisor-build.sh, in the image snapshot's build root (#517).
 set -euo pipefail
 export LC_ALL=C
 
