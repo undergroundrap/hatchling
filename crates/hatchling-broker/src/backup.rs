@@ -502,6 +502,47 @@ fn service(action: &str) -> Result<(), Error> {
     }
 }
 
+/// What a backup, a restore or a reset says when a broker still serves
+/// once the service is stopped: one started by hand, not by the service.
+const STILL_SERVING: &str = "a broker is still running here, one the service didn't start: stop it (Ctrl-C where it runs), then run this again. Nothing was changed";
+
+/// What `lock` says then: that broker still holds the vault's key.
+const STILL_HOLDS_KEY: &str = "a broker is still running here, one the service didn't start, and it still holds the vault's key: stop it (Ctrl-C where it runs), then lock again. Nothing was locked";
+
+/// Holds the serving lock for `config`'s socket until the result is
+/// dropped (#508): no broker serves meanwhile, and none can start. One
+/// serving is refused, in the words `said`. With no directory for the
+/// lock, no broker has ever served there, and there is nothing to hold.
+fn hold_serving(config: &Config, said: &str) -> Result<Option<hatchling_sys::HeldLock>, Error> {
+    let lock = crate::sweep::lock_path(config.socket.as_path());
+    if lock.parent().is_some_and(|dir| !dir.is_dir()) {
+        return Ok(None);
+    }
+    crate::sweep::take_lock(config).map(Some).map_err(|error| {
+        if matches!(error, Error::BrokerBusy { .. }) {
+            Error::Usage {
+                reason: said.to_owned(),
+            }
+        } else {
+            error
+        }
+    })
+}
+
+/// Stops the service with `service`, then holds what `hold` takes: the
+/// serving lock, so the stores are copied, cleared or swapped with no
+/// broker beside them (#508). Refused, the service is started again, as
+/// it was.
+fn stopped_alone<T>(
+    service: impl Fn(&str) -> Result<(), Error>,
+    hold: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    service("stop")?;
+    hold().inspect_err(|_| {
+        let _ = service("start");
+    })
+}
+
 fn must_be_root() -> Result<(), Error> {
     if hatchling_sys::euid() == 0 {
         Ok(())
@@ -637,8 +678,9 @@ pub fn run_backup(config: &Config, to: Option<&Path>) -> Result<(), Error> {
     // The key before the service: stopped at the prompt, nothing's down.
     let (mut ask, mut devices) = ring::terminal_operator();
     let key = opened(config, &keyring, &mut ask, &mut devices)?;
-    service("stop")?;
+    let alone = stopped_alone(service, || hold_serving(config, STILL_SERVING))?;
     let made = make_backup(config, &key, to);
+    drop(alone);
     let started = service("start");
     let made = made?;
     started?;
@@ -670,7 +712,7 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
     let (key, staged_ring) =
         open_for_restore(config, &keyring_config, &ring_bytes, &mut ask, &mut devices)?;
     let room = crate::room_disk::here()?;
-    service("stop")?;
+    let alone = stopped_alone(service, || hold_serving(config, STILL_SERVING))?;
     let restored = (|| {
         let staging = config.vault.root.with_extension("restoring");
         fresh_staging(&staging)?;
@@ -684,6 +726,7 @@ pub fn run_restore(config: &Config, from: &Path) -> Result<(), Error> {
         drop_staging(&staging);
         Ok::<(usize, Option<String>), Error>((count, room_after_restore(&room, &key)))
     })();
+    drop(alone);
     let started = service("start");
     let (count, room_said) = restored?;
     started?;
@@ -842,7 +885,7 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
         Some(opened(config, &keyring, &mut ask, &mut devices)?)
     };
     let room = crate::room_disk::here()?;
-    service("stop")?;
+    let alone = stopped_alone(service, || hold_serving(config, STILL_SERVING))?;
     let done = (|| {
         if let Some(key) = &key {
             let made = make_backup(config, key, None)?;
@@ -859,6 +902,7 @@ pub fn run_reset(config: &Config, args: &[String]) -> Result<(), Error> {
         }
         Ok::<(), Error>(())
     })();
+    drop(alone);
     let started = service("start");
     done?;
     started?;
@@ -906,7 +950,7 @@ const fn locks_at(tier: hatchling_vault::Tier) -> bool {
 /// # Errors
 ///
 /// Why not. A vault its key file opens is refused, not pretended locked.
-pub fn run_lock() -> Result<(), Error> {
+pub fn run_lock(config: &Config) -> Result<(), Error> {
     must_be_root()?;
     let keyring = KeyringConfig::from_env()?;
     let tier = keyring
@@ -924,7 +968,11 @@ pub fn run_lock() -> Result<(), Error> {
         });
     }
     let room = crate::room_disk::here()?;
-    lock_with(&mut service, &|| crate::room_disk::close(&room))?;
+    lock_with(
+        &mut service,
+        &|| hold_serving(config, STILL_HOLDS_KEY).map(drop),
+        &|| crate::room_disk::close(&room),
+    )?;
     let _ = writeln!(
         std::io::stdout().lock(),
         "{}",
@@ -936,19 +984,27 @@ pub fn run_lock() -> Result<(), Error> {
 }
 
 /// A lock's steps: the service stopped, which takes the vault's key out of
-/// memory, then the room disk closed and confirmed closed, then the service
-/// started again, waiting to be unlocked. Locked only once the room disk is
-/// closed: one still open is refused, saying so, and the service is started
-/// all the same.
+/// memory, then no broker found still serving (`alone`: one started by
+/// hand holds the key still, #508), then the room disk closed and
+/// confirmed closed, then the service started again, waiting to be
+/// unlocked. Locked only once the room disk is closed: one still open is
+/// refused, saying so, and the service is started all the same, as it is
+/// when a broker still serves.
 ///
 /// # Errors
 ///
-/// Why the service didn't stop or start, or the room disk is still open.
+/// Why the service didn't stop or start, a broker still serves, or the
+/// room disk is still open.
 fn lock_with(
     service: &mut dyn FnMut(&str) -> Result<(), Error>,
+    alone: &dyn Fn() -> Result<(), Error>,
     close: &dyn Fn() -> Result<(), String>,
 ) -> Result<(), Error> {
     service("stop")?;
+    if let Err(error) = alone() {
+        let _ = service("start");
+        return Err(error);
+    }
     let closed = close();
     let started = service("start");
     closed.map_err(|reason| Error::Usage {
@@ -1636,6 +1692,7 @@ mod tests {
     fn a_lock_is_said_only_once_the_room_disk_is_closed() {
         use std::cell::RefCell;
         let steps = RefCell::new(Vec::new());
+        let alone = || Ok(());
         let mut service = |action: &str| {
             steps.borrow_mut().push(action.to_owned());
             Ok(())
@@ -1644,14 +1701,14 @@ mod tests {
             steps.borrow_mut().push(String::from("close"));
             Ok(())
         };
-        lock_with(&mut service, &closed).unwrap();
+        lock_with(&mut service, &alone, &closed).unwrap();
         assert_eq!(*steps.borrow(), ["stop", "close", "start"]);
         steps.borrow_mut().clear();
         let still_open = || {
             steps.borrow_mut().push(String::from("close"));
             Err(String::from("the room disk is busy"))
         };
-        let said = lock_with(&mut service, &still_open)
+        let said = lock_with(&mut service, &alone, &still_open)
             .unwrap_err()
             .to_string();
         assert!(
@@ -1673,7 +1730,9 @@ mod tests {
             }
         };
         let never = || -> Result<(), String> { Err(String::from("closed while the service ran")) };
-        let said = lock_with(&mut stuck, &never).unwrap_err().to_string();
+        let said = lock_with(&mut stuck, &alone, &never)
+            .unwrap_err()
+            .to_string();
         assert!(
             said.contains("stuck"),
             "a lock went on past a stop that failed: {said}"
@@ -1762,12 +1821,123 @@ mod tests {
         }
         let config = crate::api_auth::tests::owner_config(None);
         for refused in [
-            run_lock(),
+            run_lock(&config),
             run_reset(&config, &[String::from("agent"), String::from("--yes")]),
             run_restore(&config, Path::new("/nonexistent/hatchling.backup")),
         ] {
             let said = refused.unwrap_err().to_string();
             assert!(said.contains("sudo"), "refused for something else: {said}");
         }
+    }
+
+    /// A config whose socket is in `dir`, as a broker serving there has it.
+    fn served_in(dir: &Path) -> Config {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.socket = dir.join("broker.sock").to_str().unwrap().parse().unwrap();
+        config
+    }
+
+    /// A backup, a restore or a reset beside a broker still serving, one
+    /// started by hand, changes nothing and says why, and the service is
+    /// started again (#508). Once none serves, the serving lock is held
+    /// throughout, so none can start meanwhile, and let go after.
+    #[test]
+    fn nothing_is_changed_beside_a_broker_still_serving() {
+        use std::cell::RefCell;
+        let dir = crate::api_auth::tests::scratch("backup-serving");
+        let config = served_in(&dir.0);
+        let steps = RefCell::new(Vec::new());
+        let service = |action: &str| {
+            steps.borrow_mut().push(action.to_owned());
+            Ok(())
+        };
+        let serving = crate::sweep::take_lock(&config).unwrap();
+        let said = stopped_alone(service, || hold_serving(&config, STILL_SERVING))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("still running") && said.contains("Nothing was changed"),
+            "a broker still serving wasn't said: {said}"
+        );
+        assert_eq!(
+            *steps.borrow(),
+            ["stop", "start"],
+            "the service was left stopped"
+        );
+        drop(serving);
+        steps.borrow_mut().clear();
+        let alone = stopped_alone(service, || hold_serving(&config, STILL_SERVING)).unwrap();
+        assert!(alone.is_some(), "the serving lock wasn't held");
+        assert_eq!(*steps.borrow(), ["stop"]);
+        assert!(
+            matches!(
+                crate::sweep::take_lock(&config),
+                Err(Error::BrokerBusy { .. })
+            ),
+            "a broker could start while the stores are changed"
+        );
+        drop(alone);
+        drop(crate::sweep::take_lock(&config).unwrap());
+        // A lock that can't be taken is refused too, never passed.
+        let lock = crate::sweep::lock_path(config.socket.as_path());
+        fs::remove_file(&lock).unwrap();
+        fs::create_dir(&lock).unwrap();
+        steps.borrow_mut().clear();
+        assert!(stopped_alone(service, || hold_serving(&config, STILL_SERVING)).is_err());
+        assert_eq!(*steps.borrow(), ["stop", "start"]);
+    }
+
+    /// With no directory for the serving lock, no broker has served there:
+    /// nothing is held, and nothing is made.
+    #[test]
+    fn no_lock_is_held_where_no_broker_ever_served() {
+        let dir = crate::api_auth::tests::scratch("backup-never-served");
+        let config = served_in(&dir.0.join("gone"));
+        assert!(hold_serving(&config, STILL_SERVING).unwrap().is_none());
+        assert!(
+            !dir.0.join("gone").exists(),
+            "the lock's directory was made"
+        );
+    }
+
+    /// `lock` beside a broker still serving, which holds the vault's key,
+    /// is refused before the room disk is touched, saying so, and the
+    /// service is started again (#508).
+    #[test]
+    fn a_lock_beside_a_broker_still_serving_is_refused() {
+        use std::cell::RefCell;
+        let dir = crate::api_auth::tests::scratch("lock-serving");
+        let config = served_in(&dir.0);
+        let steps = RefCell::new(Vec::new());
+        let mut service = |action: &str| {
+            steps.borrow_mut().push(action.to_owned());
+            Ok(())
+        };
+        let alone = || hold_serving(&config, STILL_HOLDS_KEY).map(drop);
+        let closed = || {
+            steps.borrow_mut().push(String::from("close"));
+            Ok(())
+        };
+        let serving = crate::sweep::take_lock(&config).unwrap();
+        let said = lock_with(&mut service, &alone, &closed)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            said.contains("still holds the vault's key") && said.contains("Nothing was locked"),
+            "a lock beside a serving broker wasn't refused: {said}"
+        );
+        assert_eq!(
+            *steps.borrow(),
+            ["stop", "start"],
+            "the room disk was touched"
+        );
+        drop(serving);
+        steps.borrow_mut().clear();
+        lock_with(&mut service, &alone, &closed).unwrap();
+        assert_eq!(*steps.borrow(), ["stop", "close", "start"]);
+        assert!(
+            crate::sweep::take_lock(&config).is_ok(),
+            "lock kept the serving lock, so the service couldn't start"
+        );
     }
 }
