@@ -55,8 +55,8 @@
 //! Every operation holds one lock for the process, so nothing here is
 //! seen half done by another.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, Once, PoisonError};
 
 use hatchling_core::room::TAKE_FILE_BYTES;
@@ -133,6 +133,13 @@ const STATE: &str = "library-state";
 
 /// Serializes every operation within a broker.
 static LIBRARY: Mutex<()> = Mutex::new(());
+
+/// The conversation, by each Library's root, whose handing over was turned
+/// off after a secret was found but couldn't be written so (#505). Held in
+/// memory, and written again before anything else the Library does; until
+/// it is, the conversation is off all the same. A new conversation lets it
+/// go, as it lets a written off go.
+static OFF_OWED: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
 
 /// Whether `name` is one the Library keeps an item by: 1 to [`NAME_BYTES`]
 /// ASCII letters, digits, `.`, `_` or `-`, not starting with a dot.
@@ -803,8 +810,67 @@ impl<'k> Library<'k> {
     ) -> Result<T, String> {
         let _held = LIBRARY.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
-        let state = Self::recover(&vault)?;
+        let mut state = Self::recover(&vault)?;
+        self.settle_off(&vault, &mut state);
         then(&vault, state)
+    }
+
+    /// An off this Library owes its open conversation (#505): written now if
+    /// it can be, and off whether it can or not. One owed to an earlier
+    /// conversation is let go.
+    fn settle_off(&self, vault: &SealedVault<'_>, state: &mut State) {
+        // The Library's own lock is held: nothing owes or settles meanwhile.
+        let owed = OFF_OWED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(self.root)
+            .copied();
+        let Some(conversation) = owed else {
+            return;
+        };
+        if conversation != state.conversation {
+            self.owe_no_off();
+            return;
+        }
+        state.off = true;
+        match Self::write(vault, STATE, state) {
+            Ok(()) => {
+                self.owe_no_off();
+                tracing::info!(
+                    "handing over, turned off after a secret was found, is written off now"
+                );
+            }
+            Err(error) => {
+                tracing::error!(%error, "handing over is off, after a secret was found, but still couldn't be written so");
+            }
+        }
+    }
+
+    /// Owes an off to `conversation`, as when the Library couldn't be opened
+    /// to write it.
+    #[cfg(test)]
+    pub(crate) fn pretend_off_owed(&self, conversation: u64) {
+        OFF_OWED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(self.root.to_path_buf(), conversation);
+    }
+
+    /// Whether this Library owes an off still.
+    #[cfg(test)]
+    pub(crate) fn off_owed(&self) -> bool {
+        OFF_OWED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(self.root)
+    }
+
+    /// Lets go of the off this Library owed: written, or its conversation over.
+    fn owe_no_off(&self) {
+        OFF_OWED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(self.root);
     }
 
     /// Why `claim` wouldn't be kept now, if it wouldn't: what is asked
@@ -1170,13 +1236,31 @@ impl<'k> Library<'k> {
     ///
     /// When the Library can't be read or written.
     pub fn turn_off_in(&self, conversation: u64) -> Result<(), String> {
-        self.opened(|vault, mut state| {
+        // Off whether or not it can be written (#505): a secret was found.
+        // What isn't written is owed, held under the Library's lock so no
+        // hand-over comes between, and written before anything else.
+        let owe = || {
+            OFF_OWED
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(self.root.to_path_buf(), conversation);
+        };
+        let written = self.opened(|vault, mut state| {
             if state.conversation != conversation {
                 return Ok(());
             }
             state.off = true;
-            Self::write(vault, STATE, &state)
-        })
+            let written = Self::write(vault, STATE, &state);
+            if written.is_err() {
+                owe();
+            }
+            written
+        });
+        // And when the Library couldn't even be opened.
+        if written.is_err() {
+            owe();
+        }
+        written
     }
 
     /// Turns handing over off for the open conversation.

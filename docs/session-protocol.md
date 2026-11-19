@@ -686,7 +686,8 @@ which shows a card kept from a chat with its run's own account.
   too) and devices, pipes and sockets are left out and counted, never
   opened. A name that isn't printable ASCII without `< > : " \ | ? *`,
   starts or ends with a space, ends with a dot, is a name Windows keeps
-  for a device or acts on when its folder is shown, at any depth, or is
+  for a device (those above, and the console's `CONIN$` and `CONOUT$`, and
+  `CLOCK$`) or acts on when its folder is shown, at any depth, or is
   another's in its folder but for case, refuses the folder; so does a
   folder that isn't the one its parent listed. The words never name the
   path.
