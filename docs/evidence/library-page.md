@@ -129,6 +129,14 @@ design check, the actions, protocol and seam checks, the format check, 597
 unit tests, the live adapter's tests (257, at 100% of lines, branches and
 functions) and the operator's (16, at 100%).
 
+## Found after: still drawn per file
+
+On the release build ([folders-acceptance.md](folders-acceptance.md)), the page was still drawn once per file
+during a `.zip`: each file read is an API call, and each call puts an Activity event on the stream, which
+draws the page again. So the progress line counts without drawing, as above, but the page doesn't stay still.
+A click on another card landed during one there. Drawing at most once a frame is
+[#528](https://github.com/undergroundrap/hatchling/issues/528).
+
 ## Not here
 
 A press during a `.zip` in a real browser, and the page against a real

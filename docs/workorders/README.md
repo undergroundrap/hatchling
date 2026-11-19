@@ -77,7 +77,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [040](workorder-040-room-disk-capacity.md) | The room disk's capacity, reserved and grown | yes | QUEUED |
 | [041](workorder-041-files-between-you-and-the-agents-computer.md) | Files between you and the agent's computer: attach one in, hand one out | yes | CLOSED |
 | [042](workorder-042-keep-the-docs-and-the-queue-honest-in-ci.md) | Keep the docs and the queue honest in CI |  | DONE |
-| [043](workorder-043-folders-and-the-chats-files.md) | Folders, and the chat's files: give a project back, keep it in the chat, take what you need | yes | IN-PROGRESS |
+| [043](workorder-043-folders-and-the-chats-files.md) | Folders, and the chat's files: give a project back, keep it in the chat, take what you need | yes | CLOSED |
 
 ## Candidates
 
