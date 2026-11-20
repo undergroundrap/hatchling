@@ -47,6 +47,26 @@ The broker makes these as it runs and removes each when its cell or run ends. A 
 | `<socket>.token` | The UI or operator socket's token, minted at each start. |
 | `<broker socket>.lock` | The serving lock: a broker holds it for its life, so a second broker or `clean` refuses while it serves. |
 
+## Give the agent's room disk more room
+
+The room disk is the size it was made at (`HATCHLING_ROOM_DISK_SIZE`, 10 GiB by default), all of it reserved on the disk below. To give the agent more, grow it, with Hatchling stopped:
+
+```bash
+sudo systemctl stop hatchling
+```
+
+```bash
+sudo hatchling-broker room-disk grow 20G
+```
+
+```bash
+sudo systemctl start hatchling
+```
+
+`room-disk grow` takes a size as `HATCHLING_ROOM_DISK_SIZE` does (bytes, or a whole number with `M` or `G`), up to 1024G. It grows the image to that size, reserving the new space on the disk below, and keeps everything already on it. The file system inside grows to the new size when Hatchling starts and opens the disk. A room disk made before 0.9.0's reserving has all its space reserved when it's grown.
+
+It refuses, before anything changes: while the room disk is open (stop Hatchling first), a size no larger than the disk is now (a room disk only grows), and a size the disk below hasn't room for, saying what's free and what it needs (the new space and 1 GiB to spare). A grow cut short, by a crash or a power cut, is finished when Hatchling next starts; if the disk below has no room for it by then, it's undone, and the room disk opens at the size it was. `HATCHLING_ROOM_DISK_SIZE` is only the size a new room disk is made at: changing it doesn't grow one that's there.
+
 ## Back up and restore
 
 Rekey and tier enrollment require the room disk to be closed. If Room work
