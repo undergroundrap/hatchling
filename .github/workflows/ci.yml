@@ -493,6 +493,68 @@ jobs:
           # A provider it doesn't know is refused.
           if sudo sh "$RUNNER_TEMP/release-installer/scripts/install.sh" --from "$RUNNER_TEMP/release" --hosted elsewhere < /dev/null; then exit 1; fi
 
+      # WO-038: a release with the agent's computer's image installs it, as a
+      # Linux install from a release does. The image here is a stand-in with
+      # a real hash tree (the release workflow's installer proof uses the real
+      # one); last in the job, so nothing before depends on it.
+      - name: A release's image of the agent's computer is admitted only as the release has it
+        run: |
+          installer="$RUNNER_TEMP/release-installer/scripts/install.sh"
+          image=room-system-x86_64
+          layout() { # directory: the release, with the stand-in image and SHA256SUMS to match
+            rm -rf "$1"
+            cp -R "$RUNNER_TEMP/release" "$1"
+            cp "$RUNNER_TEMP/room-image/$image".* "$1/"
+            (cd "$1" && sha256sum -- $(ls | grep -v '^SHA256SUMS$') > SHA256SUMS)
+          }
+          mkdir "$RUNNER_TEMP/room-image"
+          head -c 4194304 /dev/urandom > "$RUNNER_TEMP/room-image/$image.squashfs"
+          salt=$(sha256sum < "$RUNNER_TEMP/room-image/$image.squashfs"); salt=${salt%% *}
+          sudo /usr/sbin/veritysetup format --no-superblock --format=1 --hash=sha256 --data-block-size=4096 \
+            --hash-block-size=4096 --salt "$salt" "$RUNNER_TEMP/room-image/$image.squashfs" \
+            "$RUNNER_TEMP/room-image/$image.verity" | awk '/^Root hash:/ {print $3}' > "$RUNNER_TEMP/room-image/$image.root-hash"
+          # veritysetup, as root, made the hash tree root's alone: it's the
+          # runner's, as a download is.
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/room-image/$image.verity"
+          chmod 644 "$RUNNER_TEMP/room-image/$image.verity"
+          printf '%s\n%s\n' "$(cat "$RUNNER_TEMP/room-image/$image.root-hash")" "$salt" > "$RUNNER_TEMP/room-image/admission"
+          admitted() { sudo cmp "$RUNNER_TEMP/room-image/admission" /etc/hatchling/room-image.admission; }
+          # The release's image: checked, then installed with its record.
+          layout "$RUNNER_TEMP/release-room"
+          sudo sh "$installer" --from "$RUNNER_TEMP/release-room" --keep-model | tee "$RUNNER_TEMP/install-room.log"
+          grep -q "checking the agent's computer's image against the release" "$RUNNER_TEMP/install-room.log"
+          grep -q "installing the verified Room image" "$RUNNER_TEMP/install-room.log"
+          admitted
+          cmp "$RUNNER_TEMP/room-image/$image.squashfs" "/usr/local/share/hatchling/room/$image.squashfs"
+          # A changed image stops the install before anything is installed.
+          layout "$RUNNER_TEMP/release-changed"
+          printf x >> "$RUNNER_TEMP/release-changed/$image.squashfs"
+          if sudo sh "$installer" --from "$RUNNER_TEMP/release-changed" --keep-model > "$RUNNER_TEMP/install-changed.log" 2>&1; then exit 1; fi
+          grep -q "a file differs from SHA256SUMS: nothing was installed" "$RUNNER_TEMP/install-changed.log"
+          admitted
+          # A folder others may write is refused, before anything is installed.
+          layout "$RUNNER_TEMP/release-open"
+          chmod 777 "$RUNNER_TEMP/release-open"
+          if sudo sh "$installer" --from "$RUNNER_TEMP/release-open" --keep-model > "$RUNNER_TEMP/install-open.log" 2>&1; then exit 1; fi
+          grep -q "nobody else's to write: nothing was installed" "$RUNNER_TEMP/install-open.log"
+          admitted
+          # An image file its SHA256SUMS doesn't list is refused, before
+          # anything is installed.
+          layout "$RUNNER_TEMP/release-unlisted"
+          grep -v "  $image.verity\$" "$RUNNER_TEMP/release-unlisted/SHA256SUMS" > "$RUNNER_TEMP/unlisted-sums"
+          cp "$RUNNER_TEMP/unlisted-sums" "$RUNNER_TEMP/release-unlisted/SHA256SUMS"
+          if sudo sh "$installer" --from "$RUNNER_TEMP/release-unlisted" --keep-model > "$RUNNER_TEMP/install-unlisted.log" 2>&1; then exit 1; fi
+          grep -q "$image.verity, part of the agent's computer's image, isn't in SHA256SUMS: nothing was installed" "$RUNNER_TEMP/install-unlisted.log"
+          admitted
+          # An image the release lists and doesn't have isn't installed, and
+          # the rest is; the image admitted before stays.
+          layout "$RUNNER_TEMP/release-missing"
+          rm "$RUNNER_TEMP/release-missing/$image.verity"
+          sudo sh "$installer" --from "$RUNNER_TEMP/release-missing" --keep-model | tee "$RUNNER_TEMP/install-missing.log"
+          grep -q "the agent's computer's image isn't all in" "$RUNNER_TEMP/install-missing.log"
+          if grep -q "installing the verified Room image" "$RUNNER_TEMP/install-missing.log"; then exit 1; fi
+          admitted
+
       - name: The services' logs
         if: always()
         run: |

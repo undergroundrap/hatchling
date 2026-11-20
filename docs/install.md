@@ -24,7 +24,7 @@ curl -fsSLO https://github.com/undergroundrap/hatchling/releases/latest/download
 sh get-hatchling.sh
 ```
 
-It checks this machine can run Hatchling, downloads the programs, the app and the installer of the release it came with, and checks every file against that release's `SHA256SUMS`: a file that differs, or isn't listed, stops it before anything is installed. Then it makes sure Ollama is here with the model (`qwen3.5:9b`, unless `--model` names another), and offers to download the model if it isn't. Without Ollama it says how to install it and stops: it doesn't install other people's software for you. Last, it runs the release's own installer, below, with `sudo`, which asks for your password once.
+It checks this machine can run Hatchling, downloads the programs, the app and the installer of the release it came with (and on x86_64, from 0.9.0, the image of the agent's computer), and checks every file against that release's `SHA256SUMS`: a file that differs, or isn't listed, stops it before anything is installed. Then it makes sure Ollama is here with the model (`qwen3.5:9b`, unless `--model` names another), and offers to download the model if it isn't. Without Ollama it says how to install it and stops: it doesn't install other people's software for you. Last, it runs the release's own installer, below, with `sudo`, which asks for your password once.
 
 It doesn't pipe anything into a shell, and it's in the release's `SHA256SUMS` and attested like every other file: `gh attestation verify get-hatchling.sh --repo undergroundrap/hatchling` checks it was built by this project's release workflow. `sh get-hatchling.sh --help` lists its options: another model, a model server other than Ollama, `--yes` to download the model without asking.
 
@@ -75,6 +75,8 @@ sudo scripts/install.sh --from release --model-endpoint http://localhost:11434/v
 ```
 
 Or, with a hosted model and none on this machine, `sudo scripts/install.sh --from release --hosted openrouter`: it asks for the key at its own prompt.
+
+**The agent's computer** (x86_64, from 0.9.0): the release's image of it, `room-system-x86_64.squashfs`, `.verity` and `.root-hash`, comes with the rest. The installer copies each into a folder only root can reach, checks the copy against the release's `SHA256SUMS`, verifies its hash tree with `veritysetup` (it adds `cryptsetup-bin`), and only then admits it. `release/` and the files in it must be yours or root's, and nobody else's to write, or nothing is installed. Without the image files, the install says so and goes on without the agent's computer. `SHA256SUMS` is what the installer trusts, for the image as for the programs: [Verifying a release](releasing.md#verifying-a-release) checks it is the release's.
 
 Before it starts anything, it runs `hatchling-broker doctor`, which checks the settings, that this machine can make the agent's cells, and that the model's server answers with the model named. If one isn't so, it stops and says what to do. Run it again after: it keeps your configuration.
 
@@ -140,7 +142,7 @@ To use a hosted model instead, with a far larger window, run `sudo hatchling-bro
 | The app's host, a system service run as you, confined by systemd (no privileges, the system read-only) | `hatchling-host@<you>.service` |
 | Five system users: the cells', the broker's, the vault keeper's, the egress authority's, and the Room's (the agent's computer runs as it) | `/etc/sysusers.d/hatchling.conf` |
 | `cryptsetup-bin`, with `apt-get`, when `cryptsetup` isn't there: the agent's computer keeps its files on an encrypted disk. Without it the agent's computer is off and the rest works | the system's packages |
-| The agent's computer's image and the record that admits it, from a Windows Setup bundle only | `/usr/local/share/hatchling/room/`, `/etc/hatchling/room-image.admission` |
+| The agent's computer's image and the record that admits it, from a release on x86_64 or Windows Setup, once its checksums and hash tree verify | `/usr/local/share/hatchling/room/`, `/etc/hatchling/room-image.admission` |
 | Its state: the vault, schedules, sockets | `/var/lib/hatchling` ([what's kept](storage.md)) |
 
 With systemd 254 or later, the broker gets a cgroup of its own to give each cell, so each cell's processes, memory and CPU are bounded as a whole.

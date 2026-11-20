@@ -74,7 +74,7 @@ It checks every file against the release's `SHA256SUMS` before it changes anythi
 
 `--keep-model` takes no model and no `--force`: it leaves your configuration, your model and its server alone. When the new version keeps something by default that your configuration doesn't name at all, it adds that setting, copies the old file beside it (`hatchling.env.before-<date>`), and says so. A setting you set empty stays off.
 
-**The agent's computer** (from 0.9) needs a system image, and today only Windows Setup installs it. An install updated from a terminal keeps working as it did, without the agent's computer.
+**The agent's computer** (from 0.9) needs a system image. On x86_64 the release has it, as `room-system-x86_64.squashfs`, `.verity` and `.root-hash`: `gh release download` gets them with the rest, and `install.sh` installs the image once each file matches the release's `SHA256SUMS` and its hash tree verifies. The folder they're in, and each of them, must be yours or root's, and nobody else's to write; one that is, or a file that differs, stops the update before anything changes. With the image files missing, or no `veritysetup` here, the update says so and goes on without the agent's computer, keeping any image it had. On aarch64 there's no image yet.
 
 ## From your own build, or one from CI
 

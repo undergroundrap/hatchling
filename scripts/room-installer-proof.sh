@@ -60,7 +60,7 @@ install_room() {
         FROM=$1
         TARGET=x86_64-unknown-linux-gnu
         . "$2"
-        room_prepare
+        room_prepare windows
         if [ "$3" = interrupt ]; then
             mv() {
                 case "$4" in *.verity) return 1 ;; esac
@@ -100,7 +100,7 @@ wrong=$(printf '%064d' 0)
 printf '%s\n' "$wrong" > "$payload/$prefix.root-hash"
 refuses "$prefix.root-hash differs from the Setup manifest"
 manifest
-refuses 'the bundled Room image failed verity verification'
+refuses "the Room's image failed verity verification"
 cp "$artifacts/$prefix.root-hash" "$payload/$prefix.root-hash"
 cp "$proof/bundled-manifest" "$payload/SHA256SUMS"
 grep -F "$prefix.verity" "$proof/bundled-manifest" >> "$payload/SHA256SUMS"
@@ -119,4 +119,98 @@ echo 'Interrupted publication left Room admission closed'
 install_room
 record_ok
 echo 'Retry restored verified admission'
+
+# The release path (WO-038): a release's files in a directory of the
+# owner's, as get-hatchling.sh leaves them, checked against the release's
+# SHA256SUMS.
+# A uid that isn't root's: the proof's /etc names no users.
+owner=65534
+release=$proof/release
+mkdir -- "$release"
+release_files() {
+    local suffix
+    rm -rf -- "${release:?}"/*
+    for suffix in squashfs verity root-hash; do
+        cp -- "$artifacts/$prefix.$suffix" "$release/"
+    done
+    (cd "$release"; sha256sum -- "$prefix.squashfs" "$prefix.verity" "$prefix.root-hash" > SHA256SUMS)
+    chown -R "$owner" "$release"
+    chmod 755 "$release"
+    chmod 644 "$release"/*
+}
+install_release() {
+    /bin/sh -eu -c '
+        fail() { printf "%s\n" "$*" >&2; exit 1; }
+        FROM=$1 OWNER=$3 OWNER_NAME=nobody
+        TARGET=x86_64-unknown-linux-gnu
+        . "$2"
+        if [ "$4" = swap ]; then
+            # Once the manifest is staged, the release is swapped for a
+            # changed image and a manifest that matches it.
+            install() {
+                command install "$@"
+                case "$4" in
+                    */SHA256SUMS)
+                        printf x >> "$FROM/room-system-x86_64.squashfs"
+                        (cd "$FROM" && sha256sum -- room-system-x86_64.squashfs room-system-x86_64.verity \
+                            room-system-x86_64.root-hash > SHA256SUMS)
+                        ;;
+                esac
+            }
+        fi
+        room_prepare release
+        room_publish
+    ' proof "$release" "$helper" "$owner" "${1:-normal}"
+}
+release_refuses() {
+    local expected=$1
+    if install_release "${2:-normal}" >"$proof/refused.log" 2>&1; then
+        echo "installer accepted the refused release" >&2
+        exit 1
+    fi
+    cat "$proof/refused.log"
+    grep -Fq -- "$expected" "$proof/refused.log"
+    record_ok
+    [[ $(stat -c '%i' "$record") = "$release_record" && $(stat -c '%i' "$room/$prefix.squashfs") = "$release_image" ]]
+}
+
+release_files
+install_release
+record_ok
+release_record=$(stat -c '%i' "$record")
+release_image=$(stat -c '%i' "$room/$prefix.squashfs")
+echo 'A release in its owner'"'"'s directory installed its verified image'
+
+printf x >> "$release/$prefix.squashfs"
+release_refuses "$prefix.squashfs differs from the release's SHA256SUMS"
+release_files
+printf '%064d\n' 0 > "$release/$prefix.root-hash"
+(cd "$release"; sha256sum -- "$prefix.squashfs" "$prefix.verity" "$prefix.root-hash" > SHA256SUMS)
+release_refuses "the Room's image failed verity verification"
+release_files
+rm -- "$release/$prefix.verity"
+release_refuses "is missing a regular $prefix.verity"
+release_files
+grep -v "  $prefix.verity\$" "$release/SHA256SUMS" > "$proof/sums" && cat "$proof/sums" > "$release/SHA256SUMS"
+release_refuses "$prefix.verity needs one checksum in the release's SHA256SUMS"
+release_files
+chmod 777 "$release"
+release_refuses "nobody else's to write"
+release_files
+chmod 666 "$release/SHA256SUMS"
+release_refuses "the release's SHA256SUMS must be a file of root's or nobody's"
+release_files
+chown "$((owner - 1))" "$release/$prefix.squashfs"
+release_refuses "$prefix.squashfs must be root's or nobody's"
+release_files
+mv -- "$release/$prefix.squashfs" "$release/real.squashfs"
+ln -s real.squashfs "$release/$prefix.squashfs"
+release_refuses "is missing a regular $prefix.squashfs"
+release_files
+release_refuses "$prefix.squashfs differs from the release's SHA256SUMS" swap
+echo 'A changed, missing, unlisted, open or linked release image, or one swapped after the check, was refused, and the admitted image kept'
+release_files
+install_release
+record_ok
+echo 'The release installed again once its files were right'
 PROOF
