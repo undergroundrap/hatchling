@@ -170,6 +170,16 @@ impl Grant {
     }
 }
 
+/// How long a grant in force covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cover {
+    /// Until the owner revokes it.
+    Always,
+    /// Until this time, in seconds since the epoch by the broker's clock: a
+    /// day grant's end.
+    Until(i64),
+}
+
 /// The store's entry: every grant, and the latest time the owner's
 /// operations have seen.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,13 +360,37 @@ impl<'k> SiteGrants<'k> {
     ///
     /// Why the store can't be read.
     pub fn covers(&self, key: &GrantKey, now: i64) -> Result<bool, String> {
+        self.cover(key, now).map(|cover| cover.is_some())
+    }
+
+    /// The grant in force at `now` that covers `key`, as how long it
+    /// covers; `None` when none does.
+    ///
+    /// # Errors
+    ///
+    /// Why the store can't be read.
+    pub fn cover(&self, key: &GrantKey, now: i64) -> Result<Option<Cover>, String> {
         self.opened(|_, kept| {
             let back = went_back(self.root, now, kept.high_water);
             Ok(kept
                 .grants
                 .iter()
-                .any(|grant| grant.key() == *key && grant.in_force(now, back)))
+                .find(|grant| grant.key() == *key && grant.in_force(now, back))
+                .map(|grant| match grant.scope {
+                    Scope::Always => Cover::Always,
+                    Scope::Day => Cover::Until(grant.made_at + DAY_SECS),
+                }))
         })
+    }
+
+    /// The grant in force at `now` that covers reading `site`, as how long
+    /// it covers; `None` when none does.
+    ///
+    /// # Errors
+    ///
+    /// Why the store can't be read.
+    pub fn covering(&self, site: &str, now: i64) -> Result<Option<Cover>, String> {
+        GrantKey::site(site).map_or(Ok(None), |key| self.cover(&key, now))
     }
 
     /// Whether a grant in force at `now` covers reading `site`.
@@ -613,6 +647,33 @@ mod tests {
         assert!(again.holds("https://b.example:8443", T + 5).unwrap());
         let shown = format!("{again:?}");
         assert!(shown.starts_with("SiteGrants { root: "), "{shown}");
+    }
+
+    /// A grant says how long it covers: always, or to its day's end.
+    #[test]
+    fn a_grant_says_how_long_it_covers() {
+        let (config, _scratch, master) = kept("cover");
+        let grants = SiteGrants::of(&config, &master).unwrap();
+        grants.allow("https://always.example", T).unwrap();
+        grants
+            .grant(&key("https://day.example"), Scope::Day, T)
+            .unwrap();
+        assert_eq!(
+            grants.covering("https://always.example", T + 1).unwrap(),
+            Some(Cover::Always)
+        );
+        assert_eq!(
+            grants.covering("https://day.example", T + 1).unwrap(),
+            Some(Cover::Until(T + DAY_SECS))
+        );
+        assert_eq!(
+            grants
+                .covering("https://day.example", T + DAY_SECS)
+                .unwrap(),
+            None
+        );
+        assert_eq!(grants.covering("https://other.example", T).unwrap(), None);
+        assert_eq!(grants.covering("https://Day.example", T).unwrap(), None);
     }
 
     /// A day grant covers for [`DAY_SECS`] from when it was made, and not

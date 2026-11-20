@@ -343,6 +343,9 @@ pub struct BrowserSession {
     /// The sites the signed-in profile holds, which the owner keeps with
     /// it: a site's revoke doesn't reach them.
     kept: BTreeSet<String>,
+    /// Each site a day grant gave the browser, with the grant's end: it's
+    /// let go then (WO-036).
+    ends: BTreeMap<String, crate::browser_proxy::End>,
 }
 
 /// A page's elements, by id.
@@ -447,6 +450,7 @@ impl BrowserSession {
             reach: None,
             seen: BTreeMap::new(),
             kept: BTreeSet::new(),
+            ends: BTreeMap::new(),
         }
     }
 
@@ -884,6 +888,7 @@ impl BrowserSession {
         for site in std::mem::take(&mut self.once) {
             let closed = self.sites.revoke(&site);
             self.seen.remove(&site);
+            self.ends.remove(&site);
             tracing::debug!(%site, closed, "a site held once is left");
         }
         self.visit = None;
@@ -891,14 +896,33 @@ impl BrowserSession {
 
     /// Lets go of every site the owner revoked since a yes gave it to the
     /// browser, joining `config`'s revokes first if it hasn't
-    /// ([`crate::grant_reach`]). A browser on a revoked site's page is
-    /// closed, so nothing more is done on it: the site, if one was.
+    /// ([`crate::grant_reach`]), and of every site whose day grant ended. A
+    /// browser on such a site's page is closed, so nothing more is done on
+    /// it: why, if one was.
     fn revokes_taken(&mut self, config: &Config) -> Option<String> {
         if self.reach.is_none() {
             self.reach = crate::grant_reach::join(config);
         }
-        let revoked = self.reach.as_ref()?.take();
+        let ended: Vec<String> = self
+            .ends
+            .iter()
+            .filter(|(_, end)| end.come())
+            .map(|(destination, _)| destination.clone())
+            .collect();
         let mut closed = None;
+        for destination in ended {
+            if self.let_go(&destination) {
+                closed = Some(format!(
+                    "the owner's 24-hour grant for {} ended",
+                    site_of(&destination)
+                ));
+            }
+        }
+        let revoked = self
+            .reach
+            .as_ref()
+            .map(|reach| reach.take())
+            .unwrap_or_default();
         for (site, number) in revoked {
             let Ok(url) = WebUrl::parse(&site) else {
                 continue;
@@ -914,20 +938,43 @@ impl BrowserSession {
             {
                 continue;
             }
-            self.seen.remove(&destination);
-            self.once.remove(&destination);
-            let _ = self.sites.revoke(&destination);
-            if self.visit.as_deref() == Some(destination.as_str()) {
-                if self.is_open() {
-                    self.end(BrowserState::Completed);
-                }
-                self.leave();
-                self.page = None;
-                self.typed.clear();
-                closed = Some(site);
+            if self.let_go(&destination) {
+                closed = Some(format!("the owner revoked {site}"));
             }
         }
         closed
+    }
+
+    /// Lets go of `destination`: its tunnels, its hold for the visit, and,
+    /// if the browser is on its page, the browser, closed. Whether it was.
+    fn let_go(&mut self, destination: &str) -> bool {
+        self.seen.remove(destination);
+        self.once.remove(destination);
+        self.ends.remove(destination);
+        let _ = self.sites.revoke(destination);
+        if self.visit.as_deref() != Some(destination) {
+            return false;
+        }
+        if self.is_open() {
+            self.end(BrowserState::Completed);
+        }
+        self.leave();
+        self.page = None;
+        self.typed.clear();
+        true
+    }
+
+    /// Holds `destination` for the browser by `yes`: until a day grant's
+    /// end, if that's what it is.
+    fn hold(&mut self, destination: &str, yes: crate::web_ops::Yes) {
+        if let Some(end) = yes.until {
+            self.sites.grant_until(destination, end);
+            self.ends.insert(destination.to_owned(), end);
+        } else {
+            self.sites.grant(destination);
+            self.ends.remove(destination);
+        }
+        self.seen.insert(destination.to_owned(), yes.seen);
     }
 
     /// Has the owner's revokes reach the browser's proxy, at once, but for
@@ -1223,10 +1270,10 @@ pub fn handle_browser_op(
     if browser.owner_stopped() {
         return BrowserResult::Stopped;
     }
-    if let Some(site) = browser.revokes_taken(config) {
+    if let Some(why) = browser.revokes_taken(config) {
         if !matches!(op, BrowserOp::Open { .. }) {
             return refused(&format!(
-                "the owner revoked {site}, so the browser on its page was closed: open a page to go on"
+                "{why}, so the browser on its page was closed: open a page to go on"
             ));
         }
     }
@@ -1519,6 +1566,7 @@ fn open(
         browser.leave();
         browser.sites = Sites::default();
         browser.seen.clear();
+        browser.ends.clear();
     } else if !same_visit {
         browser.leave();
     }
@@ -1526,12 +1574,14 @@ fn open(
     if let Some(profile) = &profile {
         for site in &profile.sites {
             browser.sites.grant(site);
+            browser.ends.remove(site);
             browser.kept.insert(site.clone());
         }
     }
-    browser.sites.grant(&destination);
-    if let Some(seen) = yes {
-        browser.seen.insert(destination.clone(), seen);
+    // Without a yes, it's the same visit or a profile's site: held as it
+    // was, to its end if it has one.
+    if let Some(yes) = yes {
+        browser.hold(&destination, yes);
     }
     browser.watched();
     if profile.is_none() && !web.holds(url.origin()) {
@@ -1705,18 +1755,25 @@ fn allow_site(
     if config.web.refuses(url.origin().host()) {
         return refused("the operator refuses this site");
     }
-    let seen = match crate::web_ops::allow(config, keys, web, &url, reason, true) {
-        Ok(seen) => seen,
+    let yes = match crate::web_ops::allow(config, keys, web, &url, reason, true) {
+        Ok(yes) => yes,
         Err(answer) => return from_web(answer),
     };
-    browser.sites.grant(site);
-    browser.seen.insert(site.to_owned(), seen);
+    browser.hold(site, yes);
     if !web.holds(url.origin()) {
         browser.once.insert(site.to_owned());
     }
     BrowserResult::Allowed {
         site: site.to_owned(),
     }
+}
+
+/// The site, as the owner sees it, that `destination` (`host:port`) is.
+fn site_of(destination: &str) -> String {
+    destination.strip_suffix(":443").map_or_else(
+        || format!("https://{destination}"),
+        |host| format!("https://{host}"),
+    )
 }
 
 /// A fresh browser cell's id.
@@ -1898,6 +1955,7 @@ fn refused(reason: &str) -> BrowserResult {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
 
     use hatchling_core::browser::PageSnapshot;
     use hatchling_core::ui::Decision;
@@ -4327,6 +4385,65 @@ mod tests {
         assert!(!sessions.1.is_open(), "closed as the op ended");
         assert_eq!(sessions.1.visit, None);
         assert!(!sessions.1.sites().holds("a.example:443"));
+        drop(sessions);
+    }
+
+    /// A site a day grant opened is held to the grant's end (WO-036): the
+    /// visit goes on until then, its proxy refuses it from then, and the
+    /// browser on its page is closed, asking again to go on.
+    #[test]
+    fn a_day_grants_site_is_held_to_its_end() {
+        let scratch = crate::api_auth::tests::scratch("browser-day-end");
+        let mut config = web_config("browser-day-end");
+        config.web.grants = scratch.0.join("sites");
+        let keys = Arc::new(MasterKey::generate().unwrap());
+        let now = hatchling_scheduler::Timestamp::now().as_second();
+        crate::site_grants::SiteGrants::of(&config, keys.as_ref())
+            .unwrap()
+            .grant(
+                &crate::site_grants::GrantKey::site("https://a.example").unwrap(),
+                crate::site_grants::Scope::Day,
+                now - crate::site_grants::DAY_SECS + 3_600,
+            )
+            .unwrap();
+        let fake = Fake::default();
+        let (sessions, answer) = ask_keyed(
+            &config,
+            &keys,
+            session("t", &fake),
+            &open("https://a.example/"),
+        );
+        assert_eq!(answer, page("https://a.example/"), "covered, not asked");
+        let end = sessions
+            .1
+            .ends
+            .get("a.example:443")
+            .copied()
+            .expect("held to an end");
+        assert_eq!(sessions.1.sites().end_of("a.example:443"), Some(end));
+        assert!(end.monotonic > Instant::now() + Duration::from_secs(3_500));
+        assert_eq!(end.wall, now + 3_600);
+        // The same visit again: held to the same end, not past it.
+        let (mut sessions, answer) =
+            ask_keyed(&config, &keys, sessions, &open("https://a.example/x"));
+        assert_eq!(answer, page("https://a.example/x"));
+        assert_eq!(sessions.1.ends.get("a.example:443"), Some(&end));
+        assert_eq!(sessions.1.sites().end_of("a.example:443"), Some(end));
+        // The end comes.
+        // Past its end by the broker's clock, as after the host slept: the
+        // monotonic clock didn't count the sleep.
+        let ended = crate::browser_proxy::End {
+            monotonic: end.monotonic,
+            wall: crate::browser_proxy::wall_now() - 1,
+        };
+        sessions.1.ends.insert(String::from("a.example:443"), ended);
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &BrowserOp::Read {});
+        let closed = matches!(&answer, BrowserResult::Refused { reason } if reason.contains("24-hour grant for https://a.example ended"));
+        assert!(closed, "{answer:?}");
+        assert!(!sessions.1.is_open());
+        assert_eq!(sessions.1.visit, None);
+        assert!(!sessions.1.sites().holds("a.example:443"));
+        assert!(sessions.1.ends.is_empty());
         drop(sessions);
     }
 
