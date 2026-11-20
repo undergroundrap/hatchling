@@ -460,21 +460,6 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             }
         ]
     },
-    "AllowedSite": {
-        "properties": {
-            "allowed_at": {
-                "type": "string"
-            },
-            "site": {
-                "type": "string"
-            }
-        },
-        "required": [
-            "site",
-            "allowed_at"
-        ],
-        "type": "object"
-    },
     "ApiOutcome": {
         "oneOf": [
             {
@@ -514,7 +499,7 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
-                "const": "manage_sites",
+                "const": "manage_grants",
                 "type": "string"
             },
             {
@@ -1218,9 +1203,6 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     },
     "ConfirmationRequest": {
         "properties": {
-            "always": {
-                "type": "boolean"
-            },
             "approve": {
                 "type": [
                     "string",
@@ -1251,12 +1233,21 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 },
                 "type": "array"
             },
+            "grant_key": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
             "revision": {
                 "minimum": 0,
                 "type": "integer"
             },
-            "session": {
-                "type": "boolean"
+            "scopes": {
+                "items": {
+                    "$ref": "#/$defs/GrantScope"
+                },
+                "type": "array"
             },
             "summary": {
                 "type": "string"
@@ -1267,7 +1258,8 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "revision",
             "summary",
             "digest",
-            "fields"
+            "fields",
+            "scopes"
         ],
         "type": "object"
     },
@@ -1303,6 +1295,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "approve_session",
+                "type": "string"
+            },
+            {
+                "const": "approve_day",
                 "type": "string"
             },
             {
@@ -2180,6 +2176,149 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "updated_at"
         ],
         "type": "object"
+    },
+    "GrantKind": {
+        "oneOf": [
+            {
+                "const": "web.visit",
+                "type": "string"
+            }
+        ]
+    },
+    "GrantOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "key": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "revoke",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "key"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "GrantResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "grants": {
+                        "items": {
+                            "$ref": "#/$defs/StandingGrant"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "grants"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "revoked",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "GrantScope": {
+        "oneOf": [
+            {
+                "const": "once",
+                "type": "string"
+            },
+            {
+                "const": "task",
+                "type": "string"
+            },
+            {
+                "const": "day",
+                "type": "string"
+            },
+            {
+                "const": "always",
+                "type": "string"
+            }
+        ]
+    },
+    "GrantState": {
+        "oneOf": [
+            {
+                "const": "covering",
+                "type": "string"
+            },
+            {
+                "const": "clock_behind",
+                "type": "string"
+            }
+        ]
     },
     "Handoff": {
         "oneOf": [
@@ -4121,109 +4260,6 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
-    "SiteOp": {
-        "oneOf": [
-            {
-                "properties": {
-                    "op": {
-                        "const": "list",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "op"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "op": {
-                        "const": "revoke",
-                        "type": "string"
-                    },
-                    "site": {
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "op",
-                    "site"
-                ],
-                "type": "object"
-            }
-        ]
-    },
-    "SiteResult": {
-        "oneOf": [
-            {
-                "properties": {
-                    "result": {
-                        "const": "listed",
-                        "type": "string"
-                    },
-                    "sites": {
-                        "items": {
-                            "$ref": "#/$defs/AllowedSite"
-                        },
-                        "type": "array"
-                    }
-                },
-                "required": [
-                    "result",
-                    "sites"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "revoked",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "not_found",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "off",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            },
-            {
-                "properties": {
-                    "result": {
-                        "const": "failed",
-                        "type": "string"
-                    }
-                },
-                "required": [
-                    "result"
-                ],
-                "type": "object"
-            }
-        ]
-    },
     "SiteSignIn": {
         "properties": {
             "created_at": {
@@ -4335,6 +4371,43 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "object"
             }
         ]
+    },
+    "StandingGrant": {
+        "properties": {
+            "ends_at": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "key": {
+                "type": "string"
+            },
+            "kind": {
+                "$ref": "#/$defs/GrantKind"
+            },
+            "made_at": {
+                "type": "string"
+            },
+            "scope": {
+                "$ref": "#/$defs/GrantScope"
+            },
+            "state": {
+                "$ref": "#/$defs/GrantState"
+            },
+            "target": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "key",
+            "kind",
+            "target",
+            "scope",
+            "made_at",
+            "state"
+        ],
+        "type": "object"
     },
     "Suggestion": {
         "properties": {
@@ -4902,11 +4975,11 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
-                        "const": "manage_sites",
+                        "const": "manage_grants",
                         "type": "string"
                     },
                     "op": {
-                        "$ref": "#/$defs/SiteOp"
+                        "$ref": "#/$defs/GrantOp"
                     }
                 },
                 "required": [
@@ -5598,6 +5671,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "decision": {
                         "$ref": "#/$defs/Decision"
                     },
+                    "kept": {
+                        "type": [
+                            "boolean",
+                            "null"
+                        ]
+                    },
                     "result": {
                         "const": "decided",
                         "type": "string"
@@ -5649,10 +5728,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "outcome": {
-                        "$ref": "#/$defs/SiteResult"
+                        "$ref": "#/$defs/GrantResult"
                     },
                     "result": {
-                        "const": "sites",
+                        "const": "grants",
                         "type": "string"
                     }
                 },

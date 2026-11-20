@@ -2,8 +2,8 @@
  * A live implementation must return authoritative requests, validate the exact
  * revision and scope, deduplicate attempts, and persist decisions server-side.
  * Neither an optimistic click nor a lost response is an approval. */
-export type ApprovalDecision = 'once' | 'task' | 'always' | 'deny';
-export type ApprovalStatus = 'pending' | 'allowed-once' | 'allowed-task' | 'allowed-always' | 'denied' | 'expired' | 'cancelled';
+export type ApprovalDecision = 'once' | 'task' | 'day' | 'always' | 'deny';
+export type ApprovalStatus = 'pending' | 'allowed-once' | 'allowed-task' | 'allowed-day' | 'allowed-always' | 'denied' | 'expired' | 'cancelled';
 /** One field of what a request asks, and who stated it: the broker resolved it, or the agent wrote it. */
 export interface ReviewField {
     readonly label: string;
@@ -20,7 +20,9 @@ export interface TaskApproval {
     readonly description: string;
     readonly resource: string;
     readonly detail: string;
-    readonly scopes: readonly ('once' | 'task' | 'always')[];
+    readonly scopes: readonly ('once' | 'task' | 'day' | 'always')[];
+    /** The grant a standing yes would make, as its source names it: `web.visit:https://a.example`. */
+    readonly grantKey?: string;
     /** What approving it does, when its source says: the one approve button's words, for Allow once. */
     readonly approveLabel?: string;
     readonly status: ApprovalStatus;

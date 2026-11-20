@@ -4347,12 +4347,12 @@ mod tests {
         config: &Config,
         keys: &dyn OpensStores,
         site: &str,
-    ) -> hatchling_core::ui::SiteResult {
-        crate::site_grants::handle_site_op(
+    ) -> hatchling_core::ui::GrantResult {
+        crate::site_grants::handle_grant_op(
             config,
             keys,
-            &hatchling_core::ui::SiteOp::Revoke {
-                site: site.to_owned(),
+            &hatchling_core::ui::GrantOp::Revoke {
+                key: format!("web.visit:{site}"),
             },
             hatchling_scheduler::Timestamp::now().as_second(),
         )

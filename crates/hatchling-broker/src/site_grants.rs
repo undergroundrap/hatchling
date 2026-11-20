@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use hatchling_core::SecretName;
-use hatchling_core::ui::{AllowedSite, SiteOp, SiteResult};
+use hatchling_core::ui::{GrantKind, GrantOp, GrantResult, GrantScope, GrantState, StandingGrant};
 use hatchling_egress::web::WebUrl;
 use hatchling_scheduler::Timestamp;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
@@ -113,6 +113,18 @@ impl GrantKey {
     pub fn target(&self) -> &str {
         &self.target
     }
+
+    /// The key `key` names, as [`fmt::Display`] writes one
+    /// (`web.visit:https://a.example`): `None` for any other spelling, kind
+    /// or target.
+    #[must_use]
+    pub fn parse(key: &str) -> Option<Self> {
+        let (kind, target) = key.split_once(':')?;
+        if kind != Kind::WebVisit.as_str() {
+            return None;
+        }
+        Self::site(target)
+    }
 }
 
 impl fmt::Display for GrantKey {
@@ -168,6 +180,20 @@ impl Grant {
             Scope::Day => !back && self.made_at <= now && now < self.made_at + DAY_SECS,
         }
     }
+}
+
+/// A grant as the owner lists it ([`SiteGrants::standing`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    /// What it allows.
+    pub key: GrantKey,
+    /// How long.
+    pub scope: Scope,
+    /// When the owner made it, in seconds since the epoch.
+    pub made_at: i64,
+    /// Whether it covers now: a day grant the clock check holds back
+    /// doesn't.
+    pub covering: bool,
 }
 
 /// How long a grant in force covers.
@@ -353,6 +379,32 @@ impl<'k> SiteGrants<'k> {
         })
     }
 
+    /// Every grant not ended at `now`, oldest first, each with its key, how
+    /// long it lasts, when it was made, and whether it covers now: a day
+    /// grant the clock check holds back is listed, so the owner can revoke
+    /// it, as covering nothing.
+    ///
+    /// # Errors
+    ///
+    /// Why the store can't be read.
+    pub fn standing(&self, now: i64) -> Result<Vec<Listed>, String> {
+        self.opened(|_, kept| {
+            let back = went_back(self.root, now, kept.high_water);
+            let latest = now.max(kept.high_water);
+            Ok(kept
+                .grants
+                .into_iter()
+                .filter(|grant| grant.scope == Scope::Always || latest < grant.made_at + DAY_SECS)
+                .map(|grant| Listed {
+                    key: grant.key(),
+                    scope: grant.scope,
+                    made_at: grant.made_at,
+                    covering: grant.in_force(now, back),
+                })
+                .collect())
+        })
+    }
+
     /// Whether a grant in force at `now` covers `key`. Checking writes
     /// nothing.
     ///
@@ -485,72 +537,105 @@ impl<'k> SiteGrants<'k> {
     }
 }
 
-/// The owner's `op` on the allowed sites, under `config`, with `keys`, at
-/// `now`.
+/// `at`, seconds since the epoch, as RFC 3339.
+fn rfc3339(at: i64) -> String {
+    Timestamp::from_second(at)
+        .map(|at| at.to_string())
+        .unwrap_or_default()
+}
+
+/// A grant as the owner's app is shown it.
+fn shown(listed: &Listed) -> StandingGrant {
+    let (scope, ends_at) = match listed.scope {
+        Scope::Always => (GrantScope::Always, None),
+        Scope::Day => (GrantScope::Day, Some(rfc3339(listed.made_at + DAY_SECS))),
+    };
+    StandingGrant {
+        key: listed.key.to_string(),
+        kind: match listed.key.kind() {
+            Kind::WebVisit => GrantKind::WebVisit,
+        },
+        target: listed.key.target().to_owned(),
+        scope,
+        made_at: rfc3339(listed.made_at),
+        ends_at,
+        state: if listed.covering {
+            GrantState::Covering
+        } else {
+            GrantState::ClockBehind
+        },
+    }
+}
+
+/// The owner's `op` on their standing grants, under `config`, with
+/// `keys`, at `now`.
 #[must_use]
-pub fn handle_site_op(
+pub fn handle_grant_op(
     config: &Config,
     keys: &dyn OpensStores,
-    op: &SiteOp,
+    op: &GrantOp,
     now: i64,
-) -> SiteResult {
+) -> GrantResult {
     let Some(grants) = SiteGrants::of(config, keys) else {
-        return SiteResult::Off;
+        return GrantResult::Off;
     };
     let answer = match op {
-        SiteOp::List => grants.list(now).map(|sites| SiteResult::Listed {
-            sites: sites
-                .into_iter()
-                .map(|(site, at)| AllowedSite {
-                    site,
-                    allowed_at: Timestamp::from_second(at)
-                        .map(|at| at.to_string())
-                        .unwrap_or_default(),
-                })
-                .collect(),
+        GrantOp::List => grants.standing(now).map(|listed| GrantResult::Listed {
+            grants: listed.iter().map(shown).collect(),
         }),
-        SiteOp::Revoke { site } => {
-            let revoked = grants.revoke(site, now).map(|revoked| {
+        GrantOp::Revoke { key } => {
+            let Some(key) = GrantKey::parse(key) else {
+                return GrantResult::NotFound;
+            };
+            let revoked = grants.revoke(key.target(), now).map(|revoked| {
                 if revoked {
-                    SiteResult::Revoked
+                    GrantResult::Revoked
                 } else {
-                    SiteResult::NotFound
+                    GrantResult::NotFound
                 }
             });
             // Whatever the store held, the site is let go by every running
             // task: its approvals not yet used, the sites held for a task,
             // and its browser (WO-036).
-            crate::grant_reach::revoke(config, site);
+            crate::grant_reach::revoke(config, key.target());
             revoked
         }
     };
     answer.unwrap_or_else(|error| {
-        tracing::error!(%error, "a site operation failed");
-        SiteResult::Failed
+        tracing::error!(%error, "a grants operation failed");
+        GrantResult::Failed
     })
 }
 
-/// Keeps the owner's choice on a site's approval, made at `now` (#542).
+/// Keeps the owner's choice on a site's approval, made at `now` (#542,
+/// WO-036): whether it was a standing one, kept.
 ///
-/// *Allow always* is a grant from the moment the owner decides, whatever
-/// becomes of the session that asked. Anything else keeps nothing here.
+/// *Allow for 24 hours* and *Allow always* are grants from the moment the
+/// owner decides, whatever becomes of the session that asked. Anything else
+/// keeps nothing here.
 ///
 /// # Errors
 ///
-/// Why an always grant couldn't be kept.
+/// Why a standing grant couldn't be kept.
 pub fn keep_decision(
     config: &Config,
     keys: &dyn OpensStores,
     site: &str,
     decision: hatchling_core::ui::Decision,
     now: i64,
-) -> Result<(), String> {
-    if decision != hatchling_core::ui::Decision::ApproveAlways {
-        return Ok(());
-    }
+) -> Result<bool, String> {
+    let scope = match decision {
+        hatchling_core::ui::Decision::ApproveDay => Scope::Day,
+        hatchling_core::ui::Decision::ApproveAlways => Scope::Always,
+        hatchling_core::ui::Decision::Approve
+        | hatchling_core::ui::Decision::ApproveSession
+        | hatchling_core::ui::Decision::Deny => return Ok(false),
+    };
     let grants = SiteGrants::of(config, keys)
-        .ok_or_else(|| String::from("no store is given for always-allowed sites"))?;
-    grants.allow(site, now)
+        .ok_or_else(|| String::from("no store is given for standing grants"))?;
+    let key = GrantKey::site(site).ok_or_else(|| format!("{site:?} isn't a site"))?;
+    grants.grant(&key, scope, now)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1040,50 +1125,128 @@ mod tests {
         );
     }
 
-    /// The owner's operations: listed with when, revoked, not found; off
-    /// with no store; failed when the store can't be read.
+    /// A key is read back only in the one spelling a key is written in.
+    #[test]
+    fn a_key_is_read_only_as_it_is_written() {
+        let written = key("https://a.example:8443");
+        assert_eq!(GrantKey::parse(&written.to_string()), Some(written));
+        assert_eq!(
+            GrantKey::parse("web.visit:https://a.example"),
+            Some(key("https://a.example"))
+        );
+        for other in [
+            "WEB.VISIT:https://a.example",
+            "web.visit:https://a.example:443",
+            "web.visit:https://a.example/",
+            "web.visit:https://A.example",
+            " web.visit:https://a.example",
+            "web.visit:https://a.example ",
+            "web.visit: https://a.example",
+            "web.fetch:https://a.example",
+            "web.visit:http://a.example",
+            "web.visit:",
+            "web.visit",
+            "https://a.example",
+            "",
+        ] {
+            assert_eq!(GrantKey::parse(other), None, "{other:?}");
+        }
+    }
+
+    /// The owner's operations: listed by key, scope, made and ending, and
+    /// whether each covers; revoked by key, not found; off with no store;
+    /// failed when the store can't be read.
     #[test]
     fn the_owners_operations() {
         let (config, _scratch, master) = kept("ops");
         assert_eq!(
-            handle_site_op(&config, &master, &SiteOp::List, T),
-            SiteResult::Listed { sites: Vec::new() }
+            handle_grant_op(&config, &master, &GrantOp::List, T),
+            GrantResult::Listed { grants: Vec::new() }
         );
-        SiteGrants::of(&config, &master)
-            .unwrap()
-            .allow("https://a.example", T)
+        let grants = SiteGrants::of(&config, &master).unwrap();
+        grants.allow("https://a.example", T).unwrap();
+        grants
+            .grant(&key("https://day.example"), Scope::Day, T + 1)
             .unwrap();
         assert_eq!(
-            handle_site_op(&config, &master, &SiteOp::List, T),
-            SiteResult::Listed {
-                sites: vec![AllowedSite {
-                    site: String::from("https://a.example"),
-                    allowed_at: String::from("2026-09-21T14:13:20Z"),
-                }]
+            handle_grant_op(&config, &master, &GrantOp::List, T + 2),
+            GrantResult::Listed {
+                grants: vec![
+                    StandingGrant {
+                        key: String::from("web.visit:https://a.example"),
+                        kind: GrantKind::WebVisit,
+                        target: String::from("https://a.example"),
+                        scope: GrantScope::Always,
+                        made_at: String::from("2026-09-21T14:13:20Z"),
+                        ends_at: None,
+                        state: GrantState::Covering,
+                    },
+                    StandingGrant {
+                        key: String::from("web.visit:https://day.example"),
+                        kind: GrantKind::WebVisit,
+                        target: String::from("https://day.example"),
+                        scope: GrantScope::Day,
+                        made_at: String::from("2026-09-21T14:13:21Z"),
+                        ends_at: Some(String::from("2026-09-22T14:13:21Z")),
+                        state: GrantState::Covering,
+                    },
+                ]
             }
         );
-        let revoke = SiteOp::Revoke {
-            site: String::from("https://a.example"),
+        // With the clock set back, a day grant is listed, covering nothing,
+        // so the owner can still revoke it; an always grant still covers.
+        assert!(matches!(
+            handle_grant_op(&config, &master, &GrantOp::List, T - 10),
+            GrantResult::Listed { grants } if grants.iter().map(|grant| grant.state).collect::<Vec<_>>() == [GrantState::Covering, GrantState::ClockBehind]
+        ));
+        // Ended, a day grant isn't listed.
+        assert!(
+            matches!(
+                handle_grant_op(&config, &master, &GrantOp::List, T + 1 + DAY_SECS),
+                GrantResult::Listed { grants } if grants.len() == 1 && grants.iter().all(|grant| grant.scope == GrantScope::Always)
+            ),
+            "the always grant, past a day, and not the day grant that ended"
+        );
+        for not_a_key in [
+            "https://a.example",
+            "web.visit:https://A.example",
+            "web.visit:https://a.example/",
+        ] {
+            let revoke = GrantOp::Revoke {
+                key: String::from(not_a_key),
+            };
+            assert_eq!(
+                handle_grant_op(&config, &master, &revoke, T + 3),
+                GrantResult::NotFound,
+                "{not_a_key:?}"
+            );
+        }
+        assert!(
+            grants.holds("https://a.example", T + 3).unwrap(),
+            "nothing revoked"
+        );
+        let revoke = GrantOp::Revoke {
+            key: String::from("web.visit:https://a.example"),
         };
         assert_eq!(
-            handle_site_op(&config, &master, &revoke, T),
-            SiteResult::Revoked
+            handle_grant_op(&config, &master, &revoke, T + 3),
+            GrantResult::Revoked
         );
         assert_eq!(
-            handle_site_op(&config, &master, &revoke, T),
-            SiteResult::NotFound
+            handle_grant_op(&config, &master, &revoke, T + 3),
+            GrantResult::NotFound
         );
         let off = crate::api_auth::tests::owner_config(None);
         assert!(SiteGrants::of(&off, &master).is_none());
         assert_eq!(
-            handle_site_op(&off, &master, &SiteOp::List, T),
-            SiteResult::Off
+            handle_grant_op(&off, &master, &GrantOp::List, T),
+            GrantResult::Off
         );
         // Another key can't open the sealed store.
         let other = MasterKey::generate().unwrap();
         assert_eq!(
-            handle_site_op(&config, &other, &SiteOp::List, T),
-            SiteResult::Failed
+            handle_grant_op(&config, &other, &GrantOp::List, T),
+            GrantResult::Failed
         );
         let corrupt = SiteGrants::of(&config, &master).unwrap();
         corrupt
@@ -1095,30 +1258,58 @@ mod tests {
             )
             .unwrap();
         assert!(corrupt.list(T).is_err());
+        assert!(corrupt.standing(T).is_err());
         assert!(corrupt.allow("https://x.example", T).is_err());
         assert!(corrupt.revoke("https://x.example", T).is_err());
     }
 
-    /// The owner's decision keeps an always grant the moment it is made
-    /// (#542), and any other keeps nothing; with no store, an always can't
+    /// The owner's decision keeps a day or always grant the moment it is
+    /// made (#542), and any other keeps nothing; with no store, neither can
     /// be kept and says so.
     #[test]
     fn the_owners_always_is_kept_when_decided() {
         let (config, _scratch, master) = kept("decided");
         for decision in [Decision::Approve, Decision::ApproveSession, Decision::Deny] {
-            keep_decision(&config, &master, "https://a.example", decision, T).unwrap();
+            assert!(!keep_decision(&config, &master, "https://a.example", decision, T).unwrap());
         }
         let grants = SiteGrants::of(&config, &master).unwrap();
         assert_eq!(grants.list(T).unwrap(), [], "kept for less than always");
-        keep_decision(
-            &config,
-            &master,
-            "https://a.example",
-            Decision::ApproveAlways,
-            T,
-        )
-        .unwrap();
+        assert!(
+            keep_decision(
+                &config,
+                &master,
+                "https://a.example",
+                Decision::ApproveAlways,
+                T,
+            )
+            .unwrap()
+        );
         assert!(grants.holds("https://a.example", T).unwrap());
+        assert!(
+            keep_decision(
+                &config,
+                &master,
+                "https://day.example",
+                Decision::ApproveDay,
+                T
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            grants.covering("https://day.example", T).unwrap(),
+            Some(Cover::Until(T + DAY_SECS)),
+            "a day, not always"
+        );
+        assert!(
+            keep_decision(
+                &config,
+                &master,
+                "https://A.example",
+                Decision::ApproveDay,
+                T
+            )
+            .is_err()
+        );
         let off = crate::api_auth::tests::owner_config(None);
         assert!(
             keep_decision(
@@ -1130,6 +1321,9 @@ mod tests {
             )
             .is_err()
         );
-        keep_decision(&off, &master, "https://a.example", Decision::Approve, T).unwrap();
+        assert!(
+            keep_decision(&off, &master, "https://a.example", Decision::ApproveDay, T).is_err()
+        );
+        assert!(!keep_decision(&off, &master, "https://a.example", Decision::Approve, T).unwrap());
     }
 }

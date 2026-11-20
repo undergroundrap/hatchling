@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 8;
+export const UI_SCHEMA_VERSION = 9;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 33;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -345,19 +345,6 @@ export type AgentMessage = {
  */
 export type AgentState = 'idle' | 'working' | 'awaiting_approval' | 'paused' | 'stalled';
 /**
- * A site the agent is always allowed to read.
- */
-export type AllowedSite = {
-    /**
-     * When the owner allowed it, RFC 3339.
-     */
-    readonly allowed_at: string;
-    /**
-     * The site, `https://host[:port]`.
-     */
-    readonly site: string;
-};
-/**
  * How the API answered one call.
  */
 export type ApiOutcome = 'served' | 'refused';
@@ -365,7 +352,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_sites' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1134,11 +1121,6 @@ export type ConfirmationField = {
  */
 export type ConfirmationRequest = {
     /**
-     * Whether it can be approved always ([`Decision::ApproveAlways`]): a
-     * site, where the broker keeps the sites the owner allows.
-     */
-    readonly always?: boolean;
-    /**
      * What approving it does, in a few words, when that's more than
      * allowing it once: "Remember it" for something the agent asks to
      * keep. The broker's, never the agent's.
@@ -1166,16 +1148,22 @@ export type ConfirmationRequest = {
      */
     readonly fields: readonly (ConfirmationField)[];
     /**
+     * The grant a standing yes on it would make, as the broker names it
+     * (WO-036): `web.visit:https://a.example` for a site. `None` for a
+     * request only ever approved once. Never the agent's words.
+     */
+    readonly grant_key?: string | null;
+    /**
      * Bumped when the request changes. A decision names the revision
      * it applies to, and a stale one is rejected.
      */
     readonly revision: number;
     /**
-     * Whether it can be approved for the rest of the session
-     * ([`Decision::ApproveSession`]) as well as once: a site the agent
-     * asks to read (WO-028).
+     * The scopes it can be approved for, in this order: what the request's
+     * kind allows, and no other. A decision for a scope not here is
+     * refused ([`DecisionRejection::NotOffered`]).
      */
-    readonly session?: boolean;
+    readonly scopes: readonly (GrantScope)[];
     /**
      * What is being asked, as plain text: the broker's name for the
      * operation, never the agent's words.
@@ -1231,7 +1219,7 @@ export type ControlRefusal = 'unknown_session' | 'finished' | 'switching' | 'not
 /**
  * A user's decision on a confirmation.
  */
-export type Decision = 'approve' | 'approve_session' | 'approve_always' | 'deny';
+export type Decision = 'approve' | 'approve_session' | 'approve_day' | 'approve_always' | 'deny';
 /**
  * A decision the owner made, kept: the card as they were shown it, and what
  * they decided.
@@ -1836,6 +1824,49 @@ export type GoalsResult = {
 } | {
     readonly result: 'goals-error';
 };
+/**
+ * What a standing grant allows (WO-036).
+ */
+export type GrantKind = 'web.visit';
+/**
+ * An operation on the owner's standing grants (WO-036).
+ */
+export type GrantOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * The grant's key, as listed: `web.visit:https://a.example`.
+     */
+    readonly key: string;
+    readonly op: 'revoke';
+};
+/**
+ * The result of a [`GrantOp`].
+ */
+export type GrantResult = {
+    /**
+     * The grants.
+     */
+    readonly grants: readonly (StandingGrant)[];
+    readonly result: 'listed';
+} | {
+    readonly result: 'revoked';
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
+ * How long a yes lasts (WO-036). A request offers only the scopes its
+ * kind allows ([`ConfirmationRequest::scopes`]).
+ */
+export type GrantScope = 'once' | 'task' | 'day' | 'always';
+/**
+ * Where a standing grant stands.
+ */
+export type GrantState = 'covering' | 'clock_behind';
 /**
  * One step in handing control over.
  */
@@ -4633,36 +4664,6 @@ export type SignedInProfile = {
     readonly sites: readonly (string)[];
 };
 /**
- * An operation on the sites the agent is always allowed to read (WO-028).
- */
-export type SiteOp = {
-    readonly op: 'list';
-} | {
-    readonly op: 'revoke';
-    /**
-     * The site, `https://host[:port]`, as listed.
-     */
-    readonly site: string;
-};
-/**
- * The result of a [`SiteOp`].
- */
-export type SiteResult = {
-    readonly result: 'listed';
-    /**
-     * The sites.
-     */
-    readonly sites: readonly (AllowedSite)[];
-} | {
-    readonly result: 'revoked';
-} | {
-    readonly result: 'not_found';
-} | {
-    readonly result: 'off';
-} | {
-    readonly result: 'failed';
-};
-/**
  * A sign-in the broker keeps, as the owner's app is told it: its label and
  * where it's filled, never its username or password.
  */
@@ -4878,6 +4879,39 @@ export type SpaceResult = {
     readonly result: 'denied';
 } | {
     readonly result: 'space-error';
+};
+/**
+ * One of the owner's standing grants.
+ */
+export type StandingGrant = {
+    /**
+     * When it ends, RFC 3339: a 24-hour grant's. `None` for always.
+     */
+    readonly ends_at?: string | null;
+    /**
+     * Its key, the broker's: `web.visit:https://a.example`.
+     */
+    readonly key: string;
+    /**
+     * What it allows.
+     */
+    readonly kind: GrantKind;
+    /**
+     * When the owner made it, RFC 3339.
+     */
+    readonly made_at: string;
+    /**
+     * How long it lasts: [`GrantScope::Day`] or [`GrantScope::Always`].
+     */
+    readonly scope: GrantScope;
+    /**
+     * Where it stands.
+     */
+    readonly state: GrantState;
+    /**
+     * What it allows it on: for a site, `https://host[:port]`.
+     */
+    readonly target: string;
 };
 /**
  * Why a subagent op was refused.
@@ -5190,11 +5224,11 @@ export type UiAction = {
      */
     readonly revision: number;
 } | {
-    readonly action: 'manage_sites';
+    readonly action: 'manage_grants';
     /**
      * The operation.
      */
-    readonly op: SiteOp;
+    readonly op: GrantOp;
 } | {
     readonly action: 'manage_schedule';
     /**
@@ -5487,6 +5521,12 @@ export type UiActionResult = {
      * The decision recorded.
      */
     readonly decision: Decision;
+    /**
+     * For a standing yes (24 hours or always), whether its grant was
+     * kept. One that wasn't covers only the request the owner was
+     * shown, once. `None` for every other decision.
+     */
+    readonly kept?: boolean | null;
     readonly result: 'decided';
 } | {
     /**
@@ -5508,8 +5548,8 @@ export type UiActionResult = {
     /**
      * The result.
      */
-    readonly outcome: SiteResult;
-    readonly result: 'sites';
+    readonly outcome: GrantResult;
+    readonly result: 'grants';
 } | {
     /**
      * The result, as the session protocol defines it.

@@ -198,9 +198,9 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'settings.chat-panel':
                 return this.#prefer({ keepChatPanelVisible: command.value });
             case 'permission.website':
-                // The broker adds a site only from the owner's Allow always on its request.
+                // The broker adds a site only from the owner's standing yes on its request.
                 return command.policy === 'allow'
-                    ? { ok: false, message: "Allow a site from the agent's request for it, with Allow always." }
+                    ? { ok: false, message: "Allow a site from the agent's request for it, with Allow for 24 hours or Allow always." }
                     : this.#sites.revoke(command.host);
             case 'job.create':
                 return command.kind === 'time'
@@ -388,7 +388,7 @@ export class LiveAdapter implements ProtocolAdapter {
     #build(): AppState {
         const threads = [...this.#activity.threads(), ...this.#surfaces.threads()];
         return {
-            websitePermissions: this.#sites.sites().map(site => ({ host: site.site, policy: 'allow' as const })),
+            websitePermissions: this.#sites.grants().map(grant => ({ host: grant.target, policy: 'allow' as const, grant: { key: grant.key, scope: grant.scope === 'day' ? 'day' as const : 'always' as const, madeAt: grant.made_at, endsAt: grant.ends_at ?? null, covering: grant.state === 'covering' } })),
             signedInSites: this.#profiles.profiles().map(site => ({ ...site, signIns: this.signIns.of(site.id) })),
             networkPermissions: [],
             version: 1,

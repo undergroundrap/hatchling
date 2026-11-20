@@ -83,7 +83,7 @@ export class LiveChatSession implements ChatSessionPort {
             case 'conversation_started':
             case 'schedule':
             case 'setup':
-            case 'sites':
+            case 'grants':
             case 'skill':
             case 'artifact_opened':
             case 'artifact_shared':

@@ -80,7 +80,7 @@ test('a read that fails says why', async () => {
     const { live } = surface([
         { kind: 'failed', detail: 'Not connected.' },
         { kind: 'answered', result: { result: 'refused', reason: 'not_granted' } },
-        { kind: 'answered', result: { result: 'sites', outcome: { result: 'off' } } },
+        { kind: 'answered', result: { result: 'grants', outcome: { result: 'off' } } },
     ]);
     await live.refresh();
     assert.deepEqual(live.current(), { kind: 'failed', detail: 'Not connected.' });
@@ -123,7 +123,7 @@ test('limits that weren\'t set say why, and leave the usage as it was', async ()
         refused('unavailable'),
         refused('not_granted'),
         refused('not_connected'),
-        { kind: 'answered', result: { result: 'sites', outcome: { result: 'off' } } },
+        { kind: 'answered', result: { result: 'grants', outcome: { result: 'off' } } },
     ]);
     const said = [];
     for (let attempt = 0; attempt < 6; attempt++) {

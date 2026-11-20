@@ -1797,8 +1797,8 @@ fn an_approval_builds_only_the_request_whose_hash_it_holds() {
                 fingerprint: serde_json::json!({ "op": "artifact.activate", "request_hash": other }),
                 task: String::from("t-approved-hash"),
                 decide_secs: 60,
-                session: false,
-                always: false,
+                scopes: vec![hatchling_core::ui::GrantScope::Once],
+                grant_key: None,
             },
             NOW,
         )

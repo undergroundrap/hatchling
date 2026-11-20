@@ -41,8 +41,8 @@ use hatchling_core::subagent::{ActivityEvent, SubagentEvent};
 use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
     Decision, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal, FileOutRefusal, FolderEntry,
-    GoalOp, Handoff, InboxFile, KeptOp, LibraryFile, LibraryFolder, LibraryStanding, ProfileOp,
-    ProfileResult, RoomDiskView, SetupState, SignInOp, SiteOp, SuggestionOp, UiAction,
+    GoalOp, GrantOp, Handoff, InboxFile, KeptOp, LibraryFile, LibraryFolder, LibraryStanding,
+    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SuggestionOp, UiAction,
     UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -61,7 +61,7 @@ use crate::{Config, Error, handle_schedule_op, handle_skill_op};
 #[derive(Clone, Copy)]
 enum Owned<'a> {
     /// Their always-allowed sites (WO-028).
-    Sites(&'a SiteOp),
+    Grants(&'a GrantOp),
     /// Their signed-in profiles (WO-030).
     Profiles(&'a ProfileOp),
     /// The sign-ins the broker fills for them (WO-030).
@@ -278,7 +278,7 @@ impl<'a> Ops<'a> {
             }
             UiAction::InvokeSkill { op } => self.skill(owns, op),
             UiAction::ManageSchedule { op } => self.schedule(caller, owns, &owner, op),
-            UiAction::ManageSites { op } => self.owned(owns, Owned::Sites(op)),
+            UiAction::ManageGrants { op } => self.owned(owns, Owned::Grants(op)),
             UiAction::ManageProfiles { op } => self.owned(owns, Owned::Profiles(op)),
             UiAction::ManageSignIns { op } => self.owned(owns, Owned::SignIns(op)),
             UiAction::ReadUsage {} => self.owned(owns, Owned::Usage),
@@ -388,8 +388,8 @@ impl<'a> Ops<'a> {
             );
         }
         let result = match what {
-            Owned::Sites(op) => UiActionResult::Sites {
-                outcome: crate::site_grants::handle_site_op(
+            Owned::Grants(op) => UiActionResult::Grants {
+                outcome: crate::site_grants::handle_grant_op(
                     self.config,
                     self.key,
                     op,
@@ -722,10 +722,11 @@ impl<'a> Ops<'a> {
             decision,
             Timestamp::now().as_second(),
         ) {
-            Ok(_) => (
+            Ok(decided) => (
                 UiActionResult::Decided {
                     confirmation_id: confirmation_id.to_owned(),
                     decision,
+                    kept: decided.kept,
                 },
                 ApiOutcome::Served,
             ),
@@ -2898,7 +2899,7 @@ mod tests {
     /// WO-028: only the owner lists or revokes the sites the agent is
     /// always allowed to read.
     #[test]
-    fn only_the_owner_manages_the_allowed_sites() {
+    fn only_the_owner_manages_the_standing_grants() {
         let config = owner_config(Some("/srv/hatchling/schedules"));
         let key = MasterKey::generate().unwrap();
         let skills = Skills::load(&SkillConfig::disabled()).unwrap();
@@ -2908,12 +2909,12 @@ mod tests {
         let partial = caller(held.get(..1).unwrap_or_default());
         let mut replies = Replies::default();
         for op in [
-            SiteOp::List,
-            SiteOp::Revoke {
-                site: String::from("https://a.example"),
+            GrantOp::List,
+            GrantOp::Revoke {
+                key: String::from("web.visit:https://a.example"),
             },
         ] {
-            let manage = UiAction::ManageSites { op };
+            let manage = UiAction::ManageGrants { op };
             assert_eq!(
                 ops.handle(&partial, &manage, &mut replies),
                 (
@@ -2926,8 +2927,8 @@ mod tests {
             assert_eq!(
                 ops.handle(&owner, &manage, &mut replies),
                 (
-                    UiActionResult::Sites {
-                        outcome: hatchling_core::ui::SiteResult::Off
+                    UiActionResult::Grants {
+                        outcome: hatchling_core::ui::GrantResult::Off
                     },
                     ApiOutcome::Served
                 )

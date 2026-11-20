@@ -34,7 +34,7 @@ use hatchling_artifact::PinnedRequest;
 use hatchling_channel::LocalHub;
 use hatchling_core::ui::{
     ChatAuthor, ChatMessage, ConfirmationField, ConfirmationRequest, Decision, DecisionRecord,
-    DecisionRejection, FieldSource, UiEventBody,
+    DecisionRejection, FieldSource, GrantScope, UiEventBody,
 };
 use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
 use hatchling_scheduler::Timestamp;
@@ -136,8 +136,9 @@ pub struct SiteAsk<'a> {
     pub reason: &'a str,
     /// The search that gave the page, and the result's place, when one did.
     pub led: Option<(&'a str, usize)>,
-    /// Whether the owner may allow the site always: the broker keeps sites.
-    pub always: bool,
+    /// Whether the owner may allow the site for 24 hours or always: the
+    /// broker keeps standing grants.
+    pub standing: bool,
     /// Whether it's for the agent's browser, whose once is the visit: the
     /// pages it opens on the site until it leaves. A page read is once
     /// that page.
@@ -194,14 +195,24 @@ pub fn board(config: &Config) -> Arc<Board> {
     )
 }
 
+/// The owner's decision, as [`decide_as_owner`] recorded it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerDecision {
+    /// Where the request is now.
+    pub state: State,
+    /// For a standing yes on a site (24 hours or always), whether its grant
+    /// was kept; `None` for every other decision.
+    pub kept: Option<bool>,
+}
+
 /// The owner's `decision` on request `id`, decided on `config`'s board and
-/// kept as the owner's (#542).
+/// kept as the owner's (#542, WO-036).
 ///
 /// It is made at the `revision` and `digest` the owner was shown, at
-/// `now`. A site the owner allows always is a grant from then, whatever
-/// becomes of the session that asked. One that can't be kept is said in
-/// the journal, and the session that asked reads only the page it was
-/// shown.
+/// `now`. A site the owner allows for 24 hours or always is a grant from
+/// then, whatever becomes of the session that asked. One that can't be
+/// kept is said in the journal and to the owner, and the session that
+/// asked reads only the page it was shown.
 ///
 /// # Errors
 ///
@@ -214,7 +225,7 @@ pub fn decide_as_owner(
     digest: &str,
     decision: Decision,
     now: i64,
-) -> Result<State, DecisionRejection> {
+) -> Result<OwnerDecision, DecisionRejection> {
     let board = board(config);
     let decided = board.decide(id, revision, digest, decision, now)?;
     let site = board
@@ -227,12 +238,19 @@ pub fn decide_as_owner(
             | Approved::Memory(_)
             | Approved::Schedule(_) => None,
         });
-    if let Some(site) = site {
-        if let Err(error) = crate::site_grants::keep_decision(config, keys, &site, decision, now) {
-            tracing::error!(%error, %site, "the owner allowed a site always, but it couldn't be kept: the session that asked reads the page it was shown, and asks again for others");
+    let kept = site.and_then(|site| {
+        match crate::site_grants::keep_decision(config, keys, &site, decision, now) {
+            Ok(standing) => standing.then_some(true),
+            Err(error) => {
+                tracing::error!(%error, %site, "the owner allowed a site past the task, but it couldn't be kept: the session that asked reads the page it was shown, and asks again for others");
+                Some(false)
+            }
         }
-    }
-    Ok(decided)
+    });
+    Ok(OwnerDecision {
+        state: decided,
+        kept,
+    })
 }
 
 impl Board {
@@ -320,8 +338,8 @@ impl Board {
                 fingerprint: effect,
                 task: task.to_owned(),
                 decide_secs: UNWAITED_DECIDE_SECS,
-                session: false,
-                always: false,
+                scopes: vec![GrantScope::Once],
+                grant_key: None,
             },
             now,
         )?;
@@ -354,9 +372,22 @@ impl Board {
             url,
             reason,
             led,
-            always,
+            standing,
             visit,
         } = *ask;
+        // The key is the broker's, from the site it resolved: a site with
+        // no key can't be granted past the task.
+        let key = crate::site_grants::GrantKey::site(site);
+        let scopes = if standing && key.is_some() {
+            vec![
+                GrantScope::Once,
+                GrantScope::Task,
+                GrantScope::Day,
+                GrantScope::Always,
+            ]
+        } else {
+            vec![GrantScope::Once, GrantScope::Task]
+        };
         let requested = self.approvals.propose(
             Proposal {
                 run: Approved::Site(SiteVisit {
@@ -366,14 +397,14 @@ impl Board {
                 fingerprint: json!({ "op": "web.visit", "site": site }),
                 task: task.to_owned(),
                 decide_secs: DECIDE_SECS,
-                session: true,
-                always,
+                scopes,
+                grant_key: key.map(|key| key.to_string()),
             },
             now,
         )?;
         if requested.new {
             self.publish(UiEventBody::Confirmation(site_confirmation(
-                site, url, reason, led, always, visit, &requested,
+                site, url, reason, led, visit, &requested,
             )));
         }
         Ok(requested)
@@ -404,8 +435,8 @@ impl Board {
                 fingerprint: json!({ "op": "memory.keep", "content": content }),
                 task: task.to_owned(),
                 decide_secs: UNWAITED_DECIDE_SECS,
-                session: false,
-                always: false,
+                scopes: vec![GrantScope::Once],
+                grant_key: None,
             },
             now,
         )?;
@@ -433,8 +464,8 @@ impl Board {
                         source: FieldSource::Agent,
                     },
                 ],
-                session: false,
-                always: false,
+                grant_key: requested.grant_key.clone(),
+                scopes: requested.scopes.clone(),
                 approve: Some(String::from("Remember it")),
             }));
         }
@@ -469,8 +500,8 @@ impl Board {
                 fingerprint: json!({ "op": "schedule.create", "when": when, "task": task }),
                 task: asking.to_owned(),
                 decide_secs: schedule_wait(when, now),
-                session: false,
-                always: false,
+                scopes: vec![GrantScope::Once],
+                grant_key: None,
             },
             now,
         )?;
@@ -501,8 +532,8 @@ impl Board {
                         source: FieldSource::Agent,
                     },
                 ],
-                session: false,
-                always: false,
+                grant_key: requested.grant_key.clone(),
+                scopes: requested.scopes.clone(),
                 approve: Some(String::from("Schedule it")),
             }));
         }
@@ -537,8 +568,8 @@ impl Board {
                 fingerprint,
                 task: task.to_owned(),
                 decide_secs: DECIDE_SECS,
-                session: false,
-                always: false,
+                scopes: vec![GrantScope::Once],
+                grant_key: None,
             },
             now,
         )?;
@@ -553,8 +584,8 @@ impl Board {
                     .map(|at| at.to_string()),
                 digest: requested.digest.clone(),
                 fields,
-                session: false,
-                always: false,
+                grant_key: requested.grant_key.clone(),
+                scopes: requested.scopes.clone(),
                 approve: None,
             }));
         }
@@ -746,10 +777,10 @@ fn site_confirmation(
     url: &str,
     reason: &str,
     led: Option<(&str, usize)>,
-    always: bool,
     visit: bool,
     requested: &Requested,
 ) -> ConfirmationRequest {
+    let offers = |scope| requested.scopes.contains(&scope);
     let field = |label: &str, value: &str, source: FieldSource| ConfirmationField {
         label: label.to_owned(),
         value: value.to_owned(),
@@ -771,13 +802,18 @@ fn site_confirmation(
                 field(
                     "What it allows",
                     &format!(
-                        "{} For this task: any page on this site until the agent's session ends; in a chat, that's this answer.{} The site sees whatever the agent puts in a page's address.",
+                        "{} For this task: any page on this site until the agent's session ends; in a chat, that's this answer.{}{} The site sees whatever the agent puts in a page's address.",
                         if visit {
                             "Once: this visit, in the agent's browser: this page, and the pages it opens on this site until it leaves it."
                         } else {
                             "Once: this page, now."
                         },
-                        if always {
+                        if offers(GrantScope::Day) {
+                            " For 24 hours: any page on this site, in every session, for 24 hours from your answer by Hatchling's clock, unless you revoke it sooner in the app."
+                        } else {
+                            ""
+                        },
+                        if offers(GrantScope::Always) {
                             " Always: any page on this site, in every session, until you revoke it in the app."
                         } else {
                             ""
@@ -798,8 +834,8 @@ fn site_confirmation(
             fields.push(field("Why it wants it", reason, FieldSource::Agent));
             fields
         },
-        session: true,
-        always,
+        grant_key: requested.grant_key.clone(),
+        scopes: requested.scopes.clone(),
         approve: None,
     }
 }
@@ -877,8 +913,8 @@ fn confirmation(
             .map(|at| at.to_string()),
         digest: requested.digest.clone(),
         fields,
-        session: false,
-        always: false,
+        grant_key: requested.grant_key.clone(),
+        scopes: requested.scopes.clone(),
         approve: None,
     }
 }
@@ -1311,7 +1347,7 @@ mod tests {
                     url: "https://a.example/x",
                     reason: "to read it",
                     led: None,
-                    always: false,
+                    standing: false,
                     visit: false,
                 },
                 "t1",
@@ -1652,7 +1688,7 @@ mod tests {
                     url: "https://a.example/x",
                     reason: "to read it",
                     led: None,
-                    always: false,
+                    standing: false,
                     visit: false,
                 },
                 "t1",
@@ -1668,7 +1704,7 @@ mod tests {
                     url: "https://a.example/x",
                     reason: "again",
                     led: None,
-                    always: false,
+                    standing: false,
                     visit: false,
                 },
                 "t1",
@@ -1686,7 +1722,7 @@ mod tests {
                     url: "https://a.example/c?d=what-the-agent-read",
                     reason: "again",
                     led: None,
-                    always: false,
+                    standing: false,
                     visit: false,
                 },
                 "t1",
@@ -1758,6 +1794,8 @@ mod tests {
             digest: String::from("ab"),
             expires_at: 1_790_000_000,
             new: true,
+            scopes: vec![GrantScope::Once, GrantScope::Task],
+            grant_key: Some(String::from("web.visit:https://a.example")),
         };
         let request = site_confirmation(
             "https://a.example",
@@ -1765,10 +1803,17 @@ mod tests {
             "to read it",
             None,
             false,
-            false,
             &requested,
         );
-        assert!(request.session);
+        assert_eq!(
+            request.scopes,
+            [GrantScope::Once, GrantScope::Task],
+            "the ledger's"
+        );
+        assert_eq!(
+            request.grant_key.as_deref(),
+            Some("web.visit:https://a.example")
+        );
         assert_eq!(request.summary, "Let the agent read a site");
         assert_eq!(
             (
@@ -1816,7 +1861,6 @@ mod tests {
                 "https://a.example/x",
                 "to read it",
                 None,
-                false,
                 visit,
                 &requested,
             )
@@ -1829,6 +1873,44 @@ mod tests {
         assert!(allows(false).starts_with("Once: this page, now."));
         assert!(allows(true).starts_with("Once: this visit, in the agent's browser"));
         assert!(!allows(false).contains("Always"));
+        assert!(!allows(false).contains("24 hours"));
+    }
+
+    /// Where the ledger offers them, a site's card offers a day and always,
+    /// and says what each allows.
+    #[test]
+    fn a_sites_card_says_what_a_day_and_always_allow() {
+        let standing = Requested {
+            id: String::from("approval-1"),
+            revision: 1,
+            digest: String::from("ab"),
+            expires_at: 1_790_000_000,
+            new: true,
+            scopes: vec![
+                GrantScope::Once,
+                GrantScope::Task,
+                GrantScope::Day,
+                GrantScope::Always,
+            ],
+            grant_key: Some(String::from("web.visit:https://a.example")),
+        };
+        let card = site_confirmation(
+            "https://a.example",
+            "https://a.example/x",
+            "to read it",
+            None,
+            false,
+            &standing,
+        );
+        assert_eq!(card.scopes, standing.scopes);
+        let said = card
+            .fields
+            .into_iter()
+            .find(|field| field.label == "What it allows")
+            .map(|field| field.value)
+            .unwrap_or_default();
+        assert!(said.contains(" For 24 hours: any page on this site, in every session, for 24 hours from your answer"), "{said}");
+        assert!(said.contains(" Always: any page on this site"), "{said}");
     }
 
     /// The worker waits for an approval, and wakes when one comes.

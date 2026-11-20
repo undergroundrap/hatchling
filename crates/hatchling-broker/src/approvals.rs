@@ -44,7 +44,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use hatchling_core::action::{self, CanonicalError};
-use hatchling_core::ui::{ConfirmationClosure, Decision, DecisionRejection};
+use hatchling_core::ui::{ConfirmationClosure, Decision, DecisionRejection, GrantScope};
 use serde_json::Value;
 
 /// Most requests waiting for the owner at once.
@@ -81,11 +81,11 @@ pub struct Proposal<A> {
     pub task: String,
     /// How long the owner has to decide, in seconds.
     pub decide_secs: i64,
-    /// Whether the owner may approve it for the rest of the session
-    /// ([`Decision::ApproveSession`]) as well as once.
-    pub session: bool,
-    /// Whether the owner may approve it always ([`Decision::ApproveAlways`]).
-    pub always: bool,
+    /// The scopes the owner may approve it for (WO-036): the one list the
+    /// card shows and a decision is checked against.
+    pub scopes: Vec<GrantScope>,
+    /// The grant a standing yes would make, the broker's name for it.
+    pub grant_key: Option<String>,
 }
 
 /// A request that stopped waiting for the owner without their decision.
@@ -141,8 +141,8 @@ pub struct Request<A> {
     pub decision: Option<Decision>,
     run: A,
     fingerprint: String,
-    session: bool,
-    always: bool,
+    scopes: Vec<GrantScope>,
+    grant_key: Option<String>,
 }
 
 impl<A> Request<A> {
@@ -167,6 +167,11 @@ pub struct Requested {
     /// Whether it's new, so the owner is asked; an identical waiting
     /// request isn't asked twice.
     pub new: bool,
+    /// The scopes it may be approved for, as the ledger keeps them: what
+    /// the card offers.
+    pub scopes: Vec<GrantScope>,
+    /// The grant a standing yes would make, as the ledger keeps it.
+    pub grant_key: Option<String>,
 }
 
 /// Why a proposal wasn't put to the owner.
@@ -406,6 +411,8 @@ impl<A: Clone> Ledger<A> {
                 digest,
                 expires_at: waiting.expires_at,
                 new: false,
+                scopes: waiting.scopes.clone(),
+                grant_key: waiting.grant_key.clone(),
             });
         }
         let pending: Vec<&Request<A>> = ledger
@@ -447,8 +454,8 @@ impl<A: Clone> Ledger<A> {
                 decision: None,
                 run: proposal.run,
                 fingerprint,
-                session: proposal.session,
-                always: proposal.always,
+                scopes: proposal.scopes.clone(),
+                grant_key: proposal.grant_key.clone(),
             },
         );
         Ok(Requested {
@@ -457,6 +464,8 @@ impl<A: Clone> Ledger<A> {
             digest,
             expires_at,
             new: true,
+            scopes: proposal.scopes,
+            grant_key: proposal.grant_key,
         })
     }
 
@@ -489,19 +498,20 @@ impl<A: Clone> Ledger<A> {
         if request.revision != revision || request.digest != digest {
             return Err(DecisionRejection::StaleRevision);
         }
-        let offered = match decision {
-            Decision::ApproveSession => request.session,
-            Decision::ApproveAlways => request.always,
-            Decision::Approve | Decision::Deny => true,
-        };
+        // A denial is always the owner's; every yes only for a scope the
+        // request offered.
+        let offered = decision
+            .scope()
+            .is_none_or(|scope| request.scopes.contains(&scope));
         if !offered {
             return Err(DecisionRejection::NotOffered);
         }
         let fingerprint = request.fingerprint.clone();
         let decided = match decision {
-            Decision::Approve | Decision::ApproveSession | Decision::ApproveAlways => {
-                State::Approved
-            }
+            Decision::Approve
+            | Decision::ApproveSession
+            | Decision::ApproveDay
+            | Decision::ApproveAlways => State::Approved,
             Decision::Deny => State::Denied,
         };
         request.state = decided;
@@ -643,8 +653,8 @@ mod tests {
             fingerprint: json!({ "op": "activate", "effect": effect }),
             task: task.to_owned(),
             decide_secs: DECIDE_SECS,
-            session: false,
-            always: false,
+            scopes: vec![GrantScope::Once],
+            grant_key: None,
         }
     }
 
@@ -1116,7 +1126,7 @@ mod tests {
         );
         assert_eq!(ledger.get(&once.id).unwrap().state, State::Pending);
         let offered = Proposal {
-            session: true,
+            scopes: vec![GrantScope::Once, GrantScope::Task],
             ..proposal("site", "t2")
         };
         let action = offered.action.clone();
@@ -1167,33 +1177,67 @@ mod tests {
         );
     }
 
-    /// Always is offered only where the request says so, and recorded as
-    /// the owner's decision (WO-028).
+    /// Every scope is offered only where the request says so, and recorded
+    /// as the owner's decision (WO-036); a denial always is. A request that
+    /// offers no once can't be approved once.
     #[test]
-    fn always_is_offered_only_where_the_request_says_so() {
+    fn a_scope_is_offered_only_where_the_request_says_so() {
         let ledger = Approvals::new();
-        let session_only = Proposal {
-            session: true,
+        let task_only = Proposal {
+            scopes: vec![GrantScope::Once, GrantScope::Task],
             ..proposal("site", "t1")
         };
-        let asked = ledger.propose(session_only, 0).unwrap();
-        assert_eq!(
-            ledger.decide(&asked.id, 1, &asked.digest, Decision::ApproveAlways, 1),
-            Err(DecisionRejection::NotOffered)
-        );
-        let always = Proposal {
-            session: true,
-            always: true,
-            ..proposal("kept", "t2")
+        let asked = ledger.propose(task_only, 0).unwrap();
+        assert_eq!(asked.scopes, [GrantScope::Once, GrantScope::Task]);
+        for standing in [Decision::ApproveDay, Decision::ApproveAlways] {
+            assert_eq!(
+                ledger.decide(&asked.id, 1, &asked.digest, standing, 1),
+                Err(DecisionRejection::NotOffered),
+                "{standing:?}"
+            );
+        }
+        for (task, decision) in [
+            ("t2", Decision::ApproveDay),
+            ("t3", Decision::ApproveAlways),
+        ] {
+            let all = Proposal {
+                scopes: vec![
+                    GrantScope::Once,
+                    GrantScope::Task,
+                    GrantScope::Day,
+                    GrantScope::Always,
+                ],
+                grant_key: Some(String::from("web.visit:https://kept.example")),
+                ..proposal("kept", task)
+            };
+            let asked = ledger.propose(all, 0).unwrap();
+            assert_eq!(
+                asked.grant_key.as_deref(),
+                Some("web.visit:https://kept.example")
+            );
+            assert_eq!(
+                ledger.decide(&asked.id, 1, &asked.digest, decision, 1),
+                Ok(State::Approved)
+            );
+            assert_eq!(ledger.get(&asked.id).unwrap().decision, Some(decision));
+        }
+        let no_once = Proposal {
+            scopes: vec![GrantScope::Task],
+            ..proposal("profile", "t4")
         };
-        let asked = ledger.propose(always, 0).unwrap();
+        let asked = ledger.propose(no_once.clone(), 0).unwrap();
+        let again = ledger.propose(no_once, 0).unwrap();
+        assert!(!again.new);
+        assert_eq!(again.scopes, [GrantScope::Task], "as the ledger keeps it");
         assert_eq!(
-            ledger.decide(&asked.id, 1, &asked.digest, Decision::ApproveAlways, 1),
-            Ok(State::Approved)
+            ledger.decide(&asked.id, 1, &asked.digest, Decision::Approve, 1),
+            Err(DecisionRejection::NotOffered),
+            "no once offered"
         );
         assert_eq!(
-            ledger.get(&asked.id).unwrap().decision,
-            Some(Decision::ApproveAlways)
+            ledger.decide(&asked.id, 1, &asked.digest, Decision::Deny, 1),
+            Ok(State::Denied),
+            "a denial always is the owner's"
         );
     }
 }

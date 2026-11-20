@@ -403,9 +403,19 @@ export interface SystemEntry {
     description: string;
 }
 export type WebsitePolicy = 'allow' | 'ask' | 'block';
+/** The standing grant behind an allowed website (WO-036), when its source keeps one. */
+export interface WebsiteGrant {
+    key: string;
+    scope: 'day' | 'always';
+    madeAt: string;
+    endsAt: string | null;
+    /** False while the source's clock reads earlier than it has before: it covers nothing until it catches up. */
+    covering: boolean;
+}
 export interface WebsitePermission {
     host: string;
     policy: WebsitePolicy;
+    grant?: WebsiteGrant;
 }
 export interface NetworkPermission {
     id: string;

@@ -67,7 +67,7 @@ test('a decision, or Hatchling\'s own word, reads it again; anything else does n
     const { client, live } = surface([listed(), listed()]);
     const event = body => ({ seq: 1, ts: 't', body });
     live.observe(event({ kind: 'chat_message', author: 'agent', chat_id: 'local', message_id: 'm', text: 'hi' }));
-    live.observe(event({ kind: 'confirmation', confirmation_id: 'c' }));
+    live.observe(event({ kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'c' }));
     assert.equal(client.sent.length, 0);
     live.observe(event({ kind: 'confirmation_decided', confirmation_id: 'c', revision: 1, decision: 'approve' }));
     live.observe(event({ kind: 'chat_message', author: 'system', chat_id: 'local', message_id: 'm', text: 'Remembered' }));

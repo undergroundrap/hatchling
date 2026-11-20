@@ -531,9 +531,9 @@ pub(crate) fn allow(
         &site_action(&site, &url.to_string()),
         State::Approved,
     );
-    let always = grants.is_some();
+    let standing = grants.is_some();
     let id = found.map_or_else(
-        || ask_owner(&board, web, url, reason, &site, always, visit),
+        || ask_owner(&board, web, url, reason, &site, standing, visit),
         Ok,
     )?;
     let decision = board
@@ -553,10 +553,14 @@ pub(crate) fn allow(
         Some(Decision::ApproveSession) => {
             web.sites.insert(origin.clone(), seen);
         }
-        // An always was kept as a grant when the owner chose it (#542): it,
-        // not this session, covers the site's other pages, so a revoke
-        // reaches this task too. The page the owner was shown is read now.
-        Some(Decision::Approve | Decision::ApproveAlways | Decision::Deny) | None => {}
+        // A day or an always was kept as a grant when the owner chose it
+        // (#542): it, not this session, covers the site's other pages, so a
+        // revoke reaches this task too. The page the owner was shown is
+        // read now.
+        Some(
+            Decision::Approve | Decision::ApproveDay | Decision::ApproveAlways | Decision::Deny,
+        )
+        | None => {}
     }
     Ok(Yes { seen, until: None })
 }
@@ -570,7 +574,7 @@ fn ask_owner(
     url: &WebUrl,
     reason: &str,
     site: &str,
-    always: bool,
+    standing: bool,
     visit: bool,
 ) -> Result<String, WebResult> {
     let now = Timestamp::now().as_second();
@@ -581,7 +585,7 @@ fn ask_owner(
                 url: &url.to_string(),
                 reason,
                 led: web.led_to(url),
-                always,
+                standing,
                 visit,
             },
             &web.task,
@@ -724,7 +728,7 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::sync::Mutex;
 
-    use hatchling_core::ui::{SiteOp, SiteResult};
+    use hatchling_core::ui::{GrantOp, GrantResult, GrantScope};
     use hatchling_core::{ApprovalRefusal, VaultAction};
     use hatchling_egress::web::Page;
     use hatchling_vault::{MasterKey, SealedVault, Secret};
@@ -1129,7 +1133,7 @@ pub(crate) mod tests {
             url,
             reason: "why",
             led: None,
-            always: false,
+            standing: false,
             visit: false,
         }
     }
@@ -1740,9 +1744,12 @@ pub(crate) mod tests {
         let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/one"));
         assert!(waiting(&answer, "https://a.example"), "{answer:?}");
         let offered = bus.after(None).into_iter().any(|event| {
-            matches!(event.body, hatchling_core::ui::UiEventBody::Confirmation(ref request) if request.always)
+            matches!(event.body, hatchling_core::ui::UiEventBody::Confirmation(ref request) if request.scopes == [GrantScope::Once, GrantScope::Task, GrantScope::Day, GrantScope::Always] && request.grant_key.as_deref() == Some("web.visit:https://a.example"))
         });
-        assert!(offered, "always offered where sites are kept");
+        assert!(
+            offered,
+            "every scope offered where grants are kept, with the key"
+        );
         owner_decides_keyed(
             &config,
             &master,
@@ -1768,17 +1775,9 @@ pub(crate) mod tests {
             "another session: {answer:?}"
         );
         assert_eq!(asked.lock().unwrap().len(), 2);
-        let revoke = SiteOp::Revoke {
-            site: String::from("https://a.example"),
-        };
         assert_eq!(
-            crate::site_grants::handle_site_op(
-                &config,
-                &master,
-                &revoke,
-                Timestamp::now().as_second()
-            ),
-            SiteResult::Revoked
+            revoke(&config, &master, "https://a.example"),
+            GrantResult::Revoked
         );
         let mut third = unattended("t3", &fetcher);
         let answer = handle_web_op(
@@ -1806,12 +1805,13 @@ pub(crate) mod tests {
         assert!(waiting(&answer, "https://a.example"), "{answer:?}");
     }
 
-    fn revoke(config: &Config, keys: &dyn OpensStores, site: &str) -> SiteResult {
-        crate::site_grants::handle_site_op(
+    /// The owner revokes `site`'s grant, by its key, as Settings does.
+    fn revoke(config: &Config, keys: &dyn OpensStores, site: &str) -> GrantResult {
+        crate::site_grants::handle_grant_op(
             config,
             keys,
-            &SiteOp::Revoke {
-                site: site.to_owned(),
+            &GrantOp::Revoke {
+                key: format!("web.visit:{site}"),
             },
             Timestamp::now().as_second(),
         )
@@ -1836,7 +1836,7 @@ pub(crate) mod tests {
         assert!(web.holds(&origin("https://a.example/")));
         assert_eq!(
             revoke(&config, &master, "https://a.example"),
-            SiteResult::NotFound,
+            GrantResult::NotFound,
             "no standing grant, and still a revoke"
         );
         let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/two"));
@@ -1986,6 +1986,82 @@ pub(crate) mod tests {
         );
     }
 
+    /// A day is kept when the owner chooses it (WO-036): every session reads
+    /// the site without asking, by a grant that ends, and the session that
+    /// asked holds nothing of its own.
+    #[test]
+    fn a_day_is_kept_when_the_owner_chooses_it() {
+        let (mut config, scratch, master) = search_config("day-decided", None);
+        config.web.grants = scratch.0.join("sites");
+        let (fetcher, _) = scripted(vec![page("https://a.example/two", "2")]);
+        let mut web = unattended("t", &fetcher);
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/one"));
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+        owner_decides_keyed(
+            &config,
+            &master,
+            "t",
+            "https://a.example",
+            Decision::ApproveDay,
+        );
+        let mut other = unattended("t2", &fetcher);
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut other,
+            &fetch("https://a.example/two"),
+        );
+        assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        let grants = crate::site_grants::SiteGrants::of(&config, &master).unwrap();
+        let cover = grants
+            .covering("https://a.example", Timestamp::now().as_second())
+            .unwrap();
+        assert!(
+            matches!(cover, Some(crate::site_grants::Cover::Until(_))),
+            "a day, not always: {cover:?}"
+        );
+        assert!(!web.holds(&origin("https://a.example/")));
+    }
+
+    /// The owner's standing yes says whether its grant was kept: one the
+    /// store couldn't keep is said, so the app never shows it as kept.
+    #[test]
+    fn a_standing_yes_says_whether_it_was_kept() {
+        let (mut config, scratch, master) = search_config("kept-said", None);
+        config.web.grants = scratch.0.join("sites");
+        let (fetcher, _) = scripted(Vec::new());
+        let decided = |task: &str, keys: &dyn OpensStores, decision| {
+            let mut web = unattended(task, &fetcher);
+            let _ = handle_web_op(&config, keys, &mut web, &fetch("https://a.example/"));
+            let board = board(&config);
+            let id = board
+                .approvals()
+                .find_run(task, State::Pending, |_| true)
+                .unwrap();
+            let digest = board.approvals().get(&id).unwrap().digest;
+            crate::approval_board::decide_as_owner(
+                &config,
+                keys,
+                &id,
+                1,
+                &digest,
+                decision,
+                Timestamp::now().as_second(),
+            )
+            .unwrap()
+            .kept
+        };
+        assert_eq!(decided("t1", &master, Decision::Approve), None);
+        assert_eq!(decided("t2", &master, Decision::ApproveSession), None);
+        assert_eq!(decided("t3", &master, Decision::ApproveDay), Some(true));
+        let other = MasterKey::generate().unwrap();
+        assert_eq!(
+            decided("t4", &other, Decision::ApproveAlways),
+            Some(false),
+            "a store the broker can't open"
+        );
+    }
+
     /// The owner's always is kept when they choose it (#542), not when the
     /// session that asked comes back for the site: one that never does
     /// still leaves it allowed for every other.
@@ -2047,34 +2123,31 @@ pub(crate) mod tests {
         let (fetcher, _) = scripted(Vec::new());
         let mut web = unattended("t", &fetcher);
         let _ = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/"));
-        let offered: Vec<bool> = bus
+        let offered: Vec<Vec<GrantScope>> = bus
             .after(None)
             .into_iter()
             .filter_map(|event| {
                 if let hatchling_core::ui::UiEventBody::Confirmation(request) = event.body {
-                    Some(request.always)
+                    Some(request.scopes)
                 } else {
                     None
                 }
             })
             .collect();
-        assert_eq!(offered, [false]);
+        assert_eq!(offered, [vec![GrantScope::Once, GrantScope::Task]]);
         let board = board(&config);
         let id = board
             .approvals()
             .find_run("t", State::Pending, |run| matches!(run, crate::approval_board::Approved::Site(visit) if visit.site == "https://a.example"))
             .unwrap();
         let digest = board.approvals().get(&id).unwrap().digest;
-        assert_eq!(
-            board.decide(
-                &id,
-                1,
-                &digest,
-                Decision::ApproveAlways,
-                Timestamp::now().as_second()
-            ),
-            Err(hatchling_core::ui::DecisionRejection::NotOffered)
-        );
+        for standing in [Decision::ApproveDay, Decision::ApproveAlways] {
+            assert_eq!(
+                board.decide(&id, 1, &digest, standing, Timestamp::now().as_second()),
+                Err(hatchling_core::ui::DecisionRejection::NotOffered),
+                "{standing:?}"
+            );
+        }
         let (mut unreadable, scratch, master) = search_config("unreadable-sites", None);
         unreadable.web.grants = scratch.0.join("sites");
         crate::site_grants::SiteGrants::of(&unreadable, &master)

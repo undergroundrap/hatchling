@@ -2,7 +2,7 @@ import type { AppContext } from '../../app/context.js';
 import { h, valueOf } from '../../components/dom.js';
 import { icon } from '../../components/icons.js';
 import { button, textareaField, toggle } from '../../components/ui.js';
-import type { IconName, WebsitePolicy } from '../../protocol/models.js';
+import type { IconName, WebsiteGrant, WebsitePolicy } from '../../protocol/models.js';
 import type { SettingsNavigation } from './settings-navigation.js';
 import { providerMark } from './connections.js';
 function navigationRow(label: string, count: number | null, action: () => void): HTMLElement {
@@ -75,14 +75,30 @@ function websites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     }
     return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, "Websites you've allowed"), group));
 }
-/** The sites Hatchling's broker keeps: added only by Allow always on a request, revoked here. */
+/** A grant's scope and age, in the owner's words. */
+function grantWords(grant: WebsiteGrant): string {
+    const made = shortDate(grant.madeAt);
+    if (grant.scope === 'always')
+        return `Always · since ${made}`;
+    const ends = grant.endsAt === null ? '' : shortTime(grant.endsAt);
+    return grant.covering ? `24 hours · ends ${ends}` : `24 hours · paused: this computer's clock went back`;
+}
+function shortDate(at: string): string {
+    const day = new Date(at);
+    return Number.isNaN(day.getTime()) ? at : day.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
+function shortTime(at: string): string {
+    const time = new Date(at);
+    return Number.isNaN(time.getTime()) ? at : time.toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+/** The sites Hatchling's broker keeps: added only by a standing yes on a request, revoked here. */
 function liveWebsites(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     const group = h('div', { class: 'settings-group reference-list website-permissions' });
     for (const item of ctx.state.websitePermissions) {
         const revoke = button('Revoke', () => ctx.dialogs.confirm(`Revoke ${item.host}?`, 'The agent asks you again the next time it wants a page on this site, in every task, running ones included. A browser on one of its pages is closed.', () => { void ctx.run({ type: 'permission.website', host: item.host, policy: 'ask' }, true).then(nav.refresh); }, { label: 'Revoke site' }), { variant: 'ghost' });
-        group.append(h('div', { class: 'reference-setting-row website-permission' }, h('span', { class: 'website-icon' }, icon('globe', 18)), h('span', { class: 'setting-row-copy' }, item.host), revoke));
+        group.append(h('div', { class: 'reference-setting-row website-permission' }, h('span', { class: 'website-icon' }, icon('globe', 18)), h('span', { class: 'setting-row-copy' }, item.host, item.grant ? h('span', { class: 'setting-description' }, grantWords(item.grant)) : null), revoke));
     }
-    const empty = h('p', { class: 'settings-note' }, 'No sites yet. When the agent asks to read a site, choose Allow always on its request to keep it here.');
+    const empty = h('p', { class: 'settings-note' }, 'No sites yet. When the agent asks to read a site, choose Allow for 24 hours or Allow always on its request to keep it here.');
     return h('div', { class: 'settings-stack' }, h('section', {}, h('h3', { class: 'settings-section-title' }, "Websites you've allowed"), ctx.state.websitePermissions.length ? group : empty));
 }
 /** The sites the user kept signed in for the agent: kept only from a browser they drove, signed out or deleted here. */

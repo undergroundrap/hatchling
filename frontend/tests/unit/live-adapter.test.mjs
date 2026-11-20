@@ -50,10 +50,10 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library'].includes(frame.action.action) && !(['manage_suggestions', 'manage_sites', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library'].includes(frame.action.action) && !(['manage_suggestions', 'manage_grants', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
-const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
+const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
 const decidedEvent = (seq, decision, revision = 2) => sampleEvent(seq, seq, { kind: 'confirmation_decided', confirmation_id: 'confirm-1', revision, decision });
 // ---- A minimal DOM: enough for h() and markdown(), and nothing that parses HTML.
 class FakeNode {
@@ -907,7 +907,7 @@ test('confirmation UI: typed approve and deny, through the existing approval rev
 });
 test('a site offers Allow for task, sent as approve_session and shown as allowed for the task', async () => {
     const { transport, adapter } = connected();
-    const site = sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], session: true });
+    const site = sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], grant_key: 'web.visit:https://a.example', scopes: ['once', 'task'] });
     transport.deliver(site);
     const [card] = adapter.taskApprovals.getSnapshot();
     assert.deepEqual(card.scopes, ['once', 'task']);
@@ -936,10 +936,12 @@ test('a site offers Allow for task, sent as approve_session and shown as allowed
 });
 test('a site that can be kept offers Allow always, sent as approve_always and shown as always allowed', async () => {
     const { transport, adapter } = connected();
-    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], session: true, always: true }));
+    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], grant_key: 'web.visit:https://a.example', scopes: ['once', 'task', 'day', 'always'] }));
     const [card] = adapter.taskApprovals.getSnapshot();
-    assert.deepEqual(card.scopes, ['once', 'task', 'always']);
+    assert.deepEqual(card.scopes, ['once', 'task', 'day', 'always']);
+    assert.equal(card.grantKey, 'web.visit:https://a.example', "the broker's key");
     assert.match(card.detail, /Allow always answers every request like it, in every session, until you revoke it in Permissions\./);
+    assert.match(card.detail, /Either keeps the grant web\.visit:https:\/\/a\.example\./);
     const pending = adapter.taskApprovals.respond({ id: 'attempt-always', requestId: 'confirm-1', revision: 1, decision: 'always' });
     await flush();
     assert.deepEqual(transport.last().action, { action: 'decide', confirmation_id: 'confirm-1', revision: 1, digest: 'digest-1', decision: 'approve_always' });
@@ -950,42 +952,42 @@ test('a site that can be kept offers Allow always, sent as approve_always and sh
     // Deciding always asks the broker for its list again; and for what's
     // kept, since a decision can keep something.
     const asked = transport.sent.slice(-2).map(frame => frame.action);
-    assert.deepEqual(asked, [{ action: 'manage_sites', op: { op: 'list' } }, { action: 'manage_memory', op: { op: 'list' } }]);
+    assert.deepEqual(asked, [{ action: 'manage_grants', op: { op: 'list' } }, { action: 'manage_memory', op: { op: 'list' } }]);
     // Where it isn't offered, it's refused before anything is sent.
     const other = connected();
-    other.transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [], session: true }));
+    other.transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [], grant_key: 'web.visit:https://a.example', scopes: ['once', 'task'] }));
     assert.deepEqual(other.adapter.taskApprovals.getSnapshot()[0].scopes, ['once', 'task']);
     const before = other.transport.sent.length;
-    assert.match((await other.adapter.taskApprovals.respond({ id: 'a1', requestId: 'confirm-1', revision: 1, decision: 'always' })).detail, /Allowing always is not offered/);
+    assert.match((await other.adapter.taskApprovals.respond({ id: 'a1', requestId: 'confirm-1', revision: 1, decision: 'always' })).detail, /not offered for this request/);
     assert.equal(other.transport.sent.length, before, 'nothing sent');
 });
 test('allowed sites: the broker\'s list, loaded on connecting; revoked by the owner, and listed again', async () => {
     const { transport, adapter } = connected();
-    const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'manage_sites');
-    assert.deepEqual(listing?.action, { action: 'manage_sites', op: { op: 'list' } }, 'asked for on connecting');
+    const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'manage_grants');
+    assert.deepEqual(listing?.action, { action: 'manage_grants', op: { op: 'list' } }, 'asked for on connecting');
     assert.deepEqual(adapter.getSnapshot().websitePermissions, [], 'empty until the broker answers');
-    answer(transport, listing.request_id, { result: 'sites', outcome: { result: 'listed', sites: [{ site: 'https://a.example', allowed_at: '2026-10-20T08:00:00Z' }] } });
+    answer(transport, listing.request_id, { result: 'grants', outcome: { result: 'listed', grants: [{ key: 'web.visit:https://a.example', kind: 'web.visit', target: 'https://a.example', scope: 'always', made_at: '2026-10-20T08:00:00Z', state: 'covering' }, { key: 'web.visit:https://day.example', kind: 'web.visit', target: 'https://day.example', scope: 'day', made_at: '2026-10-20T09:00:00Z', ends_at: '2026-10-21T09:00:00Z', state: 'clock_behind' }] } });
     await flush();
-    assert.deepEqual(adapter.getSnapshot().websitePermissions, [{ host: 'https://a.example', policy: 'allow' }]);
-    assert.deepEqual(await adapter.execute({ type: 'permission.website', host: 'https://b.example', policy: 'allow' }), { ok: false, message: "Allow a site from the agent's request for it, with Allow always." });
+    assert.deepEqual(adapter.getSnapshot().websitePermissions, [{ host: 'https://a.example', policy: 'allow', grant: { key: 'web.visit:https://a.example', scope: 'always', madeAt: '2026-10-20T08:00:00Z', endsAt: null, covering: true } }, { host: 'https://day.example', policy: 'allow', grant: { key: 'web.visit:https://day.example', scope: 'day', madeAt: '2026-10-20T09:00:00Z', endsAt: '2026-10-21T09:00:00Z', covering: false } }]);
+    assert.deepEqual(await adapter.execute({ type: 'permission.website', host: 'https://b.example', policy: 'allow' }), { ok: false, message: "Allow a site from the agent's request for it, with Allow for 24 hours or Allow always." });
     const revoking = adapter.execute({ type: 'permission.website', host: 'https://a.example', policy: 'ask' });
     await flush();
     const revoke = transport.last();
-    assert.deepEqual(revoke.action, { action: 'manage_sites', op: { op: 'revoke', site: 'https://a.example' } });
-    answer(transport, revoke.request_id, { result: 'sites', outcome: { result: 'revoked' } });
+    assert.deepEqual(revoke.action, { action: 'manage_grants', op: { op: 'revoke', key: 'web.visit:https://a.example' } }, 'by its key, as listed');
+    answer(transport, revoke.request_id, { result: 'grants', outcome: { result: 'revoked' } });
     await flush();
     const relisting = transport.last();
-    assert.deepEqual(relisting.action, { action: 'manage_sites', op: { op: 'list' } });
-    answer(transport, relisting.request_id, { result: 'sites', outcome: { result: 'listed', sites: [] } });
-    assert.deepEqual(await revoking, { ok: true, message: 'Revoked. The agent asks again the next time it wants a page on this site.' });
+    assert.deepEqual(relisting.action, { action: 'manage_grants', op: { op: 'list' } });
+    answer(transport, relisting.request_id, { result: 'grants', outcome: { result: 'listed', grants: [] } });
+    assert.deepEqual(await revoking, { ok: true, message: 'Revoked. The agent asks again the next time it wants a page on this site, in every task, running ones included.' });
     assert.deepEqual(adapter.getSnapshot().websitePermissions, []);
     // Every other answer is told as what it is; only revoked and not found list again.
     for (const [outcome, ok, words, relists] of [
-        [{ result: 'sites', outcome: { result: 'not_found' } }, false, /no longer allowed/, true],
-        [{ result: 'sites', outcome: { result: 'off' } }, false, /keeps no allowed sites/, false],
-        [{ result: 'sites', outcome: { result: 'failed' } }, false, /nothing was revoked/, false],
-        [{ result: 'sites', outcome: { result: 'listed', sites: [] } }, false, /nothing was revoked/, false],
-        [{ result: 'refused', reason: 'not_granted' }, false, /may not change the allowed sites/, false],
+        [{ result: 'grants', outcome: { result: 'not_found' } }, false, /no longer allowed/, true],
+        [{ result: 'grants', outcome: { result: 'off' } }, false, /keeps no standing grants/, false],
+        [{ result: 'grants', outcome: { result: 'failed' } }, false, /nothing was revoked/, false],
+        [{ result: 'grants', outcome: { result: 'listed', grants: [] } }, false, /nothing was revoked/, false],
+        [{ result: 'refused', reason: 'not_granted' }, false, /may not change the standing grants/, false],
         [{ result: 'decided', confirmation_id: 'c', decision: 'approve' }, false, /not confirmed/, false],
     ]) {
         const pending = adapter.execute({ type: 'permission.website', host: 'https://a.example', policy: 'block' });
@@ -1041,7 +1043,7 @@ test('signed-in sites: the broker\'s list, loaded on connecting; signed out of a
         [{ result: 'profiles', outcome: { result: 'failed' } }, /nothing changed/, false],
         [{ result: 'profiles', outcome: { result: 'listed', profiles: [] } }, /nothing changed/, false],
         [{ result: 'refused', reason: 'not_granted' }, /may not change the signed-in sites/, false],
-        [{ result: 'sites', outcome: { result: 'revoked' } }, /not confirmed/, false],
+        [{ result: 'grants', outcome: { result: 'revoked' } }, /not confirmed/, false],
     ]) {
         const pending = adapter.execute({ type: 'profile.sign-out', id: 'profile-1' });
         await flush();
@@ -1109,6 +1111,30 @@ test('sign-ins: listed by label on each signed-in site, deleted by the owner, an
     assert.deepEqual(adapter.getSnapshot().signedInSites[0].signIns.map(item => item.label), ['Work'], 'a list the broker did not give leaves the last');
     adapter.dispose();
     assert.equal((await adapter.execute({ type: 'sign-in.delete', id: 'cred-1' })).ok, false, 'offline: nothing sent');
+});
+test('a site that can be kept offers Allow for 24 hours, sent as approve_day; a grant the broker could not keep is said', async () => {
+    const { transport, adapter } = connected();
+    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [], grant_key: 'web.visit:https://a.example', scopes: ['once', 'task', 'day', 'always'] }));
+    const [card] = adapter.taskApprovals.getSnapshot();
+    assert.match(card.detail, /Allow for 24 hours answers every request like it, in every session, for 24 hours/);
+    const pending = adapter.taskApprovals.respond({ id: 'attempt-day', requestId: 'confirm-1', revision: 1, decision: 'day' });
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'decide', confirmation_id: 'confirm-1', revision: 1, digest: 'digest-1', decision: 'approve_day' });
+    answer(transport, 'attempt-day', { result: 'decided', confirmation_id: 'confirm-1', decision: 'approve_day', kept: false });
+    const settled = await pending;
+    assert.equal(settled.state, 'accepted');
+    assert.match(settled.detail, /couldn’t keep the grant: this request is allowed once/);
+    transport.deliver(decidedEvent(2, 'approve_day', 1));
+    assert.equal(adapter.taskApprovals.getSnapshot()[0].status, 'allowed-day');
+    // A day asks the broker for its grants again.
+    assert.ok(transport.sent.some(frame => frame.type === 'action' && frame.action.action === 'manage_grants' && frame.action.op.op === 'list'));
+    // A card that offers no day can't be answered with one.
+    const other = connected();
+    other.transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-2', revision: 1, chat_id: 'main', summary: 'Remember this?', expires_at: null, digest: 'digest-2', fields: [], grant_key: null, scopes: ['once'] }));
+    assert.equal(other.adapter.taskApprovals.getSnapshot()[0].grantKey, undefined);
+    const before = other.transport.sent.length;
+    assert.match((await other.adapter.taskApprovals.respond({ id: 'a1', requestId: 'confirm-2', revision: 1, decision: 'day' })).detail, /not offered for this request/);
+    assert.equal(other.transport.sent.length, before, 'nothing sent');
 });
 test('a decision is re-validated at dispatch, against the broker\'s latest state, not the card that was drawn', async () => {
     const { transport, adapter } = connected();
@@ -1218,7 +1244,7 @@ test('a request says until when it waits, in the words of the day it was offered
     assert.equal(expiryWords('2026-10-07T09:10:00Z', 'no time'), '09:10', 'an offer with no time is read as the same day');
     const card = body => {
         const { transport, adapter } = connected();
-        transport.deliver(sampleEvent(1, 0, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Remember this about you?', digest: 'digest-1', fields: [], ...body }));
+        transport.deliver(sampleEvent(1, 0, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Remember this about you?', digest: 'digest-1', fields: [], ...body }));
         return adapter.taskApprovals.getSnapshot()[0].resource;
     };
     assert.equal(card({ expires_at: sampleTime(24 * 60 * 60) }), 'This request waits for your answer until tomorrow at 09:00.');
@@ -1231,7 +1257,7 @@ test('approvals reconcile without resending, and an older revision never replace
     transport.deliver(confirmation(2, 1, 'An older version.'));
     assert.equal(adapter.taskApprovals.getSnapshot()[0].revision, 2);
     // A confirmation that names no chat belongs to the main one.
-    transport.deliver(sampleEvent(3, 3, { kind: 'confirmation', confirmation_id: 'confirm-2', revision: 1, summary: 'A general question.', digest: 'digest-q', fields: [] }));
+    transport.deliver(sampleEvent(3, 3, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'confirm-2', revision: 1, summary: 'A general question.', digest: 'digest-q', fields: [] }));
     // The newest leads.
     assert.deepEqual(adapter.taskApprovals.getSnapshot().map(item => [item.id, item.chatId]), [['confirm-2', 'main'], ['confirm-1', 'main']]);
     await adapter.taskApprovals.refresh('confirm-1');
@@ -1530,7 +1556,7 @@ test('memory: listed into the snapshot, forgotten from the page, never added the
 });
 test('an approval that says what approving does is labelled so; one that doesn\'t is Allow once', () => {
     const { transport, adapter } = connected();
-    const card = (id, extra) => sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: id, revision: 1, chat_id: 'main', summary: 'Remember this about you?', expires_at: null, digest: `digest-${id}`, fields: [{ label: 'What it would remember', value: 'Their cat is Biscuit.', source: 'agent' }], ...extra });
+    const card = (id, extra) => sampleEvent(1, 1, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: id, revision: 1, chat_id: 'main', summary: 'Remember this about you?', expires_at: null, digest: `digest-${id}`, fields: [{ label: 'What it would remember', value: 'Their cat is Biscuit.', source: 'agent' }], ...extra });
     transport.deliver(card('keep-1', { approve: 'Remember it' }));
     const [kept] = adapter.taskApprovals.getSnapshot();
     assert.equal(kept.approveLabel, 'Remember it');
@@ -1563,7 +1589,7 @@ test('approvals history: what was decided before the connection, as it was decid
     await flush();
     assert.ok(told > 0, 'the history is told when it arrives');
     // A request the stream shows live is shown live, once.
-    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], session: true, always: true }));
+    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', confirmation_id: 'confirm-1', revision: 1, chat_id: 'main', summary: 'Let the agent read a site', expires_at: null, digest: 'digest-1', fields: [{ label: 'Site', value: 'https://a.example', source: 'broker' }], grant_key: 'web.visit:https://a.example', scopes: ['once', 'task', 'day', 'always'] }));
     const cards = adapter.taskApprovals.getSnapshot();
     assert.deepEqual(cards.map(card => [card.id, card.status]), [['confirm-1', 'pending'], ['kept-1', 'allowed-once'], ['kept-2', 'denied']]);
     assert.equal(cards[1].description, 'Remember this about you?');

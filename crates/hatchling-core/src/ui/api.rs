@@ -63,8 +63,10 @@ pub enum ApiRequest {
     Decide,
     /// [`UiAction::ManageSchedule`].
     ManageSchedule,
-    /// [`UiAction::ManageSites`].
-    ManageSites,
+    /// [`UiAction::ManageGrants`]. Activity kept before v9 named it
+    /// `manage_sites`.
+    #[serde(alias = "manage_sites")]
+    ManageGrants,
     /// [`UiAction::InvokeSkill`].
     InvokeSkill,
     /// [`UiAction::OpenArtifact`].
@@ -156,7 +158,7 @@ impl ApiRequest {
             UiAction::NewConversation { .. } => Self::NewConversation,
             UiAction::Decide { .. } => Self::Decide,
             UiAction::ManageSchedule { .. } => Self::ManageSchedule,
-            UiAction::ManageSites { .. } => Self::ManageSites,
+            UiAction::ManageGrants { .. } => Self::ManageGrants,
             UiAction::InvokeSkill { .. } => Self::InvokeSkill,
             UiAction::OpenArtifact { .. } => Self::OpenArtifact,
             UiAction::ShareArtifact { .. } => Self::ShareArtifact,
