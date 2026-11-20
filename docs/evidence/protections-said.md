@@ -56,7 +56,7 @@ somewhere the owner looks.
 | `npm run check` (typecheck, lint, design, protocol, the lock, tests, coverage), on Windows | 880 passed, 0 failed |
 | The page shows the doc word for word (`your-security.test.mjs`) | passed |
 | The page's notices: unread said, read said by tier and cgroup, nothing in the demo or while it's read | passed |
-| `hatchling-dev audit` on the final tree | RESULT_AUDIT |
+| `hatchling-dev audit` on the final tree, the close included (`e86be848`) | all checks passed |
 
 ## Residual
 
