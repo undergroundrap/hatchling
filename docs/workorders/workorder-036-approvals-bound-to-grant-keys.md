@@ -1,6 +1,6 @@
 # WO-036: Approvals bound to grant keys
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-broker` (`approvals`, `approval_board`, `site_grants`, the stores of standing grants), `crates/hatchling-core` (the confirmation's choices), `frontend/` (the approval card, and a page of standing grants)
 **Issue:** [#478](https://github.com/undergroundrap/hatchling/issues/478)
 **Trust boundary:** yes (what the owner's yes covers)
@@ -26,13 +26,13 @@ The fix is one scheme for every standing yes: a **grant key** names what is allo
 
 ## Acceptance criteria
 
-- [ ] Every approval card shows the grant key it would make and offers only the scopes its kind allows.
-- [ ] A request whose grant key a standing grant covers runs without a card, and is in Activity with the grant that covered it.
-- [ ] A request carrying a warning asks every time, whatever is granted: the warning is checked before any grant, the list of warnings is the broker's, and a test proves an agent can't add to or remove from it.
-- [ ] The owner lists standing grants with their scope and age, and revokes any one alone; a revoked grant covers nothing from then on, a running task included.
-- [ ] A 24-hour grant stops covering anything 24 hours after it was made, by the broker's clock, and a clock set back never stretches one.
-- [ ] Sites kept as always today are kept, as always grants on the scheme.
-- [ ] Each guard is hand-broken and the test that names it fails for the right reason.
+- [x] Every approval card shows the grant key it would make and offers only the scopes its kind allows. Slice 2b ([grants-v9.md](../evidence/grants-v9.md)): the ledger's one list of scopes, the broker's key; slice 3 ([warnings.md](../evidence/warnings.md)): a signed-in profile's card offers for the task alone, and a warned request once alone.
+- [x] A request whose grant key a standing grant covers runs without a card, and is in Activity with the grant that covered it. Slice 2c ([covered.md](../evidence/covered.md)); a record that can't be kept means the owner is asked.
+- [x] A request carrying a warning asks every time, whatever is granted: the warning is checked before any grant, the list of warnings is the broker's, and a test proves an agent can't add to or remove from it. Slice 3 ([warnings.md](../evidence/warnings.md)): sites' first warning, an address over 1,024 characters (the maintainer's choice, 2026-11-20).
+- [x] The owner lists standing grants with their scope and age, and revokes any one alone; a revoked grant covers nothing from then on, a running task included. Slices 1b ([revokes-reach.md](../evidence/revokes-reach.md)) and 2b ([grants-v9.md](../evidence/grants-v9.md)).
+- [x] A 24-hour grant stops covering anything 24 hours after it was made, by the broker's clock, and a clock set back never stretches one. Slices 1 ([grants-kept.md](../evidence/grants-kept.md)), 2a ([day-ends.md](../evidence/day-ends.md)) and 2b; a host's sleep doesn't stretch one either. A WSL clock lagging after the host slept can, by the lag: said in 2a's residual.
+- [x] Sites kept as always today are kept, as always grants on the scheme. Slice 1 ([grants-kept.md](../evidence/grants-kept.md)).
+- [x] Each guard is hand-broken and the test that names it fails for the right reason. Every slice's record lists its breaks: 15, 17, 17, 12, 9 and the close's.
 
 ## Gates
 
@@ -45,8 +45,7 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend and protocol gates (the card an
 - Slice 2a, a day grant's end reaching every running task: [day-ends.md](../evidence/day-ends.md)
 - Slice 2b, approvals bound to grant keys and scopes, the local UI API v9: [grants-v9.md](../evidence/grants-v9.md)
 - Slice 2c, what standing grants covered, kept and shown in Activity: [covered.md](../evidence/covered.md)
-
-The rest is filled in at close.
+- Slice 3, the warning rule and a profile's card said truly, and the close: [warnings.md](../evidence/warnings.md)
 
 ## Notes
 

@@ -563,7 +563,10 @@ pub(crate) fn allow(
 ) -> Result<Yes, WebResult> {
     let seen = web.revokes_taken(config);
     let origin = url.origin();
-    if let Some(held) = web.sites.get(origin) {
+    // A warning is checked before any grant: a request that carries one
+    // asks every time, whatever is granted (WO-036).
+    let warning = crate::warnings::site_warning(url);
+    if let (None, Some(held)) = (warning, web.sites.get(origin)) {
         return Ok(Yes {
             seen: *held,
             until: None,
@@ -571,7 +574,7 @@ pub(crate) fn allow(
     }
     let site = origin.to_string();
     let grants = crate::site_grants::SiteGrants::of(config, keys);
-    if let Some(grants) = &grants {
+    if let (None, Some(grants)) = (warning, &grants) {
         let now = Timestamp::now().as_second();
         match grants.covering(&site, now) {
             Ok(Some(cover)) => {
@@ -667,6 +670,7 @@ fn ask_owner(
                 led: web.led_to(url),
                 standing,
                 visit,
+                warning: crate::warnings::site_warning(url),
             },
             &web.task,
             now,
@@ -1215,6 +1219,7 @@ pub(crate) mod tests {
             led: None,
             standing: false,
             visit: false,
+            warning: None,
         }
     }
 
@@ -2075,6 +2080,114 @@ pub(crate) mod tests {
             .allow(site, Timestamp::now().as_second())
             .unwrap();
         (config, scratch, master)
+    }
+
+    /// An address over 1,024 characters.
+    fn long_page() -> String {
+        let base = "https://a.example/";
+        format!(
+            "{base}{}",
+            "x".repeat(crate::warnings::LONG_ADDRESS + 1 - base.len())
+        )
+    }
+
+    /// A request with a warning asks every time, whatever is granted
+    /// (WO-036): an always grant and a site held for the task cover it not,
+    /// the card says the warning and offers once alone, and a yes is used
+    /// once.
+    #[test]
+    fn a_long_address_asks_every_time_whatever_is_granted() {
+        let (config, _scratch, master) = granted("warned", "https://a.example");
+        let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(Arc::clone(&bus));
+        let long = long_page();
+        let (fetcher, asked) =
+            scripted(vec![page("https://a.example/short", "1"), page(&long, "2")]);
+        let mut web = unattended("t", &fetcher);
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut web,
+            &fetch("https://a.example/short"),
+        );
+        assert!(
+            matches!(answer, WebResult::Page { .. }),
+            "covered: {answer:?}"
+        );
+        let answer = handle_web_op(&config, &master, &mut web, &fetch(&long));
+        assert!(waiting(&answer, "https://a.example"), "warned: {answer:?}");
+        let card = bus
+            .after(None)
+            .into_iter()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::Confirmation(request) = event.body {
+                    Some(request)
+                } else {
+                    None
+                }
+            })
+            .expect("a card");
+        assert_eq!(card.scopes, [GrantScope::Once], "once alone");
+        assert!(card.fields.iter().any(|field| {
+            field.label == "Warning"
+                && field.source == hatchling_core::ui::FieldSource::Broker
+                && field
+                    .value
+                    .starts_with("Its address is over 1,024 characters")
+        }));
+        let ledger = board(&config);
+        let id = ledger
+            .approvals()
+            .find_run("t", State::Pending, |_| true)
+            .unwrap();
+        let digest = ledger.approvals().get(&id).unwrap().digest;
+        for standing in [
+            Decision::ApproveSession,
+            Decision::ApproveDay,
+            Decision::ApproveAlways,
+        ] {
+            assert_eq!(
+                ledger.decide(&id, 1, &digest, standing, Timestamp::now().as_second()),
+                Err(hatchling_core::ui::DecisionRejection::NotOffered),
+                "{standing:?}"
+            );
+        }
+        owner_decides(&config, "t", "https://a.example", Decision::Approve);
+        let answer = handle_web_op(&config, &master, &mut web, &fetch(&long));
+        assert!(
+            matches!(answer, WebResult::Page { .. }),
+            "allowed once: {answer:?}"
+        );
+        let answer = handle_web_op(&config, &master, &mut web, &fetch(&long));
+        assert!(
+            waiting(&answer, "https://a.example"),
+            "asked again: {answer:?}"
+        );
+        assert_eq!(asked.lock().unwrap().len(), 2, "read once");
+        // A site held for the task doesn't cover it either.
+        let (config, _scratch, master) = search_config("warned-task", None);
+        let (fetcher, _) = scripted(vec![page("https://a.example/short", "1")]);
+        let mut web = unattended("t", &fetcher);
+        let _ = handle_web_op(
+            &config,
+            &master,
+            &mut web,
+            &fetch("https://a.example/short"),
+        );
+        owner_decides(&config, "t", "https://a.example", Decision::ApproveSession);
+        let answer = handle_web_op(
+            &config,
+            &master,
+            &mut web,
+            &fetch("https://a.example/short"),
+        );
+        assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        assert!(web.holds(&origin("https://a.example/")));
+        let answer = handle_web_op(&config, &master, &mut web, &fetch(&long_page()));
+        assert!(
+            waiting(&answer, "https://a.example"),
+            "held for the task: {answer:?}"
+        );
     }
 
     /// A read a standing grant covers is recorded with the address the agent

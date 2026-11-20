@@ -70,7 +70,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [033](workorder-033-install-it-and-leave-it-on.md) | Install it and leave it on: one command, a service that survives a reboot | yes | IN-PROGRESS |
 | [034](workorder-034-run-commands-in-the-agents-encrypted-room.md) | Run commands in the agent's encrypted room | yes | IN-PROGRESS |
 | [035](workorder-035-the-agents-tools-in-its-own-computer.md) | The agent's tools in its own computer: run, read, search, write and edit from a chat | yes | DONE |
-| [036](workorder-036-approvals-bound-to-grant-keys.md) | Approvals bound to grant keys: a tool and its target, scoped and revocable | yes | IN-PROGRESS |
+| [036](workorder-036-approvals-bound-to-grant-keys.md) | Approvals bound to grant keys: a tool and its target, scoped and revocable | yes | CLOSED |
 | [037](workorder-037-say-when-a-protection-is-off.md) | Say when a protection is off: doctor and Your security name what's missing | yes | QUEUED |
 | [038](workorder-038-know-what-is-installed.md) | Know what is installed: a version command, store modes checked, the Room's image on Linux | yes | QUEUED |
 | [039](workorder-039-the-spawner-in-a-crate-of-its-own.md) | The spawner in a crate of its own, design first | yes | QUEUED |

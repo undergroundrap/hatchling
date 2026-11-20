@@ -123,6 +123,9 @@ pub struct SignedAsk {
     /// The card's fields: the broker's first, then the agent's and the
     /// page's words, labelled as theirs.
     pub fields: Vec<ConfirmationField>,
+    /// The scopes it may be approved for: an act once, a profile for the
+    /// task (WO-036).
+    pub scopes: Vec<GrantScope>,
 }
 
 /// A site the agent asks to read, as the owner is asked about it (WO-028).
@@ -143,6 +146,9 @@ pub struct SiteAsk<'a> {
     /// pages it opens on the site until it leaves. A page read is once
     /// that page.
     pub visit: bool,
+    /// The warning the broker put on it, if one (WO-036): it's offered once
+    /// alone, and the card says why.
+    pub warning: Option<&'a str>,
 }
 
 /// A site the agent asked to read (WO-028).
@@ -374,11 +380,15 @@ impl Board {
             led,
             standing,
             visit,
+            warning,
         } = *ask;
         // The key is the broker's, from the site it resolved: a site with
-        // no key can't be granted past the task.
+        // no key can't be granted past the task. A request with a warning
+        // is offered once alone.
         let key = crate::site_grants::GrantKey::site(site);
-        let scopes = if standing && key.is_some() {
+        let scopes = if warning.is_some() {
+            vec![GrantScope::Once]
+        } else if standing && key.is_some() {
             vec![
                 GrantScope::Once,
                 GrantScope::Task,
@@ -404,7 +414,7 @@ impl Board {
         )?;
         if requested.new {
             self.publish(UiEventBody::Confirmation(site_confirmation(
-                site, url, reason, led, visit, &requested,
+                site, url, reason, led, visit, warning, &requested,
             )));
         }
         Ok(requested)
@@ -560,6 +570,7 @@ impl Board {
             fingerprint,
             summary,
             fields,
+            scopes,
         } = ask;
         let requested = self.approvals.propose(
             Proposal {
@@ -568,7 +579,7 @@ impl Board {
                 fingerprint,
                 task: task.to_owned(),
                 decide_secs: DECIDE_SECS,
-                scopes: vec![GrantScope::Once],
+                scopes,
                 grant_key: None,
             },
             now,
@@ -778,6 +789,7 @@ fn site_confirmation(
     reason: &str,
     led: Option<(&str, usize)>,
     visit: bool,
+    warning: Option<&str>,
     requested: &Requested,
 ) -> ConfirmationRequest {
     let offers = |scope| requested.scopes.contains(&scope);
@@ -799,6 +811,11 @@ fn site_confirmation(
             let mut fields = vec![
                 field("Operation", "Read pages from a site", FieldSource::Broker),
                 field("Site", site, FieldSource::Broker),
+            ];
+            if let Some(warning) = warning {
+                fields.push(field("Warning", warning, FieldSource::Broker));
+            }
+            fields.extend([
                 field(
                     "What it allows",
                     &format!(
@@ -821,7 +838,7 @@ fn site_confirmation(
                     ),
                     FieldSource::Broker,
                 ),
-            ];
+            ]);
             if let Some((query, place)) = led {
                 fields.push(field(
                     "Found by",
@@ -1349,6 +1366,7 @@ mod tests {
                     led: None,
                     standing: false,
                     visit: false,
+                    warning: None,
                 },
                 "t1",
                 100,
@@ -1681,35 +1699,22 @@ mod tests {
         let board = empty();
         let bus = Arc::new(Bus::starting_at(1));
         board.attach(Arc::clone(&bus));
+        let ask = |url, reason| SiteAsk {
+            site: "https://a.example",
+            url,
+            reason,
+            led: None,
+            standing: false,
+            visit: false,
+            warning: None,
+        };
         let site = board
-            .propose_site(
-                &SiteAsk {
-                    site: "https://a.example",
-                    url: "https://a.example/x",
-                    reason: "to read it",
-                    led: None,
-                    standing: false,
-                    visit: false,
-                },
-                "t1",
-                100,
-            )
+            .propose_site(&ask("https://a.example/x", "to read it"), "t1", 100)
             .unwrap();
         assert!(site.new);
         // The same page asked again is the request waiting.
         let again = board
-            .propose_site(
-                &SiteAsk {
-                    site: "https://a.example",
-                    url: "https://a.example/x",
-                    reason: "again",
-                    led: None,
-                    standing: false,
-                    visit: false,
-                },
-                "t1",
-                100,
-            )
+            .propose_site(&ask("https://a.example/x", "again"), "t1", 100)
             .unwrap();
         assert!(!again.new, "one request per page and session");
         assert_eq!(again.id, site.id);
@@ -1717,14 +1722,7 @@ mod tests {
         // owner's answer about the page they were shown.
         assert_eq!(
             board.propose_site(
-                &SiteAsk {
-                    site: "https://a.example",
-                    url: "https://a.example/c?d=what-the-agent-read",
-                    reason: "again",
-                    led: None,
-                    standing: false,
-                    visit: false,
-                },
+                &ask("https://a.example/c?d=what-the-agent-read", "again"),
                 "t1",
                 100,
             ),
@@ -1803,6 +1801,7 @@ mod tests {
             "to read it",
             None,
             false,
+            None,
             &requested,
         );
         assert_eq!(
@@ -1862,6 +1861,7 @@ mod tests {
                 "to read it",
                 None,
                 visit,
+                None,
                 &requested,
             )
             .fields
@@ -1900,6 +1900,7 @@ mod tests {
             "to read it",
             None,
             false,
+            None,
             &standing,
         );
         assert_eq!(card.scopes, standing.scopes);

@@ -194,9 +194,13 @@ def allowing(page, task, answers):
     while time.monotonic() < deadline:
         if page.evaluate(HAS_ANSWERED, [task, answers]):
             return allowed
+        # The smallest yes the card offers, as the owner would give it: once,
+        # or for the task where that is all it offers (browsing signed in).
         allow = page.locator("[id^='approval-once-']:enabled").first
+        if not allow.count():
+            allow = page.locator("[id^='approval-task-']:enabled").first
         if allow.count():
-            request = (allow.get_attribute("id") or "").removeprefix("approval-once-")
+            request = re.sub(r"^approval-(once|task)-", "", allow.get_attribute("id") or "")
             card = page.locator(f"section[data-task-approval='{request}']")
             allowed.append(card.inner_text() if card.count() else "")
             screenshot(page, f"browser-7-asked-{len(allowed)}.png")

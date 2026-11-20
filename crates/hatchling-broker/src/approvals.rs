@@ -146,6 +146,12 @@ pub struct Request<A> {
 }
 
 impl<A> Request<A> {
+    /// The scopes it may be approved for.
+    #[must_use]
+    pub fn scopes(&self) -> &[GrantScope] {
+        &self.scopes
+    }
+
     /// The action it would run.
     #[must_use]
     pub const fn run(&self) -> &A {

@@ -112,6 +112,7 @@ pub mod model_window;
 pub mod operator;
 pub mod output_gate;
 pub mod owner;
+pub mod warnings;
 pub use output_gate::{RedactionConfig, Rules, RulesHandle, RulesWorker};
 pub mod run_launcher;
 pub mod run_trail;

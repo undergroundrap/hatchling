@@ -1193,6 +1193,7 @@ impl BrowserSession {
             fingerprint: record,
             summary: String::from("Let the agent act signed in as you"),
             fields,
+            scopes: vec![hatchling_core::ui::GrantScope::Once],
         })
     }
 
@@ -1550,7 +1551,12 @@ fn open(
             }
             browser.allowed_profiles.insert(profile.id.clone());
         }
-    } else if !(same_visit && browser.once.contains(&destination)) {
+    }
+    // A page with a warning is asked for even on the same visit, or signed
+    // in: whatever is granted, it asks every time (WO-036).
+    if crate::warnings::site_warning(&url).is_some()
+        || (profile.is_none() && !(same_visit && browser.once.contains(&destination)))
+    {
         match crate::web_ops::allow(config, keys, web, &url, reason, true) {
             Ok(seen) => yes = Some(seen),
             Err(answer) => return from_web(answer),
@@ -1881,6 +1887,8 @@ fn profile_ask(
             page_field("Page it asked for", &url.to_string()),
             page_field("Why it wants it", reason),
         ],
+        // Its yes lasts the task, so that's what the card offers (WO-036).
+        scopes: vec![hatchling_core::ui::GrantScope::Task],
     }
 }
 
@@ -2235,12 +2243,22 @@ mod tests {
         if !matches!(asked.run(), crate::approval_board::Approved::Signed(_)) {
             return answer;
         }
+        // Answered for the scope it offers: an act once, a profile for the
+        // task.
+        let decision = if asked
+            .scopes()
+            .contains(&hatchling_core::ui::GrantScope::Once)
+        {
+            Decision::Approve
+        } else {
+            Decision::ApproveSession
+        };
         board
             .decide(
                 request,
                 asked.revision,
                 &asked.digest,
-                Decision::Approve,
+                decision,
                 hatchling_scheduler::Timestamp::now().as_second(),
             )
             .unwrap();
@@ -4386,6 +4404,60 @@ mod tests {
         assert_eq!(sessions.1.visit, None);
         assert!(!sessions.1.sites().holds("a.example:443"));
         drop(sessions);
+    }
+
+    /// On the same visit, a page with a warning is asked for all the same
+    /// (WO-036): a long address is never covered by the visit.
+    #[test]
+    fn a_long_address_is_asked_for_on_the_same_visit() {
+        let scratch = crate::api_auth::tests::scratch("browser-warned");
+        let mut config = web_config("browser-warned");
+        config.web.grants = scratch.0.join("sites");
+        let keys = Arc::new(MasterKey::generate().unwrap());
+        crate::site_grants::SiteGrants::of(&config, keys.as_ref())
+            .unwrap()
+            .allow(
+                "https://a.example",
+                hatchling_scheduler::Timestamp::now().as_second(),
+            )
+            .unwrap();
+        let fake = Fake::default();
+        let (sessions, answer) = ask_keyed(
+            &config,
+            &keys,
+            session("t", &fake),
+            &open("https://a.example/"),
+        );
+        assert_eq!(answer, page("https://a.example/"), "covered");
+        let long = format!(
+            "https://a.example/{}",
+            "x".repeat(crate::warnings::LONG_ADDRESS)
+        );
+        let (sessions, answer) = ask_keyed(&config, &keys, sessions, &open(&long));
+        let asked =
+            matches!(&answer, BrowserResult::Waiting { site, .. } if site == "https://a.example");
+        assert!(asked, "the same visit, asked: {answer:?}");
+        drop(sessions);
+    }
+
+    /// A signed-in profile's card offers for the task alone: its yes lasts
+    /// the task, so once isn't what it is (WO-036).
+    #[test]
+    fn a_profiles_card_offers_the_task_alone() {
+        let profile = crate::browser_profiles::Profile {
+            id: String::from("profile-1"),
+            sites: vec![String::from("a.example:443")],
+            created_at: 0,
+            last_used: 0,
+            signed_out: 0,
+        };
+        let ask = profile_ask(&profile, &WebUrl::parse("https://a.example/").unwrap(), "r");
+        assert_eq!(ask.scopes, [hatchling_core::ui::GrantScope::Task]);
+        assert!(
+            ask.fields
+                .iter()
+                .any(|field| field.value.starts_with("For this task:"))
+        );
     }
 
     /// A site a day grant opened is held to the grant's end (WO-036): the
