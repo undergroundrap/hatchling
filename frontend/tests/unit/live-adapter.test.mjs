@@ -966,9 +966,9 @@ test('allowed sites: the broker\'s list, loaded on connecting; revoked by the ow
     const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'manage_grants');
     assert.deepEqual(listing?.action, { action: 'manage_grants', op: { op: 'list' } }, 'asked for on connecting');
     assert.deepEqual(adapter.getSnapshot().websitePermissions, [], 'empty until the broker answers');
-    answer(transport, listing.request_id, { result: 'grants', outcome: { result: 'listed', grants: [{ key: 'web.visit:https://a.example', kind: 'web.visit', target: 'https://a.example', scope: 'always', made_at: '2026-10-20T08:00:00Z', state: 'covering' }] } });
+    answer(transport, listing.request_id, { result: 'grants', outcome: { result: 'listed', grants: [{ key: 'web.visit:https://a.example', kind: 'web.visit', target: 'https://a.example', scope: 'always', made_at: '2026-10-20T08:00:00Z', state: 'covering' }, { key: 'web.visit:https://day.example', kind: 'web.visit', target: 'https://day.example', scope: 'day', made_at: '2026-10-20T09:00:00Z', ends_at: '2026-10-21T09:00:00Z', state: 'clock_behind' }] } });
     await flush();
-    assert.deepEqual(adapter.getSnapshot().websitePermissions, [{ host: 'https://a.example', policy: 'allow', grant: { key: 'web.visit:https://a.example', scope: 'always', madeAt: '2026-10-20T08:00:00Z', endsAt: null, covering: true } }]);
+    assert.deepEqual(adapter.getSnapshot().websitePermissions, [{ host: 'https://a.example', policy: 'allow', grant: { key: 'web.visit:https://a.example', scope: 'always', madeAt: '2026-10-20T08:00:00Z', endsAt: null, covering: true } }, { host: 'https://day.example', policy: 'allow', grant: { key: 'web.visit:https://day.example', scope: 'day', madeAt: '2026-10-20T09:00:00Z', endsAt: '2026-10-21T09:00:00Z', covering: false } }]);
     assert.deepEqual(await adapter.execute({ type: 'permission.website', host: 'https://b.example', policy: 'allow' }), { ok: false, message: "Allow a site from the agent's request for it, with Allow for 24 hours or Allow always." });
     const revoking = adapter.execute({ type: 'permission.website', host: 'https://a.example', policy: 'ask' });
     await flush();
