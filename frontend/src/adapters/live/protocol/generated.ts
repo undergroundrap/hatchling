@@ -352,7 +352,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'list_covered' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -1216,6 +1216,50 @@ export type Control = 'agent' | 'user' | 'to_user' | 'to_agent';
  * Why a control action was refused.
  */
 export type ControlRefusal = 'unknown_session' | 'finished' | 'switching' | 'not_allowed' | 'stale_frame';
+/**
+ * A request a standing grant covered, so the owner wasn't asked (WO-036):
+ * kept, the owner's alone, in a log of its own.
+ *
+ * A task's first requests under a grant are each kept with the address the
+ * agent asked for; past those, a record counts them as the count doubles.
+ */
+export type CoveredRecord = {
+    /**
+     * When, RFC 3339.
+     */
+    readonly at: string;
+    /**
+     * How many of the task's requests the grant had covered, this one
+     * included.
+     */
+    readonly count: number;
+    /**
+     * The grant that covered it, as listed: `web.visit:https://a.example`.
+     */
+    readonly key: string;
+    /**
+     * How long that grant lasts: [`GrantScope::Day`] or
+     * [`GrantScope::Always`].
+     */
+    readonly scope: GrantScope;
+    /**
+     * The task it was for, as the broker knows it.
+     */
+    readonly task: string;
+    /**
+     * The address the agent asked for, the agent's words: what a standing
+     * grant lets it send. `None` for a record that counts.
+     */
+    readonly url?: string | null;
+    /**
+     * How it reached the site.
+     */
+    readonly via: CoveredVia;
+};
+/**
+ * How a request a standing grant covered reached its site.
+ */
+export type CoveredVia = 'fetch' | 'browser';
 /**
  * A user's decision on a confirmation.
  */
@@ -5358,6 +5402,8 @@ export type UiAction = {
 } | {
     readonly action: 'list_decisions';
 } | {
+    readonly action: 'list_covered';
+} | {
     readonly action: 'read_usage';
 } | {
     readonly action: 'set_usage_limits';
@@ -5682,6 +5728,12 @@ export type UiActionResult = {
      */
     readonly decisions: readonly (DecisionRecord)[];
     readonly result: 'decisions';
+} | {
+    /**
+     * They.
+     */
+    readonly covered: readonly (CoveredRecord)[];
+    readonly result: 'covered';
 } | {
     readonly result: 'usage';
     /**

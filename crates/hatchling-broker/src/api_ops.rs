@@ -74,6 +74,8 @@ enum Owned<'a> {
     Memory(&'a KeptOp),
     /// The decisions they made.
     Decisions,
+    /// The requests their standing grants covered.
+    Covered,
     /// The posts on their Feed page.
     Feed,
     /// Their Ideas page.
@@ -310,6 +312,7 @@ impl<'a> Ops<'a> {
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
+            UiAction::ListCovered {} => self.owned(owns, Owned::Covered),
             UiAction::ReadFeed {} => self.owned(owns, Owned::Feed),
             UiAction::ManageSuggestions { op } => self.owned(owns, Owned::Suggestions(op)),
             UiAction::Decide {
@@ -411,6 +414,9 @@ impl<'a> Ops<'a> {
             },
             Owned::Memory(op) => UiActionResult::Memory {
                 outcome: crate::memory_keep::handle_kept_op(self.config, op),
+            },
+            Owned::Covered => UiActionResult::Covered {
+                covered: crate::covered::list(self.config),
             },
             Owned::Decisions => UiActionResult::Decisions {
                 decisions: if self.config.scheduler.enabled() {
@@ -2934,6 +2940,39 @@ mod tests {
                 )
             );
         }
+    }
+
+    /// Only the owner lists what their standing grants covered (WO-036):
+    /// the addresses the agent sent are theirs to see.
+    #[test]
+    fn only_the_owner_lists_what_the_grants_covered() {
+        let config = owner_config(Some("/srv/hatchling/schedules"));
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let held: Vec<ScheduleGrant> = ops.owner_grants().into_iter().collect();
+        let owner = caller(&held);
+        let partial = caller(held.get(..1).unwrap_or_default());
+        let mut replies = Replies::default();
+        let list = UiAction::ListCovered {};
+        assert_eq!(
+            ops.handle(&partial, &list, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &list, &mut replies),
+            (
+                UiActionResult::Covered {
+                    covered: Vec::new()
+                },
+                ApiOutcome::Served
+            )
+        );
     }
 
     /// Only the owner reads the model usage the broker counted.

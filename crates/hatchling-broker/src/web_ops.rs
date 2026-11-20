@@ -100,6 +100,9 @@ pub struct WebSession {
     sites: BTreeMap<Origin, u64>,
     /// Its part in the owner's revokes, from its first check of a site.
     reach: Option<Arc<crate::grant_reach::Reach>>,
+    /// What the owner's standing grants covered for it, by grant key: how
+    /// many requests, and the addresses kept ([`crate::covered`]).
+    covered: BTreeMap<String, Covered>,
     wait: Duration,
     deadline: Duration,
     fetcher: Option<Fetcher>,
@@ -182,6 +185,7 @@ impl WebSession {
             task: task.to_owned(),
             sites: BTreeMap::new(),
             reach: None,
+            covered: BTreeMap::new(),
             wait: if config.web.attended {
                 WAIT_FOR_OWNER
             } else {
@@ -208,6 +212,7 @@ impl WebSession {
             task: task.to_owned(),
             sites: BTreeMap::new(),
             reach: None,
+            covered: BTreeMap::new(),
             wait,
             deadline,
             fetcher: Some(fetcher),
@@ -453,6 +458,62 @@ fn fetch(
     read(web, url)
 }
 
+/// What a grant covered for a session: how many requests, and the
+/// addresses kept.
+#[derive(Debug, Default)]
+struct Covered {
+    count: u64,
+    urls: std::collections::BTreeSet<String>,
+}
+
+impl WebSession {
+    /// Records that the grant `key` (lasting `scope`) covered `url`, reached
+    /// `via` (WO-036): each of the task's first requests under it with its
+    /// address, then as the count doubles. An address already kept writes
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// Why it couldn't be recorded: the request isn't covered.
+    fn covered_by(
+        &mut self,
+        config: &Config,
+        key: &str,
+        scope: hatchling_core::ui::GrantScope,
+        url: &WebUrl,
+        via: hatchling_core::ui::CoveredVia,
+    ) -> std::io::Result<()> {
+        let path = crate::covered::log_path(config)
+            .ok_or_else(|| std::io::Error::other("no log is given for covered requests"))?;
+        let address = url.to_string();
+        let covered = self.covered.entry(key.to_owned()).or_default();
+        if covered.urls.contains(&address) {
+            return Ok(());
+        }
+        let count = covered.count + 1;
+        let first = count <= crate::covered::FIRST_KEPT;
+        if crate::covered::kept(count) {
+            crate::covered::record(
+                &path,
+                &hatchling_core::ui::CoveredRecord {
+                    key: key.to_owned(),
+                    scope,
+                    url: first.then(|| address.clone()),
+                    via,
+                    task: self.task.clone(),
+                    count,
+                    at: Timestamp::now().to_string(),
+                },
+            )?;
+        }
+        covered.count = count;
+        if first {
+            covered.urls.insert(address);
+        }
+        Ok(())
+    }
+}
+
 /// What allowed a site, as [`allow`] says it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Yes {
@@ -514,10 +575,29 @@ pub(crate) fn allow(
         let now = Timestamp::now().as_second();
         match grants.covering(&site, now) {
             Ok(Some(cover)) => {
-                return Ok(Yes {
-                    seen,
-                    until: ends_at(cover, now, Instant::now()),
-                });
+                // Covered only once it's recorded: the owner sees what a
+                // standing grant let through (WO-036).
+                let scope = match cover {
+                    crate::site_grants::Cover::Always => hatchling_core::ui::GrantScope::Always,
+                    crate::site_grants::Cover::Until(_) => hatchling_core::ui::GrantScope::Day,
+                };
+                let via = if visit {
+                    hatchling_core::ui::CoveredVia::Browser
+                } else {
+                    hatchling_core::ui::CoveredVia::Fetch
+                };
+                let key = format!("web.visit:{site}");
+                match web.covered_by(config, &key, scope, url, via) {
+                    Ok(()) => {
+                        return Ok(Yes {
+                            seen,
+                            until: ends_at(cover, now, Instant::now()),
+                        });
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, %site, "a covered request couldn't be recorded: the owner is asked");
+                    }
+                }
             }
             Ok(None) => {}
             Err(error) => {
@@ -1986,6 +2066,116 @@ pub(crate) mod tests {
         );
     }
 
+    /// A config whose grants are kept, with `site` allowed always.
+    fn granted(name: &str, site: &str) -> (Config, crate::api_auth::tests::Scratch, MasterKey) {
+        let (mut config, scratch, master) = search_config(name, None);
+        config.web.grants = scratch.0.join("sites");
+        crate::site_grants::SiteGrants::of(&config, &master)
+            .unwrap()
+            .allow(site, Timestamp::now().as_second())
+            .unwrap();
+        (config, scratch, master)
+    }
+
+    /// A read a standing grant covers is recorded with the address the agent
+    /// asked for and the grant that covered it (WO-036); the same address
+    /// again in the session writes nothing more.
+    #[test]
+    fn a_covered_read_is_recorded_with_its_address_and_grant() {
+        let (config, _scratch, master) = granted("covered", "https://a.example");
+        let (fetcher, _) = scripted(vec![
+            page("https://a.example/one", "1"),
+            page("https://a.example/two?q=secret-ish", "2"),
+        ]);
+        let mut web = unattended("t", &fetcher);
+        for url in [
+            "https://a.example/one",
+            "https://a.example/two?q=secret-ish",
+            "https://a.example/one",
+        ] {
+            let answer = handle_web_op(&config, &master, &mut web, &fetch(url));
+            assert!(matches!(answer, WebResult::Page { .. }), "{answer:?}");
+        }
+        let kept = crate::covered::list(&config);
+        let said: Vec<(Option<&str>, u64, &str)> = kept
+            .iter()
+            .map(|record| (record.url.as_deref(), record.count, record.task.as_str()))
+            .collect();
+        assert_eq!(
+            said,
+            [
+                (Some("https://a.example/two?q=secret-ish"), 2, "t"),
+                (Some("https://a.example/one"), 1, "t"),
+            ]
+        );
+        assert!(
+            kept.iter()
+                .all(|record| record.key == "web.visit:https://a.example"
+                    && record.scope == GrantScope::Always
+                    && record.via == hatchling_core::ui::CoveredVia::Fetch)
+        );
+        // Opened in the browser, it's the browser's.
+        let _ = allow(
+            &config,
+            &master,
+            &mut web,
+            &WebUrl::parse("https://a.example/three").unwrap(),
+            "r",
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            crate::covered::list(&config)
+                .first()
+                .map(|record| record.via),
+            Some(hatchling_core::ui::CoveredVia::Browser)
+        );
+    }
+
+    /// A task that loops on a grant adds a few records, not one a request:
+    /// its first 20 addresses, then a count as it doubles.
+    #[test]
+    fn a_looping_task_adds_few_records() {
+        let (config, _scratch, master) = granted("covered-loop", "https://a.example");
+        let (fetcher, _) = scripted(Vec::new());
+        let mut web = unattended("t", &fetcher);
+        for n in 1..=130 {
+            let url = WebUrl::parse(&format!("https://a.example/{n}")).unwrap();
+            assert!(allow(&config, &master, &mut web, &url, "r", false).is_ok());
+        }
+        let kept = crate::covered::list(&config);
+        let counts: Vec<u64> = kept.iter().rev().map(|record| record.count).collect();
+        let mut expected: Vec<u64> = (1..=20).collect();
+        expected.extend([32, 64, 128]);
+        assert_eq!(counts, expected);
+        assert!(
+            kept.iter()
+                .filter(|record| record.count > 20)
+                .all(|record| record.url.is_none()),
+            "past the first, a count with no address"
+        );
+        // Another task counts from the start.
+        let mut other = unattended("t2", &fetcher);
+        let url = WebUrl::parse("https://a.example/1").unwrap();
+        assert!(allow(&config, &master, &mut other, &url, "r", false).is_ok());
+        let newest = crate::covered::list(&config).into_iter().next().unwrap();
+        assert_eq!((newest.task.as_str(), newest.count), ("t2", 1));
+    }
+
+    /// A read the grant would cover whose record can't be kept isn't
+    /// covered: the owner is asked (WO-036).
+    #[test]
+    fn a_covered_read_that_cant_be_recorded_asks_the_owner() {
+        let (config, _scratch, master) = granted("covered-unkept", "https://a.example");
+        // The log's place is taken by a directory: nothing can be written.
+        std::fs::create_dir_all(crate::covered::log_path(&config).unwrap()).unwrap();
+        let (fetcher, asked) = scripted(vec![page("https://a.example/", "1")]);
+        let mut web = unattended("t", &fetcher);
+        let answer = handle_web_op(&config, &master, &mut web, &fetch("https://a.example/"));
+        assert!(waiting(&answer, "https://a.example"), "{answer:?}");
+        assert!(asked.lock().unwrap().is_empty(), "nothing read");
+    }
+
     /// A day is kept when the owner chooses it (WO-036): every session reads
     /// the site without asking, by a grant that ends, and the session that
     /// asked holds nothing of its own.
@@ -2021,6 +2211,13 @@ pub(crate) mod tests {
             "a day, not always: {cover:?}"
         );
         assert!(!web.holds(&origin("https://a.example/")));
+        // The other session's read was covered, by a day grant.
+        let kept = crate::covered::list(&config);
+        assert_eq!(
+            kept.first()
+                .map(|record| (record.task.as_str(), record.scope)),
+            Some(("t2", GrantScope::Day))
+        );
     }
 
     /// The owner's standing yes says whether its grant was kept: one the

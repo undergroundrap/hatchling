@@ -87,8 +87,8 @@ pub use surfaces::{
 /// folder's count of files in Activity.
 /// 9: grants bound to keys and scopes (WO-036): a confirmation's
 /// `grant_key` and `scopes` in place of `session` and `always`, the
-/// `approve_day` decision, whether a standing yes was kept, and
-/// `manage_grants` in place of `manage_sites`.
+/// `approve_day` decision, whether a standing yes was kept,
+/// `manage_grants` in place of `manage_sites`, and `list_covered`.
 pub const UI_SCHEMA_VERSION: u16 = 9;
 
 /// The incompatibility sentence when the frontend is newer than the
@@ -869,6 +869,44 @@ pub struct StandingGrant {
     pub ends_at: Option<String>,
     /// Where it stands.
     pub state: GrantState,
+}
+
+/// How a request a standing grant covered reached its site.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum CoveredVia {
+    /// A page read.
+    Fetch,
+    /// A page the agent's browser opened, or a site a page of it needed.
+    Browser,
+}
+
+/// A request a standing grant covered, so the owner wasn't asked (WO-036):
+/// kept, the owner's alone, in a log of its own.
+///
+/// A task's first requests under a grant are each kept with the address the
+/// agent asked for; past those, a record counts them as the count doubles.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CoveredRecord {
+    /// The grant that covered it, as listed: `web.visit:https://a.example`.
+    pub key: String,
+    /// How long that grant lasts: [`GrantScope::Day`] or
+    /// [`GrantScope::Always`].
+    pub scope: GrantScope,
+    /// The address the agent asked for, the agent's words: what a standing
+    /// grant lets it send. `None` for a record that counts.
+    pub url: Option<String>,
+    /// How it reached the site.
+    pub via: CoveredVia,
+    /// The task it was for, as the broker knows it.
+    pub task: String,
+    /// How many of the task's requests the grant had covered, this one
+    /// included.
+    pub count: u64,
+    /// When, RFC 3339.
+    pub at: String,
 }
 
 /// The result of a [`GrantOp`].
@@ -1662,6 +1700,9 @@ pub enum UiAction {
     /// List the decisions the owner made, the newest first: the owner's
     /// alone.
     ListDecisions {},
+    /// List the requests the owner's standing grants covered, the newest
+    /// first (WO-036): the owner's alone.
+    ListCovered {},
     /// Read the model usage the broker counted: the owner's alone.
     ReadUsage {},
     /// Set the limits on model usage, answered with the usage as it now
@@ -1926,6 +1967,11 @@ pub enum UiActionResult {
     Decisions {
         /// They.
         decisions: Vec<DecisionRecord>,
+    },
+    /// The requests the owner's standing grants covered, the newest first.
+    Covered {
+        /// They.
+        covered: Vec<CoveredRecord>,
     },
     /// The model usage the broker counted.
     Usage {
@@ -2330,6 +2376,29 @@ mod tests {
         pinned(&Decision::ApproveDay, &json!("approve_day"));
         pinned(&GrantScope::Day, &json!("day"));
         pinned(&GrantKind::WebVisit, &json!("web.visit"));
+    }
+
+    /// What a covered request is said as, on the wire.
+    #[test]
+    fn covered_requests_are_listed_as_kept() {
+        pinned(
+            &UiAction::ListCovered {},
+            &json!({"action": "list_covered"}),
+        );
+        pinned(
+            &UiActionResult::Covered {
+                covered: vec![CoveredRecord {
+                    key: s("web.visit:https://a.example"),
+                    scope: GrantScope::Day,
+                    url: Some(s("https://a.example/page?q=1")),
+                    via: CoveredVia::Browser,
+                    task: s("t-1"),
+                    count: 1,
+                    at: s("2026-11-20T08:00:00Z"),
+                }],
+            },
+            &json!({"result": "covered", "covered": [{"key": "web.visit:https://a.example", "scope": "day", "url": "https://a.example/page?q=1", "via": "browser", "task": "t-1", "count": 1, "at": "2026-11-20T08:00:00Z"}]}),
+        );
     }
 
     #[test]
