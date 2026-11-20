@@ -88,7 +88,7 @@ standing yes keeps. Before this slice:
 | clippy `-D warnings`, default and all features | clean on 1.85.0 and 1.98.1 |
 | `cargo test --workspace`, `HATCHLING_REQUIRE_CELL=1`, `HATCHLING_REQUIRE_CGROUP=1` | 135 binaries, 4,245 passed, 0 failed, on 1.85.0 and on 1.98.1 |
 | `seed-check`, `protocol-schema`, `audit` | all passed on both |
-| `npm run check` (typecheck, lint, design, protocol, the lock, tests, coverage) | 872 passed, 0 failed; coverage 100% |
+| `npm run check` (typecheck, lint, design, protocol, the lock, tests, coverage) | 872 passed, 0 failed; the live adapter's and the operator's coverage gates, run by hand, 100% lines, branches and functions (below) |
 
 ### Hand-breaks
 
@@ -115,6 +115,15 @@ gaps, now closed:
 - **A decision's scope** read as none: the core crate's own tests never said
   each decision's scope, and a mutation of the core runs only its own tests.
   They do now.
+
+**Found by CI after the PR opened:** the live adapter's 100% coverage gate
+found the 24-hour branch of the app's grants mapping unreached, at 99.96% of
+branches. The listing test held only an always grant. On Windows, `npm run
+check` passes that gate vacuously: npm runs it through cmd, whose quotes leave
+the pattern matching no file. The test now lists a 24-hour grant the clock
+check holds back. Both coverage gates were run by hand from Git Bash, each file
+listed, at 100%. This is a test-only commit after the tested tree. It changes
+no code the broker or the gate runs.
 
 ## Residual, for the next slices
 
