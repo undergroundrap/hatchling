@@ -137,6 +137,31 @@ fn unknown_subcommand_is_usage_error() {
     );
 }
 
+/// `--version` says the release and how the build was made, reading no
+/// settings: with none at all it still answers, and starts nothing.
+#[test]
+fn version_says_the_release_and_how_it_was_built_with_no_settings() {
+    for flag in ["--version", "-V"] {
+        let output = run_broker(
+            &[flag],
+            &[],
+            &["HATCHLING_AGENT_BIN", "HATCHLING_VAULT_PATH"],
+        )
+        .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{flag}");
+        assert!(output.stderr.is_empty(), "{flag}");
+        // A test's build isn't a release-profile one: no commit is recorded.
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!(
+                "hatchling-broker {}\na debug build: its commit isn't recorded\n",
+                env!("CARGO_PKG_VERSION")
+            ),
+            "{flag}"
+        );
+    }
+}
+
 /// `rekey-vault` without a keyring and without the new key file path is a
 /// usage error, not a rotation against a default.
 #[test]

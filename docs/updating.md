@@ -101,7 +101,15 @@ Each artifact lands in a folder of its own. Wait for the run's comparison jobs t
 - **It says so.** The installer ends with the app's address, or with "Hatchling is up to date, and locked" and the command that unlocks it: `sudo hatchling-broker unlock`.
 - **`sudo hatchling-broker doctor`** checks what a start trips on. The installer runs it before it restarts anything, and stops if it finds a problem; run it again whenever something seems off.
 - **Open the app** and say something. The app's address changes with every restart, so an app left open goes offline: open it again.
-- **Which build is installed?** There's no version command yet. Hash the installed program and look for it in the release's `SHA256SUMS`:
+- **Which build is installed?** `hatchling-broker --version` names the release, the commit it was built from, and how it was built:
+
+  ```bash
+  hatchling-broker --version
+  ```
+
+  A release's programs say `built as a release is built`, with the tag's commit. Your own build says `built from source`, with its commit and whether it had changes not committed; a build without `--release` records no commit. A program from before 0.9.0 names only its version.
+
+  That's what the program says of itself. To check it's the release's own, hash it and look for it in the release's `SHA256SUMS`, then [verify the release](releasing.md#verifying-a-release):
 
   ```bash
   sha256sum /usr/local/bin/hatchling-broker

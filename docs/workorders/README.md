@@ -72,7 +72,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [035](workorder-035-the-agents-tools-in-its-own-computer.md) | The agent's tools in its own computer: run, read, search, write and edit from a chat | yes | DONE |
 | [036](workorder-036-approvals-bound-to-grant-keys.md) | Approvals bound to grant keys: a tool and its target, scoped and revocable | yes | CLOSED |
 | [037](workorder-037-say-when-a-protection-is-off.md) | Say when a protection is off: doctor and Your security name what's missing | yes | CLOSED |
-| [038](workorder-038-know-what-is-installed.md) | Know what is installed: a version command, store modes checked, the Room's image on Linux | yes | QUEUED |
+| [038](workorder-038-know-what-is-installed.md) | Know what is installed: a version command, store modes checked, the Room's image on Linux | yes | IN-PROGRESS |
 | [039](workorder-039-the-spawner-in-a-crate-of-its-own.md) | The spawner in a crate of its own, design first | yes | QUEUED |
 | [040](workorder-040-room-disk-capacity.md) | The room disk's capacity, reserved and grown | yes | QUEUED |
 | [041](workorder-041-files-between-you-and-the-agents-computer.md) | Files between you and the agent's computer: attach one in, hand one out | yes | CLOSED |

@@ -74,6 +74,9 @@ packages=()
 for entry in $PROGRAMS; do packages+=(-p "${entry%%:*}"); done
 
 export RUSTFLAGS="--remap-path-prefix=$cargo_home=/cargo"
+# A release build: `--version` says so, with the commit, and the build
+# fails on a checkout with changes (crates/hatchling-broker/build.rs).
+export HATCHLING_BUILD=release
 cargo auditable build --release --locked "${packages[@]}" --bins
 
 for entry in $PROGRAMS; do

@@ -1,6 +1,6 @@
 # WO-038: Know what is installed
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (a version command, `doctor`), `scripts/install.sh`, `packaging/install-room-image.sh`, `docs/updating.md`, `docs/install.md`
 **Issue:** [#480](https://github.com/undergroundrap/hatchling/issues/480)
 **Trust boundary:** yes (what runs as root at install, and the Room's image)
@@ -36,4 +36,4 @@ As [TEMPLATE.md](TEMPLATE.md), plus the installer proof (`scripts/room-installer
 
 ## Evidence
 
-Filled in at close.
+- Slice 1, `--version` names the release, the commit and how it was built: [version-command.md](../evidence/version-command.md)
