@@ -32,4 +32,6 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend gate.
 
 ## Evidence
 
-Filled in at close.
+- Slice 1a, `doctor` says when a protection is off or weaker: [doctor-says-off.md](../evidence/doctor-says-off.md)
+
+The rest is filled in at close.
