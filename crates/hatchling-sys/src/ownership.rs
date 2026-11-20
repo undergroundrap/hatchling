@@ -716,31 +716,116 @@ pub fn trusted_dir_chain_from(top: &Path, path: &Path, trusted: &[u32]) -> Resul
     }
 }
 
-/// Makes a new file at `path`, `size` bytes long and holding nothing on the
-/// disk yet: a sparse disk image.
+/// How many times a piece of a reservation a signal interrupts is asked
+/// again, so a stream of signals can't hold it forever.
+const RESERVE_TRIES: u32 = 100;
+
+/// How much of a file's space one call reserves: short enough to finish
+/// between signals.
+const RESERVE_PIECE: u64 = 8 << 20;
+
+/// Whether `size` bytes fit in `free`: all of it may be used.
+const fn fits(size: u64, free: u64) -> bool {
+    size <= free
+}
+
+/// `call`, asked again while a signal interrupts it (`EINTR`), up to `tries`
+/// times in all; then what the last ask said.
+fn again_if_interrupted<T>(
+    tries: u32,
+    mut call: impl FnMut() -> rustix::io::Result<T>,
+) -> rustix::io::Result<T> {
+    let mut asked = 1;
+    loop {
+        match call() {
+            Err(rustix::io::Errno::INTR) if asked < tries => asked += 1,
+            said => return said,
+        }
+    }
+}
+
+/// Makes a new file at `path`, `size` bytes long, with all its space
+/// reserved on the file system now (WO-040): a disk image the file system
+/// below can't run out under later.
 ///
 /// Made in its directory opened without following a link, as a new file
 /// (`O_EXCL | O_NOFOLLOW`), 0600, so nothing that stood at the name, or was
-/// planted there, is ever written to.
+/// planted there, is ever written to. Its blocks are allocated
+/// (`fallocate`, mode 0): they read as zeros, and nothing is written. When
+/// they can't all be, the file made is removed, so a failure keeps no space.
 ///
 /// # Errors
 ///
 /// [`Error::Ownership`] when the directory can't be opened, something is
-/// at the name, or the file can't be made or sized.
-pub fn make_sparse_file(path: &Path, size: u64) -> Result<(), Error> {
-    use rustix::fs::{Mode, OFlags};
+/// at the name, the file can't be made, or its space can't be reserved
+/// (too little is free, or the file system reserves none).
+pub fn make_reserved_file(path: &Path, size: u64) -> Result<(), Error> {
+    use rustix::fs::FallocateFlags;
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(refused("make a file", "not a file in a directory"));
+    };
+    let handle = open_dir_nofollow(dir).map_err(failed("open the directory"))?;
+    // More than is free is refused before anything is made: reserved a
+    // piece at a time, it would fill the disk first and then give it back.
+    let seen = rustix::fs::fstatvfs(&handle).map_err(failed("look at the free space"))?;
+    let free = seen.f_bavail.saturating_mul(seen.f_frsize);
+    if !fits(size, free) {
+        return Err(Error::Ownership {
+            operation: "reserve the file's space",
+            source: io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!("{size} bytes asked for, and {free} free"),
+            ),
+        });
+    }
+    make_new_then(&handle, name, |file| {
+        reserve_pieces(size, |offset, piece| {
+            rustix::fs::fallocate(file, FallocateFlags::empty(), offset, piece)
+        })
+    })
+}
+
+/// Makes `name` a new file in `dir`, never over what's there or through a
+/// link (`O_EXCL | O_NOFOLLOW`), 0600, and does `fill` to it. When `fill`
+/// fails, the file made is removed: made by this call as a new file, it is
+/// nobody else's.
+fn make_new_then(
+    dir: &rustix::fd::OwnedFd,
+    name: &std::ffi::OsStr,
+    fill: impl FnOnce(&rustix::fd::OwnedFd) -> Result<(), Error>,
+) -> Result<(), Error> {
+    use rustix::fs::{AtFlags, Mode, OFlags};
     const FLAGS: OFlags = OFlags::WRONLY
         .union(OFlags::CREATE)
         .union(OFlags::EXCL)
         .union(OFlags::NOFOLLOW)
         .union(OFlags::CLOEXEC);
-    let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
-        return Err(refused("make a file", "not a file in a directory"));
-    };
-    let handle = open_dir_nofollow(dir).map_err(failed("open the directory"))?;
-    let file = rustix::fs::openat(&handle, name, FLAGS, Mode::from_raw_mode(0o600))
+    let made = rustix::fs::openat(dir, name, FLAGS, Mode::from_raw_mode(0o600))
         .map_err(failed("make the file"))?;
-    rustix::fs::ftruncate(&file, size).map_err(failed("size the file"))
+    let filled = fill(&made);
+    if filled.is_err() {
+        drop(made);
+        let _ = rustix::fs::unlinkat(dir, name, AtFlags::empty());
+    }
+    filled
+}
+
+/// Reserves `size` bytes with `call(offset, length)`, a piece at a time: a
+/// signal can interrupt a reservation (tmpfs gives back that call's part
+/// and says EINTR), and only the piece it interrupted is asked again, so
+/// what's reserved stays and it gets on. The first piece that fails ends it.
+fn reserve_pieces(
+    size: u64,
+    mut call: impl FnMut(u64, u64) -> rustix::io::Result<()>,
+) -> Result<(), Error> {
+    let mut offset = 0;
+    while offset < size {
+        let piece = size.saturating_sub(offset).min(RESERVE_PIECE);
+        again_if_interrupted(RESERVE_TRIES, || call(offset, piece))
+            .map_err(failed("reserve the file's space"))?;
+        offset = offset.saturating_add(piece);
+    }
+    Ok(())
 }
 
 /// The first `bytes` bytes of the regular file at `path`, read without
@@ -980,27 +1065,164 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// A sparse file is made new, 0600, at its size and holding nothing on
-    /// the disk; never over what's there, or through a link. A file's head
-    /// is read without following a link, and only from a regular file long
-    /// enough.
+    /// A call a signal interrupts is asked again, up to its tries in all;
+    /// one that succeeds, or fails otherwise, is said at once.
     #[test]
-    fn a_sparse_file_is_made_new_and_a_head_is_read_from_a_file_itself() {
+    fn an_interrupted_call_is_asked_again_up_to_its_tries() {
+        use rustix::io::Errno;
+        let asked = |interruptions: u32, tries: u32, last: Errno| {
+            let mut count = 0;
+            let said = again_if_interrupted::<()>(tries, || {
+                count += 1;
+                if count <= interruptions {
+                    Err(Errno::INTR)
+                } else {
+                    Err(last)
+                }
+            });
+            (said, count)
+        };
+        assert_eq!(asked(0, 5, Errno::NOSPC), (Err(Errno::NOSPC), 1));
+        assert_eq!(asked(3, 5, Errno::NOSPC), (Err(Errno::NOSPC), 4));
+        assert_eq!(asked(4, 5, Errno::NOSPC), (Err(Errno::NOSPC), 5));
+        assert_eq!(
+            asked(9, 5, Errno::NOSPC),
+            (Err(Errno::INTR), 5),
+            "past its tries"
+        );
+        assert_eq!(asked(9, 1, Errno::NOSPC), (Err(Errno::INTR), 1));
+        let mut count = 0;
+        let fine = again_if_interrupted(5, || {
+            count += 1;
+            if count < 3 {
+                Err(Errno::INTR)
+            } else {
+                Ok(count)
+            }
+        });
+        assert_eq!(fine, Ok(3));
+    }
+
+    /// What's asked fits in what's free when it's no more: all of it may be
+    /// used.
+    #[test]
+    fn a_size_fits_in_what_is_free_up_to_all_of_it() {
+        assert!(fits(10, 10));
+        assert!(fits(9, 10));
+        assert!(!fits(11, 10));
+        assert!(fits(0, 0));
+    }
+
+    /// A reservation goes a piece at a time, each asked again alone when a
+    /// signal interrupts it; the first piece that fails otherwise ends it.
+    #[test]
+    fn a_reservation_goes_a_piece_at_a_time_and_ends_at_a_failure() {
+        use rustix::io::Errno;
+        let mut asked = Vec::new();
+        reserve_pieces(20 * MIB, |offset, piece| {
+            asked.push((offset, piece));
+            // A reservation that never gets on is ended here, not waited on.
+            match asked.len() {
+                2 => Err(Errno::INTR),
+                9.. => Err(Errno::NOSPC),
+                _ => Ok(()),
+            }
+        })
+        .unwrap();
+        assert_eq!(
+            asked,
+            [
+                (0, 8 * MIB),
+                (8 * MIB, 8 * MIB),
+                (8 * MIB, 8 * MIB),
+                (16 * MIB, 4 * MIB)
+            ],
+            "the interrupted piece asked again, alone"
+        );
+        let mut asked = Vec::new();
+        let ended = reserve_pieces(20 * MIB, |offset, piece| {
+            asked.push((offset, piece));
+            if offset == 8 * MIB {
+                Err(Errno::NOSPC)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(ended.is_err());
+        assert_eq!(
+            asked,
+            [(0, 8 * MIB), (8 * MIB, 8 * MIB)],
+            "it went on past a failure"
+        );
+        let mut asked = 0;
+        reserve_pieces(0, |_, _| {
+            asked += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(asked, 0, "nothing asked of no size");
+    }
+
+    /// A file made for filling is removed when the filling fails, and kept
+    /// when it doesn't.
+    #[test]
+    fn a_file_whose_filling_fails_is_removed() {
+        let dir = scratch("filling");
+        let handle = open_dir_nofollow(&dir).unwrap();
+        let failed = make_new_then(&handle, std::ffi::OsStr::new("bad"), |_| {
+            Err(refused("fill", "on purpose"))
+        });
+        assert!(failed.is_err());
+        assert!(
+            std::fs::symlink_metadata(dir.join("bad")).is_err(),
+            "it was left"
+        );
+        make_new_then(&handle, std::ffi::OsStr::new("good"), |_| Ok(())).unwrap();
+        assert!(dir.join("good").is_file());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A reserved file is made new, 0600, at its size, with every block of
+    /// it held on the disk below (WO-040); never over what's there, or
+    /// through a link; and one whose space can't be reserved isn't left
+    /// behind. A file's head is read without following a link, and only
+    /// from a regular file long enough.
+    #[test]
+    fn a_reserved_file_is_made_new_and_a_head_is_read_from_a_file_itself() {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-        let dir = scratch("sparse");
+        let dir = scratch("reserved");
         let image = dir.join("disk.img");
-        make_sparse_file(&image, 64 * MIB).unwrap();
+        make_reserved_file(&image, 64 * MIB).unwrap();
         let meta = std::fs::metadata(&image).unwrap();
         assert_eq!(meta.len(), 64 * MIB, "not the size asked for");
         assert_eq!(meta.permissions().mode() & 0o777, 0o600, "not private");
-        assert!(meta.blocks() < 64, "it holds the disk it's sized at");
-        assert!(make_sparse_file(&image, MIB).is_err(), "made over a file");
+        assert!(
+            meta.blocks().saturating_mul(512) >= 64 * MIB,
+            "its space isn't all held: {} blocks",
+            meta.blocks()
+        );
+        assert!(make_reserved_file(&image, MIB).is_err(), "made over a file");
         assert_eq!(std::fs::metadata(&image).unwrap().len(), 64 * MIB);
         let target = dir.join("target");
         std::fs::write(&target, b"kept").unwrap();
         let link = dir.join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(make_sparse_file(&link, MIB).is_err(), "made through a link");
+        assert!(
+            make_reserved_file(&link, MIB).is_err(),
+            "made through a link"
+        );
+        // More than any disk here has: refused, and nothing left at the name.
+        let huge = dir.join("huge.img");
+        // Refused by what's free, before anything is made, saying both.
+        let refused = make_reserved_file(&huge, 1 << 62).unwrap_err().to_string();
+        assert!(
+            refused.contains(&format!("{} bytes asked for, and ", 1_u64 << 62)),
+            "not refused by what's free: {refused}"
+        );
+        assert!(
+            std::fs::symlink_metadata(&huge).is_err(),
+            "a file whose space couldn't be reserved was left"
+        );
         assert_eq!(std::fs::read(&target).unwrap(), b"kept");
 
         assert_eq!(read_file_head(&target, 2).unwrap(), b"ke");
