@@ -42,6 +42,7 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend and protocol gates (the card an
 
 - Slice 1, the grants kept and the owner's always kept when chosen (#542): [grants-kept.md](../evidence/grants-kept.md)
 - Slice 1b, a revoke reaching every running task: [revokes-reach.md](../evidence/revokes-reach.md)
+- Slice 2a, a day grant's end reaching every running task: [day-ends.md](../evidence/day-ends.md)
 
 The rest is filled in at close.
 
