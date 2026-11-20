@@ -131,6 +131,8 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
         }
     };
     let lookup = |key: &str| settings.get(key).cloned();
+    let service = matches!(&source, Source::File(path) if path == Path::new(SERVICE_SETTINGS));
+    let cgroup = lookup(env::HATCHLING_CELL_CGROUP.name).or_else(service_cell_cgroup);
     let checks = [
         ("settings", check_settings(&lookup)),
         (
@@ -138,14 +140,15 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             check_program(lookup(env::HATCHLING_AGENT_BIN.name).as_deref()),
         ),
         ("cells", check_cells(&lookup)),
+        ("cell limits", check_cell_limits(cgroup.as_deref())),
         (
-            "cell limits",
-            check_cell_limits(
-                lookup(env::HATCHLING_CELL_CGROUP.name)
-                    .or_else(service_cell_cgroup)
-                    .as_deref(),
+            "browser",
+            browser_said(
+                is_set(lookup(env::HATCHLING_BROWSER.name)),
+                cgroup.is_some(),
             ),
         ),
+        ("agent uid", nobody_said(&lookup)),
         ("model", {
             let endpoint = lookup(env::HATCHLING_SCHEDULER_MODEL_ENDPOINT.name);
             let name = lookup(env::HATCHLING_SCHEDULER_MODEL_NAME.name);
@@ -154,6 +157,13 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
         }),
         ("other model", check_other(&lookup)),
         ("vault", check_vault(&lookup, &Machine::here())),
+        (
+            "confinement",
+            confinement_said(hatchling_sys::landlock::landlock_abi()),
+        ),
+        ("users", users_said(service, hatchling_sys::euid())),
+        ("output gate", output_gate_said(&lookup)),
+        ("decisions", decisions_said(&lookup)),
         ("room disk", check_room_disk(&lookup)),
         ("memory", check_memory(crate::model_window::memory())),
     ];
@@ -474,7 +484,7 @@ const NOT_A_CGROUP_FIX: &str = "Set it to the service's own cgroup under /sys/fs
 
 /// What doctor says of cells with no cgroup of their own: it works, and
 /// it's weaker, so it's said as something to know.
-const PROCESS_LIMITS: &str = "cells are held by process limits alone (HATCHLING_CELL_CGROUP isn't set): nothing bounds a cell's memory or CPU as a whole, and a cell that ends isn't killed as one";
+const PROCESS_LIMITS: &str = "cells are held by process limits alone (HATCHLING_CELL_CGROUP isn't set): nothing bounds a cell's memory or CPU as a whole, a cell that ends isn't killed as one, and the agent's computer (the Room) and its browser can't run, as each needs a cgroup";
 
 /// How to give cells a cgroup, where the machine can.
 const PROCESS_LIMITS_FIX: &str = "where this machine's cgroups offer the pids, memory and cpu controllers (`cat /sys/fs/cgroup/cgroup.controllers`), run the installer again, or see the README's Cell limits";
@@ -497,6 +507,146 @@ fn cell_limits_found(set: bool, problem: Option<(String, &'static str)>) -> Find
     }
 }
 
+/// What the owner can do about a vault anyone with the disk can open.
+const WEAKER_VAULT_FIX: &str =
+    "Protect it with a security key: it can't be opened without one (docs/security-keys.md)";
+
+/// What doctor says of the agent's browser: off, in a cell of its own, or
+/// set where it can't start, with cells held by process limits alone.
+fn browser_said(set: bool, cgroup: bool) -> Finding {
+    match (set, cgroup) {
+        (false, _) => Finding::Fine(String::from(
+            "off: the agent has no browser (HATCHLING_BROWSER isn't set)",
+        )),
+        (true, false) => Finding::problem(
+            "HATCHLING_BROWSER is set, but cells are held by process limits alone: the agent's browser can't start without a cgroup",
+            PROCESS_LIMITS_FIX,
+        ),
+        (true, true) => Finding::Fine(String::from(
+            "in a cell of its own, reaching only the sites its session holds, through the broker's proxy",
+        )),
+    }
+}
+
+/// What doctor says of the agent's uid: one `nobody` shares with every
+/// process running as nobody only where the operator accepted that.
+fn nobody_said(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
+    match crate::api_auth::flag(
+        lookup(env::HATCHLING_AGENT_ALLOW_NOBODY.name).as_deref(),
+        "HATCHLING_AGENT_ALLOW_NOBODY",
+    ) {
+        Ok(false) => Finding::Fine(String::from("nobody isn't accepted as the agent's uid")),
+        Ok(true) => Finding::Note {
+            what: String::from(
+                "HATCHLING_AGENT_ALLOW_NOBODY accepts nobody (65534) as the agent's uid: any process running as nobody could act as the agent",
+            ),
+            fix: String::from(
+                "Give cells a uid of their own (HATCHLING_AGENT_UID), and unset HATCHLING_AGENT_ALLOW_NOBODY",
+            ),
+        },
+        Err(_) => Finding::Unchecked(String::from("its setting doesn't parse (see settings)")),
+    }
+}
+
+/// What a kernel without Landlock leaves the broker's own file access.
+const NO_LANDLOCK: &str = "this kernel has no Landlock: the broker's own file access isn't confined, and a compromised broker reaches every file its user can";
+
+/// What doctor says of the broker's own confinement, with the kernel's
+/// Landlock `abi`, if it has one.
+fn confinement_said(abi: Option<u32>) -> Finding {
+    abi.map_or_else(
+        || Finding::Note {
+            what: String::from(NO_LANDLOCK),
+            fix: String::from(
+                "Use a kernel with Landlock on (Linux 5.13 or later; `cat /sys/kernel/security/lsm` lists landlock)",
+            ),
+        },
+        |abi| Finding::Fine(format!("Landlock (ABI {abi}) confines the broker's own file access")),
+    )
+}
+
+/// Whether a setting is set: given, and not blank.
+fn is_set(value: Option<String>) -> bool {
+    value.is_some_and(|value| !value.trim().is_empty())
+}
+
+/// What doctor says of who the Keeper and the Broker run as: a user of
+/// their own each, as the `service` or run as root (`euid` 0); otherwise
+/// the owner's own.
+fn users_said(service: bool, euid: u32) -> Finding {
+    if service || euid == 0 {
+        Finding::Fine(String::from(
+            "the Keeper and the Broker each run as a user of their own",
+        ))
+    } else {
+        Finding::Note {
+            what: String::from(
+                "run by hand, not as root: the Keeper and the Broker run as your own user, so neither is kept apart from you or from each other",
+            ),
+            fix: String::from(
+                "Install Hatchling as a service (docs/install.md), or run it as root, which gives each a user of its own",
+            ),
+        }
+    }
+}
+
+/// What doctor says of the output gate: whether the agent's replies to a
+/// channel are checked for the owner's secrets and private keys.
+fn output_gate_said(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
+    let Ok(config) = Config::parse(lookup) else {
+        return Finding::Unchecked(String::from("the settings don't parse (see settings)"));
+    };
+    let Ok(gate) = crate::output_gate::RedactionConfig::parse(&config, lookup) else {
+        return Finding::Unchecked(String::from("its settings don't parse (see settings)"));
+    };
+    if !gate.enabled {
+        return Finding::Note {
+            what: String::from(
+                "the agent's replies to a channel aren't checked for your secrets before they go (HATCHLING_OUTPUT_GATE=off)",
+            ),
+            fix: String::from("Unset HATCHLING_OUTPUT_GATE, or set it to on"),
+        };
+    }
+    let off: Vec<&str> = [
+        (gate.builtins.secrets, "the secrets Hatchling keeps"),
+        (gate.builtins.private_keys, "private keys"),
+    ]
+    .into_iter()
+    .filter(|(on, _)| !on)
+    .map(|(_, what)| what)
+    .collect();
+    if off.is_empty() {
+        Finding::Fine(String::from(
+            "the agent's replies to a channel are checked for your secrets and private keys before they go",
+        ))
+    } else {
+        Finding::Note {
+            what: format!(
+                "the agent's replies to a channel aren't checked for {} (HATCHLING_REDACTION_BUILTINS)",
+                off.join(" or ")
+            ),
+            fix: String::from("Unset HATCHLING_REDACTION_BUILTINS to check for both"),
+        }
+    }
+}
+
+/// What doctor says of the owner's decisions: kept where the scheduler is
+/// on, and not otherwise.
+fn decisions_said(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
+    if is_set(lookup(env::HATCHLING_SCHEDULER_DIR.name)) {
+        Finding::Fine(String::from(
+            "your decisions on the agent's requests are kept, and listed after a restart",
+        ))
+    } else {
+        Finding::Note {
+            what: String::from(
+                "your decisions on the agent's requests aren't kept: the scheduler is off (HATCHLING_SCHEDULER_DIR isn't set), so the approvals history is empty after a restart",
+            ),
+            fix: String::from("Set HATCHLING_SCHEDULER_DIR (docs/install.md)"),
+        }
+    }
+}
+
 /// How the vault opens, and whether that needs the owner after a restart:
 /// its key file does it by itself; a code or a security key needs them
 /// (`sudo hatchling-broker unlock`). A vault waiting for that now is the
@@ -508,9 +658,12 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
         ));
     };
     let Some(path) = keyring.keyring.as_deref() else {
-        return Finding::Fine(String::from(
-            "opens with its key file, by itself after a restart; a security key protects it more (docs/security-keys.md)",
-        ));
+        return Finding::Note {
+            what: String::from(
+                "opens with its key file, by itself after a restart: anyone with this disk can open it",
+            ),
+            fix: String::from(WEAKER_VAULT_FIX),
+        };
     };
     // Run as root, the keyring is the keeper's user's: read as theirs,
     // and nothing is made or given to anyone.
@@ -583,12 +736,18 @@ fn vault_said(
         );
     }
     match tier {
-        Tier::File => Finding::Fine(String::from(
-            "a keyring at the file tier: it opens by itself after a restart",
-        )),
-        Tier::Totp => Finding::Fine(String::from(
-            "opens with a code from your authenticator app: after each restart, `sudo hatchling-broker unlock`",
-        )),
+        Tier::File => Finding::Note {
+            what: String::from(
+                "a keyring at the file tier: it opens by itself after a restart, and anyone with this disk can open it",
+            ),
+            fix: String::from(WEAKER_VAULT_FIX),
+        },
+        Tier::Totp => Finding::Note {
+            what: String::from(
+                "opens with a code from your authenticator app: after each restart, `sudo hatchling-broker unlock`. What makes the codes is on this disk, so anyone with this disk can open it",
+            ),
+            fix: String::from(WEAKER_VAULT_FIX),
+        },
         Tier::HardwareKey => {
             let mut said = format!(
                 "opens with {enrolled} security key{}: after each restart, `sudo hatchling-broker unlock` and a touch",
@@ -1454,6 +1613,185 @@ mod tests {
 
     use super::*;
 
+    /// The vault's tiers a stolen disk opens are said so, with the
+    /// stronger one: its key file, a keyring at the file tier, authenticator
+    /// codes (WO-037).
+    #[test]
+    fn a_vault_a_stolen_disk_opens_is_said() {
+        use hatchling_vault::Tier;
+        let here = || Machine {
+            keys: Vec::new(),
+            wsl: false,
+        };
+        for tier in [Tier::File, Tier::Totp] {
+            let (kind, words) = said(&vault_said(tier, 0, &here(), false));
+            assert_eq!(kind, "note", "{words}");
+            assert!(
+                words.contains("anyone with this disk can open it"),
+                "{words}"
+            );
+            assert!(words.contains("security key"), "{words}");
+        }
+        assert!(
+            said(&vault_said(Tier::File, 0, &here(), false))
+                .1
+                .contains("by itself")
+        );
+        assert!(
+            said(&vault_said(Tier::Totp, 0, &here(), false))
+                .1
+                .contains("authenticator app")
+        );
+        let none: BTreeMap<String, String> = BTreeMap::new();
+        let (kind, words) = said(&check_vault(&|key: &str| none.get(key).cloned(), &here()));
+        assert_eq!(kind, "note");
+        assert!(
+            words.contains("key file") && words.contains("anyone with this disk"),
+            "{words}"
+        );
+    }
+
+    /// What a finding says, by its kind and words.
+    fn said(finding: &Finding) -> (&'static str, String) {
+        match finding {
+            Finding::Fine(what) => ("fine", what.clone()),
+            Finding::Note { what, fix } => ("note", format!("{what} | {fix}")),
+            Finding::Problem { what, fix } => ("problem", format!("{what} | {fix}")),
+            Finding::Unchecked(why) => ("unchecked", why.clone()),
+        }
+    }
+
+    /// Without Landlock, doctor says the broker's own file access isn't
+    /// confined (WO-037).
+    #[test]
+    fn a_broker_without_landlock_is_said() {
+        let (kind, words) = said(&confinement_said(None));
+        assert_eq!(kind, "note");
+        assert!(words.starts_with(NO_LANDLOCK), "{words}");
+        assert!(words.contains("a compromised broker reaches every file its user can"));
+        assert_eq!(
+            said(&confinement_said(Some(4))),
+            (
+                "fine",
+                String::from("Landlock (ABI 4) confines the broker's own file access")
+            )
+        );
+    }
+
+    /// Run by hand, not as root, doctor says the Keeper and the Broker run
+    /// as the owner (WO-037).
+    #[test]
+    fn a_hand_run_install_says_who_runs_it() {
+        let (kind, words) = said(&users_said(false, 1000));
+        assert_eq!(kind, "note");
+        assert!(words.contains("run as your own user"), "{words}");
+        for (service, euid) in [(true, 1000), (false, 0), (true, 0)] {
+            assert_eq!(
+                said(&users_said(service, euid)).0,
+                "fine",
+                "{service} {euid}"
+            );
+        }
+        // A setting is set when it's given and not blank.
+        assert!(is_set(Some(String::from("/usr/bin/x"))));
+        assert!(!is_set(Some(String::from("  "))));
+        assert!(!is_set(None));
+    }
+
+    /// The output gate off, or a built-in check off, is said (WO-037).
+    #[test]
+    fn an_output_gate_turned_off_is_said() {
+        let settings = |extra: &[(&str, &str)]| {
+            let mut all = BTreeMap::from([
+                (
+                    String::from("HATCHLING_BROKER_SOCKET"),
+                    String::from("/run/hatchling-doctor-gate/broker.sock"),
+                ),
+                (String::from("HATCHLING_AGENT_UID"), String::from("2001")),
+                (
+                    String::from("HATCHLING_VAULT_DIR"),
+                    String::from("/tmp/hatchling-doctor-gate/vault"),
+                ),
+            ]);
+            for (key, value) in extra {
+                all.insert((*key).to_owned(), (*value).to_owned());
+            }
+            all
+        };
+        let found = |extra: &[(&str, &str)]| {
+            let all = settings(extra);
+            said(&output_gate_said(&|key: &str| all.get(key).cloned()))
+        };
+        assert_eq!(found(&[]).0, "fine", "{:?}", found(&[]));
+        let (kind, words) = found(&[("HATCHLING_OUTPUT_GATE", "off")]);
+        assert_eq!(kind, "note");
+        assert!(words.contains("aren't checked for your secrets"), "{words}");
+        let (kind, words) = found(&[("HATCHLING_REDACTION_BUILTINS", "none")]);
+        assert_eq!(kind, "note");
+        assert!(
+            words.contains("the secrets Hatchling keeps or private keys"),
+            "{words}"
+        );
+        let (kind, words) = found(&[("HATCHLING_REDACTION_BUILTINS", "secret")]);
+        assert_eq!(kind, "note");
+        assert!(
+            words.contains("aren't checked for private keys ("),
+            "{words}"
+        );
+        assert_eq!(found(&[("HATCHLING_OUTPUT_GATE", "maybe")]).0, "unchecked");
+    }
+
+    /// A browser set where cells have no cgroup can't start, and doctor
+    /// says so; process limits say the Room and the browser can't run
+    /// (WO-037).
+    #[test]
+    fn a_browser_without_a_cgroup_is_said() {
+        let (kind, words) = said(&browser_said(true, false));
+        assert_eq!(kind, "problem");
+        assert!(words.contains("can't start without a cgroup"), "{words}");
+        assert_eq!(said(&browser_said(true, true)).0, "fine");
+        assert!(said(&browser_said(false, false)).1.starts_with("off:"));
+        assert!(
+            PROCESS_LIMITS.contains("the agent's computer (the Room) and its browser can't run")
+        );
+    }
+
+    /// Nobody accepted as the agent's uid is said (WO-037).
+    #[test]
+    fn nobody_as_the_agent_is_said() {
+        let with = |value: Option<&str>| {
+            let value = value.map(str::to_owned);
+            said(&nobody_said(&|key: &str| {
+                (key == "HATCHLING_AGENT_ALLOW_NOBODY")
+                    .then(|| value.clone())
+                    .flatten()
+            }))
+        };
+        assert_eq!(with(None).0, "fine");
+        assert_eq!(with(Some("false")).0, "fine");
+        let (kind, words) = with(Some("true"));
+        assert_eq!(kind, "note");
+        assert!(
+            words.contains("any process running as nobody could act as the agent"),
+            "{words}"
+        );
+        assert_eq!(with(Some("perhaps")).0, "unchecked");
+    }
+
+    /// Decisions aren't kept where the scheduler is off, and doctor says
+    /// so (WO-037).
+    #[test]
+    fn decisions_not_kept_are_said() {
+        let none = |_: &str| None;
+        let (kind, words) = said(&decisions_said(&none));
+        assert_eq!(kind, "note");
+        assert!(words.contains("aren't kept"), "{words}");
+        let set = |key: &str| (key == "HATCHLING_SCHEDULER_DIR").then(|| String::from("/srv/s"));
+        assert_eq!(said(&decisions_said(&set)).0, "fine");
+        let blank = |key: &str| (key == "HATCHLING_SCHEDULER_DIR").then(|| String::from(" "));
+        assert_eq!(said(&decisions_said(&blank)).0, "note");
+    }
+
     /// How the vault opens, in each case: by itself, or after each restart
     /// with the owner; and, waiting now, what to do.
     /// The drop-in's setting is found among the unit's, and only that one.
@@ -1714,10 +2052,6 @@ mod tests {
                 format!("not a problem: {other:?}")
             }
         };
-        assert!(fine(vault_said(Tier::File, 0, &here(&[], false), false)).contains("by itself"));
-        assert!(
-            fine(vault_said(Tier::Totp, 0, &here(&[], false), false)).contains("authenticator app")
-        );
         let two = fine(vault_said(
             Tier::HardwareKey,
             2,
@@ -1761,15 +2095,7 @@ mod tests {
         assert!(
             fix(vault_said(Tier::Totp, 0, &here(&[], false), true)).contains("authenticator app")
         );
-        // No keyring: its key file; one that doesn't load: the problem.
-        let none: BTreeMap<String, String> = BTreeMap::new();
-        assert!(
-            fine(check_vault(
-                &|key: &str| none.get(key).cloned(),
-                &here(&[], false)
-            ))
-            .contains("key file")
-        );
+        // A keyring that doesn't load: the problem.
         let dir = std::env::temp_dir().join(format!(
             "hatchling-doctor-broken-keyring-{}",
             std::process::id()
