@@ -38,7 +38,7 @@ Usage:
   hatchling broker [subcommand]   serve agents, or run one operator subcommand
   hatchling agent [run \"task\"]    run the agent (the broker starts it inside a cell)
   hatchling --help                print this help
-  hatchling --version             print the version
+  hatchling --version             print the version, its commit and how it was built
 
 Broker subcommands (run instead of serving):
   migrate-vault, rekey-vault [<new-key-file>], vault-keyring <action>,
@@ -67,7 +67,8 @@ pub enum Route<'a> {
     Agent(&'a [String]),
     /// `--help`: usage on stdout, exit 0.
     Help,
-    /// `--version`: the version on stdout, exit 0.
+    /// `--version`: the version, its commit and how it was built, on
+    /// stdout, exit 0.
     Version,
     /// No subcommand, or an unknown one: usage on stderr, exit 64.
     Usage,

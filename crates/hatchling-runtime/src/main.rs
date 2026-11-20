@@ -25,10 +25,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Route::Version => {
-            let _ = writeln!(
+            let _ = write!(
                 std::io::stdout().lock(),
-                "hatchling {}",
-                env!("CARGO_PKG_VERSION")
+                "{}",
+                hatchling_broker::version::describe("hatchling")
             );
             ExitCode::SUCCESS
         }

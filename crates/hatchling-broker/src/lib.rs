@@ -142,6 +142,12 @@ mod room_session;
 pub mod secret_ops;
 pub use redactions::{FileAudit, FileOverrides, run_operator, run_redactions};
 pub mod broker_user;
+#[allow(
+    clippy::redundant_pub_crate,
+    dead_code,
+    reason = "build.rs includes this file and decides with it; the lib says the kind, and tests the decision"
+)]
+mod build_kind;
 pub mod confine;
 pub mod keeper;
 pub mod key_seen;
@@ -180,6 +186,7 @@ pub mod usage;
 pub mod vault_access;
 pub mod vault_keyring;
 pub mod vault_ops;
+pub mod version;
 pub mod web_ops;
 pub mod windows_setup;
 

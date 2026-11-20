@@ -43,9 +43,13 @@ fn help_and_version_exit_zero_on_stdout() {
     for flag in ["--version", "-V"] {
         let out = hatchling(None, &[flag]).expect("hatchling runs");
         assert_eq!(out.status.code(), Some(0), "{flag}");
+        // A test's build isn't a release-profile one: no commit is recorded.
         assert_eq!(
             stdout(&out),
-            format!("hatchling {}\n", env!("CARGO_PKG_VERSION"))
+            format!(
+                "hatchling {}\na debug build: its commit isn't recorded\n",
+                env!("CARGO_PKG_VERSION")
+            )
         );
     }
 }

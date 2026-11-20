@@ -121,7 +121,7 @@ cd hatchling-vX.Y.Z && cargo install cargo-auditable --version 0.7.7 --locked
 bash scripts/release-artifacts.sh build out
 ```
 
-Then compare `out/`'s programs with `SHA256SUMS`. The script prints the toolchain it used; if a program differs, compare that with `build-info-<target>.txt` first. The release workflow does this for every release, twice per target.
+It builds only from a clone with no changes to its tracked files, and the programs it builds say so: `hatchling-broker --version` names the tag's commit and a release build. Then compare `out/`'s programs with `SHA256SUMS`. The script prints the toolchain it used; if a program differs, compare that with `build-info-<target>.txt` first. The release workflow does this for every release, twice per target.
 
 ## Trusted publishing setup
 

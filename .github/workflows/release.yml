@@ -52,6 +52,11 @@ on:
       - crates/hatchling-room/**
       - crates/hatchling-core/**
       - crates/hatchling-sys/**
+      # What --version says, and how a release build decides it.
+      - crates/hatchling-broker/build.rs
+      - crates/hatchling-broker/src/build_kind.rs
+      - crates/hatchling-broker/src/version.rs
+      - crates/hatchling-runtime/src/main.rs
       - .cargo/config.toml
       - scripts/test_release_notes.py
       - scripts/publish-crates.sh
@@ -162,6 +167,34 @@ jobs:
           fi
           bash scripts/release-artifacts.sh build "$RUNNER_TEMP/out"
           test -f "$RUNNER_TEMP/out/build-info-$TARGET.txt"
+
+      # What an owner reads to know what's installed: each program that
+      # answers --version names the workspace's version, the commit built
+      # and a release build, and on a tag, the tag and its commit.
+      - name: The programs say the release and commit they were built from
+        working-directory: ${{ matrix.copy == 'a' && 'hatchling' || 'elsewhere/second-build/hatchling' }}
+        env:
+          TARGET: ${{ matrix.target }}
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          commit=$(git rev-parse HEAD)
+          if [ "$REF_TYPE" = tag ]; then
+            [ "$version" = "${TAG#v}" ] || { echo "Cargo.toml's version $version isn't $TAG's"; exit 1; }
+            [ "$commit" = "$GITHUB_SHA" ] || { echo "built $commit, not $TAG's $GITHUB_SHA"; exit 1; }
+          fi
+          status=0
+          for program in hatchling-broker hatchling; do
+            expected=$(printf '%s %s\ncommit %s\nbuilt as a release is built, by scripts/release-artifacts.sh' "$program" "$version" "$commit")
+            said=$("$RUNNER_TEMP/out/$program-$TARGET" --version)
+            if [ "$said" = "$expected" ]; then
+              echo "$program says: $said"
+            else
+              printf '%s says:\n%s\nnot:\n%s\n' "$program" "$said" "$expected"; status=1
+            fi
+          done
+          exit $status
 
       - name: Upload the build
         # actions/upload-artifact v7.0.2
