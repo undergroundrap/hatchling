@@ -112,6 +112,10 @@ const NEW_IMAGE: &str = "disk.img.new";
 /// The room disk's record.
 const RECORD: &str = "disk.json";
 
+/// A grow under way (WO-040): the size the image is growing to, beside the
+/// record. It's finished, or undone, at the next open.
+const GROW: &str = "disk.grow";
+
 /// The mount point's name in the room directory.
 const MOUNT: &str = "mnt";
 
@@ -126,6 +130,10 @@ const CRYPTSETUP: &str = "/usr/sbin/cryptsetup";
 
 /// mke2fs, run as `-t ext4`.
 const MKE2FS: &str = "/usr/sbin/mke2fs";
+
+/// The program that grows the file system inside, once the disk below it
+/// has grown: run on the mounted file system, which ext4 grows journaled.
+const RESIZE2FS: &str = "/usr/sbin/resize2fs";
 
 /// Where a mapping's device is.
 const MAPPER: &str = "/dev/mapper";
@@ -206,6 +214,8 @@ pub struct RoomDisk {
     cryptsetup: PathBuf,
     /// mke2fs.
     mke2fs: PathBuf,
+    /// resize2fs.
+    resize2fs: PathBuf,
     /// Who may own the room directory, the directories above it, the
     /// programs and the image: the spawner's user, root.
     trusted: Vec<u32>,
@@ -268,6 +278,7 @@ impl RoomDisk {
             size,
             cryptsetup: PathBuf::from(CRYPTSETUP),
             mke2fs: PathBuf::from(MKE2FS),
+            resize2fs: PathBuf::from(RESIZE2FS),
             trusted: vec![0],
             top: PathBuf::from("/"),
             sys_block: PathBuf::from(SYS_BLOCK),
@@ -885,6 +896,13 @@ impl RoomDisk {
                 "something else is mounted at the room disk's mount point",
             ));
         }
+        // A grow (WO-040) cut short before the image had all its space is
+        // finished first, or undone: the mapping made next covers it all.
+        let growing = if mapped.is_none() {
+            self.grow_image_marked(&image)
+        } else {
+            None
+        };
         if mapped.is_none() {
             self.run_tool(
                 &self.cryptsetup,
@@ -912,7 +930,12 @@ impl RoomDisk {
             })
             .and_then(|mapping| self.prepare_workspace(&mapping));
         match verified {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                if let Some(size) = growing {
+                    self.finish_grow(&device, &image, size);
+                }
+                Ok(())
+            }
             Err(reason) => {
                 if hatchling_sys::unmount_strict(&mount).is_ok() {
                     let _ = self.close_mapping(&name);
@@ -949,6 +972,137 @@ impl RoomDisk {
             self.close_mapping(&name)?;
         }
         Ok(())
+    }
+
+    /// Grows the closed room disk to `size` bytes (WO-040), grow-only: its
+    /// image reserved to that size, everything on it kept, and marked so
+    /// that the next open grows the file system inside. Refused while it's
+    /// open, and past what the disk below has free, before anything changes.
+    fn grow(&self, size: u64) -> Result<(), String> {
+        let none =
+            || String::from("there's no room disk to grow: Hatchling makes one when it starts");
+        // No room directory, no room disk.
+        if std::fs::symlink_metadata(&self.dir).is_err() {
+            return Err(none());
+        }
+        self.check_dir()?;
+        let Some(meta) = self.image_at(&self.image())? else {
+            return Err(none());
+        };
+        let image = self.image_id()?;
+        self.check_record(&image)?;
+        if self.mapped(&image, &mapping_name(&image))?.is_some() || self.mount_point_mounted()? {
+            return Err(String::from(
+                "the room disk is open: stop Hatchling first (sudo systemctl stop hatchling), then grow it, then start Hatchling",
+            ));
+        }
+        if size > MAX_SIZE {
+            return Err(format!(
+                "a room disk is at most {}, not {}",
+                said_size(MAX_SIZE),
+                said_size(size)
+            ));
+        }
+        let now = meta.len();
+        if size <= now {
+            return Err(format!(
+                "the room disk is {} already, and it only grows: ask for more",
+                said_size(now)
+            ));
+        }
+        let space = hatchling_sys::space(&self.dir).map_err(|error| error.to_string())?;
+        let held = meta.blocks().saturating_mul(512);
+        let needed = size.saturating_sub(held).saturating_add(FREE_MARGIN);
+        if !room_for(needed, space.available) {
+            return Err(format!(
+                "growing the room disk to {} needs {} free here ({} more for it, and {} to spare), and {} is",
+                said_size(size),
+                said_size(needed),
+                said_size(size.saturating_sub(held)),
+                said_size(FREE_MARGIN),
+                said_size(space.available)
+            ));
+        }
+        // Marked first: a grow cut short anywhere after this is finished, or
+        // undone, at the next open.
+        let marker = serde_json::to_vec(&Grow {
+            format: 1,
+            image: image.to_string(),
+            size,
+        })
+        .map_err(|error| format!("the room disk's grow can't be marked: {error}"))?;
+        hatchling_sys::replace_file(&self.grow_marker(), &marker, None)
+            .map_err(|error| format!("the room disk's grow can't be marked: {error}"))?;
+        hatchling_sys::reserve_file_to(&self.image(), size, meta.uid())
+            .map_err(|error| format!("the room disk's space can't be reserved: {error}"))
+    }
+
+    /// The size a marked grow is taking the image to, once the image has
+    /// all of it: a grow cut short before its image did is finished here.
+    /// A mark that isn't this image's, or a grow that can't be finished
+    /// (the disk below is fuller now), is undone, and said: the disk opens
+    /// at the size it is.
+    fn grow_image_marked(&self, image: &RoomImageId) -> Option<u64> {
+        let marker = self.grow_marker();
+        let text = std::fs::read(&marker).ok()?;
+        let undo = |why: String| {
+            tracing::warn!(reason = %why, "the room disk's grow is undone: it opens at its size");
+            let _ = std::fs::remove_file(&marker);
+            None
+        };
+        let grow: Grow = match serde_json::from_slice(&text) {
+            Ok(grow) => grow,
+            Err(error) => return undo(format!("its mark doesn't read: {error}")),
+        };
+        if grow.image != image.as_str() {
+            return undo(String::from("its mark is another image's"));
+        }
+        let now = match self.image_at(&self.image()) {
+            Ok(Some(meta)) => meta,
+            Ok(None) => return undo(String::from("there's no image")),
+            Err(reason) => return undo(reason),
+        };
+        if let Err(error) = hatchling_sys::reserve_file_to(&self.image(), grow.size, now.uid()) {
+            return undo(format!("its space can't be reserved now: {error}"));
+        }
+        Some(grow.size)
+    }
+
+    /// Grows the file system on the open `device` to the whole disk, then
+    /// records `image` at `size` and takes the mark away. One that fails
+    /// is said, and left marked: the disk works at the size its file
+    /// system is, and the next open tries again.
+    fn finish_grow(&self, device: &Path, image: &RoomImageId, size: u64) {
+        let finished = self
+            .trusted_program(&self.resize2fs)
+            .and_then(|()| self.run_tool(&self.resize2fs, &[device.as_os_str().to_owned()], None))
+            .and_then(|()| {
+                serde_json::to_vec(&Record {
+                    format: 1,
+                    image: image.to_string(),
+                    size,
+                })
+                .map_err(|error| error.to_string())
+            })
+            .and_then(|record| {
+                hatchling_sys::replace_file(&self.record(), &record, None)
+                    .map_err(|error| error.to_string())
+            })
+            .and_then(|()| {
+                std::fs::remove_file(self.grow_marker()).map_err(|error| error.to_string())
+            });
+        match finished {
+            Ok(()) => tracing::info!(size, "the room disk grew"),
+            Err(reason) => tracing::warn!(
+                %reason,
+                "the room disk's file system didn't grow: it works at its size, and the next open tries again"
+            ),
+        }
+    }
+
+    /// The mark of a grow under way.
+    fn grow_marker(&self) -> PathBuf {
+        self.dir.join(GROW)
     }
 
     /// Closes the mapping `name`, and confirms it's gone.
@@ -1105,8 +1259,43 @@ struct Record {
     format: u32,
     /// The image's LUKS UUID.
     image: String,
-    /// The size it was made at.
+    /// The size it was made at, or last grown to.
     size: u64,
+}
+
+/// A grow under way (WO-040), beside the record: kept apart from it, so a
+/// broker from before grows were made reads the record as it always has.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Grow {
+    /// The mark's own format.
+    format: u32,
+    /// The image's LUKS UUID: a mark is only ever its own image's.
+    image: String,
+    /// The size it's growing to.
+    size: u64,
+}
+
+/// Whether `needed` bytes are free in `available`: all of it may be used.
+const fn room_for(needed: u64, available: u64) -> bool {
+    needed <= available
+}
+
+/// `bytes` as a person reads a disk's size: in GiB from 1 GiB, else MiB,
+/// to one decimal where it isn't whole.
+fn said_size(bytes: u64) -> String {
+    let (unit, name) = if bytes >= GIB {
+        (GIB, "GiB")
+    } else {
+        (MIB, "MiB")
+    };
+    let whole = bytes / unit;
+    let tenths = (bytes % unit).saturating_mul(10) / unit;
+    if tenths == 0 {
+        format!("{whole} {name}")
+    } else {
+        format!("{whole}.{tenths} {name}")
+    }
 }
 
 /// What a failed unmount is said as: one in use is busy, and stays.
@@ -1383,6 +1572,59 @@ pub(crate) fn close_on_leaving(disk: &RoomDisk) {
 /// As [`RoomDisk::parse`].
 pub fn here() -> Result<RoomDisk, Error> {
     RoomDisk::parse(|key| std::env::var(key).ok())
+}
+
+/// Grows the closed room disk to `size` bytes (WO-040), holding the room
+/// disk's claim: a broker that holds the disk has it refused.
+///
+/// # Errors
+///
+/// Why it wasn't grown: open, held, not larger, past the most a room disk
+/// can be or what the disk below has free, or its space couldn't be
+/// reserved.
+pub fn grow(disk: &RoomDisk, size: u64) -> Result<(), String> {
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
+    let grown = crate::room_launch::retry_pending().and_then(|()| disk.grow(size));
+    drop(turn);
+    grown
+}
+
+/// `room-disk grow <size>`, run by `euid`: the size the room disk was grown
+/// to, or why it wasn't. Only root grows it.
+fn grown_as(euid: u32, size: &str) -> Result<u64, String> {
+    if euid != 0 {
+        return Err(String::from(
+            "run it with sudo: only root grows the room disk",
+        ));
+    }
+    let size = parse_size(size)?;
+    let disk = here().map_err(|error| error.to_string())?;
+    grow(&disk, size).map(|()| size)
+}
+
+/// `room-disk grow <size>`: the operator's grow of the closed room disk, as
+/// root, saying what it did or why it didn't.
+#[must_use]
+pub fn grow_main(program: &str, size: &str) -> std::process::ExitCode {
+    use std::io::Write as _;
+    match grown_as(hatchling_sys::euid(), size) {
+        Ok(size) => {
+            let _ = writeln!(
+                std::io::stdout().lock(),
+                "{program} room-disk grow: the room disk is {} now, its space reserved; its file system grows to it when Hatchling starts (sudo systemctl start hatchling)",
+                said_size(size)
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        Err(reason) => {
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "{program} room-disk grow: {reason}"
+            );
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 /// Closes the room disk, one op at a time with the spawner's: unmounted, its

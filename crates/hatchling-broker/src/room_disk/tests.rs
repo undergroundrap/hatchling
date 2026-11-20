@@ -303,6 +303,7 @@ impl Bench {
                 size: MIN_SIZE,
                 cryptsetup: root.join("tools/cryptsetup"),
                 mke2fs: root.join("tools/mke2fs"),
+                resize2fs: root.join("tools/resize2fs"),
                 trusted: vec![hatchling_sys::euid()],
                 top: root.clone(),
                 sys_block: root.join("sys"),
@@ -371,6 +372,7 @@ impl Bench {
         for (name, script) in [
             ("cryptsetup", cryptsetup),
             ("mke2fs", format!("{record}exit 0\n")),
+            ("resize2fs", format!("{record}exit 0\n")),
         ] {
             let path = self.root.join("tools").join(name);
             std::fs::write(&path, script).unwrap();
@@ -993,6 +995,226 @@ fn a_close_closes_the_mapping_and_confirms_it_gone() {
         .collect();
     assert_eq!(commands, [args(&["close", &name])]);
     assert!(bench.disk.mapping_uuid(&name).unwrap().is_none());
+}
+
+/// A closed room disk grows (WO-040): its image to the size asked, all of
+/// it reserved, its head and everything on it as it was, the grow marked
+/// for the next open, and the record left at the size it was until then.
+#[test]
+fn a_closed_disk_grows_its_image_reserved_and_marked() {
+    use std::os::unix::fs::MetadataExt as _;
+    let bench = Bench::new("grows");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let before = std::fs::read(bench.disk.image()).unwrap();
+    bench.disk.grow(2 * MIN_SIZE).unwrap();
+    let meta = std::fs::metadata(bench.disk.image()).unwrap();
+    assert_eq!(meta.len(), 2 * MIN_SIZE, "not grown to the size asked");
+    assert!(
+        meta.blocks().saturating_mul(512) >= 2 * MIN_SIZE,
+        "its space isn't reserved"
+    );
+    let after = std::fs::read(bench.disk.image()).unwrap();
+    let (head, rest) = after.split_at(before.len());
+    assert_eq!(head, before.as_slice(), "what it held was changed");
+    assert!(rest.iter().all(|byte| *byte == 0));
+    let grow: Grow =
+        serde_json::from_slice(&std::fs::read(bench.disk.grow_marker()).unwrap()).unwrap();
+    assert_eq!((grow.format, grow.size), (1, 2 * MIN_SIZE));
+    assert_eq!(grow.image, bench.image_id().as_str());
+    let record: Record =
+        serde_json::from_slice(&std::fs::read(bench.disk.record()).unwrap()).unwrap();
+    assert_eq!(
+        record.size, MIN_SIZE,
+        "recorded grown before its file system was"
+    );
+}
+
+/// A grow is refused before anything changes: an open disk (close it
+/// first), one no larger, one past a room disk's most, one past what the
+/// disk below has free, and none at all.
+#[test]
+fn a_grow_is_refused_before_anything_changes() {
+    let bench = Bench::new("grow-refused");
+    assert!(
+        bench
+            .disk
+            .grow(2 * MIN_SIZE)
+            .unwrap_err()
+            .contains("there's no room disk to grow")
+    );
+    bench.run(RoomDiskOp::Create).unwrap();
+    let image = std::fs::read(bench.disk.image()).unwrap();
+    let refused = |size: u64| bench.disk.grow(size).unwrap_err();
+    assert!(
+        refused(MIN_SIZE).contains("64 MiB already, and it only grows"),
+        "{}",
+        refused(MIN_SIZE)
+    );
+    assert!(refused(MIN_SIZE / 2).contains("it only grows"));
+    assert!(refused(MAX_SIZE + 1).contains("a room disk is at most 1024 GiB"));
+    let full = refused(MAX_SIZE);
+    assert!(
+        full.contains("growing the room disk to 1024 GiB needs ")
+            && full.contains(" free here (")
+            && full.contains(", and "),
+        "{full}"
+    );
+    bench.list_own_mapping();
+    assert!(refused(2 * MIN_SIZE).contains("the room disk is open: stop Hatchling first"));
+    assert_eq!(
+        std::fs::read(bench.disk.image()).unwrap(),
+        image,
+        "a refusal changed the image"
+    );
+    assert!(
+        std::fs::symlink_metadata(bench.disk.grow_marker()).is_err(),
+        "a refusal marked a grow"
+    );
+}
+
+/// At the next open, a marked grow is finished: an image short of its size
+/// is reserved to it first. A mark that's another image's, or doesn't
+/// read, is undone; with no mark, nothing grows.
+#[test]
+fn a_marked_grow_is_finished_or_undone_at_the_next_open() {
+    let bench = Bench::new("grow-marked");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let image = bench.image_id();
+    assert_eq!(
+        bench.disk.grow_image_marked(&image),
+        None,
+        "no mark, and it grew"
+    );
+    let mark = |size: u64, of: &str| {
+        let text = serde_json::to_vec(&Grow {
+            format: 1,
+            image: of.to_owned(),
+            size,
+        })
+        .unwrap();
+        hatchling_sys::replace_file(&bench.disk.grow_marker(), &text, None).unwrap();
+    };
+    // Cut short before its image grew: grown now.
+    mark(3 * MIN_SIZE, image.as_str());
+    assert_eq!(bench.disk.grow_image_marked(&image), Some(3 * MIN_SIZE));
+    assert_eq!(
+        std::fs::metadata(bench.disk.image()).unwrap().len(),
+        3 * MIN_SIZE
+    );
+    assert!(
+        bench.disk.grow_marker().exists(),
+        "the mark goes once the file system grows"
+    );
+    // Another image's mark, or one that doesn't read: undone.
+    mark(4 * MIN_SIZE, "00000000-0000-4000-8000-000000000000");
+    assert_eq!(bench.disk.grow_image_marked(&image), None);
+    assert!(!bench.disk.grow_marker().exists());
+    std::fs::write(bench.disk.grow_marker(), b"{not a mark").unwrap();
+    assert_eq!(bench.disk.grow_image_marked(&image), None);
+    assert!(!bench.disk.grow_marker().exists());
+    assert_eq!(
+        std::fs::metadata(bench.disk.image()).unwrap().len(),
+        3 * MIN_SIZE,
+        "undoing changed it"
+    );
+    // More than can be reserved now: undone, at the size it is.
+    mark(MAX_SIZE, image.as_str());
+    assert_eq!(bench.disk.grow_image_marked(&image), None);
+    assert!(!bench.disk.grow_marker().exists());
+    assert_eq!(
+        std::fs::metadata(bench.disk.image()).unwrap().len(),
+        3 * MIN_SIZE
+    );
+}
+
+/// Finishing a grow runs resize2fs on the open disk alone, then records the
+/// new size and takes the mark away; one that fails leaves the mark and the
+/// record for the next open.
+#[test]
+fn finishing_a_grow_grows_the_file_system_then_records_it() {
+    let bench = Bench::new("grow-finish");
+    bench.run(RoomDiskOp::Create).unwrap();
+    let image = bench.image_id();
+    bench.disk.grow(2 * MIN_SIZE).unwrap();
+    let device = Path::new(MAPPER).join(mapping_name(&image));
+    // resize2fs that can't be trusted: nothing run, nothing recorded.
+    let resize2fs = bench.root.join("tools/resize2fs");
+    mode(&resize2fs, 0o777);
+    bench.forget_runs();
+    bench.disk.finish_grow(&device, &image, 2 * MIN_SIZE);
+    assert!(bench.ran().is_empty(), "an untrusted resize2fs ran");
+    assert!(
+        bench.disk.grow_marker().exists(),
+        "a failed grow took its mark away"
+    );
+    let record = || -> Record {
+        serde_json::from_slice(&std::fs::read(bench.disk.record()).unwrap()).unwrap()
+    };
+    assert_eq!(record().size, MIN_SIZE);
+    mode(&resize2fs, 0o755);
+    bench.disk.finish_grow(&device, &image, 2 * MIN_SIZE);
+    let ran = bench.ran();
+    assert_eq!(ran.len(), 1);
+    assert_eq!(
+        ran.first().and_then(|run| run.argv.get(1..)),
+        Some([device.display().to_string()].as_slice()),
+        "resize2fs not run on the disk alone"
+    );
+    assert_eq!(record().size, 2 * MIN_SIZE);
+    assert_eq!(record().image, image.as_str());
+    assert!(!bench.disk.grow_marker().exists(), "the mark stayed");
+}
+
+/// The operator's grow holds the room disk's claim and grows it; run by
+/// anyone but root, it's refused before anything is read, and fails.
+#[test]
+fn the_operators_grow_holds_the_claim_and_is_roots_alone() {
+    let bench = Bench::new("grow-operator");
+    bench.run(RoomDiskOp::Create).unwrap();
+    grow(&bench.disk, 2 * MIN_SIZE).unwrap();
+    assert_eq!(
+        std::fs::metadata(bench.disk.image()).unwrap().len(),
+        2 * MIN_SIZE
+    );
+    assert!(bench.disk.grow_marker().exists());
+    let held = bench.disk.claim_operation().unwrap();
+    assert!(
+        grow(&bench.disk, 3 * MIN_SIZE)
+            .unwrap_err()
+            .contains(IN_USE),
+        "grown under a claim"
+    );
+    drop(held);
+    assert_eq!(
+        grown_as(1000, "20G").unwrap_err(),
+        "run it with sudo: only root grows the room disk"
+    );
+    if hatchling_sys::euid() != 0 {
+        assert_eq!(
+            format!("{:?}", grow_main("hatchling-broker", "20G")),
+            format!("{:?}", std::process::ExitCode::FAILURE),
+            "a grow refused said it was done"
+        );
+    }
+}
+
+/// What's needed fits in what's free when it's no more: all of it may be
+/// used.
+#[test]
+fn room_is_there_up_to_all_that_is_free() {
+    assert!(room_for(10, 10));
+    assert!(room_for(9, 10));
+    assert!(!room_for(11, 10));
+}
+
+/// A size is said as a person reads it.
+#[test]
+fn a_size_is_said_in_gib_or_mib() {
+    assert_eq!(said_size(64 * MIB), "64 MiB");
+    assert_eq!(said_size(10 * GIB), "10 GiB");
+    assert_eq!(said_size(GIB + GIB / 2), "1.5 GiB");
+    assert_eq!(said_size(MIB + MIB / 4), "1.2 MiB");
+    assert_eq!(said_size(0), "0 MiB");
 }
 
 /// The status is numbers alone: none made, then made and closed, at its
