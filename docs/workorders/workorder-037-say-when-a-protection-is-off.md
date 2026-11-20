@@ -1,6 +1,6 @@
 # WO-037: Say when a protection is off
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (`doctor`, the setup and security reads), `frontend/` (the Your security page), `docs/your-security.md`
 **Issue:** [#479](https://github.com/undergroundrap/hatchling/issues/479)
 **Trust boundary:** yes (what the owner is told about their own protection)
