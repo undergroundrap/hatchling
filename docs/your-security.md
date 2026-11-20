@@ -25,7 +25,7 @@ How well your vault is protected depends on what you've set up:
 
 ### The Keeper
 
-The Keeper guards your secrets: your API keys and saved sign-ins. It's a separate program, running as its own user. Secrets are sealed on disk. Each secret it hands over, each vault request on a cell's line to it and each check of a text goes in a log. To read it, run `sudo hatchling-broker vault-audit log`, or on Windows, `wsl -d hatchling-wsl -u root -- hatchling-broker vault-audit log`. Listing, adding or deleting a saved sign-in isn't logged there.
+The Keeper guards your secrets: your API keys and saved sign-ins. It's a separate program, running as its own user where Windows Setup or the installer set Hatchling up; run by hand, not as root, the Keeper and the Broker run as you, and `sudo hatchling-broker doctor` says so. Secrets are sealed on disk. Each secret it hands over, each vault request on a cell's line to it and each check of a text goes in a log. To read it, run `sudo hatchling-broker vault-audit log`, or on Windows, `wsl -d hatchling-wsl -u root -- hatchling-broker vault-audit log`. Listing, adding or deleting a saved sign-in isn't logged there.
 
 No cell can ask the vault for a secret and read it, whatever it's been granted. The agent can use a key without seeing it: at most its cell holds a stand-in, and the real key is put in at the boundary, after the request has left the cell.
 
@@ -39,15 +39,17 @@ After a chat or scheduled run, the Broker writes which tools it used and how eac
 
 ### The cells
 
-The agent works in cells, locked rooms the operating system's kernel enforces. A tricked or broken agent can't get out of its cell: the kernel stops it, not a request to behave.
+The agent works in cells, locked rooms the operating system's kernel enforces. A tricked or broken agent can't get out of its cell: the kernel stops it, not a request to behave. Each cell is made with the kernel's namespaces and held to a syscall filter; on a kernel without either, no cell starts, and `doctor` says which is missing.
+
+Where this machine gives Hatchling a cgroup, each cell's memory and CPU are bounded as a whole, and a cell that ends is killed as one. Held by process limits alone, they aren't, and the agent's computer and its browser can't run; this page says so on such an install, and so does `doctor`.
 
 An agent's cell has no network, and none of your files or vault secrets are in it. What it knows, the Broker hands it: your conversation, what you approved it to remember, and your goals. That goes when the cell ends.
 
-Where Windows Setup installed its image, the agent also has a computer of its own, the Room, for a chat to use: a cell like the others, with no network and a user of its own, running a verified read-only image under its own syscall filter. Unlike a cell, it keeps the agent's files between commands and chats, on a disk of its own that your vault's key encrypts. Locking the vault closes that disk, and resetting the agent or everything wipes it.
+Where Windows Setup installed its image, the agent also has a computer of its own, the Room, for a chat to use: a cell like the others, with no network and a user of its own, running a verified read-only image under its own syscall filter. Unlike a cell, it keeps the agent's files between commands and chats, on a disk of its own that your vault's key encrypts: with that key in a file, or behind authenticator codes, a stolen disk opens it too. `doctor` says whether the Room can start on this install, and what's missing if it can't. Locking the vault closes that disk, and resetting the agent or everything wipes it.
 
 Two kinds of cell, both off until you set them up, reach further: a browser's reaches only sites you've approved, and a coding tool's reaches only its own vendor's API. No chat or scheduled run can start a coding tool yet.
 
-On Windows, the setup's distro doesn't mount your drives or start Windows programs, so an account in it that isn't root can't reach your files through your drives or a Windows program.
+On Windows, the setup's distro doesn't mount your drives or start Windows programs, so an account in it that isn't root can't reach your files through your drives or a Windows program. `doctor` checks that this still holds.
 
 ### The wall
 
@@ -64,6 +66,8 @@ These don't stop, on a site it's allowed: typing, scrolling, reading a page, fol
 
 Some text on its way out is checked without asking you. What the agent puts in a web address, a search, text typed into a page, or a coding tool's task goes past the Keeper first, and so does what a coding tool hands back. If it holds a secret Hatchling keeps, it isn't sent, the run ends, its agents and any coding tool they started are killed at once, a browser closes with its session, and you're told once in the chat. You're told what kind of thing was stopped, never which secret. The schedule, hook or follow-up that started the run, and any follow-up the run asked for that hasn't run yet, don't run until you look: in the app under Needs you in Scheduled work, or, for a hook, which the app doesn't list, until you resolve it through the API.
 
+The agent's replies to a channel, such as a chat app you connected, are checked for your secrets and for private keys before they go, unless the operator turned that check off; `doctor` says when it is.
+
 ## What it can't do
 
 **Malware running as you.** On Windows, any program running as you can run `wsl -u root` with no password, so it can reach the Keeper's memory while the vault is unlocked, and change Hatchling's programs to catch your next unlock. Hatchling doesn't protect against that. On any install, a program running as you can also open the app as you and say yes to what it asks.
@@ -76,13 +80,13 @@ Some text on its way out is checked without asking you. What the agent puts in a
 
 **A compromised browser.** The browser's own sandbox is off, because its cell does that job, so one bug in how it draws a page can take the browser over. A browser that's been taken over can claim to be on any site kept for its own profile, and be given that sign-in when the agent calls for it. It already holds that profile's session cookies. The damage stays inside that profile and the sites you approved. A script on the page can also move the focus while a login is filled, so a password can land in another field. Passwords and cookies are hidden from what the agent reads only by exact match, so a page that changes one first can show it to the agent. Up to three characters of one can show where a page's text was cut short. What you type under Take control isn't hidden at all.
 
-**A compromised Broker.** The wall is the Broker's own, so taken over, it can ignore it. It can reach any https site through the web and the browser, with a profile's cookies, and ask for a sign-in to be filled on a page it serves. It holds the keys to everything but the vault and the sign-ins, including your conversation and kept cookies, and it can get your channel accounts' credentials and any secret a cell stored, each read logged. It can't get the vault's master key, or your API, search or coding tool keys.
+**A compromised Broker.** The wall is the Broker's own, so taken over, it can ignore it. It can reach any https site through the web and the browser, with a profile's cookies, and ask for a sign-in to be filled on a page it serves. It holds the keys to everything but the vault and the sign-ins, including your conversation and kept cookies, and it can get your channel accounts' credentials and any secret a cell stored, each read logged. It can't get the vault's master key, or your API, search or coding tool keys. Where the kernel has Landlock, the Broker's own files are confined to what it needs; on a kernel without it, a compromised Broker reaches every file its user can, and `doctor` says so.
 
 **The kernel, and hands on the machine.** A bug in the operating system's kernel can get out of every cell. Hatchling doesn't try to stand up to someone who has the machine itself while the vault is unlocked, and it stays unlocked until you lock it or it restarts.
 
 **What a hosted model sees.** If you choose a hosted model, what you say and what the agent reads goes to that company. A model on your own machine keeps it here. Whichever model you use, a search goes to the search provider, and what a coding tool is given goes to its vendor.
 
-**What isn't sealed.** Memory, goals, feed posts, decisions, ideas, run records, coding tools' temporary files, the usage and activity logs, your secrets' names and the Keeper's log aren't sealed where they live, on any install. Anyone who can read the disk can read them. A backup of them is sealed, and opens with what opens your vault: with authenticator codes, that's inside the backup.
+**What isn't sealed.** Memory, goals, feed posts, decisions, ideas, run records, coding tools' temporary files, the usage and activity logs, your secrets' names and the Keeper's log aren't sealed where they live, on any install. Anyone who can read the disk can read them. A backup of them is sealed, and opens with what opens your vault: with authenticator codes, that's inside the backup. Your decisions are kept at all only where the scheduler is set up; `doctor` says when they aren't.
 
 **What a disk can keep.** Protecting your vault overwrites the old key file before removing it, but a disk can keep older copies of its own, and old sealed files aren't overwritten. That goes for the agent's room disk too, where there is one: changing the vault's key changes its lock, not the key inside it, so an older copy of its lock still opens it with the old key. Memory in use can reach the swap file, and Hatchling doesn't lock it.
 
