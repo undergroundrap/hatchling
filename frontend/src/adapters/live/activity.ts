@@ -351,7 +351,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     send_message: 'Sent a message',
     new_conversation: 'Started a new conversation',
     decide: 'Answered a request',
-    manage_sites: 'Managed the sites the agent is always allowed to read',
+    manage_grants: 'Managed the standing grants',
     manage_schedule: 'Changed a schedule',
     invoke_skill: 'Ran a skill',
     open_artifact: 'Opened a file',

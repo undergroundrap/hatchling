@@ -1456,6 +1456,7 @@ mod tests {
             UiActionResult::Decided {
                 confirmation_id: asked.confirmation_id.clone(),
                 decision: Decision::Approve,
+                kept: None,
             }
         );
         assert_eq!(

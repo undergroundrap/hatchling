@@ -85,7 +85,11 @@ pub use surfaces::{
 /// conversation and reply, a folder's list in pages, a file of a folder
 /// read out, the conversation's bytes read and files in all, and a
 /// folder's count of files in Activity.
-pub const UI_SCHEMA_VERSION: u16 = 8;
+/// 9: grants bound to keys and scopes (WO-036): a confirmation's
+/// `grant_key` and `scopes` in place of `session` and `always`, the
+/// `approve_day` decision, whether a standing yes was kept, and
+/// `manage_grants` in place of `manage_sites`.
+pub const UI_SCHEMA_VERSION: u16 = 9;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -543,15 +547,14 @@ pub struct ConfirmationRequest {
     pub digest: String,
     /// The action's fields, in review order.
     pub fields: Vec<ConfirmationField>,
-    /// Whether it can be approved for the rest of the session
-    /// ([`Decision::ApproveSession`]) as well as once: a site the agent
-    /// asks to read (WO-028).
-    #[serde(default)]
-    pub session: bool,
-    /// Whether it can be approved always ([`Decision::ApproveAlways`]): a
-    /// site, where the broker keeps the sites the owner allows.
-    #[serde(default)]
-    pub always: bool,
+    /// The grant a standing yes on it would make, as the broker names it
+    /// (WO-036): `web.visit:https://a.example` for a site. `None` for a
+    /// request only ever approved once. Never the agent's words.
+    pub grant_key: Option<String>,
+    /// The scopes it can be approved for, in this order: what the request's
+    /// kind allows, and no other. A decision for a scope not here is
+    /// refused ([`DecisionRejection::NotOffered`]).
+    pub scopes: Vec<GrantScope>,
     /// What approving it does, in a few words, when that's more than
     /// allowing it once: "Remember it" for something the agent asks to
     /// keep. The broker's, never the agent's.
@@ -767,57 +770,122 @@ pub enum FieldSource {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum Decision {
-    /// Go ahead.
+    /// Go ahead, this once.
     Approve,
-    /// Go ahead, and for the rest of the session: offered only where the
-    /// request says so ([`ConfirmationRequest::session`]).
+    /// Go ahead, and for the rest of the task: the agent's session, which
+    /// in a chat is the answer ([`GrantScope::Task`]).
     ApproveSession,
-    /// Go ahead, and always, until the owner revokes it: offered only where
-    /// the request says so ([`ConfirmationRequest::always`]).
+    /// Go ahead, and for 24 hours by the broker's clock
+    /// ([`GrantScope::Day`]).
+    ApproveDay,
+    /// Go ahead, and always, until the owner revokes it
+    /// ([`GrantScope::Always`]).
     ApproveAlways,
     /// Do not.
     Deny,
 }
 
-/// An operation on the sites the agent is always allowed to read (WO-028).
+impl Decision {
+    /// The scope it approves for; `None` for a denial.
+    #[must_use]
+    pub const fn scope(self) -> Option<GrantScope> {
+        match self {
+            Self::Approve => Some(GrantScope::Once),
+            Self::ApproveSession => Some(GrantScope::Task),
+            Self::ApproveDay => Some(GrantScope::Day),
+            Self::ApproveAlways => Some(GrantScope::Always),
+            Self::Deny => None,
+        }
+    }
+}
+
+/// How long a yes lasts (WO-036). A request offers only the scopes its
+/// kind allows ([`ConfirmationRequest::scopes`]).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum GrantScope {
+    /// This request, as it was shown.
+    Once,
+    /// The rest of the task: the agent's session.
+    Task,
+    /// 24 hours from the decision, by the broker's clock.
+    Day,
+    /// Until the owner revokes it.
+    Always,
+}
+
+/// What a standing grant allows (WO-036).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum GrantKind {
+    /// Reading a site's pages, and visiting it in the agent's browser.
+    #[serde(rename = "web.visit")]
+    WebVisit,
+}
+
+/// An operation on the owner's standing grants (WO-036).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "op", rename_all = "snake_case")]
-pub enum SiteOp {
+pub enum GrantOp {
     /// List them.
     List,
-    /// Revoke one: the next read of a page on it asks again.
+    /// Revoke one, by its key: it covers nothing from then on, a running
+    /// task included.
     Revoke {
-        /// The site, `https://host[:port]`, as listed.
-        site: String,
+        /// The grant's key, as listed: `web.visit:https://a.example`.
+        key: String,
     },
 }
 
-/// A site the agent is always allowed to read.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Where a standing grant stands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct AllowedSite {
-    /// The site, `https://host[:port]`.
-    pub site: String,
-    /// When the owner allowed it, RFC 3339.
-    pub allowed_at: String,
+#[serde(rename_all = "snake_case")]
+pub enum GrantState {
+    /// It covers what its key names.
+    Covering,
+    /// A 24-hour grant the broker's clock reads earlier than it has before:
+    /// it covers nothing until the clock catches up, and can be revoked.
+    ClockBehind,
 }
 
-/// The result of a [`SiteOp`].
+/// One of the owner's standing grants.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct StandingGrant {
+    /// Its key, the broker's: `web.visit:https://a.example`.
+    pub key: String,
+    /// What it allows.
+    pub kind: GrantKind,
+    /// What it allows it on: for a site, `https://host[:port]`.
+    pub target: String,
+    /// How long it lasts: [`GrantScope::Day`] or [`GrantScope::Always`].
+    pub scope: GrantScope,
+    /// When the owner made it, RFC 3339.
+    pub made_at: String,
+    /// When it ends, RFC 3339: a 24-hour grant's. `None` for always.
+    pub ends_at: Option<String>,
+    /// Where it stands.
+    pub state: GrantState,
+}
+
+/// The result of a [`GrantOp`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "result", rename_all = "snake_case")]
-pub enum SiteResult {
-    /// The sites, in the order they were allowed.
+pub enum GrantResult {
+    /// The grants not ended, in the order they were made.
     Listed {
-        /// The sites.
-        sites: Vec<AllowedSite>,
+        /// The grants.
+        grants: Vec<StandingGrant>,
     },
-    /// The site was revoked.
+    /// The grant was revoked.
     Revoked,
-    /// No such site is allowed.
+    /// No grant has that key.
     NotFound,
-    /// The broker keeps no sites: the operator hasn't given it a place to.
+    /// The broker keeps no grants: the operator hasn't given it a place to.
     Off,
     /// The broker couldn't read or change them; its log says why.
     Failed,
@@ -1484,11 +1552,11 @@ pub enum UiAction {
         /// The decision.
         decision: Decision,
     },
-    /// List or revoke the sites the agent is always allowed to read
-    /// (WO-028).
-    ManageSites {
+    /// List or revoke the owner's standing grants (WO-036): the owner's
+    /// alone.
+    ManageGrants {
         /// The operation.
-        op: SiteOp,
+        op: GrantOp,
     },
     /// Create, cancel, or follow up a schedule.
     ManageSchedule {
@@ -1738,6 +1806,11 @@ pub enum UiActionResult {
         confirmation_id: String,
         /// The decision recorded.
         decision: Decision,
+        /// For a standing yes (24 hours or always), whether its grant was
+        /// kept. One that wasn't covers only the request the owner was
+        /// shown, once. `None` for every other decision.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept: Option<bool>,
     },
     /// The decision was not recorded, for a typed reason.
     DecisionRejected {
@@ -1751,10 +1824,10 @@ pub enum UiActionResult {
         /// The result, as the session protocol defines it.
         outcome: ScheduleResult,
     },
-    /// A site operation's result.
-    Sites {
+    /// A standing grants operation's result.
+    Grants {
         /// The result.
-        outcome: SiteResult,
+        outcome: GrantResult,
     },
     /// A skill invocation's result.
     Skill {
@@ -2245,6 +2318,20 @@ mod tests {
         }
     }
 
+    /// Each decision approves for its own scope, and a denial for none
+    /// (WO-036): what a card's scopes are checked against.
+    #[test]
+    fn each_decision_approves_for_its_own_scope() {
+        assert_eq!(Decision::Approve.scope(), Some(GrantScope::Once));
+        assert_eq!(Decision::ApproveSession.scope(), Some(GrantScope::Task));
+        assert_eq!(Decision::ApproveDay.scope(), Some(GrantScope::Day));
+        assert_eq!(Decision::ApproveAlways.scope(), Some(GrantScope::Always));
+        assert_eq!(Decision::Deny.scope(), None);
+        pinned(&Decision::ApproveDay, &json!("approve_day"));
+        pinned(&GrantScope::Day, &json!("day"));
+        pinned(&GrantKind::WebVisit, &json!("web.visit"));
+    }
+
     #[test]
     fn a_file_offered_and_one_withheld_have_their_wire_form() {
         let file = LibraryFile {
@@ -2286,7 +2373,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 8);
+        assert_eq!(UI_SCHEMA_VERSION, 9);
     }
 
     #[test]
@@ -2737,12 +2824,12 @@ mod tests {
                             source: FieldSource::Agent,
                         },
                     ],
-                    session: false,
-                    always: false,
+                    grant_key: None,
+                    scopes: vec![GrantScope::Once],
                     approve: None,
                 }),
             ),
-            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "session": false, "always": false}}),
+            &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "grant_key": null, "scopes": ["once"]}}),
         );
         pinned(
             &at(

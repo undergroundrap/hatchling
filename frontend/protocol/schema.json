@@ -650,24 +650,6 @@
         }
       ]
     },
-    "AllowedSite": {
-      "description": "A site the agent is always allowed to read.",
-      "properties": {
-        "allowed_at": {
-          "description": "When the owner allowed it, RFC 3339.",
-          "type": "string"
-        },
-        "site": {
-          "description": "The site, `https://host[:port]`.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "site",
-        "allowed_at"
-      ],
-      "type": "object"
-    },
     "ApiOutcome": {
       "description": "How the API answered one call.",
       "oneOf": [
@@ -717,8 +699,8 @@
           "type": "string"
         },
         {
-          "const": "manage_sites",
-          "description": "[`UiAction::ManageSites`].",
+          "const": "manage_grants",
+          "description": "[`UiAction::ManageGrants`]. Activity kept before v9 named it\n`manage_sites`.",
           "type": "string"
         },
         {
@@ -2734,11 +2716,6 @@
     "ConfirmationRequest": {
       "description": "The agent asks the user to approve or deny something.\n\nWhat is asked is the broker's record of one frozen action (WO-027): its\ndigest, and its fields in the order the owner reviews them, the broker's\nfirst and the agent's after, each labeled with who stated it.",
       "properties": {
-        "always": {
-          "default": false,
-          "description": "Whether it can be approved always ([`Decision::ApproveAlways`]): a\nsite, where the broker keeps the sites the owner allows.",
-          "type": "boolean"
-        },
         "approve": {
           "description": "What approving it does, in a few words, when that's more than\nallowing it once: \"Remember it\" for something the agent asks to\nkeep. The broker's, never the agent's.",
           "type": [
@@ -2775,16 +2752,25 @@
           },
           "type": "array"
         },
+        "grant_key": {
+          "description": "The grant a standing yes on it would make, as the broker names it\n(WO-036): `web.visit:https://a.example` for a site. `None` for a\nrequest only ever approved once. Never the agent's words.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "revision": {
           "description": "Bumped when the request changes. A decision names the revision\nit applies to, and a stale one is rejected.",
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
         },
-        "session": {
-          "default": false,
-          "description": "Whether it can be approved for the rest of the session\n([`Decision::ApproveSession`]) as well as once: a site the agent\nasks to read (WO-028).",
-          "type": "boolean"
+        "scopes": {
+          "description": "The scopes it can be approved for, in this order: what the request's\nkind allows, and no other. A decision for a scope not here is\nrefused ([`DecisionRejection::NotOffered`]).",
+          "items": {
+            "$ref": "#/$defs/GrantScope"
+          },
+          "type": "array"
         },
         "summary": {
           "description": "What is being asked, as plain text: the broker's name for the\noperation, never the agent's words.",
@@ -2796,7 +2782,8 @@
         "revision",
         "summary",
         "digest",
-        "fields"
+        "fields",
+        "scopes"
       ],
       "type": "object"
     },
@@ -2917,17 +2904,22 @@
       "oneOf": [
         {
           "const": "approve",
-          "description": "Go ahead.",
+          "description": "Go ahead, this once.",
           "type": "string"
         },
         {
           "const": "approve_session",
-          "description": "Go ahead, and for the rest of the session: offered only where the\nrequest says so ([`ConfirmationRequest::session`]).",
+          "description": "Go ahead, and for the rest of the task: the agent's session, which\nin a chat is the answer ([`GrantScope::Task`]).",
+          "type": "string"
+        },
+        {
+          "const": "approve_day",
+          "description": "Go ahead, and for 24 hours by the broker's clock\n([`GrantScope::Day`]).",
           "type": "string"
         },
         {
           "const": "approve_always",
-          "description": "Go ahead, and always, until the owner revokes it: offered only where\nthe request says so ([`ConfirmationRequest::always`]).",
+          "description": "Go ahead, and always, until the owner revokes it\n([`GrantScope::Always`]).",
           "type": "string"
         },
         {
@@ -4535,6 +4527,170 @@
             "result"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "GrantKind": {
+      "description": "What a standing grant allows (WO-036).",
+      "oneOf": [
+        {
+          "const": "web.visit",
+          "description": "Reading a site's pages, and visiting it in the agent's browser.",
+          "type": "string"
+        }
+      ]
+    },
+    "GrantOp": {
+      "description": "An operation on the owner's standing grants (WO-036).",
+      "oneOf": [
+        {
+          "description": "List them.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Revoke one, by its key: it covers nothing from then on, a running\ntask included.",
+          "properties": {
+            "key": {
+              "description": "The grant's key, as listed: `web.visit:https://a.example`.",
+              "type": "string"
+            },
+            "op": {
+              "const": "revoke",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "key"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GrantResult": {
+      "description": "The result of a [`GrantOp`].",
+      "oneOf": [
+        {
+          "description": "The grants not ended, in the order they were made.",
+          "properties": {
+            "grants": {
+              "description": "The grants.",
+              "items": {
+                "$ref": "#/$defs/StandingGrant"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "grants"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The grant was revoked.",
+          "properties": {
+            "result": {
+              "const": "revoked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No grant has that key.",
+          "properties": {
+            "result": {
+              "const": "not_found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker keeps no grants: the operator hasn't given it a place to.",
+          "properties": {
+            "result": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker couldn't read or change them; its log says why.",
+          "properties": {
+            "result": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GrantScope": {
+      "description": "How long a yes lasts (WO-036). A request offers only the scopes its\nkind allows ([`ConfirmationRequest::scopes`]).",
+      "oneOf": [
+        {
+          "const": "once",
+          "description": "This request, as it was shown.",
+          "type": "string"
+        },
+        {
+          "const": "task",
+          "description": "The rest of the task: the agent's session.",
+          "type": "string"
+        },
+        {
+          "const": "day",
+          "description": "24 hours from the decision, by the broker's clock.",
+          "type": "string"
+        },
+        {
+          "const": "always",
+          "description": "Until the owner revokes it.",
+          "type": "string"
+        }
+      ]
+    },
+    "GrantState": {
+      "description": "Where a standing grant stands.",
+      "oneOf": [
+        {
+          "const": "covering",
+          "description": "It covers what its key names.",
+          "type": "string"
+        },
+        {
+          "const": "clock_behind",
+          "description": "A 24-hour grant the broker's clock reads earlier than it has before:\nit covers nothing until the clock catches up, and can be revoked.",
+          "type": "string"
         }
       ]
     },
@@ -11212,120 +11368,6 @@
       ],
       "type": "object"
     },
-    "SiteOp": {
-      "description": "An operation on the sites the agent is always allowed to read (WO-028).",
-      "oneOf": [
-        {
-          "description": "List them.",
-          "properties": {
-            "op": {
-              "const": "list",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Revoke one: the next read of a page on it asks again.",
-          "properties": {
-            "op": {
-              "const": "revoke",
-              "type": "string"
-            },
-            "site": {
-              "description": "The site, `https://host[:port]`, as listed.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "op",
-            "site"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "SiteResult": {
-      "description": "The result of a [`SiteOp`].",
-      "oneOf": [
-        {
-          "description": "The sites, in the order they were allowed.",
-          "properties": {
-            "result": {
-              "const": "listed",
-              "type": "string"
-            },
-            "sites": {
-              "description": "The sites.",
-              "items": {
-                "$ref": "#/$defs/AllowedSite"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "result",
-            "sites"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The site was revoked.",
-          "properties": {
-            "result": {
-              "const": "revoked",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "No such site is allowed.",
-          "properties": {
-            "result": {
-              "const": "not_found",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The broker keeps no sites: the operator hasn't given it a place to.",
-          "properties": {
-            "result": {
-              "const": "off",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "The broker couldn't read or change them; its log says why.",
-          "properties": {
-            "result": {
-              "const": "failed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "result"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "SiteSignIn": {
       "description": "A sign-in the broker keeps, as the owner's app is told it: its label and\nwhere it's filled, never its username or password.",
       "properties": {
@@ -11918,6 +11960,51 @@
           "type": "object"
         }
       ]
+    },
+    "StandingGrant": {
+      "description": "One of the owner's standing grants.",
+      "properties": {
+        "ends_at": {
+          "description": "When it ends, RFC 3339: a 24-hour grant's. `None` for always.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "Its key, the broker's: `web.visit:https://a.example`.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/GrantKind",
+          "description": "What it allows."
+        },
+        "made_at": {
+          "description": "When the owner made it, RFC 3339.",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/GrantScope",
+          "description": "How long it lasts: [`GrantScope::Day`] or [`GrantScope::Always`]."
+        },
+        "state": {
+          "$ref": "#/$defs/GrantState",
+          "description": "Where it stands."
+        },
+        "target": {
+          "description": "What it allows it on: for a site, `https://host[:port]`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "kind",
+        "target",
+        "scope",
+        "made_at",
+        "state"
+      ],
+      "type": "object"
     },
     "SubagentRefusal": {
       "description": "Why a subagent op was refused.",
@@ -12835,14 +12922,14 @@
           "type": "object"
         },
         {
-          "description": "List or revoke the sites the agent is always allowed to read\n(WO-028).",
+          "description": "List or revoke the owner's standing grants (WO-036): the owner's\nalone.",
           "properties": {
             "action": {
-              "const": "manage_sites",
+              "const": "manage_grants",
               "type": "string"
             },
             "op": {
-              "$ref": "#/$defs/SiteOp",
+              "$ref": "#/$defs/GrantOp",
               "description": "The operation."
             }
           },
@@ -13636,6 +13723,13 @@
               "$ref": "#/$defs/Decision",
               "description": "The decision recorded."
             },
+            "kept": {
+              "description": "For a standing yes (24 hours or always), whether its grant was\nkept. One that wasn't covers only the request the owner was\nshown, once. `None` for every other decision.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "result": {
               "const": "decided",
               "type": "string"
@@ -13690,14 +13784,14 @@
           "type": "object"
         },
         {
-          "description": "A site operation's result.",
+          "description": "A standing grants operation's result.",
           "properties": {
             "outcome": {
-              "$ref": "#/$defs/SiteResult",
+              "$ref": "#/$defs/GrantResult",
               "description": "The result."
             },
             "result": {
-              "const": "sites",
+              "const": "grants",
               "type": "string"
             }
           },
@@ -15893,7 +15987,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 33,
-    "ui_schema_version": 8
+    "ui_schema_version": 9
   },
   "x-roots": {
     "ActivityEvent": {

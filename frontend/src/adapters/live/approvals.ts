@@ -1,8 +1,10 @@
 // The approval cards, from the broker's confirmations . The UI's
-// existing approval surface (TaskApprovalPort) offers Allow once and Deny,
-// and Allow for task and Allow always where the request offers them (a
-// site the agent asks to read, WO-028): the first lasts for the agent's
-// session, which is its task, the second until the owner revokes it. Each becomes the typed `decide` action at the revision the user saw.
+// existing approval surface (TaskApprovalPort) offers Deny and each scope
+// the request offers, and no other (WO-036): Allow once, and for a site the
+// agent asks to read Allow for task (the agent's session), Allow for 24
+// hours and Allow always (until the owner revokes it). The card names the
+// grant a standing yes would make, in the broker's words. Each becomes the
+// typed `decide` action at the revision the user saw.
 //
 // A decision is checked again at dispatch, against the confirmation as the
 // broker last stated it, not against the card that was drawn: one that is no
@@ -19,7 +21,7 @@
 // across a restart.
 import type { ApprovalAttempt, ApprovalResult, ApprovalStatus, TaskApproval, TaskApprovalPort } from '../../session/task-approvals.js';
 import type { LiveClient, Reply } from './client.js';
-import type { ActionRefusal, ConfirmationClosure, ConfirmationRequest, Decision, DecisionRecord, DecisionRejection, UiEvent } from './protocol/generated.js';
+import type { ActionRefusal, ConfirmationClosure, ConfirmationRequest, Decision, DecisionRecord, DecisionRejection, GrantScope, UiEvent } from './protocol/generated.js';
 import { MAIN_CHAT, appChat } from './chat.js';
 import { clockTime } from './text.js';
 const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
@@ -33,6 +35,10 @@ const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
 const CLOSES: Readonly<Partial<Record<DecisionRejection, ApprovalStatus>>> = { unknown: 'cancelled', expired: 'expired' };
 /** What the broker closing a request without a decision makes of its card. */
 const CLOSURES: Readonly<Record<ConfirmationClosure, ApprovalStatus>> = { expired: 'expired', withdrawn: 'cancelled' };
+/** The scopes in the order the card offers them. */
+const SCOPES: readonly GrantScope[] = ['once', 'task', 'day', 'always'];
+/** Each answer, as the broker's decision. */
+const DECISIONS: Readonly<Record<ApprovalAttempt['decision'], Decision>> = { once: 'approve', task: 'approve_session', day: 'approve_day', always: 'approve_always', deny: 'deny' };
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** The local calendar day a moment falls on, as a day count. */
 const localDay = (at: number): number => {
@@ -129,7 +135,7 @@ export class LiveApprovals implements TaskApprovalPort {
         // What was decided before this connection, as it was decided.
         const kept = this.#history
             .filter(record => !this.#seen.has(record.confirmation_id))
-            .map(record => this.#card({ confirmation_id: record.confirmation_id, revision: 0, chat_id: MAIN_CHAT, summary: record.summary, expires_at: null, digest: '', fields: record.fields, session: false, always: false }, record.decided_at, record.decision));
+            .map(record => this.#card({ confirmation_id: record.confirmation_id, revision: 0, chat_id: MAIN_CHAT, summary: record.summary, expires_at: null, digest: '', fields: record.fields, grant_key: null, scopes: ['once'] }, record.decided_at, record.decision));
         return [...live, ...kept];
     }
     subscribe(listener: () => void): () => void {
@@ -156,9 +162,9 @@ export class LiveApprovals implements TaskApprovalPort {
     }
     #card(request: ConfirmationRequest, at: string, kept?: Decision): TaskApproval {
         const decision = kept ?? this.#client.decision(request.confirmation_id);
-        const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'approve_always' ? 'allowed-always' : decision === 'deny' ? 'denied' : this.#ended.get(request.confirmation_id) ?? this.#closed.get(request.confirmation_id) ?? 'pending';
-        const forTask = request.session === true;
-        const always = request.always === true;
+        const status: ApprovalStatus = decision === 'approve' ? 'allowed-once' : decision === 'approve_session' ? 'allowed-task' : decision === 'approve_day' ? 'allowed-day' : decision === 'approve_always' ? 'allowed-always' : decision === 'deny' ? 'denied' : this.#ended.get(request.confirmation_id) ?? this.#closed.get(request.confirmation_id) ?? 'pending';
+        const offers = (scope: GrantScope): boolean => request.scopes.includes(scope);
+        const key = typeof request.grant_key === 'string' && request.grant_key !== '' ? request.grant_key : undefined;
         // The broker's own words for approving, when it has them: Remember it.
         const approve = typeof request.approve === 'string' ? request.approve : 'Allow once';
         const expires = typeof request.expires_at === 'string' && clockTime(request.expires_at) !== '' ? expiryWords(request.expires_at, at) : '';
@@ -173,11 +179,14 @@ export class LiveApprovals implements TaskApprovalPort {
             resource: expires === '' ? 'This request does not expire.' : `This request waits for your answer until ${expires}.`,
             detail: [
                 `${approve} answers this request as described, and only this version of it.`,
-                forTask ? "Allow for task also answers every request like it until the agent's session ends; in a chat, that's this answer." : '',
-                always ? 'Allow always answers every request like it, in every session, until you revoke it in Permissions.' : '',
+                offers('task') ? "Allow for task also answers every request like it until the agent's session ends; in a chat, that's this answer." : '',
+                offers('day') ? 'Allow for 24 hours answers every request like it, in every session, for 24 hours by Hatchling’s clock, unless you revoke it sooner in Permissions.' : '',
+                offers('always') ? 'Allow always answers every request like it, in every session, until you revoke it in Permissions.' : '',
+                key !== undefined && (offers('day') || offers('always')) ? `Either keeps the grant ${key}.` : '',
                 'Your answer is recorded once.',
             ].filter(part => part !== '').join(' '),
-            scopes: [...(['once'] as const), ...(forTask ? (['task'] as const) : []), ...(always ? (['always'] as const) : [])],
+            scopes: SCOPES.filter(offers),
+            ...(key === undefined ? {} : { grantKey: key }),
             ...(approve === 'Allow once' ? {} : { approveLabel: approve }),
             status,
             time: clockTime(at),
@@ -187,13 +196,11 @@ export class LiveApprovals implements TaskApprovalPort {
     }
     async #dispatch(attempt: ApprovalAttempt): Promise<ApprovalResult> {
         const offered = this.#seen.get(attempt.requestId)?.request;
-        if (attempt.decision === 'task' && offered?.session !== true)
-            return rejected('Allowing a whole task is not offered. Choose Allow once or Deny.');
-        if (attempt.decision === 'always' && offered?.always !== true)
-            return rejected('Allowing always is not offered. Choose another answer.');
+        if (offered !== undefined && attempt.decision !== 'deny' && !offered.scopes.includes(attempt.decision))
+            return rejected('That answer is not offered for this request. Choose another.');
         if (this.#sending.has(attempt.requestId))
             return unknown('An answer to this request is already on its way. Check its status instead of answering again.');
-        const action = this.#client.decide(attempt.requestId, attempt.decision === 'once' ? 'approve' : attempt.decision === 'task' ? 'approve_session' : attempt.decision === 'always' ? 'approve_always' : 'deny');
+        const action = this.#client.decide(attempt.requestId, DECISIONS[attempt.decision]);
         if (action?.action !== 'decide' || this.#closed.has(attempt.requestId))
             return rejected('This request is no longer waiting for an answer.');
         if (action.revision !== attempt.revision)
@@ -211,7 +218,10 @@ export class LiveApprovals implements TaskApprovalPort {
         const result = reply.result;
         switch (result.result) {
             case 'decided':
-                return { state: 'accepted', detail: 'Hatchling recorded your answer.' };
+                // A standing yes the broker couldn't keep covers only what was shown.
+                return result.kept === false
+                    ? { state: 'accepted', detail: 'Hatchling recorded your answer, but couldn’t keep the grant: this request is allowed once, and the agent asks again for anything else. Its log says why.' }
+                    : { state: 'accepted', detail: 'Hatchling recorded your answer.' };
             case 'decision_rejected': {
                 const closes = CLOSES[result.reason];
                 if (closes !== undefined)
@@ -224,7 +234,7 @@ export class LiveApprovals implements TaskApprovalPort {
             case 'conversation_started':
             case 'schedule':
             case 'setup':
-            case 'sites':
+            case 'grants':
             case 'skill':
             case 'artifact_opened':
             case 'artifact_shared':

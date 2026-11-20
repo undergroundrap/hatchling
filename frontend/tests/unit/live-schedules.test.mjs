@@ -148,7 +148,7 @@ test('every refusal is a sentence, and nothing unconfirmed is called done', asyn
         [schedule({ result: 'schedule-error' }), /doctor/],
         [schedule({ result: 'listed', schedules: [] }), /not confirmed/],
         [{ kind: 'answered', result: { result: 'refused', reason: 'not_granted' } }, /may not change schedules/],
-        [{ kind: 'answered', result: { result: 'sites', outcome: { result: 'off' } } }, /not confirmed/],
+        [{ kind: 'answered', result: { result: 'grants', outcome: { result: 'off' } } }, /not confirmed/],
         [{ kind: 'unsent', detail: 'Not connected.' }, /Not connected/],
     ]) {
         const { schedules } = surface([answer]);

@@ -208,7 +208,7 @@ test('request snapshots cannot be mutated by presentation', () => {
     first[0].status = 'allowed-once';
     first[0].scopes.push('always');
     assert.equal(port.getSnapshot()[0].status, 'pending');
-    assert.deepEqual(port.getSnapshot()[0].scopes, ['once', 'task']);
+    assert.deepEqual(port.getSnapshot()[0].scopes, ['once', 'task', 'day']);
     adapter.dispose();
 });
 test('chat deletion or archival invalidates stale approval controls', async () => {

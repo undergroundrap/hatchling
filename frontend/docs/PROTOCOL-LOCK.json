@@ -7,7 +7,7 @@
   "files": {
     "src/protocol/codec.ts": "a1270292f3f6cf55c7718e400b8b5bf0e42c0ff1c1556c7c450a3dc9fcb851ad",
     "src/protocol/identity-document.ts": "401cb95b852cb78e8119d85971286fe141533f94666fe6a5d3e65607734f0924",
-    "src/protocol/models.ts": "0a989d8141a3eb2c5bcfc6e12e7e49bb330b66492e7231922abece35a6771c08",
+    "src/protocol/models.ts": "2ccdbbeec03959d4af2471c3eb1f42a39333797903349f21e91747e84e439f85",
     "src/protocol/rules.ts": "6ae575eed661d202f316ec911d1787cb0b2c2a0b084946d8177dd00f887a4bfa"
   },
   "history": [
@@ -59,6 +59,13 @@
       "from": "56ee03430352e3fb314c8fce35e5cc04e588188a83976cf57b85470fbd63befc",
       "to": "0a989d8141a3eb2c5bcfc6e12e7e49bb330b66492e7231922abece35a6771c08",
       "change": "BrowserTask gains codeRequest (with BrowserCodeRequest: id, origin), and Command gains browser.decline-code: a signed-in site's request for a one-time code, shown on its browser (WO-030, part 3). The code itself is not a Command and never state: the browser view sends it straight to the broker through the live adapter's CodePort, which types it into the page once. Approved by the maintainer, 2026-10-23. browser.decline-code is human-only."
+    },
+    {
+      "date": "2026-11-20",
+      "file": "src/protocol/models.ts",
+      "from": "0a989d8141a3eb2c5bcfc6e12e7e49bb330b66492e7231922abece35a6771c08",
+      "to": "2ccdbbeec03959d4af2471c3eb1f42a39333797903349f21e91747e84e439f85",
+      "change": "WebsitePermission gains an optional grant (with WebsiteGrant: key, scope day or always, madeAt, endsAt, covering): the standing grant behind an allowed website, its scope and age, as the broker keeps it (WO-036, slice 2b; local UI API v9). It adds no Command: revoking still sends permission.website, which the live adapter revokes by the grant's key. Approved by the maintainer, 2026-11-19, for WO-036 slice 2."
     }
   ]
 }

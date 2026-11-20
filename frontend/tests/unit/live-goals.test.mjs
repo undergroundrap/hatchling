@@ -88,7 +88,7 @@ test('every answer to a change is said, and a gone or closed goal reads the list
     const cases = [
         [{ kind: 'failed', detail: 'Not connected.' }, 'Not connected.', false],
         [{ kind: 'answered', result: { result: 'refused', reason: 'not_granted' } }, /may not change your goals/, false],
-        [{ kind: 'answered', result: { result: 'sites', outcome: { result: 'off' } } }, /something else/, false],
+        [{ kind: 'answered', result: { result: 'grants', outcome: { result: 'off' } } }, /something else/, false],
         [listed(), /something else/, false],
         [goals({ result: 'not_found' }), /no longer there/, true],
         [goals({ result: 'already_closed' }), /is closed, so it can’t change/, true],
