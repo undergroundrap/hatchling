@@ -21,10 +21,16 @@ export function onThisInstall(setup: SetupState | undefined): string | null {
 export function roomsOnThisInstall(setup: SetupState | undefined): string | null {
     if (setup?.kind !== 'read' || !setup.setup.processLimitsOnly)
         return null;
-    return 'On this install, the agent\'s rooms are held by process limits alone: this machine gives Hatchling no cgroup to bound a room\'s memory and CPU as a whole. sudo hatchling-broker doctor says why, and what would change it.';
+    return 'On this install, the agent\'s rooms are held by process limits alone: this machine gives Hatchling no cgroup to bound a room\'s memory and CPU as a whole, and the agent\'s computer and its browser can\'t run. sudo hatchling-broker doctor says why, and what would change it.';
+}
+/** Said when this install couldn't be read: the page below is then said of no install in particular. Nothing in the demo, and nothing while it's being read. */
+export function unreadOnThisInstall(setup: SetupState | undefined): string | null {
+    if (setup?.kind !== 'failed')
+        return null;
+    return 'Hatchling couldn\'t read how this install is protected, so nothing below is said of it in particular. sudo hatchling-broker doctor says what this install has, and what\'s off.';
 }
 export function securityTab(ctx: AppContext): HTMLElement {
     const setup = ctx.setup?.current();
-    const notices = [onThisInstall(setup), roomsOnThisInstall(setup)].filter((said): said is string => said !== null);
+    const notices = [unreadOnThisInstall(setup), onThisInstall(setup), roomsOnThisInstall(setup)].filter((said): said is string => said !== null);
     return h('div', { class: 'settings-stack' }, ...notices.map(said => h('div', { class: 'notice' }, said)), markdown(YOUR_SECURITY));
 }

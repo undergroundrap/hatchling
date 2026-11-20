@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { YOUR_SECURITY } from '../../dist/app/features/settings/your-security-text.js';
-import { onThisInstall, roomsOnThisInstall } from '../../dist/app/features/settings/security.js';
+import { onThisInstall, roomsOnThisInstall, unreadOnThisInstall } from '../../dist/app/features/settings/security.js';
 const page = readFileSync(new URL('../../../docs/your-security.md', import.meta.url), 'utf8');
 const REPO = 'https://github.com/undergroundrap/hatchling/blob/main';
 /** The docs page as the app shows it: no title, the dialog has one, and links that work from there. */
@@ -31,6 +31,10 @@ test('the page says only what is true of this install', () => {
     }
     // Rooms held by process limits alone are the weaker way, and said; a cgroup of their own goes without saying.
     const rooms = (processLimitsOnly) => ({ kind: 'read', setup: { ...read('file').setup, processLimitsOnly } });
-    assert.match(roomsOnThisInstall(rooms(true)), /process limits alone.*no cgroup to bound a room's memory and CPU.*doctor/u);
+    assert.match(roomsOnThisInstall(rooms(true)), /process limits alone.*no cgroup to bound a room's memory and CPU.*computer and its browser can't run.*doctor/u);
     assert.equal(roomsOnThisInstall(rooms(false)), null);
+    // An install that couldn't be read is said so; one not read yet, or the demo, isn't.
+    assert.match(unreadOnThisInstall({ kind: 'failed', detail: 'x' }), /couldn't read how this install is protected.*doctor/u);
+    for (const quiet of [undefined, { kind: 'unread' }, read('file')])
+        assert.equal(unreadOnThisInstall(quiet), null);
 });
