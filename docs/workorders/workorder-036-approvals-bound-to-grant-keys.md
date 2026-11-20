@@ -44,6 +44,7 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend and protocol gates (the card an
 - Slice 1b, a revoke reaching every running task: [revokes-reach.md](../evidence/revokes-reach.md)
 - Slice 2a, a day grant's end reaching every running task: [day-ends.md](../evidence/day-ends.md)
 - Slice 2b, approvals bound to grant keys and scopes, the local UI API v9: [grants-v9.md](../evidence/grants-v9.md)
+- Slice 2c, what standing grants covered, kept and shown in Activity: [covered.md](../evidence/covered.md)
 
 The rest is filled in at close.
 
