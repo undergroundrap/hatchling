@@ -40,6 +40,7 @@ import { LiveGoals } from './goals.js';
 import { LiveFeed } from './feed.js';
 import { LiveIdeas } from './ideas.js';
 import { LiveMemory } from './memory.js';
+import { LiveCovered } from './covered.js';
 import { LiveSites } from './sites.js';
 import { Surfaces } from './surfaces.js';
 /** When the daily post is written, until the owner picks a time. */
@@ -62,6 +63,7 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly #chats = new ChatBook();
     readonly #surfaces: Surfaces;
     readonly #sites: LiveSites;
+    readonly #covered: LiveCovered;
     readonly #profiles: LiveProfiles;
     readonly #schedules: LiveSchedules;
     /** Where the Settings form sends a sign-in to keep: straight to the broker, never as a Command. */
@@ -109,6 +111,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#surfaces = new Surfaces(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.taskApprovals = new LiveApprovals(this.#client, () => `live-command-${++this.#serial}`);
         this.#sites = new LiveSites(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.#covered = new LiveCovered(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#profiles = new LiveProfiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#schedules = new LiveSchedules(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.attention = this.#schedules;
@@ -310,6 +313,7 @@ export class LiveAdapter implements ProtocolAdapter {
         switch (body.kind) {
             case 'activity':
                 this.#activity.apply(body.event);
+                this.#covered.observe();
                 this.#chats.trail(body.event);
                 this.#usage.observeRun(body.event);
                 this.#ideas.observeRun(body.event);
@@ -386,7 +390,8 @@ export class LiveAdapter implements ProtocolAdapter {
             listener();
     }
     #build(): AppState {
-        const threads = [...this.#activity.threads(), ...this.#surfaces.threads()];
+        const covered = this.#covered.thread();
+        const threads = [...this.#activity.threads(), ...this.#surfaces.threads(), ...(covered === undefined ? [] : [covered])];
         return {
             websitePermissions: this.#sites.grants().map(grant => ({ host: grant.target, policy: 'allow' as const, grant: { key: grant.key, scope: grant.scope === 'day' ? 'day' as const : 'always' as const, madeAt: grant.made_at, endsAt: grant.ends_at ?? null, covering: grant.state === 'covering' } })),
             signedInSites: this.#profiles.profiles().map(site => ({ ...site, signIns: this.signIns.of(site.id) })),

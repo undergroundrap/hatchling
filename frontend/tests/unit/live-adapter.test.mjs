@@ -50,7 +50,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library'].includes(frame.action.action) && !(['manage_suggestions', 'manage_grants', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library', 'list_covered'].includes(frame.action.action) && !(['manage_suggestions', 'manage_grants', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -960,6 +960,17 @@ test('a site that can be kept offers Allow always, sent as approve_always and sh
     const before = other.transport.sent.length;
     assert.match((await other.adapter.taskApprovals.respond({ id: 'a1', requestId: 'confirm-1', revision: 1, decision: 'always' })).detail, /not offered for this request/);
     assert.equal(other.transport.sent.length, before, 'nothing sent');
+});
+test('what the standing grants covered is asked for on connecting and shown in Activity as its own thread', async () => {
+    const { transport, adapter } = connected();
+    const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'list_covered');
+    assert.deepEqual(listing?.action, { action: 'list_covered' }, 'asked for on connecting');
+    assert.ok(!adapter.getSnapshot().threads.some(item => item.id === 'covered'), 'none until the broker answers');
+    answer(transport, listing.request_id, { result: 'covered', covered: [{ key: 'web.visit:https://a.example', scope: 'always', url: 'https://a.example/x', via: 'fetch', task: 't-1', count: 1, at: '2026-11-20T08:00:00Z' }] });
+    await flush();
+    const covered = adapter.getSnapshot().threads.find(item => item.id === 'covered');
+    assert.equal(covered?.name, 'Allowed by your standing grants');
+    assert.equal(covered?.lanes[0].rows[0].title, 'https://a.example/x');
 });
 test('allowed sites: the broker\'s list, loaded on connecting; revoked by the owner, and listed again', async () => {
     const { transport, adapter } = connected();

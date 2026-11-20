@@ -779,6 +779,11 @@
           "type": "string"
         },
         {
+          "const": "list_covered",
+          "description": "[`UiAction::ListCovered`].",
+          "type": "string"
+        },
+        {
           "const": "read_usage",
           "description": "[`UiAction::ReadUsage`].",
           "type": "string"
@@ -2895,6 +2900,68 @@
         {
           "const": "stale_frame",
           "description": "The frame the user returned control from is not the latest.",
+          "type": "string"
+        }
+      ]
+    },
+    "CoveredRecord": {
+      "description": "A request a standing grant covered, so the owner wasn't asked (WO-036):\nkept, the owner's alone, in a log of its own.\n\nA task's first requests under a grant are each kept with the address the\nagent asked for; past those, a record counts them as the count doubles.",
+      "properties": {
+        "at": {
+          "description": "When, RFC 3339.",
+          "type": "string"
+        },
+        "count": {
+          "description": "How many of the task's requests the grant had covered, this one\nincluded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "description": "The grant that covered it, as listed: `web.visit:https://a.example`.",
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/GrantScope",
+          "description": "How long that grant lasts: [`GrantScope::Day`] or\n[`GrantScope::Always`]."
+        },
+        "task": {
+          "description": "The task it was for, as the broker knows it.",
+          "type": "string"
+        },
+        "url": {
+          "description": "The address the agent asked for, the agent's words: what a standing\ngrant lets it send. `None` for a record that counts.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "via": {
+          "$ref": "#/$defs/CoveredVia",
+          "description": "How it reached the site."
+        }
+      },
+      "required": [
+        "key",
+        "scope",
+        "via",
+        "task",
+        "count",
+        "at"
+      ],
+      "type": "object"
+    },
+    "CoveredVia": {
+      "description": "How a request a standing grant covered reached its site.",
+      "oneOf": [
+        {
+          "const": "fetch",
+          "description": "A page read.",
+          "type": "string"
+        },
+        {
+          "const": "browser",
+          "description": "A page the agent's browser opened, or a site a page of it needed.",
           "type": "string"
         }
       ]
@@ -13278,6 +13345,19 @@
           "type": "object"
         },
         {
+          "description": "List the requests the owner's standing grants covered, the newest\nfirst (WO-036): the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "list_covered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Read the model usage the broker counted: the owner's alone.",
           "properties": {
             "action": {
@@ -14140,6 +14220,27 @@
           "required": [
             "result",
             "decisions"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The requests the owner's standing grants covered, the newest first.",
+          "properties": {
+            "covered": {
+              "description": "They.",
+              "items": {
+                "$ref": "#/$defs/CoveredRecord"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "covered",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "covered"
           ],
           "type": "object"
         },

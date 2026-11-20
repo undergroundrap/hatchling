@@ -126,6 +126,13 @@ fn lines(path: &Path) -> std::io::Result<Vec<String>> {
 /// file or it can't be read. A line that doesn't read is skipped.
 #[must_use]
 pub fn list<T: DeserializeOwned>(path: &Path) -> Vec<T> {
+    list_within(path, MAX_KEPT)
+}
+
+/// The newest `kept` records at `path`, the newest first: [`list`] for a
+/// log with a bound of its own.
+#[must_use]
+pub fn list_within<T: DeserializeOwned>(path: &Path, kept: usize) -> Vec<T> {
     let Ok(lines) = lines(path) else {
         return Vec::new();
     };
@@ -133,7 +140,7 @@ pub fn list<T: DeserializeOwned>(path: &Path) -> Vec<T> {
         .iter()
         .rev()
         .filter_map(|line| serde_json::from_str(line).ok())
-        .take(MAX_KEPT)
+        .take(kept)
         .collect()
 }
 

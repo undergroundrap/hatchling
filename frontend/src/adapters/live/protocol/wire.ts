@@ -563,6 +563,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "list_covered",
+                "type": "string"
+            },
+            {
                 "const": "read_usage",
                 "type": "string"
             },
@@ -1283,6 +1287,56 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             },
             {
                 "const": "stale_frame",
+                "type": "string"
+            }
+        ]
+    },
+    "CoveredRecord": {
+        "properties": {
+            "at": {
+                "type": "string"
+            },
+            "count": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "key": {
+                "type": "string"
+            },
+            "scope": {
+                "$ref": "#/$defs/GrantScope"
+            },
+            "task": {
+                "type": "string"
+            },
+            "url": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "via": {
+                "$ref": "#/$defs/CoveredVia"
+            }
+        },
+        "required": [
+            "key",
+            "scope",
+            "via",
+            "task",
+            "count",
+            "at"
+        ],
+        "type": "object"
+    },
+    "CoveredVia": {
+        "oneOf": [
+            {
+                "const": "fetch",
+                "type": "string"
+            },
+            {
+                "const": "browser",
                 "type": "string"
             }
         ]
@@ -5285,6 +5339,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "list_covered",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "read_usage",
                         "type": "string"
                     }
@@ -6036,6 +6102,25 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "decisions"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "covered": {
+                        "items": {
+                            "$ref": "#/$defs/CoveredRecord"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "covered",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "covered"
                 ],
                 "type": "object"
             },

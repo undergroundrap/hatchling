@@ -97,6 +97,8 @@ pub enum ApiRequest {
     ManageMemory,
     /// [`UiAction::ListDecisions`].
     ListDecisions,
+    /// [`UiAction::ListCovered`].
+    ListCovered,
     /// [`UiAction::ReadUsage`].
     ReadUsage,
     /// [`UiAction::SetUsageLimits`].
@@ -174,6 +176,7 @@ impl ApiRequest {
             UiAction::ManageGoals { .. } => Self::ManageGoals,
             UiAction::ManageMemory { .. } => Self::ManageMemory,
             UiAction::ListDecisions {} => Self::ListDecisions,
+            UiAction::ListCovered {} => Self::ListCovered,
             UiAction::ReadUsage {} => Self::ReadUsage,
             UiAction::SetUsageLimits { .. } => Self::SetUsageLimits,
             UiAction::ReadModel {} => Self::ReadModel,
@@ -377,6 +380,7 @@ mod tests {
                 action(UiAction::ListDecisions {}),
                 ApiRequest::ListDecisions,
             ),
+            (action(UiAction::ListCovered {}), ApiRequest::ListCovered),
             (action(UiAction::ReadUsage {}), ApiRequest::ReadUsage),
             (
                 action(UiAction::SetUsageLimits {
