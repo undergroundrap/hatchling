@@ -33,5 +33,6 @@ As [TEMPLATE.md](TEMPLATE.md), with the frontend gate.
 ## Evidence
 
 - Slice 1a, `doctor` says when a protection is off or weaker: [doctor-says-off.md](../evidence/doctor-says-off.md)
+- Slice 1b, `doctor` probes the syscall filter, the Room's image and the Windows seal: [doctor-probes.md](../evidence/doctor-probes.md)
 
 The rest is filled in at close.

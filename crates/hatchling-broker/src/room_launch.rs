@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use crate::room_disk::RoomDisk;
 use crate::spawner::ROOM_MOUNT_SUBCOMMAND;
 
-const RECORD: &str = "/etc/hatchling/room-image.admission";
-const IMAGE_DIR: &str = "/usr/local/share/hatchling/room";
+pub(crate) const RECORD: &str = "/etc/hatchling/room-image.admission";
+pub(crate) const IMAGE_DIR: &str = "/usr/local/share/hatchling/room";
 const UNSHARE: &str = "/usr/bin/unshare";
 const SUPERVISOR: &str = "/usr/local/libexec/hatchling-room";
 const SUPERVISOR_FD: i32 = 3;
@@ -74,7 +74,9 @@ struct MountSpec {
 
 /// The installer must publish this record from separately attested
 /// release data. The image directory itself has no authority over it.
-fn read_admission(path: &Path) -> Result<(String, String), String> {
+/// The installed image's admission record at `path`: read, checked to be
+/// root's and whole (WO-037: doctor reads it too).
+pub(crate) fn read_admission(path: &Path) -> Result<(String, String), String> {
     let parent = path.parent().ok_or("no room image admission directory")?;
     hatchling_sys::trusted_dir_chain(parent, &[0]).map_err(|error| error.to_string())?;
     let meta = fs::symlink_metadata(path).map_err(|error| {

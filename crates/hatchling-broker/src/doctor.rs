@@ -165,6 +165,23 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
         ("output gate", output_gate_said(&lookup)),
         ("decisions", decisions_said(&lookup)),
         ("room disk", check_room_disk(&lookup)),
+        (
+            "the Room",
+            room_image_said(room_missing([
+                (cfg!(target_arch = "x86_64"), RoomMissing::Arch),
+                (
+                    crate::room_launch::read_admission(Path::new(crate::room_launch::RECORD))
+                        .is_ok(),
+                    RoomMissing::Admission,
+                ),
+                (
+                    Path::new(crate::room_launch::IMAGE_DIR).is_dir(),
+                    RoomMissing::Image,
+                ),
+                (cgroup.is_some(), RoomMissing::Cgroup),
+            ])),
+        ),
+        ("windows seal", wsl_seal_said(WslSeal::here())),
         ("memory", check_memory(crate::model_window::memory())),
     ];
     report(&label, &checks)
@@ -504,6 +521,122 @@ fn cell_limits_found(set: bool, problem: Option<(String, &'static str)>) -> Find
             what: String::from(PROCESS_LIMITS),
             fix: String::from(PROCESS_LIMITS_FIX),
         },
+    }
+}
+
+/// What stops the agent's computer, the Room, starting here (WO-037).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoomMissing {
+    /// Its supervisor needs `x86_64`.
+    Arch,
+    /// No image is admitted (`/etc/hatchling/room-image.admission`).
+    Admission,
+    /// Its image isn't in place.
+    Image,
+    /// Cells have no cgroup, which it needs.
+    Cgroup,
+}
+
+impl RoomMissing {
+    /// What the owner is told of it.
+    const fn said(self) -> &'static str {
+        match self {
+            Self::Arch => "it needs x86_64 Linux",
+            Self::Admission => "no image is installed (/etc/hatchling/room-image.admission)",
+            Self::Image => "its image isn't in place (/usr/local/share/hatchling/room)",
+            Self::Cgroup => "cells are held by process limits alone, and it needs a cgroup",
+        }
+    }
+}
+
+/// The first of `checks` that fails, in order: what stops the Room.
+fn room_missing(checks: [(bool, RoomMissing); 4]) -> Option<RoomMissing> {
+    checks
+        .into_iter()
+        .find(|(passed, _)| !passed)
+        .map(|(_, missing)| missing)
+}
+
+/// What doctor says of the agent's computer: whether it can start here, and
+/// what's `missing` if it can't. Read, never started.
+fn room_image_said(missing: Option<RoomMissing>) -> Finding {
+    missing.map_or_else(
+        || {
+            Finding::Fine(String::from(
+                "its image is installed: it starts when a run asks for it",
+            ))
+        },
+        |missing| Finding::Note {
+            what: format!(
+                "the agent's computer (the Room) can't start here: {}",
+                missing.said()
+            ),
+            fix: String::from(
+                "Windows Setup installs it (docs/windows.md); on Linux, it isn't packaged yet",
+            ),
+        },
+    )
+}
+
+/// What doctor reads of a WSL distro's seal from Windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WslSeal {
+    /// Whether this is WSL.
+    wsl: bool,
+    /// Whether the Windows drive is mounted here (`/mnt/c`).
+    drives: bool,
+    /// Whether Windows programs can be started from here (WSL interop).
+    interop: bool,
+}
+
+impl WslSeal {
+    fn here() -> Self {
+        Self {
+            wsl: std::fs::read_to_string("/proc/sys/kernel/osrelease")
+                .is_ok_and(|release| release.to_ascii_lowercase().contains("microsoft")),
+            drives: Path::new("/mnt/c/Windows").exists(),
+            interop: std::fs::read_to_string("/proc/sys/fs/binfmt_misc/WSLInterop")
+                .is_ok_and(|said| interop_enabled(&said)),
+        }
+    }
+}
+
+/// Whether WSL's interop entry, as `binfmt_misc` says it, is on.
+fn interop_enabled(said: &str) -> bool {
+    said.lines().next() == Some("enabled")
+}
+
+/// What doctor says of a WSL distro's seal: cut off from the Windows drive
+/// and Windows programs, as Windows Setup leaves it, or not.
+fn wsl_seal_said(seal: WslSeal) -> Finding {
+    if !seal.wsl {
+        return Finding::Unchecked(String::from("not WSL"));
+    }
+    let open: Vec<&str> = [
+        (seal.drives, "it can read your Windows drive (/mnt/c)"),
+        (
+            seal.interop,
+            "it can start Windows programs (WSL interop is on)",
+        ),
+    ]
+    .into_iter()
+    .filter(|(open, _)| *open)
+    .map(|(_, what)| what)
+    .collect();
+    if open.is_empty() {
+        Finding::Fine(String::from(
+            "cut off from your Windows drives and Windows programs",
+        ))
+    } else {
+        Finding::Note {
+            what: format!(
+                "this WSL distro isn't cut off from Windows: {}. Anything that escapes a cell here reaches them",
+                open.join(", and ")
+            ),
+            fix: String::from(
+                "In /etc/wsl.conf set [automount] enabled=false and [interop] enabled=false, then `wsl --terminate <distro>`. Windows Setup does this for its own distro",
+            ),
+        }
     }
 }
 
@@ -1006,14 +1139,25 @@ fn check_cells_in(lookup: &dyn Fn(&str) -> Option<String>, temp: &Path) -> Findi
     // with its mount namespace.
     let _ = std::fs::remove_dir(&stage);
     match probed {
-        Ok(()) if identity.mapping == Mapping::Subordinate => Finding::Fine(String::from(
-            "namespaces work (the range's map helpers aren't tried here)",
-        )),
-        Ok(()) => Finding::Fine(format!("a cell runs as uid {}", identity.principal)),
+        Ok(()) => cells_fine(identity.mapping, identity.principal),
         Err((step, errno)) => {
             let (what, fix) = cell_advice(step, errno, Facts::read());
             Finding::problem(what, fix)
         }
+    }
+}
+
+/// What doctor says of cells that work, mapped as `mapping`, run as
+/// `principal`.
+fn cells_fine(mapping: Mapping, principal: u32) -> Finding {
+    if mapping == Mapping::Subordinate {
+        Finding::Fine(String::from(
+            "namespaces and the syscall filter work (the range's map helpers aren't tried here)",
+        ))
+    } else {
+        Finding::Fine(format!(
+            "a cell runs as uid {principal}, behind its syscall filter"
+        ))
     }
 }
 
@@ -1036,10 +1180,12 @@ enum Step {
     Pid,
     /// None: the probe ended before saying which.
     Ended,
+    /// No new privileges, then its syscall filter (WO-037).
+    Filter,
 }
 
 impl Step {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::User,
         Self::Maps,
         Self::Mount,
@@ -1048,6 +1194,7 @@ impl Step {
         Self::Root,
         Self::Pid,
         Self::Ended,
+        Self::Filter,
     ];
 
     /// Its code on the probe's socket: 0 is "done".
@@ -1061,6 +1208,7 @@ impl Step {
             Self::Root => 6,
             Self::Pid => 7,
             Self::Ended => 8,
+            Self::Filter => 9,
         }
     }
 
@@ -1175,7 +1323,13 @@ fn cell_child(socket: &mut UnixStream, stage: &Path) -> Result<(), Failed> {
     hatchling_sys::MountPlan::new(stage.to_path_buf(), &HashSet::new(), Vec::new())
         .and_then(|plan| plan.apply())
         .map_err(|err| (Step::Root, errno(&err)))?;
-    hatchling_sys::unshare_pid().map_err(|err| (Step::Pid, errno(&err)))
+    hatchling_sys::unshare_pid().map_err(|err| (Step::Pid, errno(&err)))?;
+    // Last, as a cell does: no new privileges, then the agent's own
+    // syscall filter, which a kernel without seccomp filtering refuses.
+    hatchling_sys::set_no_new_privs().map_err(|err| (Step::Filter, errno(&err)))?;
+    let profile = hatchling_sys::seccomp::SeccompProfile::agent()
+        .map_err(|err| (Step::Filter, errno(&err)))?;
+    hatchling_sys::seccomp::install(&profile).map_err(|err| (Step::Filter, errno(&err)))
 }
 
 /// What the kernel's settings say about making a user namespace.
@@ -1266,6 +1420,7 @@ fn cell_advice(step: Step, errno: Option<i32>, facts: Facts) -> (String, String)
         step if !facts.root
             && facts.restriction == Restriction::AppArmor
             && step != Step::Ended
+            && step != Step::Filter
             && (step == Step::User || refused_permission(errno)) =>
         {
             (
@@ -1302,6 +1457,14 @@ fn cell_advice(step: Step, errno: Option<i32>, facts: Facts) -> (String, String)
         Step::Root => (
             format!("a cell's own root filesystem couldn't be made{because}"),
             String::from(NOT_IN_A_CONTAINER),
+        ),
+        Step::Filter => (
+            format!(
+                "a cell couldn't take its syscall filter{because}: without seccomp filtering, no cell starts"
+            ),
+            String::from(
+                "Use a kernel with seccomp filtering on (CONFIG_SECCOMP_FILTER, Linux 3.5 or later): `grep Seccomp /proc/self/status` shows a Seccomp_filters line where it is.",
+            ),
         ),
         Step::Ended => (
             format!("the cell probe ended before saying how it went{because}"),
@@ -1647,6 +1810,94 @@ mod tests {
         assert_eq!(kind, "note");
         assert!(
             words.contains("key file") && words.contains("anyone with this disk"),
+            "{words}"
+        );
+    }
+
+    /// The agent's computer, the Room: what stops it starting here is
+    /// said, the first first; installed, it's fine (WO-037).
+    #[test]
+    fn a_room_that_cant_start_says_why() {
+        use RoomMissing::{Admission, Arch, Cgroup, Image};
+        let checks = |arch, admission, image, cgroup| {
+            room_missing([
+                (arch, Arch),
+                (admission, Admission),
+                (image, Image),
+                (cgroup, Cgroup),
+            ])
+        };
+        assert_eq!(checks(true, true, true, true), None);
+        assert_eq!(checks(false, true, true, true), Some(Arch));
+        assert_eq!(checks(true, false, true, true), Some(Admission));
+        assert_eq!(checks(true, true, false, true), Some(Image));
+        assert_eq!(checks(true, true, true, false), Some(Cgroup));
+        assert_eq!(
+            checks(false, false, true, true),
+            Some(Arch),
+            "the first first"
+        );
+        assert_eq!(said(&room_image_said(None)).0, "fine");
+        for (missing, why) in [
+            (Arch, "it needs x86_64 Linux"),
+            (Admission, "no image is installed"),
+            (Image, "its image isn't in place"),
+            (Cgroup, "it needs a cgroup"),
+        ] {
+            let (kind, words) = said(&room_image_said(Some(missing)));
+            assert_eq!(kind, "note", "{words}");
+            assert!(
+                words.starts_with("the agent's computer (the Room) can't start here: ")
+                    && words.contains(why),
+                "{why}: {words}"
+            );
+        }
+    }
+
+    /// A WSL distro not cut off from Windows is said, by what's open
+    /// (WO-037).
+    #[test]
+    fn a_wsl_distro_open_to_windows_is_said() {
+        let sealed = WslSeal {
+            wsl: true,
+            drives: false,
+            interop: false,
+        };
+        assert_eq!(said(&wsl_seal_said(sealed)).0, "fine");
+        assert_eq!(
+            said(&wsl_seal_said(WslSeal {
+                wsl: false,
+                drives: true,
+                interop: true
+            })),
+            ("unchecked", String::from("not WSL"))
+        );
+        let (kind, words) = said(&wsl_seal_said(WslSeal {
+            drives: true,
+            ..sealed
+        }));
+        assert_eq!(kind, "note");
+        assert!(
+            words.contains("read your Windows drive (/mnt/c)")
+                && !words.contains("WSL interop is on"),
+            "{words}"
+        );
+        let (kind, words) = said(&wsl_seal_said(WslSeal {
+            interop: true,
+            ..sealed
+        }));
+        assert_eq!(kind, "note");
+        assert!(
+            words.contains("WSL interop is on") && !words.contains("/mnt/c"),
+            "{words}"
+        );
+        let (_, words) = said(&wsl_seal_said(WslSeal {
+            drives: true,
+            interop: true,
+            ..sealed
+        }));
+        assert!(
+            words.contains("(/mnt/c), and it can start Windows programs"),
             "{words}"
         );
     }
@@ -2555,7 +2806,13 @@ mod tests {
         let required = std::env::var("HATCHLING_REQUIRE_CELL").is_ok_and(|value| value == "1");
         match &found {
             Finding::Fine(seen) => {
-                assert_eq!(seen, &format!("a cell runs as uid {}", uid.unwrap()));
+                assert_eq!(
+                    seen,
+                    &format!(
+                        "a cell runs as uid {}, behind its syscall filter",
+                        uid.unwrap()
+                    )
+                );
             }
             Finding::Problem { what, fix } => {
                 assert!(!required, "cells are required: {what}");
@@ -2666,6 +2923,51 @@ mod tests {
         }
         assert!(what(Step::Root, None, user).0.contains("root filesystem"));
         assert!(what(Step::Ended, None, user).1.contains("uname -a"));
+    }
+
+    /// Cells that work say how they're mapped, behind their filter; WSL's
+    /// interop entry is read as `binfmt_misc` writes it (WO-037).
+    #[test]
+    fn working_cells_and_interop_are_read_as_said() {
+        assert_eq!(
+            said(&cells_fine(Mapping::Direct, 2001)),
+            (
+                "fine",
+                String::from("a cell runs as uid 2001, behind its syscall filter")
+            )
+        );
+        assert!(
+            said(&cells_fine(Mapping::Subordinate, 2001))
+                .1
+                .starts_with("namespaces and the syscall filter work")
+        );
+        assert!(interop_enabled(
+            "enabled
+interpreter /init
+"
+        ));
+        assert!(!interop_enabled(
+            "disabled
+interpreter /init
+"
+        ));
+        assert!(!interop_enabled(""));
+    }
+
+    /// A filter refused is a kernel without seccomp filtering, never put
+    /// down to `AppArmor` (WO-037).
+    #[test]
+    fn a_filter_refused_has_its_own_advice() {
+        let facts = |root, restriction| Facts { root, restriction };
+        let (said, fix) = cell_advice(Step::Filter, Some(22), facts(false, Restriction::None));
+        assert!(said.contains("couldn't take its syscall filter"), "{said}");
+        assert!(
+            said.contains("without seccomp filtering, no cell starts"),
+            "{said}"
+        );
+        assert!(fix.contains("CONFIG_SECCOMP_FILTER"), "{fix}");
+        let (said, _) = cell_advice(Step::Filter, Some(1), facts(false, Restriction::AppArmor));
+        assert!(said.contains("syscall filter"), "{said}");
     }
 
     #[test]
