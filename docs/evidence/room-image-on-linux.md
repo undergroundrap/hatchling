@@ -142,6 +142,10 @@ The release path, from a folder owned by an unprivileged uid, as
   admitted before.
 - **The release workflow's dry run** runs the installer proof against the
   real image.
+- **The step's first run** failed before it installed anything: `veritysetup`,
+  run as root to make the stand-in, left its hash tree readable by root
+  alone, and the runner's copy of it was refused. The step now gives the
+  stand-in's files to the runner, as a download is (`ci.yml` only).
 
 ## Residual
 
