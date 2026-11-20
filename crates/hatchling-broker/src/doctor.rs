@@ -34,6 +34,8 @@ use hatchling_isolation::{CellIdentity, Mapping};
 use crate::Config;
 use crate::environment as env;
 
+mod stores;
+
 /// How the cell probe's staging directory is named, before its random
 /// part.
 const STAGE_PREFIX: &str = "hatchling-doctor-cell-";
@@ -157,6 +159,7 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
         }),
         ("other model", check_other(&lookup)),
         ("vault", check_vault(&lookup, &Machine::here())),
+        ("stores", check_stores(&lookup)),
         (
             "confinement",
             confinement_said(hatchling_sys::landlock::landlock_abi()),
@@ -827,6 +830,24 @@ fn check_vault(lookup: &dyn Fn(&str) -> Option<String>, machine: &Machine) -> Fi
         | Finding::Unchecked(_)
         | Finding::Note { .. }) => other,
     }
+}
+
+/// The stores' directories (WO-038): each as its reader takes it, or
+/// named with the commands that put it right.
+fn check_stores(lookup: &dyn Fn(&str) -> Option<String>) -> Finding {
+    check_stores_as(lookup, hatchling_sys::euid())
+}
+
+/// [`check_stores`], run by `euid`.
+fn check_stores_as(lookup: &dyn Fn(&str) -> Option<String>, euid: u32) -> Finding {
+    let Ok(config) = Config::parse(lookup) else {
+        return Finding::Unchecked(String::from("the settings don't parse (see settings)"));
+    };
+    let keyring = crate::vault_keyring::KeyringConfig::parse(lookup)
+        .ok()
+        .and_then(|keyring| keyring.keyring);
+    let dirs = stores::store_dirs(&config, keyring.as_deref(), lookup);
+    stores::said(&stores::check(&dirs, stores::owner(euid)), euid == 0)
 }
 
 /// What doctor says where the settings name a keyring at `path` and none
@@ -1775,6 +1796,64 @@ mod tests {
     use std::thread;
 
     use super::*;
+
+    /// The stores' directories are checked as their readers take them:
+    /// fine when right, and each wrong one named with its fix (WO-038).
+    #[test]
+    fn the_stores_are_checked_as_their_readers_take_them() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let base = crate::api_auth::tests::scratch("doctor-stores");
+        let at = |name: &str| base.0.join(name);
+        let settings: BTreeMap<String, String> = [
+            ("HATCHLING_BROKER_SOCKET", at("run/broker.sock")),
+            ("HATCHLING_AGENT_UID", PathBuf::from("2001")),
+            ("HATCHLING_VAULT_DIR", at("vault")),
+            ("HATCHLING_MEMORY_DIR", at("memory")),
+            ("HATCHLING_GOALS_DIR", at("goals")),
+        ]
+        .into_iter()
+        .map(|(key, path)| (String::from(key), path.display().to_string()))
+        .collect();
+        let lookup = |key: &str| settings.get(key).cloned();
+        let me = hatchling_sys::euid();
+        let (kind, words) = said(&check_stores_as(&lookup, me));
+        assert_eq!(kind, "fine", "{words}");
+        assert!(words.starts_with("none made yet"), "{words}");
+        for dir in ["vault", "memory/user/985", "goals/goals/985"] {
+            std::fs::create_dir_all(at(dir)).unwrap();
+        }
+        let mode = |dir: &str, mode: u32| {
+            std::fs::set_permissions(at(dir), std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        for dir in [
+            "vault",
+            "memory",
+            "memory/user",
+            "memory/user/985",
+            "goals",
+            "goals/goals",
+        ] {
+            mode(dir, 0o700);
+        }
+        mode("goals/goals/985", 0o755);
+        let (kind, words) = said(&check_stores_as(&lookup, me));
+        assert_eq!(kind, "problem", "{words}");
+        let wrong = at("goals/goals/985").display().to_string();
+        assert!(words.contains(&format!("{wrong} (mode 755)")), "{words}");
+        assert!(words.contains(&format!("`chmod 700 {wrong}`")), "{words}");
+        mode("goals/goals/985", 0o700);
+        assert_eq!(
+            check_stores_as(&lookup, me),
+            Finding::Fine(String::from(
+                "7 directories checked: each its owner's alone, mode 700"
+            ))
+        );
+        let broken = |key: &str| (key == "HATCHLING_VAULT_DIR").then(|| String::from("relative"));
+        assert!(matches!(
+            check_stores_as(&broken, me),
+            Finding::Unchecked(_)
+        ));
+    }
 
     /// The vault's tiers a stolen disk opens are said so, with the
     /// stronger one: its key file, a keyring at the file tier, authenticator
