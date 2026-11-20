@@ -30,13 +30,13 @@
 //! never the method, path or body inside it: those are the browser's, in
 //! TLS. Which sites a session holds is the broker's to decide (part 3).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead as _, BufReader, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs as _};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hatchling_core::ui::operator::EgressVerdict;
 use hatchling_egress::allowlist::is_internal;
@@ -137,7 +137,59 @@ struct Held {
     next: u64,
     /// Sealed: nothing is granted again.
     sealed: bool,
+    /// When each site granted until a time stops being held.
+    ends: BTreeMap<String, End>,
 }
+
+impl Held {
+    /// Whether `destination` is granted, and its end, if it has one, hasn't
+    /// come.
+    fn holds(&self, destination: &str) -> bool {
+        self.granted.contains(destination)
+            && self.ends.get(destination).is_none_or(|end| !end.come())
+    }
+}
+
+/// When a site granted until a time stops being held: a day grant's end
+/// (WO-036).
+///
+/// It's held by two clocks, and comes with whichever is first. The monotonic clock
+/// can't be set back, so a clock set back never stretches it; the broker's
+/// own clock goes on while the host sleeps, which the monotonic one doesn't
+/// count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct End {
+    /// By the monotonic clock.
+    pub monotonic: Instant,
+    /// By the broker's clock, in seconds since the epoch.
+    pub wall: i64,
+}
+
+impl End {
+    /// Whether it has come, by either clock.
+    #[must_use]
+    pub fn come(&self) -> bool {
+        Instant::now() >= self.monotonic || wall_now() >= self.wall
+    }
+}
+
+/// The broker's clock, in seconds since the epoch.
+#[must_use]
+pub fn wall_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
+        })
+}
+
+/// How often a site's timer looks at the broker's clock while it waits for
+/// the monotonic one: a host that slept is seen within this of waking.
+pub const END_CHECK: Duration = Duration::from_secs(60);
+
+/// How much earlier than the end a site is held to a new end must be to
+/// replace it: the same grant, read again, gives the same end within it.
+pub const END_SLACK: Duration = Duration::from_secs(1);
 
 /// An open tunnel, as revoking its site closes it.
 #[derive(Debug)]
@@ -162,6 +214,60 @@ impl Sites {
         }
         held.refused.remove(destination);
         held.granted.insert(destination.to_owned());
+        held.ends.remove(destination);
+    }
+
+    /// Grants `destination` until `end`, as a day grant covers it (WO-036):
+    /// from then it's refused, and as `end` comes it's revoked and its
+    /// tunnels closed. Granted without an end again, it has none.
+    ///
+    /// Granted until a time again, the earlier end is kept, unless the new
+    /// one is more than [`END_SLACK`] earlier: the same grant read again is
+    /// the same end, and one timer.
+    pub fn grant_until(&self, destination: &str, end: End) {
+        let mut held = self.held();
+        if held.sealed {
+            return;
+        }
+        held.refused.remove(destination);
+        held.granted.insert(destination.to_owned());
+        if held
+            .ends
+            .get(destination)
+            .is_some_and(|kept| kept.monotonic <= end.monotonic + END_SLACK)
+        {
+            return;
+        }
+        held.ends.insert(destination.to_owned(), end);
+        drop(held);
+        let sites = Arc::downgrade(&self.0);
+        let site = destination.to_owned();
+        let timer = std::thread::Builder::new()
+            .name(String::from("site-ends"))
+            .spawn(move || {
+                while !end.come() {
+                    let left = end.monotonic.saturating_duration_since(Instant::now());
+                    std::thread::sleep(left.min(END_CHECK));
+                }
+                if let Some(held) = sites.upgrade() {
+                    Self(held).ended(&site, end);
+                }
+            });
+        if let Err(error) = timer {
+            // Admitting still refuses it from `end`; what's open is closed
+            // when the session next looks.
+            tracing::warn!(%error, %destination, "no timer for a site's end");
+        }
+    }
+
+    /// `destination`'s `end` came: if it's still the end it's held to, it's
+    /// revoked.
+    fn ended(&self, destination: &str, end: End) {
+        let current = self.held().ends.get(destination) == Some(&end);
+        if current {
+            let closed = self.revoke(destination);
+            tracing::debug!(%destination, closed, "a site's grant ended");
+        }
     }
 
     /// Seals the session's sites, as the owner's stop does: every one
@@ -172,6 +278,7 @@ impl Sites {
         let mut held = self.held();
         held.sealed = true;
         held.granted.clear();
+        held.ends.clear();
         let closing = std::mem::take(&mut held.open);
         drop(held);
         for open in &closing {
@@ -187,6 +294,7 @@ impl Sites {
     pub fn revoke(&self, destination: &str) -> usize {
         let mut held = self.held();
         held.granted.remove(destination);
+        held.ends.remove(destination);
         let (closing, kept): (Vec<Open>, Vec<Open>) = std::mem::take(&mut held.open)
             .into_iter()
             .partition(|open| open.destination == destination);
@@ -199,10 +307,16 @@ impl Sites {
         closing.len()
     }
 
+    /// When `destination` stops being held, if it was granted until a time.
+    #[cfg(test)]
+    pub(crate) fn end_of(&self, destination: &str) -> Option<End> {
+        self.held().ends.get(destination).copied()
+    }
+
     /// Whether the session holds `destination`.
     #[must_use]
     pub fn holds(&self, destination: &str) -> bool {
-        self.held().granted.contains(destination)
+        self.held().holds(destination)
     }
 
     /// The sites the session was refused and doesn't hold since, in order:
@@ -222,7 +336,7 @@ impl Sites {
     /// refused, while there's room.
     pub(crate) fn admit(&self, destination: &str) -> bool {
         let mut held = self.held();
-        if held.granted.contains(destination) {
+        if held.holds(destination) {
             return true;
         }
         if held.refused.len() < MAX_REFUSED_SITES {
@@ -238,7 +352,7 @@ impl Sites {
         let (client, site) = (client.try_clone().ok()?, site.try_clone().ok()?);
         let id = {
             let mut held = self.held();
-            if !held.granted.contains(destination) {
+            if !held.holds(destination) {
                 return None;
             }
             let id = held.next;
@@ -1106,6 +1220,102 @@ mod tests {
         let (status, _) = ask(addr, b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
         assert_eq!(status, "HTTP/1.1 403 Forbidden", "nor opens a new one");
         let _ = proxy.finish();
+    }
+
+    /// A site granted until a time (a day grant's end, WO-036) is refused
+    /// from then, and as it comes it's revoked and its open tunnels closed.
+    #[test]
+    fn a_site_granted_until_a_time_is_let_go_then() {
+        let (site, _) = echo_site();
+        let sites = Sites::default();
+        let end = End {
+            monotonic: Instant::now() + Duration::from_millis(400),
+            wall: i64::MAX,
+        };
+        sites.grant_until("site.test:443", end);
+        assert!(sites.holds("site.test:443"));
+        assert_eq!(sites.end_of("site.test:443"), Some(end));
+        let (proxy, addr) = proxy_holding(site, "browser-proxy-until", sites.clone());
+        let (status, mut stream) = ask(addr, b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 200 Connection Established");
+        stream.write_all(b"ping").unwrap();
+        let mut echoed = [0u8; 4];
+        stream.read_exact(&mut echoed).unwrap();
+        // The end comes: the tunnel closes without anyone asking.
+        std::thread::sleep(Duration::from_millis(900));
+        assert!(!sites.holds("site.test:443"));
+        assert!(sites.granted().is_empty(), "revoked at its end");
+        let _ = stream.write_all(b"pong");
+        let mut rest = Vec::new();
+        let ended = stream.read_to_end(&mut rest);
+        assert!(rest.is_empty(), "{rest:?}");
+        let quiet = matches!(&ended, Err(error) if matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+        assert!(!quiet, "closed, not just quiet: {ended:?}");
+        let (status, _) = ask(addr, b"CONNECT site.test:443 HTTP/1.1\r\n\r\n");
+        assert_eq!(status, "HTTP/1.1 403 Forbidden", "nor opens a new one");
+        let _ = proxy.finish();
+    }
+
+    /// Past its end a site isn't admitted, even before its timer comes; one
+    /// granted again without an end has none; the same end read again is
+    /// kept, and only a much earlier one replaces it.
+    #[test]
+    fn a_sites_end_is_kept_until_it_is_granted_again() {
+        assert!(
+            wall_now().abs_diff(hatchling_scheduler::Timestamp::now().as_second()) <= 2,
+            "the broker's clock"
+        );
+        let sites = Sites::default();
+        let (client, _browser) = pair();
+        let (site, _far) = pair();
+        let later = Instant::now() + Duration::from_secs(3_600);
+        sites.grant_until(
+            "intranet.test:443",
+            End {
+                monotonic: later,
+                wall: wall_now() - 1,
+            },
+        );
+        assert!(
+            !sites.admit("intranet.test:443"),
+            "past its end by the broker's clock, as after the host slept"
+        );
+        let past = End {
+            monotonic: Instant::now(),
+            wall: i64::MAX,
+        };
+        sites.grant_until("site.test:443", past);
+        assert!(!sites.admit("site.test:443"), "past its end");
+        assert!(sites.opened("site.test:443", &client, &site).is_none());
+        sites.grant("site.test:443");
+        assert_eq!(sites.end_of("site.test:443"), None, "no end now");
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(
+            sites.admit("site.test:443"),
+            "its old timer doesn't revoke it"
+        );
+        let base = Instant::now();
+        let at = |millis| End {
+            monotonic: base + Duration::from_millis(millis),
+            wall: i64::MAX,
+        };
+        let end = at(3_600_000);
+        sites.grant_until("mixed.test:443", end);
+        sites.grant_until("mixed.test:443", at(3_600_000 + 1_000));
+        sites.grant_until("mixed.test:443", at(3_600_000 - 900));
+        assert_eq!(sites.end_of("mixed.test:443"), Some(end), "the same end");
+        let earlier = at(3_600_000 - 1_001);
+        sites.grant_until("mixed.test:443", earlier);
+        assert_eq!(sites.end_of("mixed.test:443"), Some(earlier));
+        assert_eq!(END_SLACK, Duration::from_secs(1));
+        let _ = sites.revoke("mixed.test:443");
+        assert_eq!(sites.end_of("mixed.test:443"), None);
+        sites.grant_until("nowhere.test:443", end);
+        assert_eq!(sites.seal(), 0);
+        assert_eq!(sites.end_of("nowhere.test:443"), None);
     }
 
     #[test]

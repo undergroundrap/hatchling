@@ -453,13 +453,41 @@ fn fetch(
     read(web, url)
 }
 
+/// What allowed a site, as [`allow`] says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Yes {
+    /// The number of the latest revoke it saw: a revoke after it reaches
+    /// whatever holds the site by it ([`crate::grant_reach`]).
+    pub seen: u64,
+    /// When it stops covering the site: a day grant's end, by both clocks.
+    /// `None` for every other yes.
+    pub until: Option<crate::browser_proxy::End>,
+}
+
+/// When a grant that `cover`s at `now` (the broker's clock, in seconds)
+/// stops: by that clock, and by the monotonic one as it reads at `at`, so a
+/// clock set back after this never stretches it.
+fn ends_at(
+    cover: crate::site_grants::Cover,
+    now: i64,
+    at: Instant,
+) -> Option<crate::browser_proxy::End> {
+    match cover {
+        crate::site_grants::Cover::Always => None,
+        crate::site_grants::Cover::Until(end) => Some(crate::browser_proxy::End {
+            monotonic: at
+                + Duration::from_secs(u64::try_from(end.saturating_sub(now)).unwrap_or(0)),
+            wall: end,
+        }),
+    }
+}
+
 /// `Ok` when the session may read `url`'s site now: it holds the site, the
 /// owner always allows it, or the owner allows it now, once, for the
 /// session, or always. Otherwise what the agent is told.
 ///
-/// `Ok` has the number of the latest revoke the yes saw: a revoke after it
-/// reaches whatever holds the site by it ([`crate::grant_reach`]). Every
-/// site the owner revoked is let go first.
+/// `Ok` says what allowed it ([`Yes`]). Every site the owner revoked is let
+/// go first.
 ///
 /// Approved once, it's `url` the owner was shown and allowed: another page
 /// on the site is asked about again. `visit` asks for the agent's browser,
@@ -471,18 +499,27 @@ pub(crate) fn allow(
     url: &WebUrl,
     reason: &str,
     visit: bool,
-) -> Result<u64, WebResult> {
+) -> Result<Yes, WebResult> {
     let seen = web.revokes_taken(config);
     let origin = url.origin();
     if let Some(held) = web.sites.get(origin) {
-        return Ok(*held);
+        return Ok(Yes {
+            seen: *held,
+            until: None,
+        });
     }
     let site = origin.to_string();
     let grants = crate::site_grants::SiteGrants::of(config, keys);
     if let Some(grants) = &grants {
-        match grants.holds(&site, Timestamp::now().as_second()) {
-            Ok(true) => return Ok(seen),
-            Ok(false) => {}
+        let now = Timestamp::now().as_second();
+        match grants.covering(&site, now) {
+            Ok(Some(cover)) => {
+                return Ok(Yes {
+                    seen,
+                    until: ends_at(cover, now, Instant::now()),
+                });
+            }
+            Ok(None) => {}
             Err(error) => {
                 tracing::error!(%error, "the allowed sites couldn't be read: the owner is asked");
             }
@@ -521,7 +558,7 @@ pub(crate) fn allow(
         // reaches this task too. The page the owner was shown is read now.
         Some(Decision::Approve | Decision::ApproveAlways | Decision::Deny) | None => {}
     }
-    Ok(seen)
+    Ok(Yes { seen, until: None })
 }
 
 /// Puts `site` to the owner for `web`'s session, which asks to read `url`
@@ -1873,6 +1910,54 @@ pub(crate) mod tests {
         assert!(
             matches!(answer, WebResult::Page { .. }),
             "a yes after the revoke: {answer:?}"
+        );
+    }
+
+    /// A day grant's end is said by the monotonic clock, from the broker's:
+    /// a clock set back after never stretches it.
+    #[test]
+    fn a_day_grants_end_is_said_by_the_monotonic_clock() {
+        use crate::site_grants::Cover;
+        let at = Instant::now();
+        let end = |monotonic, wall| Some(crate::browser_proxy::End { monotonic, wall });
+        assert_eq!(ends_at(Cover::Always, 1_000, at), None);
+        assert_eq!(
+            ends_at(Cover::Until(1_060), 1_000, at),
+            end(at + Duration::from_secs(60), 1_060)
+        );
+        assert_eq!(ends_at(Cover::Until(990), 1_000, at), end(at, 990), "ended");
+        // Read through the store: a day grant made 23 hours ago ends in one.
+        let (mut config, scratch, master) = search_config("day-end", None);
+        config.web.grants = scratch.0.join("sites");
+        let now = Timestamp::now().as_second();
+        let grants = crate::site_grants::SiteGrants::of(&config, &master).unwrap();
+        let key = crate::site_grants::GrantKey::site("https://a.example").unwrap();
+        grants
+            .grant(
+                &key,
+                crate::site_grants::Scope::Day,
+                now - crate::site_grants::DAY_SECS + 3_600,
+            )
+            .unwrap();
+        let (fetcher, _) = scripted(Vec::new());
+        let mut web = unattended("t", &fetcher);
+        let before = Instant::now();
+        let yes = allow(
+            &config,
+            &master,
+            &mut web,
+            &WebUrl::parse("https://a.example/").unwrap(),
+            "r",
+            false,
+        )
+        .unwrap();
+        let end = yes.until.expect("a day grant's end");
+        assert_eq!(end.wall, now + 3_600, "by the broker's clock");
+        assert!(end.monotonic >= before + Duration::from_secs(3_590));
+        assert!(end.monotonic <= Instant::now() + Duration::from_secs(3_601));
+        assert!(
+            !web.holds(&origin("https://a.example/")),
+            "nothing held for the task"
         );
     }
 
