@@ -513,6 +513,10 @@ jobs:
           sudo /usr/sbin/veritysetup format --no-superblock --format=1 --hash=sha256 --data-block-size=4096 \
             --hash-block-size=4096 --salt "$salt" "$RUNNER_TEMP/room-image/$image.squashfs" \
             "$RUNNER_TEMP/room-image/$image.verity" | awk '/^Root hash:/ {print $3}' > "$RUNNER_TEMP/room-image/$image.root-hash"
+          # veritysetup, as root, made the hash tree root's alone: it's the
+          # runner's, as a download is.
+          sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/room-image/$image.verity"
+          chmod 644 "$RUNNER_TEMP/room-image/$image.verity"
           printf '%s\n%s\n' "$(cat "$RUNNER_TEMP/room-image/$image.root-hash")" "$salt" > "$RUNNER_TEMP/room-image/admission"
           admitted() { sudo cmp "$RUNNER_TEMP/room-image/admission" /etc/hatchling/room-image.admission; }
           # The release's image: checked, then installed with its record.
