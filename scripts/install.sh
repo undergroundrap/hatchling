@@ -45,6 +45,11 @@
 #   /etc/systemd/system/hatchling-host@.service        the app's host, run as the
 #                                                      owner (hatchling-host@<owner>)
 #   /etc/sysusers.d/hatchling.conf, /etc/tmpfiles.d/hatchling.conf
+#   /usr/local/share/hatchling/room                    the agent's computer's image,
+#   /etc/hatchling/room-image.admission                and the record that admits it,
+#                                                      from a release on x86_64 (or
+#                                                      Windows Setup), once its
+#                                                      checksums and hash tree verify
 # then makes the users and directories, seals the vault, starts both
 # services, and prints the app's address.
 set -eu
@@ -144,7 +149,7 @@ FROM=$(cd "$FROM" && pwd -P) || fail "no directory $FROM"
 if [ -n "$WINDOWS_ROOM_BUNDLE" ]; then
   . "$PACKAGING/install-room-image.sh"
   say "checking the bundled Room image offline"
-  room_prepare
+  room_prepare windows
 fi
 found() { # program
   for name in "$1-$TARGET" "$1"; do
@@ -169,6 +174,27 @@ if [ -f "$FROM/SHA256SUMS" ]; then
   done
 else
   say "no SHA256SUMS in $FROM: the files aren't checked (a build of your own)"
+fi
+# The agent's computer's image, from a release that has one (WO-038): its
+# SHA256SUMS lists it, and this is x86_64. Admitted below, once
+# cryptsetup-bin is here to check it.
+ROOM_FILES="room-system-x86_64.squashfs room-system-x86_64.verity room-system-x86_64.root-hash"
+ROOM_RELEASE= ROOM_READY=
+if [ -z "$WINDOWS_ROOM_BUNDLE" ] && [ "$TARGET" = x86_64-unknown-linux-gnu ] && [ -f "$FROM/SHA256SUMS" ] \
+  && grep -q "  room-system-x86_64.squashfs\$" "$FROM/SHA256SUMS"; then
+  ROOM_RELEASE=1
+  . "$PACKAGING/install-room-image.sh"
+  # Checked again as they're copied; here, so a refusal installs nothing.
+  room_owned "$FROM" && room_owned "$FROM/SHA256SUMS" \
+    || fail "$FROM holds the agent's computer's image, so it and its SHA256SUMS must be root's or $OWNER_NAME's, and nobody else's to write: nothing was installed"
+  for file in $ROOM_FILES; do
+    grep -q "  $file\$" "$FROM/SHA256SUMS" \
+      || fail "$file, part of the agent's computer's image, isn't in SHA256SUMS: nothing was installed"
+    if [ -e "$FROM/$file" ] || [ -L "$FROM/$file" ]; then
+      room_owned "$FROM/$file" \
+        || fail "$FROM/$file must be root's or $OWNER_NAME's, and nobody else's to write: nothing was installed"
+    fi
+  done
 fi
 
 say "installing the programs and the app"
@@ -418,11 +444,27 @@ else
   say "no apt-get here to add cryptsetup, so the agent's computer is off here, and the rest of Hatchling works: install cryptsetup (/usr/sbin/cryptsetup), then run this again"
 fi
 
+if [ -n "$ROOM_RELEASE" ]; then
+  missing=
+  for file in $ROOM_FILES; do
+    [ -f "$FROM/$file" ] || missing="$missing $file"
+  done
+  if [ -n "$missing" ]; then
+    say "the agent's computer's image isn't all in $FROM (no$missing), so it isn't installed, and the agent's computer is off here; the rest of Hatchling works. Put the release's image files beside the rest (get-hatchling.sh does), then run this again"
+  elif [ ! -x /usr/sbin/veritysetup ]; then
+    say "no veritysetup here to check the agent's computer's image, so it isn't installed, and the agent's computer is off here; the rest of Hatchling works. Install cryptsetup-bin, then run this again"
+  else
+    say "checking the agent's computer's image against the release"
+    room_prepare release
+    ROOM_READY=1
+  fi
+fi
+
 say "checking it can work here"
 if ! /usr/local/bin/hatchling-broker doctor --env "$ENV"; then
   fail "fix what doctor found, then run this again: it keeps your configuration"
 fi
-if [ -n "$WINDOWS_ROOM_BUNDLE" ]; then
+if [ -n "$WINDOWS_ROOM_BUNDLE$ROOM_READY" ]; then
   say "installing the verified Room image"
   room_publish
 fi

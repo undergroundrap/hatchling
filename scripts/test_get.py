@@ -36,6 +36,7 @@ TOOLS = [
     "tr", "mktemp", "chmod", "rm", "mkdir", "cat", "uname", "dirname", "printf",
 ]
 PROGRAMS = ["hatchling-broker", "hatchling-agent", "hatchling-host", "hatchling-browser"]
+ROOM = ["room-system-x86_64.squashfs", "room-system-x86_64.verity", "room-system-x86_64.root-hash"]
 
 
 def stand_in(path: Path, body: str) -> None:
@@ -94,6 +95,7 @@ class GetTest(unittest.TestCase):
             f'echo "sudo $*" >> {self.log}\n'
             f'[ -f "$2" ] && echo "installer there" >> {self.log}\n'
             f'[ -d "$(dirname "$2")/../packaging" ] && echo "packaging there" >> {self.log}\n'
+            f'for f in {" ".join(ROOM)}; do [ -f "$4/$f" ] && echo "$f there" >> {self.log}; done\n'
             'echo "the installer ran"\n',
         )
         self.script = self.dir / "get-hatchling.sh"
@@ -163,6 +165,56 @@ class GetTest(unittest.TestCase):
         done = self.run_get("--model-endpoint", "http://localhost:18089/v1")
         self.assertNotEqual(done.returncode, 0)
         self.assertIn(f"hatchling-host-{TARGET} isn't in SHA256SUMS", done.stderr)
+        self.assertEqual(self.recorded(), "")
+
+    def with_room(self) -> None:
+        """The release with the agent's computer's image, as 0.9.0's has it."""
+        for name in ROOM:
+            (self.release / name).write_bytes(f"{name}\n".encode())
+        self.sums()
+
+    @unittest.skipUnless(TARGET == "x86_64-unknown-linux-gnu", "the Room's image is x86_64's")
+    def test_on_x86_64_the_agents_computer_comes_with_the_release_and_is_checked(self) -> None:
+        self.with_room()
+        done = self.run_get("--model-endpoint", "http://localhost:18089/v1", "--model", "stand-in")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("downloading the agent's computer's image", done.stdout)
+        sudo = self.recorded()
+        for name in ROOM:
+            self.assertIn(f"{name} there", sudo)
+
+    @unittest.skipUnless(TARGET == "x86_64-unknown-linux-gnu", "the Room's image is x86_64's")
+    def test_a_changed_image_stops_it_before_anything_is_installed(self) -> None:
+        self.with_room()
+        (self.release / "room-system-x86_64.verity").write_bytes(b"something else\n")
+        done = self.run_get("--model-endpoint", "http://localhost:18089/v1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("a file differs from SHA256SUMS: nothing was installed", done.stderr)
+        self.assertEqual(self.recorded(), "")
+
+    @unittest.skipUnless(TARGET == "x86_64-unknown-linux-gnu", "the Room's image is x86_64's")
+    def test_an_image_file_not_in_sha256sums_stops_it(self) -> None:
+        self.with_room()
+        sums = self.release / "SHA256SUMS"
+        sums.write_text("".join(line for line in sums.read_text().splitlines(True) if ".verity" not in line))
+        done = self.run_get("--model-endpoint", "http://localhost:18089/v1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("room-system-x86_64.verity isn't in SHA256SUMS", done.stderr)
+        self.assertEqual(self.recorded(), "")
+
+    def test_a_release_without_the_image_installs_without_it(self) -> None:
+        done = self.run_get("--model-endpoint", "http://localhost:18089/v1", "--model", "stand-in")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertNotIn("the agent's computer's image", done.stdout)
+        self.assertNotIn("room-system", self.recorded())
+
+    @unittest.skipUnless(TARGET == "x86_64-unknown-linux-gnu", "the Room's image is x86_64's")
+    def test_an_image_the_release_lists_and_hasnt_stops_it(self) -> None:
+        self.with_room()
+        (self.release / "room-system-x86_64.root-hash").unlink()
+        done = self.run_get("--model-endpoint", "http://localhost:18089/v1")
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("couldn't download room-system-x86_64.root-hash", done.stderr)
         self.assertEqual(self.recorded(), "")
 
     def installer_with(self, add: tarfile.TarInfo, data: bytes = b"") -> None:

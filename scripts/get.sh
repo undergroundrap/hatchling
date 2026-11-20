@@ -10,8 +10,9 @@
 # Run it as yourself, not as root: it asks for sudo once, to install. It
 #   1. checks this machine can run Hatchling (Linux with systemd, x86_64 or
 #      aarch64);
-#   2. downloads the release's programs, app and installer into a directory
-#      of its own, and checks every file against the release's SHA256SUMS:
+#   2. downloads the release's programs, app and installer, and on x86_64
+#      the agent's computer's image, into a directory of its own, and
+#      checks every file against the release's SHA256SUMS:
 #      one that differs, or isn't listed, stops it before anything is
 #      installed;
 #   3. makes sure a model is there to answer: Ollama, on this machine, with
@@ -144,6 +145,18 @@ for file in $FILES; do
   curl --proto "$PROTO" --tlsv1.2 -fsSL --retry 3 -o "$DIR/$file" "$FROM_URL/$file" \
     || fail "couldn't download $file: is $VERSION a release with get-hatchling.sh (0.8.0 or later)?"
 done
+# The agent's computer's image, on x86_64, when the release has one (0.9.0
+# and later): checked as the rest are, and again by the installer, which
+# admits it only when its hash tree verifies.
+ROOM="room-system-x86_64.squashfs room-system-x86_64.verity room-system-x86_64.root-hash"
+if [ "$TARGET" = x86_64-unknown-linux-gnu ] && grep -q "  room-system-x86_64.squashfs\$" "$DIR/SHA256SUMS"; then
+  say "downloading the agent's computer's image"
+  for file in $ROOM; do
+    curl --proto "$PROTO" --tlsv1.2 -fsSL --retry 3 -o "$DIR/$file" "$FROM_URL/$file" \
+      || fail "couldn't download $file, the agent's computer's image: nothing was installed"
+  done
+  FILES="$FILES $ROOM"
+fi
 say "checking every file against the release's SHA256SUMS"
 for file in $FILES; do
   [ "$file" = SHA256SUMS ] && continue
