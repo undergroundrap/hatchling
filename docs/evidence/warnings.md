@@ -78,6 +78,14 @@ close in one after it. Neither changes code.
 | No warning ever found | that, and both tests above |
 | A profile's card offering once | `a_profiles_card_offers_the_task_alone` |
 
+**Found by CI after the PR opened:** the browser end-to-end run (`browser in
+the app`) allowed every card with *Allow once*, and a profile's card now offers
+*Allow for task* alone. So the run found nothing to allow, and failed at "the
+owner was asked 0 times, not twice". Its driver
+(`scripts/browser_end_to_end.py`) now gives each card the smallest yes it
+offers. This test-only commit after the tested tree changes no code the broker
+or the gate runs.
+
 ## WO-036, criterion by criterion
 
 | Criterion | Proven by |
