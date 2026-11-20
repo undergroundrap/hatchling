@@ -172,6 +172,13 @@ if [ -f "$FROM/SHA256SUMS" ]; then
     grep -q "  $(basename "$file")\$" "$FROM/SHA256SUMS" \
       || fail "$(basename "$file") isn't in SHA256SUMS: nothing was installed"
   done
+  # Who built them (#556): SHA256SUMS attested by the release workflow, when
+  # gh is here to check. Windows Setup's payload is verified with Setup.
+  if [ -z "$WINDOWS_ROOM_BUNDLE" ]; then
+    OWNER_HOME=$(getent passwd "$OWNER_NAME" | cut -d: -f6)
+    . "$PACKAGING/release-provenance.sh"
+    release_provenance
+  fi
 else
   say "no SHA256SUMS in $FROM: the files aren't checked (a build of your own)"
 fi

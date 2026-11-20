@@ -71,6 +71,8 @@ gh attestation verify hatchling-broker-x86_64-unknown-linux-gnu --repo undergrou
 
 It checks the file's SHA-256 against an attestation signed for this repository's workflow, on GitHub's runners, at that tag. A file that any of those differs for fails, including one built anywhere else, unless it's byte-identical to the release's (see the next section). Verifying works on the file under any name, so it can check an installed program too (`/usr/local/bin/hatchling-broker`).
 
+`scripts/install.sh` does this itself when `gh` is installed and signed in as the user who runs it with `sudo`: it verifies `SHA256SUMS` (the workflow attests it with the rest), and every file it installs has just matched `SHA256SUMS`. It doesn't pin the tag, so an older release's genuine files pass: which release to install is yours. Without `gh`, signed out or offline, it says it couldn't check and goes on. It can't check the first `curl` + `sh` install by itself, since whoever could replace a release could replace `get-hatchling.sh` too: verify `get-hatchling.sh` first, as [the install guide](install.md#quick-install) says.
+
 **What's in it:** the SBOM lists every crate the program is built from, with its version and license. The same list is embedded in the binary itself; [`cargo audit`](https://crates.io/crates/cargo-audit) checks it against the RustSec advisories:
 
 ```bash
