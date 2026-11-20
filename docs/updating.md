@@ -118,6 +118,7 @@ Each artifact lands in a folder of its own. Wait for the run's comparison jobs t
 ## If it went wrong
 
 - **It stopped before installing.** A file that differs from `SHA256SUMS`, or a problem `doctor` found, stops the update with the old programs or the old configuration still in place. Fix what it names and run it again: it carries on.
+- **`doctor` names a store's directory.** Each directory of a store is its owner's alone, mode 700, and a store refuses any other: whatever reads it first fails, often with nothing to say why. An older version, or a copy made by hand, can leave one at 755. `doctor` names each, with the command that puts it right, such as `sudo chmod 700 /var/lib/hatchling/goals/goals/985`.
 - **It installed, and something is off.** `journalctl -u hatchling` has the broker's log. Your earlier configuration is beside the current one, as `hatchling.env.before-<date>`.
 - **You want the old version back.** Install the old release the same way: before 1.0 that isn't promised to work once the new version has run, because it may have moved Hatchling's data on. A snapshot is the sure way back. A backup brings back the vault and what the agent has, into whichever version is installed.
 

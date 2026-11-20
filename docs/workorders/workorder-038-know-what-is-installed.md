@@ -37,3 +37,4 @@ As [TEMPLATE.md](TEMPLATE.md), plus the installer proof (`scripts/room-installer
 ## Evidence
 
 - Slice 1, `--version` names the release, the commit and how it was built: [version-command.md](../evidence/version-command.md)
+- Slice 2, `doctor` names each store directory its store would refuse, with the fix: [store-modes.md](../evidence/store-modes.md)
