@@ -2,20 +2,31 @@
 import ts from 'typescript';
 import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]);
+import { posix } from 'node:path';
+// Paths are joined with `/` on every system: modules are named, and assets
+// matched, by these paths, and Windows' `\` named every module wrongly (#529).
+const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory() ? walk(posix.join(dir, entry.name)) : [posix.join(dir, entry.name)]);
+/** `path` with `dir/` taken off its front; a path that isn't under `dir/` stops the build. */
+const under = (dir, path) => {
+    if (!path.startsWith(`${dir}/`))
+        throw new Error(`${path} isn't under ${dir}/: the standalone page would name it wrongly.`);
+    return path.slice(dir.length + 1);
+};
 const mime = { '.png': 'image/png', '.svg': 'image/svg+xml', '.pdf': 'application/pdf', '.wav': 'audio/wav', '.webm': 'video/webm', '.gz': 'application/gzip' };
 const assets = walk('public').map((path) => {
     const extension = path.slice(path.lastIndexOf('.'));
-    return [path.replace(/^public\//, './'), `data:${mime[extension] ?? 'application/octet-stream'};base64,${readFileSync(path).toString('base64')}`];
+    return [`./${under('public', path)}`, `data:${mime[extension] ?? 'application/octet-stream'};base64,${readFileSync(path).toString('base64')}`];
 });
 const inlineAssets = (text) => {
     for (const [path, data] of assets)
         text = text.replaceAll(path, data);
     return text;
 };
-const entries = walk('dist/app').filter((path) => path.endsWith('.js')).map((path) => {
-    const id = path.replace(/^dist\/app\//, '');
+const modules = walk('dist/app').filter((path) => path.endsWith('.js'));
+if (!modules.some((path) => under('dist/app', path) === 'main.js'))
+    throw new Error('No module is named main.js: the standalone page would never start.');
+const entries = modules.map((path) => {
+    const id = under('dist/app', path);
     const input = inlineAssets(readFileSync(path, 'utf8'));
     const output = ts.transpileModule(input, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
     return `${JSON.stringify(id)}: function(module, exports, require) {\n${output}\n}`;
