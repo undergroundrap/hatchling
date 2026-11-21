@@ -49,6 +49,14 @@ int main(int argc, char **argv, char **environment) {
         !strstr(status, "CapAmb:\t0000000000000000\n"))
         return 38;
 
+    /* Its own network and IPC namespaces: neither is the host's (the
+     * test's, passed in as their inodes). Its having no network rests on
+     * the first; the second keeps it from the host's System V IPC. */
+    if (stat("/proc/self/ns/net", &info) || info.st_ino == HOST_NET_NS)
+        return 49;
+    if (stat("/proc/self/ns/ipc", &info) || info.st_ino == HOST_IPC_NS)
+        return 50;
+
     if (ROOM_PROBE_MODE == 0) {
         const char *marker = "/workspace/admission-marker";
         int file = open(marker, O_WRONLY | O_CREAT | O_EXCL, 0600);
