@@ -26,11 +26,11 @@ Step 2 of the 0.9 Room work: give the agent a room of its own that can run a pin
 
 Each item is ticked only where the evidence below proves it.
 
-- [ ] **Install a hash-identified image in disposable Linux or WSL2; run a pinned program through the real broker, spawner, keeper and encrypted workspace; workspace bytes survive restart and session scratch is discarded.** Partly proven:
+- [x] **Install a hash-identified image in disposable Linux or WSL2; run a pinned program through the real broker, spawner, keeper and encrypted workspace; workspace bytes survive restart and session scratch is discarded.**
   - the offline install of the CI-built image (`scripts/room-installer-proof.sh`, in the release workflow's dry run);
   - workspace bytes surviving a disk close and reopen, and fresh scratch for each new Room (`check_workspace_persists` in the installed test `the_installed_spawner_hands_the_verified_image_to_its_mount_helper`, `crates/hatchling-broker/tests/room_disk.rs`, every pull request as root; `scripts/room-mount-proof.sh full`);
-  - a run through the real broker on a real install, from the release image and a local model ([room-run-tool.md](../evidence/room-run-tool.md)).
-  - **Not proven:** the installed test uses a fixture image, not the release's, and calls the spawner directly; nothing restarts the service or the machine with Room data present and then checks the bytes.
+  - a run through the real broker on a real install, from the release image and a local model ([room-run-tool.md](../evidence/room-run-tool.md));
+  - on a disposable WSL install from a release build, its verified image installed by Setup: a file given to the agent and one written in the Room kept their SHA-256 across a service restart and a reboot, and the session's scratch was gone after each ([real-install-drill.md](../evidence/real-install-drill.md)). The installed test still uses a fixture image and calls the spawner directly; the drill is the release image's proof.
 - [ ] **The room's identity, mount flags, syscall policy, namespaces and cgroup limits verified in a live room; hostile inputs exercised; each new guard fails its test when removed.** Mostly proven:
   - identity (`tests/fixtures/room-admission-probe.c`, inside the installed test, #412);
   - mount flags (`scripts/room-mount-proof.sh`, `scripts/room-image-probe.sh`);
@@ -38,13 +38,15 @@ Each item is ticked only where the evidence below proves it.
   - cgroup limits read before the Room starts (#411);
   - PID and mount namespaces (#403);
   - hand-breaks recorded in #395, #400, #402, #404–#407, #411–#414, #416–#418 and #425.
-  - **Not proven:** no test asserts the network and IPC namespaces in a live Room; its having no network is proven through the syscall profile alone.
+  - on a real install, a live Room's network, IPC, PID and mount namespaces were its own, not the host's or the broker's, with no network interfaces and `ipcs` killed by the filter ([real-install-drill.md](../evidence/real-install-drill.md)).
+  - **Not proven:** no test asserts the network and IPC namespaces in a live Room, so removing them wouldn't fail one.
 - **Moved to [WO-040](workorder-040-room-disk-capacity.md)** (the maintainer's decision, 2026-11-16): ~~Real capacity reservation, existing workspace bytes preserved, closed-disk growth with interruption recovery, and a visible refusal at the free-space boundary.~~ It was never built. The disk is a fixed-size sparse file; nothing reserves it or grows it. Workspace bytes are preserved through layout preparation (#405) and rekey (a canary test in `room_disk.rs`). The only free-space refusal is at creation.
 - [ ] **Session expiry, visible failure receipts for interrupted work, and jobs drained before lock, wipe or rekey.** Partly proven:
   - expiry after an hour and after fifteen idle minutes (`room_session` tests; the installed deadline modes);
   - the session ended before a close or wipe (`closing_or_wiping_the_disk_ends_the_session_first`, and the installed test);
   - admitted work holding off rekey and enrollment (#416);
-  - a job lost with its Room says so (`a_command_lost_with_its_room_is_over`).
+  - a job lost with its Room says so (`a_command_lost_with_its_room_is_over`);
+  - on a real install, closing the room disk six seconds into a running job was refused, and the job finished ([real-install-drill.md](../evidence/real-install-drill.md)).
   - **Not proven:** lock is drilled only with stand-ins and on an install with nothing running (#424); the job table is held in memory and lost if the spawner restarts; durable receipts weren't built.
 - [ ] **Two independent image builds compared, provenance verified, a tampered or missing image rejected.** Partly proven:
   - the release workflow builds the image twice and compares them (`room-image-verified`);
