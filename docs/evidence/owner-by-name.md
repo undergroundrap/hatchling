@@ -63,6 +63,16 @@ Each was applied, the owner and config tests run, then undone. 4 broken,
 | The owner's refusal naming the agent's setting | the same |
 | The agent's refusal naming the owner's setting | `the_agent_uid_helpers_refuse_only_an_unallowed_nobody`, `invalid_agent_uid_is_an_error` |
 
+### After CodeQL
+
+On the pull request, CodeQL read the test's failure message, which
+printed what `owner_from` returned, as a uid written to a log
+(`rust/cleartext-logging`, high). The message now names only the
+setting. At that tree, `5e93c5bb`: fmt clean, clippy clean on both
+toolchains, the same tests passed, and the 4 hand-breaks above were
+caught again. Mutation wasn't run again: the change is to a test's
+message, not to code a mutant can reach.
+
 ## Residual
 
 - `install.sh` still writes the owner as a number. Both work; the number
