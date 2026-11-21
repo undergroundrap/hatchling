@@ -1,7 +1,8 @@
 //! The room disk (0.9): the agent's room keeps its work on an encrypted disk
 //! image of its own, made, opened and closed by the spawner, as root.
 //!
-//! **What it is.** One sparse file of a fixed size (`HATCHLING_ROOM_DISK_SIZE`,
+//! **What it is.** One file of a fixed size, its space reserved when it's made
+//! (`HATCHLING_ROOM_DISK_SIZE`,
 //! 10 GiB by default) in a directory of root's alone
 //! (`HATCHLING_ROOM_DISK_DIR`, `/var/lib/hatchling/room`): LUKS2,
 //! `aes-xts-plain64` with a 512-bit key, PBKDF2 at its floor, ext4 inside,
@@ -99,7 +100,7 @@ pub const HEADER_BYTES: u64 = 16 * MIB;
 const OFFSET_SECTORS: &str = "32768";
 
 /// How much more than the image's size must be free to make one: the
-/// image is sparse, and a disk that fills under it fails its writes.
+/// image's own space is reserved, and this much is left for the host.
 const FREE_MARGIN: u64 = GIB;
 
 /// The image's name in the room directory.
@@ -812,8 +813,10 @@ impl RoomDisk {
                 self.size, space.available
             ));
         }
-        hatchling_sys::make_sparse_file(&self.new_image(), self.size)
-            .map_err(|error| format!("the room disk's image can't be made: {error}"))?;
+        // Its space reserved now (WO-040): the disk below can't run out
+        // under it later, and the agent's writes don't fail unsaid.
+        hatchling_sys::make_reserved_file(&self.new_image(), self.size)
+            .map_err(|error| format!("the room disk's space can't be reserved here: {error}"))?;
         let image = new_image_id()?;
         let name = mapping_name(&image);
         if self.mapping_uuid(&name)?.is_some() {

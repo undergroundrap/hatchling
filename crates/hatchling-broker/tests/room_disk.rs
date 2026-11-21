@@ -2971,8 +2971,9 @@ fn a_room_disk_is_made_opened_closed_and_wiped_for_real() {
     assert_eq!(made.state, RoomDiskState::Closed);
     assert_eq!(made.image_bytes, Some(SIZE));
     assert!(
-        made.on_disk.is_some_and(|bytes| bytes < SIZE / 2),
-        "the image isn't sparse"
+        made.on_disk.is_some_and(|bytes| bytes >= SIZE),
+        "the image's space isn't reserved: {:?}",
+        made.on_disk
     );
     assert!(!place.mapped(), "a create left its mapping");
 

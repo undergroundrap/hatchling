@@ -996,7 +996,7 @@ fn a_close_closes_the_mapping_and_confirms_it_gone() {
 }
 
 /// The status is numbers alone: none made, then made and closed, at its
-/// size, holding little of the disk below.
+/// size, its space all held on the disk below (WO-040).
 #[test]
 fn the_status_says_how_it_is_in_numbers() {
     let bench = Bench::new("status");
@@ -1010,8 +1010,9 @@ fn the_status_says_how_it_is_in_numbers() {
     assert_eq!(closed.state, RoomDiskState::Closed);
     assert_eq!(closed.image_bytes, Some(MIN_SIZE));
     assert!(
-        closed.on_disk.is_some_and(|bytes| bytes < MIN_SIZE / 2),
-        "the image isn't sparse"
+        closed.on_disk.is_some_and(|bytes| bytes >= MIN_SIZE),
+        "the image's space isn't reserved: {:?}",
+        closed.on_disk
     );
     assert_eq!((closed.used, closed.free), (None, None));
     let json = serde_json::to_string(&closed).unwrap();
@@ -1156,7 +1157,7 @@ fn each_part_does_what_it_says() {
     child.wait().unwrap();
     assert_eq!(said_now(&stderr), "said\n");
 
-    hatchling_sys::make_sparse_file(&disk.new_image(), disk.size).unwrap();
+    hatchling_sys::make_reserved_file(&disk.new_image(), disk.size).unwrap();
     let image = new_image_id().unwrap();
     let name = mapping_name(&image);
     disk.format(&bench.keeper, &image, &name).unwrap();

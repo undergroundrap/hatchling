@@ -72,9 +72,16 @@ def validate_view(physical, setup, text, after=None):
         raise ProofError('The broker did not report a successfully opened room disk')
     if disk.get('cap') != physical['capacity'] or disk['cap'] != after['capacity']:
         raise ProofError('The broker capacity differs from the real image')
-    for name in ['cap', 'used', 'free', 'on_disk']:
+    for name in ['cap', 'used', 'free']:
         if type(disk.get(name)) is not int or not 0 < disk[name] <= disk['cap']:
             raise ProofError('The broker omitted real open-disk counters')
+    # A room disk's space is reserved when it's made: it takes all of its
+    # size on this machine, and the host's file system keeps a little of
+    # its own for the image (ext4's extent blocks).
+    if type(disk.get('on_disk')) is not int:
+        raise ProofError('The broker omitted real open-disk counters')
+    if disk['on_disk'] < disk['cap']:
+        raise ProofError('The room image takes less than its size: its space is not reserved')
     # ext4 lazy initialization can change allocation and space while opening
     # the page. Bind the answer to independent observations on both sides;
     # never substitute a broad tolerance or an assumed immutable snapshot.

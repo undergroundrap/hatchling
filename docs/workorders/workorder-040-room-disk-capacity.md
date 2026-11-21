@@ -1,6 +1,6 @@
 # WO-040: The room disk's capacity, reserved and grown
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (`room_disk`, the spawner's disk operations, `doctor`), `crates/hatchling-sys` (the disk's file), the operator commands, `docs/storage.md`
 **Issue:** [#485](https://github.com/undergroundrap/hatchling/issues/485)
 **Trust boundary:** yes (the agent's encrypted disk)
@@ -37,4 +37,4 @@ As [TEMPLATE.md](TEMPLATE.md), plus the root pass (`HATCHLING_ROOT_PASS=1 bash s
 
 ## Evidence
 
-Filled in at close.
+- Slice 1, a new room disk's space reserved on the disk below: [room-disk-reserved.md](../evidence/room-disk-reserved.md)
