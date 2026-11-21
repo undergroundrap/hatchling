@@ -114,10 +114,11 @@ mod tests {
             // sudo sets a number, so a name there is refused.
             (with(&[("SUDO_UID", "root")]), "SUDO_UID"),
         ] {
-            let refused = owner_from(&bad, 0, 0);
+            // The answer isn't printed: it would carry a uid into the
+            // test's output.
             assert!(
-                matches!(refused, Err(Error::InvalidConfig { key: said, .. }) if said == key),
-                "expected {key} refused, got {refused:?}"
+                matches!(owner_from(&bad, 0, 0), Err(Error::InvalidConfig { key: said, .. }) if said == key),
+                "expected {key} refused, naming {key}"
             );
         }
         // Recorded once: what is recorded is what is read back.
