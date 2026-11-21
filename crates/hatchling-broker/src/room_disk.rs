@@ -189,7 +189,8 @@ pub enum RoomDiskState {
 pub struct RoomDiskStatus {
     /// Whether there's one, and whether it's open.
     pub state: RoomDiskState,
-    /// The size it's configured to be made at, in bytes.
+    /// How large it is, in bytes: its image's size, or with none, the
+    /// size one's made at. A grown disk is larger than it was made.
     pub cap: u64,
     /// The image's size, when there is one.
     pub image_bytes: Option<u64>,
@@ -1105,6 +1106,16 @@ impl RoomDisk {
         self.dir.join(GROW)
     }
 
+    /// The size a grow under way is growing the image to: its mark, when
+    /// it reads and is this image's. Nothing is changed: a mark that isn't
+    /// is undone at the next open, not here.
+    fn growing_to(&self) -> Option<u64> {
+        let text = std::fs::read(self.grow_marker()).ok()?;
+        let grow: Grow = serde_json::from_slice(&text).ok()?;
+        let image = self.image_id().ok()?;
+        (grow.image == image.as_str()).then_some(grow.size)
+    }
+
     /// Closes the mapping `name`, and confirms it's gone.
     fn close_mapping(&self, name: &str) -> Result<(), String> {
         self.run_tool(
@@ -1142,6 +1153,7 @@ impl RoomDisk {
             return Ok(status);
         };
         status.state = RoomDiskState::Closed;
+        status.cap = meta.len();
         status.image_bytes = Some(meta.len());
         status.on_disk = Some(meta.blocks().saturating_mul(512));
         let mount = self.mount_point();
@@ -1751,6 +1763,21 @@ pub fn status(disk: &RoomDisk) -> Result<RoomDiskStatus, String> {
     let status = disk.status();
     drop(turn);
     status
+}
+
+/// How the room disk is, and the size a grow under way is growing it to,
+/// one op at a time with the spawner's: what doctor says of it.
+///
+/// # Errors
+///
+/// A check that failed.
+pub fn looked_at(disk: &RoomDisk) -> Result<(RoomDiskStatus, Option<u64>), String> {
+    let turn = ONE_AT_A_TIME.lock().unwrap_or_else(PoisonError::into_inner);
+    let _process = disk.claim_operation()?;
+    // With no image there's no grow: a mark alone has no image to be.
+    let looked = disk.status().map(|status| (status, disk.growing_to()));
+    drop(turn);
+    looked
 }
 
 /// cryptsetup's version, as the room disk would run it.
