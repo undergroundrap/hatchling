@@ -1364,6 +1364,16 @@ fn validate_loss_mapper(name: &str, image: &Place) -> Result<(), Failed> {
     Err("the fixture's image mapper disappeared before cleanup".into())
 }
 
+/// The host's network and IPC namespaces, this test's, as the probe's
+/// `HOST_NET_NS` and `HOST_IPC_NS`: it refuses to start in either.
+fn host_namespaces() -> Result<[String; 2], Failed> {
+    let inode = |kind: &str| std::fs::metadata(format!("/proc/self/ns/{kind}")).map(|ns| ns.ino());
+    Ok([
+        format!("-DHOST_NET_NS={}ULL", inode("net")?),
+        format!("-DHOST_IPC_NS={}ULL", inode("ipc")?),
+    ])
+}
+
 fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
     let fixture = Place::new("supervisor-boundary")?;
     let probe = fixture.dir.join("probe");
@@ -1371,15 +1381,11 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
     std::fs::write(&source, include_str!("fixtures/room-admission-probe.c"))?;
     let (uid, gid) = hatchling_sys::subid::local_account("hatchling-room")?
         .ok_or("the root fixture requires the hatchling-room account")?;
-    // The host's network and IPC namespaces, this test's: the probe
-    // refuses to start in either.
-    let host = |kind: &str| std::fs::metadata(format!("/proc/self/ns/{kind}")).map(|ns| ns.ino());
     let compiled = Command::new("cc")
         .args(["-static", "-Wall", "-Wextra", "-Werror"])
         .arg(format!("-DROOM_UID={uid}"))
         .arg(format!("-DROOM_GID={gid}"))
-        .arg(format!("-DHOST_NET_NS={}ULL", host("net")?))
-        .arg(format!("-DHOST_IPC_NS={}ULL", host("ipc")?))
+        .args(host_namespaces()?)
         .arg(format!("-DROOM_PROBE_MODE={mode}"))
         .arg(&source)
         .arg("-o")
