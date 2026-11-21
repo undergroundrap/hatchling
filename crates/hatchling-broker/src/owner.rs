@@ -24,8 +24,8 @@ static OWNER: OnceLock<u32> = OnceLock::new();
 ///
 /// # Errors
 ///
-/// [`Error::InvalidConfig`] when `HATCHLING_OWNER_UID`, or a root
-/// broker's `SUDO_UID`, isn't a uid.
+/// [`Error::InvalidConfig`] when `HATCHLING_OWNER_UID` is neither a uid
+/// nor a local account's name, or a root broker's `SUDO_UID` isn't a uid.
 pub fn owner() -> Result<u32, Error> {
     if let Some(owner) = OWNER.get() {
         return Ok(*owner);
@@ -50,18 +50,17 @@ pub(crate) fn recorded() -> u32 {
 ///
 /// As [`owner`].
 fn owner_from(get: &impl Fn(&str) -> Option<String>, uid: u32, euid: u32) -> Result<u32, Error> {
-    let parsed = |key: &'static str, raw: String| {
-        raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
-            key,
-            reason: String::from("expected a uid as a base-10 u32"),
-        })
-    };
+    // A uid or an account's name, so the settings file needs no `id -u`.
     if let Some(raw) = get(OWNER_UID) {
-        return parsed("HATCHLING_OWNER_UID", raw);
+        return crate::config::uid_value("HATCHLING_OWNER_UID", &raw);
     }
+    // sudo sets a number: SUDO_UID is never a name.
     if euid == 0 {
         if let Some(raw) = get(SUDO_UID) {
-            return parsed("SUDO_UID", raw);
+            return raw.parse::<u32>().map_err(|_| Error::InvalidConfig {
+                key: "SUDO_UID",
+                reason: String::from("expected a uid as a base-10 u32"),
+            });
         }
     }
     Ok(uid)
@@ -98,14 +97,29 @@ mod tests {
         );
         assert_eq!(owner_from(&with(&[]), 0, 0).unwrap(), 0);
         assert_eq!(owner_from(&with(&[]), 1001, 1001).unwrap(), 1001);
-        for bad in [
-            with(&[("HATCHLING_OWNER_UID", "ocean")]),
-            with(&[("SUDO_UID", "-1")]),
+        // The setting takes a local account's name: root is in every
+        // /etc/passwd, at uid 0.
+        let by_name = with(&[("HATCHLING_OWNER_UID", "root"), ("SUDO_UID", "1000")]);
+        assert_eq!(owner_from(&by_name, 1001, 1001).unwrap(), 0);
+        for (bad, key) in [
+            (
+                with(&[("HATCHLING_OWNER_UID", "no-such-account-here")]),
+                "HATCHLING_OWNER_UID",
+            ),
+            (
+                with(&[("HATCHLING_OWNER_UID", "-1")]),
+                "HATCHLING_OWNER_UID",
+            ),
+            (with(&[("SUDO_UID", "-1")]), "SUDO_UID"),
+            // sudo sets a number, so a name there is refused.
+            (with(&[("SUDO_UID", "root")]), "SUDO_UID"),
         ] {
-            assert!(matches!(
-                owner_from(&bad, 0, 0),
-                Err(Error::InvalidConfig { .. })
-            ));
+            // The answer isn't printed: it would carry a uid into the
+            // test's output.
+            assert!(
+                matches!(owner_from(&bad, 0, 0), Err(Error::InvalidConfig { key: said, .. }) if said == key),
+                "expected {key} refused, naming {key}"
+            );
         }
         // Recorded once: what is recorded is what is read back.
         let recorded_first = recorded();
