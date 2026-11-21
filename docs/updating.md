@@ -70,7 +70,7 @@ gh release download vX.Y.Z --repo undergroundrap/hatchling --dir release
 sudo scripts/install.sh --from release --keep-model
 ```
 
-It checks every file against the release's `SHA256SUMS` before it changes anything, and a file that differs stops it there. Then it replaces the programs and the app, runs `doctor`, and restarts the services. To check first that the files were built by this project's release workflow, see [Verifying a release](releasing.md#verifying-a-release).
+It checks every file against the release's `SHA256SUMS` before it changes anything, and a file that differs stops it there. Then it replaces the programs and the app, runs `doctor`, and restarts the services. With `gh` installed and signed in, it also checks that the files were built by this project's release workflow (`SHA256SUMS`'s attestation, which covers every file that matches it), and stops before changing anything if they weren't; without `gh`, it says it couldn't check, and [Verifying a release](releasing.md#verifying-a-release) has the steps by hand.
 
 `--keep-model` takes no model and no `--force`: it leaves your configuration, your model and its server alone. When the new version keeps something by default that your configuration doesn't name at all, it adds that setting, copies the old file beside it (`hatchling.env.before-<date>`), and says so. A setting you set empty stays off.
 
