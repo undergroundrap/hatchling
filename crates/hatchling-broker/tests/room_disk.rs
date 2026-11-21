@@ -1364,6 +1364,16 @@ fn validate_loss_mapper(name: &str, image: &Place) -> Result<(), Failed> {
     Err("the fixture's image mapper disappeared before cleanup".into())
 }
 
+/// The host's network and IPC namespaces, this test's, as the probe's
+/// `HOST_NET_NS` and `HOST_IPC_NS`: it refuses to start in either.
+fn host_namespaces() -> Result<[String; 2], Failed> {
+    let inode = |kind: &str| std::fs::metadata(format!("/proc/self/ns/{kind}")).map(|ns| ns.ino());
+    Ok([
+        format!("-DHOST_NET_NS={}ULL", inode("net")?),
+        format!("-DHOST_IPC_NS={}ULL", inode("ipc")?),
+    ])
+}
+
 fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
     let fixture = Place::new("supervisor-boundary")?;
     let probe = fixture.dir.join("probe");
@@ -1375,6 +1385,7 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
         .args(["-static", "-Wall", "-Wextra", "-Werror"])
         .arg(format!("-DROOM_UID={uid}"))
         .arg(format!("-DROOM_GID={gid}"))
+        .args(host_namespaces()?)
         .arg(format!("-DROOM_PROBE_MODE={mode}"))
         .arg(&source)
         .arg("-o")
