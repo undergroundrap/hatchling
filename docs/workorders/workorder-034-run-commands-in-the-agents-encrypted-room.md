@@ -1,6 +1,6 @@
 # WO-034: Run commands in the agent's encrypted room
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-sys` (the Room's syscall profile, mounts, image admission), `crates/hatchling-broker` (the spawner's Room: `room_launch`, `room_session`, `room_job`, `room_disk`), `crates/hatchling-room` (the supervisor), `crates/hatchling-core` (`room`, the supervisor's wire), `scripts/room-*.sh`, `packaging/install-room-image.sh`, `.github/workflows/release.yml`
 **Issue:** [#394](https://github.com/undergroundrap/hatchling/issues/394)
 **Trust boundary:** yes
@@ -31,7 +31,7 @@ Each item is ticked only where the evidence below proves it.
   - workspace bytes surviving a disk close and reopen, and fresh scratch for each new Room (`check_workspace_persists` in the installed test `the_installed_spawner_hands_the_verified_image_to_its_mount_helper`, `crates/hatchling-broker/tests/room_disk.rs`, every pull request as root; `scripts/room-mount-proof.sh full`);
   - a run through the real broker on a real install, from the release image and a local model ([room-run-tool.md](../evidence/room-run-tool.md));
   - on a disposable WSL install from a release build, its verified image installed by Setup: a file given to the agent and one written in the Room kept their SHA-256 across a service restart and a reboot, and the session's scratch was gone after each ([real-install-drill.md](../evidence/real-install-drill.md)). The installed test still uses a fixture image and calls the spawner directly; the drill is the release image's proof.
-- [ ] **The room's identity, mount flags, syscall policy, namespaces and cgroup limits verified in a live room; hostile inputs exercised; each new guard fails its test when removed.** Mostly proven:
+- [x] **The room's identity, mount flags, syscall policy, namespaces and cgroup limits verified in a live room; hostile inputs exercised; each new guard fails its test when removed.**
   - identity (`tests/fixtures/room-admission-probe.c`, inside the installed test, #412);
   - mount flags (`scripts/room-mount-proof.sh`, `scripts/room-image-probe.sh`);
   - syscall policy (`the_kernel_enforces_the_room_profile` and the Room's other `seccomp.rs` tests in the gate; the image's 127 commands under its filter, `scripts/room-image-tools-proof.sh`);
@@ -39,19 +39,20 @@ Each item is ticked only where the evidence below proves it.
   - PID and mount namespaces (#403);
   - hand-breaks recorded in #395, #400, #402, #404–#407, #411–#414, #416–#418 and #425.
   - on a real install, a live Room's network, IPC, PID and mount namespaces were its own, not the host's or the broker's, with no network interfaces and `ipcs` killed by the filter ([real-install-drill.md](../evidence/real-install-drill.md)).
-  - **Not proven:** no test asserts the network and IPC namespaces in a live Room, so removing them wouldn't fail one.
+  - the network and IPC namespaces asserted in a live Room by the admission probe, on every pull request as root; the supervisor started without either fails the installed test ([room-own-namespaces.md](../evidence/room-own-namespaces.md)).
 - **Moved to [WO-040](workorder-040-room-disk-capacity.md)** (the maintainer's decision, 2026-11-16): ~~Real capacity reservation, existing workspace bytes preserved, closed-disk growth with interruption recovery, and a visible refusal at the free-space boundary.~~ It was never built. The disk is a fixed-size sparse file; nothing reserves it or grows it. Workspace bytes are preserved through layout preparation (#405) and rekey (a canary test in `room_disk.rs`). The only free-space refusal is at creation.
-- [ ] **Session expiry, visible failure receipts for interrupted work, and jobs drained before lock, wipe or rekey.** Partly proven:
+- **Proven in part; the rest moved to [WO-044](workorder-044-the-rooms-work-outlives-a-restart.md)** (the maintainer's decision, 2026-11-21): ~~Session expiry, visible failure receipts for interrupted work, and jobs drained before lock, wipe or rekey.~~ Proven here:
   - expiry after an hour and after fifteen idle minutes (`room_session` tests; the installed deadline modes);
   - the session ended before a close or wipe (`closing_or_wiping_the_disk_ends_the_session_first`, and the installed test);
   - admitted work holding off rekey and enrollment (#416);
   - a job lost with its Room says so (`a_command_lost_with_its_room_is_over`);
   - on a real install, closing the room disk six seconds into a running job was refused, and the job finished ([real-install-drill.md](../evidence/real-install-drill.md)).
-  - **Not proven:** lock is drilled only with stand-ins and on an install with nothing running (#424); the job table is held in memory and lost if the spawner restarts; durable receipts weren't built.
-- [ ] **Two independent image builds compared, provenance verified, a tampered or missing image rejected.** Partly proven:
+  - **Moved to WO-044, never built or drilled:** lock with work running, on an install whose vault a security key protects (it's drilled only with stand-ins, and on installs with nothing running, #424); the job table, held in memory and lost if the spawner restarts; receipts for interrupted work that outlive the spawner.
+- **Proven in part; the attestation moved to the release's own check** (the maintainer's decision, 2026-11-21): ~~Two independent image builds compared, provenance verified, a tampered or missing image rejected.~~ Proven here:
   - the release workflow builds the image twice and compares them (`room-image-verified`);
   - a tampered or missing image is refused (`scripts/room-image-probe.sh`; `room_image_admission_pins_verifies_and_releases_the_real_image`, every pull request as root).
-  - **Not proven:** the image's attestation is made only on a tag, and no tag has been cut since the image existed; the installer doesn't verify the attestation, and a Linux install from a release can't install the image at all ([WO-038](workorder-038-know-what-is-installed.md)).
+  - a Linux install from a release installs the image, admitted only when its digests match the release's `SHA256SUMS`, which `install.sh` verifies against the release's attestation when `gh` is there ([room-image-on-linux.md](../evidence/room-image-on-linux.md), [WO-038](workorder-038-know-what-is-installed.md)).
+  - **Moved to the release:** the image's attestation is made only on a tag, and no tag has been cut since the image existed. Checking it is now a step of [Cutting a release](../releasing.md#cutting-a-release): the first release with the image verifies the image and its root hash with `gh attestation verify`.
 
 ## What shipped
 
@@ -73,4 +74,4 @@ As [TEMPLATE.md](TEMPLATE.md), plus the root pass and the release workflow's Roo
 
 ## Evidence
 
-Each pull request carries its own; the records are in [docs/evidence/](../evidence/): `wo-034-room-session.md`, `room-run-jobs.md`, `room-file-page.md`, `room-search-wire.md`, `room-write-wire.md`, `room-filter-*.md`, `room-image-proof-proc.md`, `room-ls-long.md`, `room-disk-*.md`, `room-job-path.md` and `room-crate.md`. The work order closes when the four unticked items are proven. The fifth, capacity and growth, moved to WO-040.
+Each pull request carries its own; the records are in [docs/evidence/](../evidence/): `wo-034-room-session.md`, `room-run-jobs.md`, `room-file-page.md`, `room-search-wire.md`, `room-write-wire.md`, `room-filter-*.md`, `room-image-proof-proc.md`, `room-ls-long.md`, `room-disk-*.md`, `room-job-path.md` and `room-crate.md`. Closed 2026-11-21, with the first two items proven, and of the last two what was proven said, the rest moved: capacity and growth to WO-040, which built them; lock with work running, kept job records and receipts to WO-044; the image's attestation on a real tag to the release's own check. Also: [real-install-drill.md](../evidence/real-install-drill.md) and [room-own-namespaces.md](../evidence/room-own-namespaces.md).

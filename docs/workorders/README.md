@@ -26,7 +26,7 @@ The goal is a runtime a security team can approve, for one person or a whole com
 3. **In parallel, the first five minutes:** WO-001 (`--help`, and a quickstart CI runs) and WO-016 (`cargo install hatchling-runtime`, which also holds the crates.io names with real releases). Then seeing it work: WO-021 (the UI drives a real broker), and WO-022 (an operator API, held apart from the user's, with the command center's first screen). These come before the rest of the local-attacker work: approvals delivered to the user, and per-site prompts for the agent's web access, both need the UI.
 4. **Then what a security review asks for next:** WO-024 (a second, independent guard on every delete and signal, after WO-012's test machine was wiped by a mutant); WO-014 (running without root) and WO-017 (privilege-separating the trusted side, so a bug in the broker can't reach your keys), designed together since they share the spawner; WO-025 (a scheduled run that a crash or a failed write loses or repeats, and a result dropped while reported as parked); WO-013 (the release process: signed and reproducible binaries, an SBOM, publishing from CI); and WO-015 (root cell tests in CI).
 5. **What runs in a cell, by the operator's choice:** WO-018 (a coding CLI added by a manifest, OpenCode first) and WO-019 (tools approved, pinned and listed). Hatchling bundles neither: it makes adding one safe. These can start once the hostile-cell work is done.
-6. **0.9, its own computer** ([milestone](https://github.com/undergroundrap/hatchling/milestones)): WO-034 (the Room) and WO-035 (the agent's tools in it), then WO-042 (keep the docs and the queue honest in CI), then step 4, WO-041 (files between you and the agent's computer), and WO-043 (folders, and the chat's files), then WO-036 (approvals bound to grant keys), WO-037 (say when a protection is off) and WO-038 (know what is installed). WO-040 (the room disk's capacity) is alongside them. WO-039 (the spawner in a crate of its own) moved to 0.10, the agent track, by the maintainer's decision.
+6. **0.9, its own computer** ([milestone](https://github.com/undergroundrap/hatchling/milestones)): WO-034 (the Room) and WO-035 (the agent's tools in it), then WO-042 (keep the docs and the queue honest in CI), then step 4, WO-041 (files between you and the agent's computer), and WO-043 (folders, and the chat's files), then WO-036 (approvals bound to grant keys), WO-037 (say when a protection is off) and WO-038 (know what is installed). WO-040 (the room disk's capacity) is alongside them. WO-039 (the spawner in a crate of its own) moved to 0.10, the agent track, by the maintainer's decision, and so did WO-044 (the Room's work outliving a restart), the part of WO-034 never built.
 7. **Then integrations** for larger deployments: audit export, external secret backends, fleet configuration, and the macOS backend.
 
 ## Queue
@@ -67,8 +67,8 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [030](workorder-030-signed-in-browsing.md) | Signed-in browsing: sessions sealed per site, sign-in filled by the broker, the agent never in the secret path | yes | DONE |
 | [031](workorder-031-cell-bound-credentials-skip-the-broker.md) | Cell-bound credentials skip the broker: a cell's vault secrets and browser sign-ins go from the keeper to the cell | yes | DONE |
 | [032](workorder-032-ideas-and-builds-from-the-chat.md) | Ideas and builds from the chat: the agent proposes, the owner decides | yes | DONE |
-| [033](workorder-033-install-it-and-leave-it-on.md) | Install it and leave it on: one command, a service that survives a reboot | yes | IN-PROGRESS |
-| [034](workorder-034-run-commands-in-the-agents-encrypted-room.md) | Run commands in the agent's encrypted room | yes | IN-PROGRESS |
+| [033](workorder-033-install-it-and-leave-it-on.md) | Install it and leave it on: one command, a service that survives a reboot | yes | CLOSED |
+| [034](workorder-034-run-commands-in-the-agents-encrypted-room.md) | Run commands in the agent's encrypted room | yes | CLOSED |
 | [035](workorder-035-the-agents-tools-in-its-own-computer.md) | The agent's tools in its own computer: run, read, search, write and edit from a chat | yes | DONE |
 | [036](workorder-036-approvals-bound-to-grant-keys.md) | Approvals bound to grant keys: a tool and its target, scoped and revocable | yes | CLOSED |
 | [037](workorder-037-say-when-a-protection-is-off.md) | Say when a protection is off: doctor and Your security name what's missing | yes | CLOSED |
@@ -78,6 +78,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [041](workorder-041-files-between-you-and-the-agents-computer.md) | Files between you and the agent's computer: attach one in, hand one out | yes | CLOSED |
 | [042](workorder-042-keep-the-docs-and-the-queue-honest-in-ci.md) | Keep the docs and the queue honest in CI |  | DONE |
 | [043](workorder-043-folders-and-the-chats-files.md) | Folders, and the chat's files: give a project back, keep it in the chat, take what you need | yes | CLOSED |
+| [044](workorder-044-the-rooms-work-outlives-a-restart.md) | The Room's work outlives a restart: kept job records, receipts, and lock drilled with work running | yes | QUEUED |
 
 ## Candidates
 
