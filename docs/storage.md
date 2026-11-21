@@ -67,6 +67,8 @@ sudo systemctl start hatchling
 
 It refuses, before anything changes: while the room disk is open (stop Hatchling first), a size no larger than the disk is now (a room disk only grows), and a size the disk below hasn't room for, saying what's free and what it needs (the new space and 1 GiB to spare). A grow cut short, by a crash or a power cut, is finished when Hatchling next starts; if the disk below has no room for it by then, it's undone, and the room disk opens at the size it was. `HATCHLING_ROOM_DISK_SIZE` is only the size a new room disk is made at: changing it doesn't grow one that's there.
 
+`sudo hatchling-broker doctor` says the room disk's size, what it holds and what's free in it while it's open, what it takes of the disk below and what's free there, and a grow under way. With less than a tenth of the disk free, it says how to grow it.
+
 ## Back up and restore
 
 Rekey and tier enrollment require the room disk to be closed. If Room work

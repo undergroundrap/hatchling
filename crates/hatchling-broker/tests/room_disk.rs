@@ -3245,7 +3245,24 @@ fn a_closed_room_disk_grows_and_keeps_what_it_held_for_real() {
         2 * SIZE
     );
     assert!(marker.exists(), "the grow wasn't marked for the next open");
+    let (looked, growing) = room_disk::looked_at(&place.disk).unwrap();
+    assert_eq!(
+        (looked.cap, growing),
+        (2 * SIZE, Some(2 * SIZE)),
+        "doctor isn't told of the grow"
+    );
     run(RoomDiskOp::Open).unwrap();
+    let (looked, growing) = room_disk::looked_at(&place.disk).unwrap();
+    assert_eq!(
+        (looked.state, looked.cap, growing),
+        (RoomDiskState::Open, 2 * SIZE, None),
+        "doctor isn't told the grow finished"
+    );
+    assert!(
+        looked.used.is_some_and(|used| used >= 4 << 20),
+        "what it holds isn't said: {:?}",
+        looked.used
+    );
     let grown = file_system_size(&mount).unwrap();
     assert!(
         grown > made + SIZE / 2,

@@ -1,6 +1,6 @@
 # WO-040: The room disk's capacity, reserved and grown
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-broker` (`room_disk`, the spawner's disk operations, `doctor`), `crates/hatchling-sys` (the disk's file), the operator commands, `docs/storage.md`
 **Issue:** [#485](https://github.com/undergroundrap/hatchling/issues/485)
 **Trust boundary:** yes (the agent's encrypted disk)
@@ -24,12 +24,12 @@ The agent's room disk is a sparse file of a fixed size. Nothing reserves the spa
 
 ## Acceptance criteria
 
-- [ ] A new disk's space is reserved on the host (no sparse holes), proven as root on a real filesystem.
-- [ ] A closed disk grows to a larger size, its existing files byte for byte the same after, proven by a canary written before.
-- [ ] A grow interrupted at each step (before the file grows, after it grows and before the volume does, after the volume and before the filesystem does) is completed, or undone, at the next open, and loses nothing.
-- [ ] Creating or growing a disk past what the host has free is refused before anything changes, with what's free and what was asked.
-- [ ] An open disk can't be grown; the refusal says to close it first.
-- [ ] Each guard is hand-broken and its test fails for the right reason.
+- [x] A new disk's space is reserved on the host (no sparse holes), proven as root on a real filesystem.
+- [x] A closed disk grows to a larger size, its existing files byte for byte the same after, proven by a canary written before.
+- [x] A grow interrupted at each step (before the file grows, after it grows and before the volume does, after the volume and before the filesystem does) is completed, or undone, at the next open, and loses nothing.
+- [x] Creating or growing a disk past what the host has free is refused before anything changes, with what's free and what was asked.
+- [x] An open disk can't be grown; the refusal says to close it first.
+- [x] Each guard is hand-broken and its test fails for the right reason.
 
 ## Gates
 
@@ -39,3 +39,4 @@ As [TEMPLATE.md](TEMPLATE.md), plus the root pass (`HATCHLING_ROOT_PASS=1 bash s
 
 - Slice 1, a new room disk's space reserved on the disk below: [room-disk-reserved.md](../evidence/room-disk-reserved.md)
 - Slice 2, a closed room disk grown, keeping what's on it: [room-disk-grown.md](../evidence/room-disk-grown.md)
+- Slice 3, `doctor` saying the room disk's size, what it holds, and a grow under way: [room-disk-doctor.md](../evidence/room-disk-doctor.md)

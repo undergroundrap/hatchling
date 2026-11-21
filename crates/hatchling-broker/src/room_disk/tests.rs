@@ -1127,6 +1127,57 @@ fn a_marked_grow_is_finished_or_undone_at_the_next_open() {
     );
 }
 
+/// A grow under way is read as doctor reads it, changing nothing: its own
+/// image's mark alone. A grown disk's status says its new size.
+#[test]
+fn a_grow_under_way_is_read_without_changing_anything() {
+    let bench = Bench::new("grow-read");
+    let (absent, growing) = looked_at(&bench.disk).unwrap();
+    assert_eq!(
+        (absent.state, absent.cap, growing),
+        (RoomDiskState::Absent, MIN_SIZE, None)
+    );
+    bench.run(RoomDiskOp::Create).unwrap();
+    assert_eq!(
+        bench.disk.growing_to(),
+        None,
+        "no mark, and a grow was read"
+    );
+    bench.disk.grow(2 * MIN_SIZE).unwrap();
+    let (grown, growing) = looked_at(&bench.disk).unwrap();
+    assert_eq!(
+        (grown.state, grown.cap, grown.image_bytes, growing),
+        (
+            RoomDiskState::Closed,
+            2 * MIN_SIZE,
+            Some(2 * MIN_SIZE),
+            Some(2 * MIN_SIZE)
+        )
+    );
+    assert!(
+        bench.disk.grow_marker().exists(),
+        "reading the mark took it away"
+    );
+    let other = serde_json::to_vec(&Grow {
+        format: 1,
+        image: String::from("00000000-0000-4000-8000-000000000000"),
+        size: 3 * MIN_SIZE,
+    })
+    .unwrap();
+    hatchling_sys::replace_file(&bench.disk.grow_marker(), &other, None).unwrap();
+    assert_eq!(
+        bench.disk.growing_to(),
+        None,
+        "another image's mark was read as this one's"
+    );
+    std::fs::write(bench.disk.grow_marker(), b"{not a mark").unwrap();
+    assert_eq!(bench.disk.growing_to(), None);
+    assert!(
+        bench.disk.grow_marker().exists(),
+        "reading a mark changed it"
+    );
+}
+
 /// Finishing a grow runs resize2fs on the open disk alone, then records the
 /// new size and takes the mark away; one that fails leaves the mark and the
 /// record for the next open.

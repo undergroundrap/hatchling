@@ -946,6 +946,8 @@ struct RoomFacts {
     kernel: Kernel,
     /// How the room disk is, as root.
     status: Option<Result<crate::room_disk::RoomDiskStatus, String>>,
+    /// The size a grow under way is growing the room disk to, as root.
+    growing: Option<u64>,
     /// Whether the vault waits, locked, to be unlocked.
     waiting: bool,
 }
@@ -956,6 +958,7 @@ impl RoomFacts {
         let root = hatchling_sys::euid() == 0;
         let release = std::fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
         let modules = Path::new("/lib/modules").join(release.trim());
+        let (status, growing) = kept_of(root.then(|| crate::room_disk::looked_at(disk)));
         Self {
             root,
             cryptsetup: crate::room_disk::cryptsetup_version(disk),
@@ -964,9 +967,26 @@ impl RoomFacts {
                 loop_control: Path::new("/dev/loop-control").exists(),
                 dm_crypt: kernel_has_dm_crypt(Path::new("/sys/module/dm_crypt"), &modules),
             },
-            status: root.then(|| crate::room_disk::status(disk)),
+            status,
+            growing,
             waiting,
         }
+    }
+}
+
+/// The room disk's status, as root, or why there's none, and a grow under
+/// way: what doctor keeps of [`crate::room_disk::looked_at`]'s answer
+/// (`looked`, none unless it runs as root).
+fn kept_of(
+    looked: Option<Result<(crate::room_disk::RoomDiskStatus, Option<u64>), String>>,
+) -> (
+    Option<Result<crate::room_disk::RoomDiskStatus, String>>,
+    Option<u64>,
+) {
+    match looked {
+        None => (None, None),
+        Some(Ok((status, growing))) => (Some(Ok(status)), growing),
+        Some(Err(why)) => (Some(Err(why)), None),
     }
 }
 
@@ -1077,20 +1097,49 @@ fn room_said(facts: &RoomFacts) -> Finding {
             "sudo hatchling-broker room-disk close",
         );
     }
+    room_numbers_said(&version, status, facts.growing)
+}
+
+/// What doctor says of a room disk that's fine to look at, `status`, with
+/// cryptsetup's `version` and a grow under way (`growing`): its state, its
+/// size, what it holds, what it takes below and what's free there.
+fn room_numbers_said(
+    version: &str,
+    status: &crate::room_disk::RoomDiskStatus,
+    growing: Option<u64>,
+) -> Finding {
+    use crate::room_disk::RoomDiskState;
     let state = match status.state {
-        RoomDiskState::Absent => String::from("none made yet"),
-        RoomDiskState::Closed => String::from("made, closed"),
-        RoomDiskState::Mapped => String::from("unlocked but not mounted: it couldn't be closed"),
-        RoomDiskState::Open => String::from("open"),
+        RoomDiskState::Absent => "none made yet",
+        RoomDiskState::Closed => "made, closed",
+        RoomDiskState::Mapped => "unlocked but not mounted: it couldn't be closed",
+        RoomDiskState::Open => "open",
     };
+    let size = if status.state == RoomDiskState::Absent {
+        format!("it's made at {}", bytes_said(status.cap))
+    } else {
+        bytes_said(status.cap)
+    };
+    let holds = status
+        .used
+        .zip(status.free)
+        .map_or_else(String::new, |(used, free)| {
+            format!(
+                ", holding {} with {} free",
+                bytes_said(used),
+                bytes_said(free)
+            )
+        });
+    let takes = status.on_disk.map_or_else(String::new, |bytes| {
+        format!(", taking {} of the disk below", bytes_said(bytes))
+    });
+    let said = format!("{version}; {state}; {size}{holds}{takes}");
     let on_disk = status.on_disk.unwrap_or(0);
-    let said = format!(
-        "{version}; {state}; {} at most, {} on the disk now",
-        bytes_said(status.cap),
-        bytes_said(on_disk)
-    );
-    match status.host_free {
-        Some(free) if free < status.cap.saturating_sub(on_disk) => Finding::Note {
+    if let Some(free) = status
+        .host_free
+        .filter(|&free| free < status.cap.saturating_sub(on_disk))
+    {
+        return Finding::Note {
             what: format!(
                 "{said}; only {} free below, less than it can grow to, and writes in it fail when that runs out",
                 bytes_said(free)
@@ -1098,10 +1147,54 @@ fn room_said(facts: &RoomFacts) -> Finding {
             fix: String::from(
                 "free some space, or set HATCHLING_ROOM_DISK_SIZE smaller before the room disk is made",
             ),
-        },
-        Some(free) => Finding::Fine(format!("{said}; {} free below", bytes_said(free))),
-        None => Finding::Fine(said),
+        };
     }
+    let said = match status.host_free {
+        Some(free) => format!("{said}; {} free below", bytes_said(free)),
+        None => said,
+    };
+    room_grow_said(said, status, growing)
+}
+
+/// The end of what doctor says of a room disk that's there, `said` so far:
+/// a grow under way (`growing`), or too little free in it, with how to
+/// grow it.
+fn room_grow_said(
+    said: String,
+    status: &crate::room_disk::RoomDiskStatus,
+    growing: Option<u64>,
+) -> Finding {
+    use crate::room_disk::RoomDiskState;
+    if let Some(to) = growing {
+        // Open, the open's grow didn't finish: a finished one takes its
+        // mark away.
+        if status.state == RoomDiskState::Open {
+            return Finding::Note {
+                what: format!(
+                    "{said}; its grow to {} didn't finish, so its file system is the size it was",
+                    bytes_said(to)
+                ),
+                fix: String::from(
+                    "sudo systemctl restart hatchling tries again; journalctl -u hatchling says why it didn't",
+                ),
+            };
+        }
+        return Finding::Fine(format!(
+            "{said}; growing to {}, which finishes when Hatchling starts",
+            bytes_said(to)
+        ));
+    }
+    if status.free.is_some_and(|free| free < status.cap / 10) {
+        return Finding::Note {
+            what: format!(
+                "{said}; less than a tenth of it is free, and the agent's writes in it fail when it's full"
+            ),
+            fix: String::from(
+                "grow it (docs/storage.md): sudo systemctl stop hatchling, sudo hatchling-broker room-disk grow <size>, sudo systemctl start hatchling",
+            ),
+        };
+    }
+    Finding::Fine(said)
 }
 
 /// Whether `bin`, the agent's program, is a program.
@@ -2549,7 +2642,23 @@ mod tests {
                 free: None,
                 host_free: Some(100 * 1024 * 1024 * 1024),
             })),
+            growing: None,
             waiting: false,
+        }
+    }
+
+    /// The room disk's facts, open, holding `used` of its 10 GiB with
+    /// `free` free in it, all of it reserved below.
+    fn room_open(used: u64, free: u64) -> RoomFacts {
+        RoomFacts {
+            status: Some(Ok(crate::room_disk::RoomDiskStatus {
+                state: crate::room_disk::RoomDiskState::Open,
+                on_disk: Some(10 * 1024 * 1024 * 1024 + 4096),
+                used: Some(used),
+                free: Some(free),
+                ..room_facts().status.unwrap().unwrap()
+            })),
+            ..room_facts()
         }
     }
 
@@ -2708,7 +2817,22 @@ mod tests {
         assert_eq!(
             room_said(&room_facts()),
             Finding::Fine(String::from(
-                "cryptsetup 2.8.4; made, closed; 10.0 GiB at most, 300 MiB on the disk now; 100.0 GiB free below"
+                "cryptsetup 2.8.4; made, closed; 10.0 GiB, taking 300 MiB of the disk below; 100.0 GiB free below"
+            ))
+        );
+        let none = RoomFacts {
+            status: Some(Ok(crate::room_disk::RoomDiskStatus {
+                state: crate::room_disk::RoomDiskState::Absent,
+                image_bytes: None,
+                on_disk: None,
+                ..room_facts().status.unwrap().unwrap()
+            })),
+            ..room_facts()
+        };
+        assert_eq!(
+            room_said(&none),
+            Finding::Fine(String::from(
+                "cryptsetup 2.8.4; none made yet; it's made at 10.0 GiB; 100.0 GiB free below"
             ))
         );
         let said = note_said(&room_with_free(1024 * 1024 * 1024));
@@ -2722,6 +2846,71 @@ mod tests {
         );
         assert_eq!(bytes_said(5 * 1024 * 1024), "5 MiB");
         assert_eq!(bytes_said(3 * 1024 * 1024 * 1024 / 2), "1.5 GiB");
+    }
+
+    /// Open, the room disk says what it holds and what's free in it; less
+    /// than a tenth free is a note that says how to grow it, and a tenth,
+    /// to the byte, is enough.
+    #[test]
+    fn an_open_room_disk_says_what_it_holds_and_nearly_full_says_to_grow_it() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        assert_eq!(
+            room_said(&room_open(3 * GIB / 2, 8 * GIB)),
+            Finding::Fine(String::from(
+                "cryptsetup 2.8.4; open; 10.0 GiB, holding 1.5 GiB with 8.0 GiB free, taking 10.0 GiB of the disk below; 100.0 GiB free below"
+            ))
+        );
+        let said = note_said(&room_open(9 * GIB, GIB - 1));
+        assert!(said.contains("less than a tenth of it is free"), "{said}");
+        assert!(said.contains("room-disk grow <size>"), "{said}");
+        assert!(
+            matches!(room_said(&room_open(9 * GIB, GIB)), Finding::Fine(_)),
+            "a tenth free was said to be too little"
+        );
+    }
+
+    /// Doctor keeps the room disk's status and a grow under way from what
+    /// it's told, as root; not as root, or with no status, there's no grow.
+    #[test]
+    fn doctor_keeps_the_status_and_a_grow_under_way() {
+        let status = room_facts().status.unwrap().unwrap();
+        assert_eq!(kept_of(None), (None, None));
+        assert_eq!(
+            kept_of(Some(Ok((status, Some(7))))),
+            (Some(Ok(status)), Some(7))
+        );
+        assert_eq!(kept_of(Some(Ok((status, None)))), (Some(Ok(status)), None));
+        assert_eq!(
+            kept_of(Some(Err(String::from("in use")))),
+            (Some(Err(String::from("in use"))), None)
+        );
+    }
+
+    /// A grow under way is said: closed, it finishes when Hatchling starts;
+    /// open, it didn't finish, and that's a note that says what to do.
+    #[test]
+    fn a_grow_under_way_is_said_and_one_left_unfinished_is_a_note() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let closed = RoomFacts {
+            growing: Some(20 * GIB),
+            ..room_facts()
+        };
+        assert_eq!(
+            room_said(&closed),
+            Finding::Fine(String::from(
+                "cryptsetup 2.8.4; made, closed; 10.0 GiB, taking 300 MiB of the disk below; 100.0 GiB free below; growing to 20.0 GiB, which finishes when Hatchling starts"
+            ))
+        );
+        let open = RoomFacts {
+            growing: Some(20 * GIB),
+            ..room_open(9 * GIB, GIB / 2)
+        };
+        let said = note_said(&open);
+        assert!(
+            said.contains("its grow to 20.0 GiB didn't finish"),
+            "{said}"
+        );
+        assert!(said.contains("systemctl restart hatchling"), "{said}");
     }
 
     /// `dm_crypt` is loaded, or a module, or built in; or it isn't there.
