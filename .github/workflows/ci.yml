@@ -306,6 +306,9 @@ jobs:
       - name: get-hatchling.sh refuses what it should (tampered files, a bad installer, root, no model)
         run: python3 -m unittest discover -s scripts -p 'test_get.py' -v
 
+      - name: install.sh checks who built the release when gh can (attested, not, or unchecked)
+        run: python3 -m unittest discover -s scripts -p 'test_provenance.py' -v
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
@@ -381,6 +384,10 @@ jobs:
           trap - EXIT
           sudo rm -f -- "$release_broker"
           grep -q "checking every file against the release's SHA256SUMS" "$RUNNER_TEMP/install.log"
+          # Who built them is looked at (#556): this release isn't attested,
+          # and gh here isn't signed in as the owner, so it says it couldn't
+          # check, and goes on.
+          grep -q "who built these files isn't checked" "$RUNNER_TEMP/install.log"
           grep -q "http://127.0.0.1:7340/#hatchling-ui=" "$RUNNER_TEMP/install.log"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:7340/ > /dev/null
