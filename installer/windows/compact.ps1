@@ -4,8 +4,9 @@
 #
 #   compact.ps1 [-Distro hatchling-wsl] [-DryRun]
 #
-# As you, it checks nothing is busy, says what it will do, cleans Hatchling's
-# leftovers (`hatchling-broker clean`, never your data) and stops Hatchling.
+# As you, it checks nothing is busy, says what it will do, stops Hatchling,
+# cleans its leftovers (`hatchling-broker clean`, never your data), and trims
+# the distro's free space so the compaction can give it back.
 # Then it asks Windows to run its second half as an administrator: that half
 # finds the distro's own disk file from your registry (never a path it's
 # given), stops WSL and holds it stopped, compacts that one file, and puts
@@ -198,6 +199,37 @@ function Invoke-ElevatedHalf([string] $Distro) {
 
 # ---- The half that runs as you.
 
+# A command in the distro as root, its output on the console. Returns its exit code.
+function Invoke-InDistro([string] $Distro, [string[]] $Command) {
+    & wsl.exe -d $Distro -u root --exec @Command | Out-Host
+    return $LASTEXITCODE
+}
+
+# Readies the distro for compacting: Hatchling stopped and its leftovers
+# cleaned, then the free space trimmed. Returns why it can't go on, or nothing.
+#
+# The trim is what lets a compaction give space back. The disk file keeps
+# each 1 MB block until a discard covers the whole block, and a deleted file
+# discards only its own pieces: a block freed a file at a time stays in the
+# file, empty. `fstrim` discards all the free space at once. On a test box,
+# it took the blocks the file kept from 10.08 GB to 7.02 GB.
+function Initialize-Distro([string] $Distro, [bool] $Hatchling) {
+    if ($Hatchling) {
+        Say 'Stopping Hatchling'
+        if ((Invoke-InDistro $Distro @('systemctl', 'stop', 'hatchling')) -ne 0) {
+            return "Hatchling didn't stop, so nothing was compacted. To see why: wsl -d $Distro -u root -- systemctl status hatchling"
+        }
+        Say "Cleaning Hatchling's leftovers"
+        if ((Invoke-InDistro $Distro @('hatchling-broker', 'clean')) -ne 0) {
+            Write-Host "The clean didn't finish (the lines above say why). Compacting goes on." -ForegroundColor Yellow
+        }
+    }
+    Say "Trimming the free space inside $Distro"
+    if ((Invoke-InDistro $Distro @('/usr/sbin/fstrim', '-v', '/')) -ne 0) {
+        Write-Host "The trim didn't finish (the lines above say why). Compacting goes on, and gives back less." -ForegroundColor Yellow
+    }
+}
+
 function Invoke-OwnerHalf([string] $Distro) {
     if ($Distro -notmatch '^[A-Za-z0-9._-]+$') { Stop-Setup "That isn't a distro's name: $Distro" }
     if ((Get-Distros) -notcontains $Distro) { Stop-Setup "WSL has no distro named $Distro." }
@@ -214,19 +246,24 @@ function Invoke-OwnerHalf([string] $Distro) {
     $before = (Get-Item -LiteralPath $path).Length
     $inside = Get-InsideUse $Distro
     Say "$Distro's disk file takes $(Format-Size $before) on Windows: $path"
-    if ($inside) { Say "$(Format-Size $inside.Used) of it is in use inside. Compacting can give back about the rest." }
+    # Not "about the rest": the file keeps every 1 MB block anything is in, and
+    # the filesystem's own tables, which df doesn't count.
+    if ($inside) { Say "$(Format-Size $inside.Used) of it is in use inside. Compacting gives back part of the rest." }
     $others = @(Get-Distros -Running | Where-Object { $_ -ne $Distro })
     # A distro without Hatchling (a test box, say) is compacted too, with
     # nothing of Hatchling's to clean, stop or start.
     $hatchling = (Get-FromWsl $Distro @('sh', '-c', 'test -x /usr/local/bin/hatchling-broker && echo yes')) -eq 'yes'
     Write-Host ''
     Write-Host 'This will:'
+    $every = "every WSL distro$(if ($others.Count) { ", including $($others -join ', ')" }); Docker Desktop's WSL engine stops too"
     if ($hatchling) {
-        Write-Host "  - clean Hatchling's leftovers (hatchling-broker clean: never your data)"
-        Write-Host "  - stop Hatchling, then every WSL distro$(if ($others.Count) { ", including $($others -join ', ')" }); Docker Desktop's WSL engine stops too"
+        Write-Host "  - stop Hatchling, and clean its leftovers (hatchling-broker clean: never your data)"
+        Write-Host "  - trim the free space inside $Distro, so the compaction can give it back"
+        Write-Host "  - stop $every"
     }
     else {
-        Write-Host "  - stop every WSL distro$(if ($others.Count) { ", including $($others -join ', ')" }); Docker Desktop's WSL engine stops too. Hatchling isn't in $Distro, so there's nothing of it to clean"
+        Write-Host "  - trim the free space inside $Distro, so the compaction can give it back"
+        Write-Host "  - stop $every. Hatchling isn't in $Distro, so there's nothing of it to clean"
     }
     Write-Host "  - ask Windows for an administrator, to compact $Distro's disk file. It holds WSL's service stopped meanwhile, and puts it back as it was"
     if ($hatchling) { Write-Host '  - start Hatchling again. A vault a security key protects is locked: open Hatchling from the Start menu to unlock it' }
@@ -237,14 +274,8 @@ function Invoke-OwnerHalf([string] $Distro) {
     }
     if ((Read-Host 'Type yes to go on') -ne 'yes') { Stop-Setup 'Nothing was changed.' }
 
-    if ($hatchling) {
-        Say 'Stopping Hatchling'
-        & wsl.exe -d $Distro -u root --exec systemctl stop hatchling
-        if ($LASTEXITCODE -ne 0) { Stop-Setup "Hatchling didn't stop, so nothing was compacted. To see why: wsl -d $Distro -u root -- systemctl status hatchling" }
-        Say "Cleaning Hatchling's leftovers"
-        & wsl.exe -d $Distro -u root --exec hatchling-broker clean
-        if ($LASTEXITCODE -ne 0) { Write-Host "The clean didn't finish (the lines above say why). Compacting goes on." -ForegroundColor Yellow }
-    }
+    $why = Initialize-Distro $Distro $hatchling
+    if ($why) { Stop-Setup $why }
 
     Say 'Asking Windows for an administrator'
     $elevatedArgs = "-NoProfile -ExecutionPolicy RemoteSigned -File `"$PSCommandPath`" -Distro $Distro -Elevated"

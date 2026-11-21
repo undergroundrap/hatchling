@@ -153,10 +153,13 @@ WSL keeps Hatchling's distro in one file, `ext4.vhdx`, which grows as the distro
 
 It says what it will do and waits for you to type `yes`. It refuses, changing nothing, while a backup, a restore, another of the broker's store commands or Hatchling's setup is running. Then it:
 
-1. runs `hatchling-broker clean`, which removes only Hatchling's leftovers, never your data;
-2. stops Hatchling, then every WSL distro, Docker Desktop's too;
-3. asks Windows for an administrator, for this step alone. That window finds the distro's disk file from WSL's own record in your account, never from a path it's given. It sets WSL's service not to start, stops it, compacts that one file, and puts the service back as it was, even if something fails. Without holding the service stopped, something starts WSL again within a second, and the file can't be compacted;
-4. starts Hatchling again, and says how large the file was and is.
+1. stops Hatchling and runs `hatchling-broker clean`, which removes only Hatchling's leftovers, never your data;
+2. trims the distro's free space (`fstrim`). The disk file gives back only whole 1 MB blocks that nothing is in, and a block freed a file at a time stays in it until a trim;
+3. stops every WSL distro, Docker Desktop's too;
+4. asks Windows for an administrator, for this step alone. That window finds the distro's disk file from WSL's own record in your account, never from a path it's given. It sets WSL's service not to start, stops it, compacts that one file, and puts the service back as it was, even if something fails. Without holding the service stopped, something starts WSL again within a second, and the file can't be compacted;
+5. starts Hatchling again, and says how large the file was and is.
+
+The file stays larger than what's in use inside: it keeps every 1 MB block that holds anything, and the filesystem's own tables.
 
 If you use a security key, Hatchling is locked afterwards, as after a restart: open Hatchling from the Start menu to unlock it.
 

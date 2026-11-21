@@ -115,6 +115,45 @@ try {
         Assert-Same @("Hatchling's setup is running") (Find-BusyWork 'd' @() @('Hatchling-1-Setup.exe', 'C:\t\Hatchling-1-Setup.tmp'))
     }
 
+    # ---- Readying the distro, with a stand-in for WSL
+
+    $script:ran = New-Object Collections.ArrayList
+    $script:fails = @{}
+    function script:Invoke-InDistro([string] $Distro, [string[]] $Command) {
+        $line = $Command -join ' '
+        [void] $script:ran.Add("${Distro}: $line")
+        if ($script:fails.ContainsKey($line)) { return $script:fails[$line] }
+        return 0
+    }
+    function Use-Distro([hashtable] $Fails = @{}) { $script:ran.Clear(); $script:fails = $Fails }
+    $stop = 'd: systemctl stop hatchling'
+    $clean = 'd: hatchling-broker clean'
+    $trim = 'd: /usr/sbin/fstrim -v /'
+
+    Test-Case 'Hatchling is stopped and cleaned, then the free space trimmed' {
+        Use-Distro
+        Assert-Same $null (Initialize-Distro 'd' $true) 'what went wrong'
+        Assert-Same @($stop, $clean, $trim) $script:ran 'the commands'
+    }
+    Test-Case 'a distro without Hatchling is only trimmed' {
+        Use-Distro
+        Assert-Same $null (Initialize-Distro 'd' $false)
+        Assert-Same @($trim) $script:ran
+    }
+    Test-Case "Hatchling that won't stop: nothing is cleaned or trimmed, and it says why" {
+        Use-Distro @{ 'systemctl stop hatchling' = 1 }
+        Assert-Same "Hatchling didn't stop, so nothing was compacted. To see why: wsl -d d -u root -- systemctl status hatchling" (Initialize-Distro 'd' $true)
+        Assert-Same @($stop) $script:ran
+    }
+    Test-Case 'a clean or a trim that fails is said, and compacting goes on' {
+        Use-Distro @{ 'hatchling-broker clean' = 1; '/usr/sbin/fstrim -v /' = 1 }
+        $said = & { Initialize-Distro 'd' $true } 6>&1 | ForEach-Object { "$_" }
+        Assert-Same @($stop, $clean, $trim) $script:ran
+        if (-not ($said -match "The clean didn't finish")) { throw "the clean's failure not said: $said" }
+        if (-not ($said -match "The trim didn't finish")) { throw "the trim's failure not said: $said" }
+        if ($said -match 'nothing was compacted') { throw "it stopped: $said" }
+    }
+
     # ---- How WSL's service starts
 
     Test-Case "WslService's start is read as sc.exe names it" {

@@ -210,13 +210,18 @@ override it with `--allow-unsafe`.
 
 To reclaim the space, run `installer/windows/compact.ps1 -Distro <name>`
 (on an install, **Hatchling Tools → Free up disk space**): it cleans
-Hatchling's leftovers, stops WSL, and compacts that distro's disk file
+Hatchling's leftovers, trims the free space, stops WSL, and compacts that distro's disk file
 as an administrator, putting WSL's service back as it was. `-DryRun`
 says what it would do and changes nothing. [Freeing disk
 space](windows.md#freeing-disk-space) says what it touches.
 
 By hand, with nothing running in WSL: run
-`wsl --shutdown`, then in an Administrator PowerShell run `diskpart`
+`wsl -d <distro> -u root --exec /usr/sbin/fstrim -v /` first. The disk
+file gives back only whole 1 MB blocks a discard covered, and deleting a
+file discards only its own pieces, so without a trim a compaction can
+give back almost nothing (10.25 GB to 10.09 GB on one box, where a trim
+first made 3 GB more free). Then run
+`wsl --shutdown`, and in an Administrator PowerShell run `diskpart`
 with `select vdisk file="<path>\ext4.vhdx"`, `attach vdisk readonly`,
 `compact vdisk`, `detach vdisk`. The path comes from
 `(Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss | Get-ItemProperty | Where-Object DistributionName -eq Ubuntu).BasePath`.
