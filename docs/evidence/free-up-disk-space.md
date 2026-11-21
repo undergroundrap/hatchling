@@ -38,8 +38,10 @@ Free up disk space**.
   distro);
 - says the disk file's size and what's used inside, what will stop, and
   that a protected vault is locked after; waits for `yes`;
-- runs `hatchling-broker clean` and stops Hatchling. In a distro without
+- stops Hatchling and runs `hatchling-broker clean`. In a distro without
   Hatchling, it says so and skips both;
+- trims the distro's free space with `fstrim`, Hatchling or not (added
+  after the maintainer's real run, below);
 - asks Windows to run its second half as an administrator, then starts
   Hatchling again, and the process that keeps it running if Setup made
   one, and says the size before and after.
@@ -110,14 +112,70 @@ Each break was run against the tests, then undone. 17 broken, 17 caught:
 | A delayed start put back plain | `WslService's start is read as sc.exe names it` |
 | The command to put the service back not said | `a service that can't be put back is said...` |
 
+## The maintainer's real run, and the trim it showed was missing
+
+The maintainer ran the tool for real on `Ubuntu` (no Hatchling in it),
+from an administrator PowerShell, after a dry run. Every step worked:
+the plan, `yes`, the administrator half, and `WslService` put back
+(`sc.exe qc WslService` after: `AUTO_START`, running, as before). But
+the file went from **10.25 GB to only 10.09 GB**, with 3.77 GB in use
+inside.
+
+Why, measured rather than guessed. The disk file's own block allocation
+table (read with a short script, the file untouched) showed it was at
+its floor: 10,318 stored 1 MiB blocks, 10.08 GiB, and the rest of its
+1,024 GiB unmapped or never written. So the compaction had done all it
+could. Set against ext4's block bitmaps (`dumpe2fs`):
+
+| The stored 1 MiB blocks | Blocks | GiB |
+|---|---|---|
+| Nothing in them ext4 uses | 3,150 | 3.08 |
+| Full | 4,045 | 3.95 |
+| Partly used | 3,123 | 3.05, of which 2.20 free |
+
+The root is mounted with `discard`, yet 3 GiB of empty blocks stayed.
+A delete discards only the file's own pieces, and the disk file ignores
+a discard smaller than its 1 MiB block: a block freed a file at a time
+is never given back. `fstrim -v /` discards all the free space at once.
+Run on that distro, it took the stored blocks from **10,318 to 7,187
+(7.02 GiB)**, 3.06 GiB unmapped against the 3.08 predicted. The 2.20 GiB
+free inside partly used blocks only rewriting the filesystem would give
+back. `df` also leaves out ext4's own tables, so "compacting can give
+back about the rest" promised too much.
+
+**So the tool now trims before it stops WSL:** `Initialize-Distro`
+stops Hatchling, cleans its leftovers, and runs
+`/usr/sbin/fstrim -v /` as root, in any distro, Hatchling or not. A
+failed trim is said, and the compaction goes on. The message now says
+compacting "gives back part of the rest". The steps moved out of the
+owner half into that function, so the tests can play WSL. Tested at
+tree `44f9c238`, that commit's:
+
+| Check | Result |
+|---|---|
+| `compact.tests.ps1` | 23 passed (4 new) |
+| The real `Invoke-InDistro` on `Ubuntu` | trims (`1002.4 GiB trimmed`), returns `0`; `false` and a missing program return `1`, with nothing else in the return value |
+| Dry run on `Ubuntu` | the trim in the plan, nothing changed |
+
+| Break | Caught by |
+|---|---|
+| No trim | `Hatchling is stopped and cleaned, then...`, and 2 others |
+| The trim before Hatchling is stopped and cleaned | 4 tests |
+| The trim for Hatchling's distro only | `a distro without Hatchling is only trimmed` |
+| Hatchling that won't stop, gone on with | `Hatchling that won't stop...` |
+| A failed trim stops the compaction | `a clean or a trim that fails is said...` |
+| A failed trim not said | the same |
+| A failed clean not said | the same |
+| Another filesystem trimmed | 3 tests |
+
+8 broken, 8 caught. The compaction after a trim needs another real run,
+the maintainer's, like the first.
+
 ## Residual
 
-- **The administrator half hasn't been run for real here.** It changes a
-  Windows service's start, which this record's runs don't do on the
-  maintainer's machine unasked. Its logic is covered by the tests above,
-  and the real run is the maintainer's: a dry run, then a run on a
-  distro of their choosing, reading the size before and after, and
-  `sc.exe qc WslService` before and after.
+- **The administrator half has been run for real once,** by the
+  maintainer, before the trim was added: it compacted, and put
+  `WslService` back as it was. A run with the trim is theirs too.
 - **A link swapped in between the check and diskpart:** the folder is
   checked, then diskpart opens the path. Something running as the owner
   could swap the folder for a link in between. Compacting keeps a disk's
