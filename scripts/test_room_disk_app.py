@@ -12,11 +12,13 @@ from unittest.mock import patch
 import room_disk_app as proof
 
 
-PHYSICAL = {'capacity': 10 * 1024**3, 'allocated': 3_400_000_000, 'mounted': True,
+# A reserved image: all of its size, and one block of ext4's own for it.
+CAP = 10 * 1024**3
+PHYSICAL = {'capacity': CAP, 'allocated': CAP + 4096, 'mounted': True,
             'used': 1_200_000_000, 'free': 8_800_000_000}
 SETUP = {'vault': {'tier': 'file'}, 'room_disk': {'state': 'open', 'off': None,
-         'cap': PHYSICAL['capacity'], 'used': 1_200_000_000, 'free': 8_800_000_000, 'on_disk': 3_400_000_000}}
-TEXT = 'Your agent’s computer\nIt holds up to 10.7 GB, 1.2 GB of it in use, and takes 3.4 GB on this machine.\nDeleting files inside it doesn’t make it smaller.\n' + proof.FILE_WARNING
+         'cap': CAP, 'used': 1_200_000_000, 'free': 8_800_000_000, 'on_disk': CAP + 4096}}
+TEXT = 'Your agent’s computer\nIt holds up to 10.7 GB, 1.2 GB of it in use, and takes 10.7 GB on this machine.\nDeleting files inside it doesn’t make it smaller.\n' + proof.FILE_WARNING
 
 
 class RoomDiskAppTests(unittest.TestCase):
@@ -54,18 +56,34 @@ class RoomDiskAppTests(unittest.TestCase):
         self.assertEqual(proof.validate_view({**PHYSICAL, 'used': 12_288_000}, small, TEXT.replace('1.2 GB of it', '12 MB of it'))['used'], 12_288_000)
 
     def test_lazy_initialization_changes_are_bounded_by_independent_observations(self):
-        before = {**PHYSICAL, 'allocated': 3_300_000_000, 'used': 1_100_000_000, 'free': 8_900_000_000}
-        after = {**PHYSICAL, 'allocated': 3_500_000_000, 'used': 1_300_000_000, 'free': 8_700_000_000}
+        before = {**PHYSICAL, 'allocated': CAP + 4096, 'used': 1_100_000_000, 'free': 8_900_000_000}
+        after = {**PHYSICAL, 'allocated': CAP + 8192, 'used': 1_300_000_000, 'free': 8_700_000_000}
         proof.validate_view(before, SETUP, TEXT, after)
-        for field, value in [('on_disk', 3_000_000_000), ('used', 900_000_000), ('free', 9_000_000_000)]:
+        for field, value in [('on_disk', CAP + 12288), ('used', 900_000_000), ('free', 9_000_000_000)]:
             wrong = copy.deepcopy(SETUP)
             wrong['room_disk'][field] = value
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'independent filesystem'):
                 proof.validate_view(before, wrong, TEXT, after)
         wrong = copy.deepcopy(SETUP)
-        wrong['room_disk']['on_disk'] = 3_000_000_000
+        wrong['room_disk']['on_disk'] = CAP
         with self.assertRaisesRegex(ValueError, 'independent filesystem'):
-            proof.validate_view(PHYSICAL, wrong, TEXT.replace('takes 3.4 GB', 'takes 3.0 GB'))
+            proof.validate_view(PHYSICAL, wrong, TEXT)
+
+    def test_a_reserved_image_takes_its_size_and_a_sparse_one_fails(self):
+        for extra in [0, 4096, 1 << 20]:
+            setup = copy.deepcopy(SETUP)
+            setup['room_disk']['on_disk'] = CAP + extra
+            with self.subTest(extra=extra):
+                proof.validate_view({**PHYSICAL, 'allocated': CAP + extra}, setup, TEXT)
+        sparse = copy.deepcopy(SETUP)
+        sparse['room_disk']['on_disk'] = 3_400_000_000
+        with self.assertRaisesRegex(ValueError, 'not reserved'):
+            proof.validate_view({**PHYSICAL, 'allocated': 3_400_000_000}, sparse,
+                                TEXT.replace('takes 10.7 GB', 'takes 3.4 GB'))
+        short = copy.deepcopy(SETUP)
+        short['room_disk']['on_disk'] = CAP - 1
+        with self.assertRaisesRegex(ValueError, 'not reserved'):
+            proof.validate_view({**PHYSICAL, 'allocated': CAP - 1}, short, TEXT)
 
     def test_a_heading_and_capacity_cannot_hide_an_off_mapped_or_missing_disk(self):
         for state in ['absent', 'closed', 'mapped', 'off']:
@@ -79,7 +97,7 @@ class RoomDiskAppTests(unittest.TestCase):
             proof.validate_view(PHYSICAL, setup, TEXT)
 
     def test_stale_fake_or_omitted_counters_fail(self):
-        for field, value in [('cap', 100), ('used', None), ('used', True), ('free', 0), ('on_disk', 3_000_000_000)]:
+        for field, value in [('cap', 100), ('used', None), ('used', True), ('free', 0), ('on_disk', None), ('on_disk', True), ('on_disk', 3_000_000_000)]:
             setup = copy.deepcopy(SETUP)
             setup['room_disk'][field] = value
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
