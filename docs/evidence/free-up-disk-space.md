@@ -168,14 +168,21 @@ tree `44f9c238`, that commit's:
 | A failed clean not said | the same |
 | Another filesystem trimmed | 3 tests |
 
-8 broken, 8 caught. The compaction after a trim needs another real run,
-the maintainer's, like the first.
+8 broken, 8 caught.
+
+**The maintainer's second real run, with the trim,** on the same
+`Ubuntu`, from an administrator PowerShell: the plan named the trim,
+`fstrim` said `/: 1002.4 GiB (1076307734528 bytes) trimmed`, and the
+file went from **10.10 GB to 7.03 GB**, against the 7.02 GiB of stored
+blocks the allocation table predicted. `sc.exe qc WslService` after:
+`AUTO_START`, running, as before.
 
 ## Residual
 
-- **The administrator half has been run for real once,** by the
-  maintainer, before the trim was added: it compacted, and put
-  `WslService` back as it was. A run with the trim is theirs too.
+- **The administrator half has been run for real twice,** by the
+  maintainer, on a distro without Hatchling. A run on Hatchling's own
+  distro, which also stops and starts Hatchling, is covered by the tests'
+  stand-ins, not yet by a real run.
 - **A link swapped in between the check and diskpart:** the folder is
   checked, then diskpart opens the path. Something running as the owner
   could swap the folder for a link in between. Compacting keeps a disk's
