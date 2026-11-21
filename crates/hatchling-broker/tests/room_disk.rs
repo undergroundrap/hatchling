@@ -1371,10 +1371,15 @@ fn check_supervisor_boundary(program: &Path, mode: u8) -> Result<(), Failed> {
     std::fs::write(&source, include_str!("fixtures/room-admission-probe.c"))?;
     let (uid, gid) = hatchling_sys::subid::local_account("hatchling-room")?
         .ok_or("the root fixture requires the hatchling-room account")?;
+    // The host's network and IPC namespaces, this test's: the probe
+    // refuses to start in either.
+    let host = |kind: &str| std::fs::metadata(format!("/proc/self/ns/{kind}")).map(|ns| ns.ino());
     let compiled = Command::new("cc")
         .args(["-static", "-Wall", "-Wextra", "-Werror"])
         .arg(format!("-DROOM_UID={uid}"))
         .arg(format!("-DROOM_GID={gid}"))
+        .arg(format!("-DHOST_NET_NS={}ULL", host("net")?))
+        .arg(format!("-DHOST_IPC_NS={}ULL", host("ipc")?))
         .arg(format!("-DROOM_PROBE_MODE={mode}"))
         .arg(&source)
         .arg("-o")
