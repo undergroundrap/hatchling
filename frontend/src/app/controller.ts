@@ -1,5 +1,6 @@
 import { writeRouteHash } from './route-location.js';
 import { ContentLoading } from './content-loading.js';
+import { FrameDraw } from './frame-draw.js';
 import { ApprovalReview } from '../features/approvals/review.js';
 import type { TaskApprovalPort } from '../session/task-approvals.js';
 import type { CodePort } from '../session/codes.js';
@@ -105,6 +106,8 @@ export class App implements AppContext {
     }>();
     private readonly drafts = new ComposerDrafts();
     private readQueued = false;
+    /** What the broker changes is drawn at the next frame, once (#528); what the owner does, at once. */
+    private readonly frame = new FrameDraw(() => this.render(), window);
     private readonly colorScheme = window.matchMedia('(prefers-color-scheme: light)');
     private lastViewportWidth = window.innerWidth;
     private lastViewportHeight = window.innerHeight;
@@ -126,8 +129,8 @@ export class App implements AppContext {
         this.dialogs = new DialogManager(dialogRoot, this.acknowledgeVisible);
         this.dock = new ArtifactDock(dialogRoot, this.onDockChange);
         this.contentLoading = new ContentLoading(this.render);
-        this.delivery = new ChatDelivery(adapter, this.render);
-        this.approvals = new ApprovalReview(adapter.taskApprovals, this.render);
+        this.delivery = new ChatDelivery(adapter, this.render, undefined, this.frame.soon);
+        this.approvals = new ApprovalReview(adapter.taskApprovals, this.render, undefined, this.frame.soon);
         for (const draft of this.delivery.savedDrafts())
             this.drafts.save(draft.chatId, draft.text, draft.attachments);
         const recovered = this.drafts.read(this.ui.chatId);
@@ -135,7 +138,7 @@ export class App implements AppContext {
         this.ui.attachmentNames = [...recovered.attachments];
         this.disposeTooltips = installTooltips();
         this.disposeMenus = installFloatingMenus();
-        this.unsubscribe = adapter.subscribe(this.render);
+        this.unsubscribe = adapter.subscribe(this.frame.soon);
         window.addEventListener('beforeunload', this.beforeUnload);
         window.addEventListener('online', this.networkChanged);
         window.addEventListener('offline', this.networkChanged);
@@ -161,6 +164,7 @@ export class App implements AppContext {
             void this.adapter.setup?.refresh();
     };
     render = (): void => {
+        this.frame.cancel();
         this.saveComposer();
         this.delivery.sync();
         if (this.ui.route === 'chat' && !this.state.chats.some(chat => chat.id === this.ui.chatId)) {
@@ -318,6 +322,8 @@ export class App implements AppContext {
             return { ok: false, message: 'Feed generation is already in progress.' };
         try {
             const result = await this.adapter.execute(command);
+            // What the command changed is on the page before its caller goes on.
+            this.frame.flush();
             if (loadingToken !== null)
                 this.contentLoading.finish('feed', loadingToken, result.ok, result.message);
             if (!result.ok || (!silent && result.message))
@@ -419,6 +425,8 @@ export class App implements AppContext {
         this.readQueued = true;
         queueMicrotask(() => {
             this.readQueued = false;
+            // A hidden page draws nothing: read the chat as it is now.
+            this.frame.flush();
             if (this.delivery.history(this.ui.chatId).phase !== 'ready' || this.delivery.connection.kind !== 'ready' || document.visibilityState !== 'visible' || this.root.inert || this.dock.coversConversation || this.ui.route !== 'chat' || document.querySelector('dialog:modal'))
                 return;
             const stream = this.root.querySelector<HTMLElement>('.chat-scroll');
@@ -600,6 +608,7 @@ export class App implements AppContext {
         this.contentLoading.dispose();
         this.delivery.dispose();
         this.approvals.dispose();
+        this.frame.cancel();
         window.removeEventListener('beforeunload', this.beforeUnload);
         window.removeEventListener('online', this.networkChanged);
         window.removeEventListener('offline', this.networkChanged);

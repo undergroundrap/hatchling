@@ -34,7 +34,7 @@ export class ChatDelivery {
     private persisted = false;
     constructor(private readonly adapter: ProtocolAdapter & {
         readonly chatSession?: ChatSessionPort;
-    }, private readonly changed: () => void, private readonly timeoutMs = 12000) {
+    }, private readonly changed: () => void, private readonly timeoutMs = 12000, private readonly streamed: () => void = changed) {
         this.port = adapter.chatSession;
         let recovery;
         try {
@@ -56,7 +56,7 @@ export class ChatDelivery {
                 if (history.phase === 'ready')
                     this.historyErrors.delete(chatId);
             this.observeHistory();
-            this.publish();
+            this.publish(this.streamed);
             this.pump();
         });
         this.observeHistory();
@@ -391,10 +391,11 @@ export class ChatDelivery {
             this.persisted = false;
         }
     }
-    private publish(): void {
+    /** Keep what's unsent, then tell `told`: what the owner did by default, or the stream's listener for what the port heard. */
+    private publish(told: () => void = this.changed): void {
         if (!this.disposed) {
             this.persist();
-            this.changed();
+            told();
         }
     }
     dispose(): void {

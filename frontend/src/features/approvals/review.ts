@@ -22,8 +22,9 @@ export class ApprovalReview {
     private readonly prefix = `approval-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     private serial = 0;
     private disposed = false;
-    constructor(readonly port: TaskApprovalPort | undefined, private readonly changed: () => void, private readonly timeoutMs = 12000) {
-        this.unsubscribe = port?.subscribe(() => { this.sync(); this.changed(); });
+    /** `changed` is told of what the owner does; `streamed` of what the port hears, and may wait to draw it. */
+    constructor(readonly port: TaskApprovalPort | undefined, private readonly changed: () => void, private readonly timeoutMs = 12000, streamed: () => void = changed) {
+        this.unsubscribe = port?.subscribe(() => { this.sync(); streamed(); });
     }
     get requests(): readonly TaskApproval[] { return this.port?.getSnapshot() ?? []; }
     state(id: string): ApprovalFeedback | undefined { return this.feedback.get(id); }
