@@ -38,3 +38,4 @@ As [TEMPLATE.md](TEMPLATE.md), plus the root pass (`HATCHLING_ROOT_PASS=1 bash s
 ## Evidence
 
 - Slice 1, a new room disk's space reserved on the disk below: [room-disk-reserved.md](../evidence/room-disk-reserved.md)
+- Slice 2, a closed room disk grown, keeping what's on it: [room-disk-grown.md](../evidence/room-disk-grown.md)

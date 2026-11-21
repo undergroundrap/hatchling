@@ -785,6 +785,63 @@ pub fn make_reserved_file(path: &Path, size: u64) -> Result<(), Error> {
     })
 }
 
+/// Grows the regular file at `path` to `size` bytes, all its space reserved
+/// on the file system below (WO-040), what's in it kept byte for byte.
+///
+/// Opened without following a link, and only a regular file of `owner`'s
+/// with no other name is grown. Every block up to `size` is allocated
+/// (`fallocate`, mode 0), the ones already there and any holes a sparse
+/// file had: allocating never changes what's written. Less free than it
+/// still needs is refused before anything changes; a reservation that
+/// fails part way leaves the file at least as long as it was, and its
+/// contents as they were.
+///
+/// # Errors
+///
+/// [`Error::Ownership`] when it isn't such a file, `size` is smaller than
+/// it is now (a file is never shrunk here), too little is free, or the
+/// reservation fails.
+pub fn reserve_file_to(path: &Path, size: u64, owner: u32) -> Result<(), Error> {
+    use rustix::fs::{FallocateFlags, FileType, Mode, OFlags};
+    const FLAGS: OFlags = OFlags::WRONLY
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::NONBLOCK)
+        .union(OFlags::CLOEXEC);
+    let file = rustix::fs::open(path, FLAGS, Mode::empty()).map_err(failed("open the file"))?;
+    let seen = rustix::fs::fstat(&file).map_err(failed("fstat the file"))?;
+    if FileType::from_raw_mode(seen.st_mode) != FileType::RegularFile
+        || seen.st_uid != owner
+        || seen.st_nlink != 1
+    {
+        return Err(refused(
+            "grow the file",
+            "it isn't a regular file of its owner's alone, with one name",
+        ));
+    }
+    let now = u64::try_from(seen.st_size).unwrap_or(u64::MAX);
+    if size < now {
+        return Err(refused("grow the file", "it's larger than that already"));
+    }
+    let held = u64::try_from(seen.st_blocks)
+        .unwrap_or(0)
+        .saturating_mul(512);
+    let needed = size.saturating_sub(held);
+    let space = rustix::fs::fstatvfs(&file).map_err(failed("look at the free space"))?;
+    let free = space.f_bavail.saturating_mul(space.f_frsize);
+    if !fits(needed, free) {
+        return Err(Error::Ownership {
+            operation: "reserve the file's space",
+            source: io::Error::new(
+                io::ErrorKind::StorageFull,
+                format!("{needed} more bytes asked for, and {free} free"),
+            ),
+        });
+    }
+    reserve_pieces(size, |offset, piece| {
+        rustix::fs::fallocate(&file, FallocateFlags::empty(), offset, piece)
+    })
+}
+
 /// Makes `name` a new file in `dir`, never over what's there or through a
 /// link (`O_EXCL | O_NOFOLLOW`), 0600, and does `fill` to it. When `fill`
 /// fails, the file made is removed: made by this call as a new file, it is
@@ -1161,6 +1218,66 @@ mod tests {
         })
         .unwrap();
         assert_eq!(asked, 0, "nothing asked of no size");
+    }
+
+    /// A file is grown to a larger size with all its space reserved, what
+    /// it held kept byte for byte (WO-040); never shrunk, never through a
+    /// link, never one with another name or another owner, and never past
+    /// what's free.
+    #[test]
+    fn a_file_grows_reserved_and_keeps_what_it_held() {
+        use std::os::unix::fs::MetadataExt as _;
+        let dir = scratch("grows");
+        let image = dir.join("disk.img");
+        std::fs::write(&image, b"canary").unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&image)
+            .unwrap();
+        file.set_len(16 * MIB).unwrap();
+        drop(file);
+        let me = crate::euid();
+        reserve_file_to(&image, 32 * MIB, me).unwrap();
+        let meta = std::fs::metadata(&image).unwrap();
+        assert_eq!(meta.len(), 32 * MIB, "not grown to the size asked for");
+        assert!(
+            meta.blocks().saturating_mul(512) >= 32 * MIB,
+            "its space isn't all held: {} blocks",
+            meta.blocks()
+        );
+        let bytes = std::fs::read(&image).unwrap();
+        let (head, rest) = bytes.split_at(6);
+        assert_eq!(head, b"canary", "what it held was changed");
+        assert!(rest.iter().all(|byte| *byte == 0), "the rest isn't zeros");
+        // Asked for its size again: nothing to do, and fine.
+        reserve_file_to(&image, 32 * MIB, me).unwrap();
+
+        let refused = |path: &Path, size: u64, owner: u32| {
+            reserve_file_to(path, size, owner).unwrap_err().to_string()
+        };
+        assert!(refused(&image, 16 * MIB, me).contains("larger than that already"));
+        assert!(refused(&image, 64 * MIB, me.wrapping_add(1)).contains("of its owner's alone"));
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&image, &link).unwrap();
+        assert!(
+            reserve_file_to(&link, 64 * MIB, me).is_err(),
+            "grown through a link"
+        );
+        let other = dir.join("other-name");
+        std::fs::hard_link(&image, &other).unwrap();
+        assert!(refused(&image, 64 * MIB, me).contains("with one name"));
+        std::fs::remove_file(&other).unwrap();
+        let huge = refused(&image, 1 << 62, me);
+        assert!(
+            huge.contains("more bytes asked for, and "),
+            "not refused by what's free: {huge}"
+        );
+        assert_eq!(
+            std::fs::metadata(&image).unwrap().len(),
+            32 * MIB,
+            "a refusal changed it"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A file made for filling is removed when the filling fails, and kept

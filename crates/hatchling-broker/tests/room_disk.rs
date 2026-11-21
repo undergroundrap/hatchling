@@ -3187,3 +3187,119 @@ fn an_image_that_is_a_link_is_refused_and_what_it_names_untouched() {
     );
     assert!(place.disk.image().is_symlink());
 }
+
+/// The room disk's own image id, from its record beside it.
+fn recorded_image(place: &Place) -> Result<String, Failed> {
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(place.disk.dir().join("disk.json"))?)?;
+    Ok(record
+        .get("image")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("the record names no image")?
+        .to_owned())
+}
+
+/// How large the open room disk's file system is, in bytes.
+fn file_system_size(mount: &Path) -> Result<u64, Failed> {
+    let seen = rustix::fs::statvfs(mount)?;
+    Ok(seen.f_blocks.saturating_mul(seen.f_frsize))
+}
+
+/// A closed room disk grows, for real (WO-040): what it held before is
+/// byte for byte the same after, and its file system is the new size once
+/// it opens again. A grow cut short before its image grew is finished at
+/// the next open, as is one cut short after its file system grew and before
+/// it was recorded. An open disk isn't grown.
+#[test]
+fn a_closed_room_disk_grows_and_keeps_what_it_held_for_real() {
+    let Some(_disk_tests) = as_root("a_closed_room_disk_grows_and_keeps_what_it_held_for_real")
+    else {
+        return;
+    };
+    let place = Place::new("grow").unwrap();
+    let keeper = Keeper::start(&place, "keeper").unwrap();
+    let run = |op| room_disk::run(&place.disk, &keeper.spawner, op);
+    let mount = place.disk.mount_point();
+    let marker = place.disk.dir().join("disk.grow");
+    run(RoomDiskOp::Create).unwrap();
+    run(RoomDiskOp::Open).unwrap();
+    // What it holds: a canary, and its digest.
+    let canary: Vec<u8> = (0..(4u32 << 20))
+        .map(|at| at.wrapping_mul(2_654_435_761).to_le_bytes()[1])
+        .collect();
+    std::fs::write(mount.join("canary"), &canary).unwrap();
+    let digest = Sha256::digest(&canary);
+    let made = file_system_size(&mount).unwrap();
+    assert!(
+        room_disk::grow(&place.disk, 2 * SIZE)
+            .unwrap_err()
+            .contains("the room disk is open"),
+        "an open disk was grown"
+    );
+    run(RoomDiskOp::Close).unwrap();
+
+    // Grown closed; its file system grows at the next open.
+    room_disk::grow(&place.disk, 2 * SIZE).unwrap();
+    assert_eq!(
+        std::fs::metadata(place.disk.image()).unwrap().len(),
+        2 * SIZE
+    );
+    assert!(marker.exists(), "the grow wasn't marked for the next open");
+    run(RoomDiskOp::Open).unwrap();
+    let grown = file_system_size(&mount).unwrap();
+    assert!(
+        grown > made + SIZE / 2,
+        "its file system didn't grow: {made} then {grown}"
+    );
+    assert_eq!(
+        Sha256::digest(std::fs::read(mount.join("canary")).unwrap()),
+        digest,
+        "what it held changed"
+    );
+    assert!(!marker.exists(), "a finished grow left its mark");
+    run(RoomDiskOp::Close).unwrap();
+
+    // Cut short before its image grew: the mark alone, finished at open.
+    let mark = |size: u64| {
+        let text = format!(
+            r#"{{"format":1,"image":"{}","size":{size}}}"#,
+            recorded_image(&place).unwrap()
+        );
+        std::fs::write(&marker, text).unwrap();
+        std::fs::set_permissions(&marker, std::fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    mark(3 * SIZE);
+    run(RoomDiskOp::Open).unwrap();
+    assert_eq!(
+        std::fs::metadata(place.disk.image()).unwrap().len(),
+        3 * SIZE
+    );
+    let again = file_system_size(&mount).unwrap();
+    assert!(
+        again > grown + SIZE / 2,
+        "a grow cut short wasn't finished: {grown} then {again}"
+    );
+    assert_eq!(
+        Sha256::digest(std::fs::read(mount.join("canary")).unwrap()),
+        digest
+    );
+    assert!(!marker.exists());
+    run(RoomDiskOp::Close).unwrap();
+
+    // Cut short after its file system grew, before it was recorded: the
+    // next open finds nothing more to grow, and clears the mark.
+    mark(3 * SIZE);
+    run(RoomDiskOp::Open).unwrap();
+    assert_eq!(
+        file_system_size(&mount).unwrap(),
+        again,
+        "a grown file system changed"
+    );
+    assert_eq!(
+        Sha256::digest(std::fs::read(mount.join("canary")).unwrap()),
+        digest
+    );
+    assert!(!marker.exists());
+    run(RoomDiskOp::Close).unwrap();
+    run(RoomDiskOp::Wipe).unwrap();
+}
