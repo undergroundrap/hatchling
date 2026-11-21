@@ -1130,3 +1130,33 @@ jobs:
         run: |
           npm ci
           npm run protocol:check
+
+  windows-scripts:
+    # The Windows tools (installer/windows) in Windows PowerShell, as the
+    # Start menu runs them: every script parses, and compact.ps1's tests
+    # pass. They need no WSL: what the script would change (WSL's service,
+    # the shutdown, diskpart) is played by stand-ins that record each call.
+    name: Windows scripts
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Every script parses
+        shell: powershell
+        run: |
+          $bad = 0
+          foreach ($file in Get-ChildItem installer\windows -Recurse -Filter *.ps1) {
+            $errors = $null
+            [void] [System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref] $null, [ref] $errors)
+            foreach ($problem in $errors) {
+              Write-Host "$($file.FullName):$($problem.Extent.StartLineNumber): $($problem.Message)"
+              $bad++
+            }
+          }
+          if ($bad -gt 0) { exit 1 }
+
+      - name: compact.ps1's tests
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer\windows\tests\compact.tests.ps1

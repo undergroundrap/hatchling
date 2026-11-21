@@ -64,6 +64,7 @@ Source: "common.ps1"; DestDir: "{tmp}"; Flags: ignoreversion
 Source: "setup.ps1"; DestDir: "{tmp}"; Flags: ignoreversion
 Source: "open.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "broker.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "compact.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\frontend\public\favicon.ico"; DestDir: "{app}"; DestName: "hatchling.ico"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 Source: "{#ReleaseDir}\*"; DestDir: "{tmp}\release"; Flags: ignoreversion
@@ -73,6 +74,8 @@ Name: "{autoprograms}\Hatchling"; Filename: "{#Script}"; Parameters: "{#Run} ""{
 Name: "{autoprograms}\Hatchling Tools\Protect your vault"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do protect"; IconFilename: "{app}\hatchling.ico"
 Name: "{autoprograms}\Hatchling Tools\Make a backup"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do backup"; IconFilename: "{app}\hatchling.ico"
 Name: "{autoprograms}\Hatchling Tools\Unlock"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\broker.ps1"" -Distro {#Distro} -Do unlock"; IconFilename: "{app}\hatchling.ico"
+; The one tool that asks for an administrator, for the compaction alone (#520).
+Name: "{autoprograms}\Hatchling Tools\Free up disk space"; Filename: "{#Script}"; Parameters: "{#Run} ""{app}\compact.ps1"" -Distro {#Distro}"; IconFilename: "{app}\hatchling.ico"
 ; WSL stops a distro soon after its last terminal closes: this keeps it running
 ; while the owner is logged in, with no window.
 Name: "{userstartup}\Hatchling"; Filename: "{sys}\conhost.exe"; Parameters: "--headless wsl.exe -d {#Distro} --exec sleep infinity"; Tasks: keeprunning

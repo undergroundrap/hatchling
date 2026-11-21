@@ -127,7 +127,7 @@ Each artifact lands in a folder of its own. Wait for the run's comparison jobs t
 - **An update doesn't keep the old version.** It replaces the programs (about 23 MB) and the app in place. The agent's computer's image, where Setup installs it, is about 240 MB, and is replaced too.
 - **What it leaves behind is small**: a copy of your configuration when it changed it.
 - **A snapshot is the only large thing**, and it's yours to delete.
-- **You don't need to compact WSL's disk after an update.** A distro's disk file grows and never shrinks by itself, but an update adds little to it, and a snapshot isn't inside it. Compacting is worth it after you've deleted many gigabytes inside a distro, such as old models or build output: [Disk usage](testing-on-wsl2.md#disk-usage) says how. It needs `wsl --shutdown`, which stops every distro, so a protected vault is locked after.
+- **You don't need to compact WSL's disk after an update.** A distro's disk file grows and never shrinks by itself, but an update adds little to it, and a snapshot isn't inside it. Compacting is worth it after you've deleted many gigabytes inside a distro, such as old models or build output: **Hatchling Tools → Free up disk space** does it ([Freeing disk space](windows.md#freeing-disk-space)). It stops every distro, so a protected vault is locked after.
 
 ## Testing an update before you trust it
 

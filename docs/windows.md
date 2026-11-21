@@ -40,6 +40,8 @@ A setup with administrator rights can change anything on your PC. This one can't
 
 There are two exceptions, each once, and each from Windows itself. If WSL isn't on your PC, installing it needs an administrator. So does allowing a security key with usbipd.
 
+One tool asks for an administrator each time you run it: **Free up disk space**, because Windows lets only an administrator compact a disk file. It asks only for that step, and says what it will touch first: [Freeing disk space](#freeing-disk-space).
+
 ## What's in the Start menu
 
 | Item | What it does | What you'll type |
@@ -48,6 +50,7 @@ There are two exceptions, each once, and each from Windows itself. If WSL isn't 
 | **Hatchling Tools → Protect your vault** | Registers a security key, such as a YubiKey | Your key's PIN, then you touch it |
 | **Hatchling Tools → Make a backup** | Saves one sealed file with everything Hatchling knows | Your key's PIN, if you use one |
 | **Hatchling Tools → Unlock** | Opens a locked vault, after a restart | Your key's PIN, then you touch it; or a code from your [authenticator app](authenticator.md) |
+| **Hatchling Tools → Free up disk space** | Gives Windows back the space WSL keeps after files are deleted: [Freeing disk space](#freeing-disk-space) | `yes`, then Windows asks for an administrator |
 
 Windows search finds these by name, not by their folder: open the Start menu and type **Unlock**, say.
 
@@ -143,6 +146,30 @@ Download the new Setup and [verify it](#verify-setup-before-running-it) before r
 Hatchling never checks for updates by itself, because it sends nothing out on its own. New versions are on [the releases page](https://github.com/undergroundrap/hatchling/releases).
 
 To put the whole install back as it was if a new version doesn't suit you, take a snapshot of the distro before updating: [Updating Hatchling](updating.md#a-safety-copy) says how, and what it costs in disk space.
+
+## Freeing disk space
+
+WSL keeps Hatchling's distro in one file, `ext4.vhdx`, which grows as the distro uses space and never shrinks by itself. Deleting files inside the distro, such as old models or the agent's work, frees space for the distro, not for Windows. **Hatchling Tools → Free up disk space** gives Windows back what's free inside.
+
+It says what it will do and waits for you to type `yes`. It refuses, changing nothing, while a backup, a restore, another of the broker's store commands or Hatchling's setup is running. Then it:
+
+1. stops Hatchling and runs `hatchling-broker clean`, which removes only Hatchling's leftovers, never your data;
+2. trims the distro's free space (`fstrim`). The disk file gives back only whole 1 MB blocks that nothing is in, and a block freed a file at a time stays in it until a trim;
+3. stops every WSL distro, Docker Desktop's too;
+4. asks Windows for an administrator, for this step alone. That window finds the distro's disk file from WSL's own record in your account, never from a path it's given. It sets WSL's service not to start, stops it, compacts that one file, and puts the service back as it was, even if something fails. Without holding the service stopped, something starts WSL again within a second, and the file can't be compacted;
+5. starts Hatchling again, and says how large the file was and is.
+
+The file stays larger than what's in use inside: it keeps every 1 MB block that holds anything, and the filesystem's own tables.
+
+If you use a security key, Hatchling is locked afterwards, as after a restart: open Hatchling from the Start menu to unlock it.
+
+In PowerShell, the same tool is `compact.ps1`, where Setup put Hatchling. `-DryRun` says what it would do, with the file's size and what's used inside, and changes nothing; `-Distro <name>` chooses another distro:
+
+```powershell
+powershell -ExecutionPolicy RemoteSigned -File "$env:LOCALAPPDATA\Programs\Hatchling\compact.ps1" -DryRun
+```
+
+Compacting is worth it after you've deleted many gigabytes. An update adds little to the file. To do it by hand instead, see [Disk usage](testing-on-wsl2.md#disk-usage).
 
 ## If you'd rather use a terminal
 
