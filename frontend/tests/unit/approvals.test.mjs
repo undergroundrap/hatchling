@@ -236,3 +236,30 @@ test('adapter does not accept a conflicting new decision while a previous result
     assert.equal(port.getSnapshot()[0].status, 'allowed-once');
     adapter.dispose();
 });
+test('what the port hears goes to the stream listener, which may wait to draw; the owner deciding is told at once (#528)', async () => {
+    const { adapter, port, request } = setup();
+    const listeners = new Set();
+    const heard = { getSnapshot: () => port.getSnapshot(), subscribe: fn => { listeners.add(fn); return () => listeners.delete(fn); }, respond: command => port.respond(command), refresh: id => port.refresh(id) };
+    const hear = () => {
+        for (const listener of listeners)
+            listener();
+    };
+    let changes = 0;
+    let streams = 0;
+    const review = new ApprovalReview(heard, () => { changes++; }, undefined, () => { streams++; });
+    hear();
+    hear();
+    assert.equal(streams, 2, 'each event is heard');
+    assert.equal(changes, 0, 'none of them asks to draw at once');
+    await review.respond(request, 'once');
+    assert.ok(changes > 0, 'the owner deciding draws at once');
+    assert.equal(port.getSnapshot()[0].status, 'allowed-once');
+    review.dispose();
+    // With no stream listener, what the port hears is told as a change.
+    let plain = 0;
+    const quiet = new ApprovalReview(heard, () => { plain++; });
+    hear();
+    assert.equal(plain, 1);
+    quiet.dispose();
+    adapter.dispose();
+});

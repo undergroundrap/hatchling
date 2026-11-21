@@ -39,13 +39,14 @@ function harness(options = {}) {
         saveRecovery: value => { saved = structuredClone(value); return !options.storageDenied; },
     };
     const adapter = { mode: 'scripted', getSnapshot: () => state, execute: async () => ({ ok: true, message: '' }), subscribe: () => () => { }, dispose() { }, chatSession: port };
-    const delivery = new ChatDelivery(adapter, () => changes++, options.timeout ?? 1000);
+    let streams = 0;
+    const delivery = new ChatDelivery(adapter, () => changes++, options.timeout ?? 1000, options.streamed ? () => streams++ : undefined);
     const emit = (kind, histories) => {
         session = { connection: { kind, detail: '' }, histories: histories ?? session.histories };
         for (const listener of listeners)
             listener();
     };
-    return { delivery, state, calls, accept, emit, port, adapter, saved: () => saved, changes: () => changes };
+    return { delivery, state, calls, accept, emit, port, adapter, saved: () => saved, changes: () => changes, streams: () => streams };
 }
 function cleanup(t, h) { t.after(() => h.delivery.dispose()); return h; }
 test('offline messages are visible, never dispatched, then delivered exactly once in order', async (t) => {
@@ -247,6 +248,23 @@ test('disposing cancels delivery deadlines and subscription callbacks', async (t
     h.emit('offline');
     await tick(25);
     assert.equal(h.changes(), changes);
+});
+test('what the session hears goes to the stream listener, which may wait to draw; what the owner does is told at once (#528)', async (t) => {
+    const h = cleanup(t, harness({ streamed: true }));
+    h.emit('ready');
+    h.emit('ready');
+    assert.equal(h.streams(), 2, 'each event is heard');
+    assert.equal(h.changes(), 0, 'none of them asks to draw at once');
+    assert.equal(h.delivery.enqueue('main', 'Hello', []), true);
+    assert.ok(h.changes() > 0, 'the owner sending draws at once');
+    assert.equal(h.streams(), 2);
+    await tick();
+    assert.equal(h.calls.length, 1, 'sent as before');
+    // With no stream listener, what the session hears is told as a change.
+    const plain = cleanup(t, harness());
+    plain.emit('ready');
+    assert.equal(plain.changes(), 1);
+    assert.equal(plain.streams(), 0);
 });
 test('connector chats cannot appear inside side chats, including archived views', () => {
     const state = createFixtures();
