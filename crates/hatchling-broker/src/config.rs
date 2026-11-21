@@ -1870,13 +1870,20 @@ fn parse_agent_uid(
 ///
 /// [`Error::InvalidConfig`] when it's neither: no account has that name.
 pub(crate) fn agent_uid_value(raw: &str) -> Result<u32, Error> {
+    uid_value("HATCHLING_AGENT_UID", raw)
+}
+
+/// The uid `raw` names for the setting `key`: a kernel uid in base 10, or
+/// the name of a local account.
+///
+/// # Errors
+///
+/// [`Error::InvalidConfig`] for `key` when it's neither.
+pub(crate) fn uid_value(key: &'static str, raw: &str) -> Result<u32, Error> {
     if let Ok(uid) = raw.parse::<u32>() {
         return Ok(uid);
     }
-    let invalid = |reason: String| Error::InvalidConfig {
-        key: "HATCHLING_AGENT_UID",
-        reason,
-    };
+    let invalid = |reason: String| Error::InvalidConfig { key, reason };
     match hatchling_sys::subid::local_account(raw) {
         Ok(Some((uid, _))) => Ok(uid),
         Ok(None) => Err(invalid(format!(
@@ -3686,6 +3693,16 @@ mod tests {
         assert!(
             refused.to_string().contains("no local account"),
             "{refused}"
+        );
+        assert!(
+            matches!(
+                refused,
+                Error::InvalidConfig {
+                    key: "HATCHLING_AGENT_UID",
+                    ..
+                }
+            ),
+            "the refusal names its own setting: {refused:?}"
         );
     }
 
