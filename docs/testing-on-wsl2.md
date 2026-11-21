@@ -208,13 +208,29 @@ Don't enable sparse mode: `wsl --manage <distro> --set-sparse true`
 is refused on current WSL because of data-corruption risk. Don't
 override it with `--allow-unsafe`.
 
-To reclaim the space, with nothing running in WSL: run
+To reclaim the space, run `installer/windows/compact.ps1 -Distro <name>`
+(on an install, **Hatchling Tools → Free up disk space**): it cleans
+Hatchling's leftovers, stops WSL, and compacts that distro's disk file
+as an administrator, putting WSL's service back as it was. `-DryRun`
+says what it would do and changes nothing. [Freeing disk
+space](windows.md#freeing-disk-space) says what it touches.
+
+By hand, with nothing running in WSL: run
 `wsl --shutdown`, then in an Administrator PowerShell run `diskpart`
 with `select vdisk file="<path>\ext4.vhdx"`, `attach vdisk readonly`,
 `compact vdisk`, `detach vdisk`. The path comes from
 `(Get-ChildItem HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss | Get-ItemProperty | Where-Object DistributionName -eq Ubuntu).BasePath`.
 Note `wsl --shutdown` also stops Docker Desktop. Reference result:
 19.97 GB → 9.18 GB.
+
+If diskpart says the file is in use however soon you run it after
+`wsl --shutdown`, something is starting WSL again (on one machine,
+within a second of every shutdown). Hold it stopped: in the same
+Administrator PowerShell, note `(Get-CimInstance Win32_Service -Filter
+"Name='WslService'").StartMode`, run `sc.exe config WslService start=
+disabled`, `wsl --shutdown` and `Stop-Service WslService -Force`, compact,
+then put its start back (`sc.exe config WslService start= auto`, or
+`demand` if it was Manual) and `Start-Service WslService`.
 
 Point `TMPDIR` for mutation runs at the ext4 disk, as section 7 says,
 and delete the scratch directory after each run.

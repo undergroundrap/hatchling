@@ -88,4 +88,4 @@ Stop the broker, run `hatchling-broker clean`, then delete every path set under 
 
 ## On WSL2
 
-Deleting files inside Linux doesn't shrink WSL2's virtual disk on Windows: it only grows. See [Testing on WSL2](testing-on-wsl2.md#disk-usage) to compact it.
+Deleting files inside Linux doesn't shrink WSL2's virtual disk on Windows: it only grows. **Hatchling Tools → Free up disk space** compacts it: [Freeing disk space](windows.md#freeing-disk-space). To do it by hand, see [Disk usage](testing-on-wsl2.md#disk-usage).

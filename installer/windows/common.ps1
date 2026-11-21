@@ -14,12 +14,13 @@ function Stop-Setup([string] $Message) {
     exit 1
 }
 
-# The distros here, one name a line. wsl.exe writes UTF-16 to a pipe.
-function Get-Distros {
+# The distros here, or with -Running those running, one name a line.
+# wsl.exe writes UTF-16 to a pipe.
+function Get-Distros([switch] $Running) {
     $before = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.Encoding]::Unicode
     try {
-        $names = & wsl.exe --list --quiet 2>$null
+        $names = if ($Running) { & wsl.exe --list --running --quiet 2>$null } else { & wsl.exe --list --quiet 2>$null }
         if ($LASTEXITCODE -ne 0) { return @() }
         return @($names | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     }
