@@ -164,7 +164,12 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             "confinement",
             confinement_said(hatchling_sys::landlock::landlock_abi()),
         ),
-        ("users", users_said(service, hatchling_sys::euid())),
+        (
+            "users",
+            users_said(service, hatchling_sys::euid(), &|name| {
+                hatchling_sys::subid::local_account(name).map_err(|e| e.to_string())
+            }),
+        ),
         ("output gate", output_gate_said(&lookup)),
         ("decisions", decisions_said(&lookup)),
         ("room disk", check_room_disk(&lookup)),
@@ -706,11 +711,47 @@ fn is_set(value: Option<String>) -> bool {
     value.is_some_and(|value| !value.trim().is_empty())
 }
 
+/// The system users a broker run as root gives its parts, each a user of
+/// its own (WO-017), with the part each is for.
+const SERVICE_USERS: [(&str, &str); 3] = [
+    (
+        crate::broker_user::BROKER_USER,
+        "the broker's, once started",
+    ),
+    (crate::keeper::KEEPER_USER, "the vault keeper's"),
+    (
+        crate::egress_authority::EGRESS_USER,
+        "the egress authority's",
+    ),
+];
+
+/// A local account's uid and gid by its name: none when there's no such
+/// account, or why it couldn't be looked up.
+type Account<'a> = dyn Fn(&str) -> Result<Option<(u32, u32)>, String> + 'a;
+
 /// What doctor says of who the Keeper and the Broker run as: a user of
-/// their own each, as the `service` or run as root (`euid` 0); otherwise
-/// the owner's own.
-fn users_said(service: bool, euid: u32) -> Finding {
+/// their own each, as the `service` or run as root (`euid` 0), so each of
+/// [`SERVICE_USERS`] must be an `account` that isn't root (WO-033);
+/// otherwise the owner's own.
+fn users_said(service: bool, euid: u32, account: &Account<'_>) -> Finding {
     if service || euid == 0 {
+        let wrong: Vec<String> = SERVICE_USERS
+            .iter()
+            .filter_map(|(name, part)| match account(name) {
+                Ok(Some((0, _))) => Some(format!("{name}, {part} user, is root")),
+                Ok(Some(_)) => None,
+                Ok(None) => Some(format!("there's no {name}, {part} user")),
+                Err(why) => Some(format!("{name} couldn't be looked up: {why}")),
+            })
+            .collect();
+        if !wrong.is_empty() {
+            return Finding::Problem {
+                what: format!("{}: the broker won't start without it", wrong.join("; ")),
+                fix: String::from(
+                    "Each is a system user of its own. `sudo systemd-sysusers` makes them from /etc/sysusers.d/hatchling.conf, which the installer put there; or run the README's `useradd` line for each",
+                ),
+            };
+        }
         Finding::Fine(String::from(
             "the Keeper and the Broker each run as a user of their own",
         ))
@@ -2105,12 +2146,16 @@ mod tests {
     /// as the owner (WO-037).
     #[test]
     fn a_hand_run_install_says_who_runs_it() {
-        let (kind, words) = said(&users_said(false, 1000));
+        let all = |_: &str| -> Result<Option<(u32, u32)>, String> { Ok(Some((990, 990))) };
+        let (kind, words) = said(&users_said(false, 1000, &all));
         assert_eq!(kind, "note");
         assert!(words.contains("run as your own user"), "{words}");
+        // Run by hand, the users aren't needed, so a missing one isn't asked after.
+        let asked = |_: &str| -> Result<Option<(u32, u32)>, String> { Err(String::from("asked")) };
+        assert_eq!(said(&users_said(false, 1000, &asked)).0, "note");
         for (service, euid) in [(true, 1000), (false, 0), (true, 0)] {
             assert_eq!(
-                said(&users_said(service, euid)).0,
+                said(&users_said(service, euid, &all)).0,
                 "fine",
                 "{service} {euid}"
             );
@@ -2119,6 +2164,66 @@ mod tests {
         assert!(is_set(Some(String::from("/usr/bin/x"))));
         assert!(!is_set(Some(String::from("  "))));
         assert!(!is_set(None));
+    }
+
+    /// As the service or root, a system user that's missing, root, or
+    /// can't be looked up is a problem naming it, and how to make it
+    /// (WO-033); each of the three is asked after.
+    #[test]
+    fn a_missing_system_user_is_named() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let without = |gone: &'static str, root: &'static str| {
+            move |name: &str| -> Result<Option<(u32, u32)>, String> {
+                Ok(if name == gone {
+                    None
+                } else if name == root {
+                    Some((0, 0))
+                } else {
+                    Some((990, 990))
+                })
+            }
+        };
+        let recording = |name: &str| -> Result<Option<(u32, u32)>, String> {
+            asked.borrow_mut().push(name.to_owned());
+            Ok(Some((990, 990)))
+        };
+        assert_eq!(said(&users_said(true, 0, &recording)).0, "fine");
+        assert_eq!(
+            *asked.borrow(),
+            ["hatchling-broker", "hatchling-keeper", "hatchling-egress"]
+        );
+        for (service, euid) in [(true, 1000), (false, 0)] {
+            let (kind, words) = said(&users_said(service, euid, &without("hatchling-keeper", "")));
+            assert_eq!(kind, "problem", "{service} {euid}");
+            assert!(
+                words.contains("there's no hatchling-keeper, the vault keeper's user")
+                    && words.contains("systemd-sysusers")
+                    && !words.contains("hatchling-egress"),
+                "{words}"
+            );
+        }
+        let (kind, words) = said(&users_said(true, 0, &without("", "hatchling-egress")));
+        assert_eq!(kind, "problem");
+        assert!(
+            words.contains("hatchling-egress, the egress authority's user, is root"),
+            "{words}"
+        );
+        let both = without("hatchling-broker", "hatchling-egress");
+        let (_, words) = said(&users_said(true, 0, &both));
+        assert!(
+            words.contains("there's no hatchling-broker")
+                && words.contains("hatchling-egress, the egress"),
+            "each is named: {words}"
+        );
+        let unreadable = |_: &str| -> Result<Option<(u32, u32)>, String> {
+            Err(String::from("cannot read /etc/passwd"))
+        };
+        let (kind, words) = said(&users_said(true, 0, &unreadable));
+        assert_eq!(kind, "problem");
+        assert!(
+            words.contains("couldn't be looked up: cannot read /etc/passwd"),
+            "{words}"
+        );
     }
 
     /// The output gate off, or a built-in check off, is said (WO-037).
