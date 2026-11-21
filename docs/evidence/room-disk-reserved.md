@@ -103,6 +103,16 @@ disk below (it checked the opposite, that it was sparse, before).
 **Unviable mutant:** `again_if_interrupted` returning
 `Ok(Default::default())`, which its result type doesn't have.
 
+**Found by CI, on a real install:** the install job's app check bounded
+the image's allocated bytes by its size, as a sparse image's were, and
+failed. A reserved image takes all of its size, and ext4 keeps one extent
+block of its own for it: reserved in 8 MiB pieces, a 1, 2 or 10 GiB image
+took its size and 4096 bytes. What the broker reports was true; the
+check's bound was the sparse one. The check now requires the image to
+take at least its size, so the install job proves the space is reserved
+(fix commit `4f95adba`). Its tests: 10 passed, and two hand-breaks (the
+old bound put back, a sparse image let through) both caught.
+
 ## Residual
 
 - **A room disk made before this** keeps its sparse file. Growing it
