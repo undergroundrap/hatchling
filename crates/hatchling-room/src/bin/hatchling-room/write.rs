@@ -62,16 +62,20 @@ enum Put {
     Over(u32),
 }
 
+/// How many names beside a file are tried before a write is given up:
+/// a name a job made first is never written over, nor removed.
+const BESIDE_TRIES: u32 = 16;
+
 /// Puts `bytes` at `path` in one step: written beside it under a name of
 /// its own, then given the path. What was written beside it is removed
-/// if it doesn't get there.
+/// if it doesn't get there; a name something else made first is passed
+/// over, and never removed (#573).
 fn put(path: &Path, bytes: &[u8], how: Put) -> io::Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-    let count = WRITTEN.fetch_add(1, Ordering::Relaxed);
-    let beside = dir.join(format!(".hatchling-write-{}-{count}", std::process::id()));
-    let placed = written(&beside, bytes, how).and_then(|()| match how {
+    let (beside, file) = beside(dir)?;
+    let placed = filled(file, bytes, how).and_then(|()| match how {
         // It is given the name only if nothing has that name: a rename
         // that replaces nothing. There are no hard links in the Room.
         Put::New => rustix::fs::renameat_with(CWD, &beside, CWD, path, RenameFlags::NOREPLACE)
@@ -84,13 +88,30 @@ fn put(path: &Path, bytes: &[u8], how: Put) -> io::Result<()> {
     placed
 }
 
-/// Writes `bytes` to a new file at `beside`, with the mode `how` asks.
-fn written(beside: &Path, bytes: &[u8], how: Put) -> io::Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(NEW_FILE_MODE)
-        .open(beside)?;
+/// A new file in `dir`, made by this write alone, and its path: one
+/// that was there first, whatever made it, is passed over. Made only
+/// where nothing is (`O_EXCL`), it is never a link's target.
+fn beside(dir: &Path) -> io::Result<(std::path::PathBuf, File)> {
+    let mut last = io::Error::from(io::ErrorKind::AlreadyExists);
+    for _ in 0..BESIDE_TRIES {
+        let count = WRITTEN.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!(".hatchling-write-{}-{count}", std::process::id()));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(NEW_FILE_MODE)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last = error,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last)
+}
+
+/// Writes `bytes` to `file`, just made, with the mode `how` asks.
+fn filled(mut file: File, bytes: &[u8], how: Put) -> io::Result<()> {
     file.write_all(bytes)?;
     if let Put::Over(mode) = how {
         file.set_permissions(Permissions::from_mode(mode))?;
@@ -280,6 +301,53 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    /// A name beside the file that something else made first is passed
+    /// over, never written over nor removed: the write is made under a
+    /// name of its own (#573).
+    #[test]
+    fn a_name_made_first_beside_the_file_is_passed_over_and_kept() {
+        let dir = scratch("planted");
+        let next = WRITTEN.load(Ordering::Relaxed);
+        let planted: Vec<PathBuf> = (next..next + 8)
+            .map(|count| dir.join(format!(".hatchling-write-{}-{count}", std::process::id())))
+            .collect();
+        for path in &planted {
+            std::fs::write(path, "a job's").unwrap();
+        }
+        let path = dir.join("notes.txt");
+        assert!(
+            wrote(
+                &path,
+                b"the agent's
+",
+                false
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"the agent's
+"
+        );
+        for path in &planted {
+            assert_eq!(std::fs::read(path).unwrap(), b"a job's", "{path:?}");
+        }
+        // Every name passed over, the write is refused, and still nothing
+        // of what was there is removed.
+        let next = WRITTEN.load(Ordering::Relaxed);
+        let planted: Vec<PathBuf> = (next..next + 4 * u64::from(BESIDE_TRIES))
+            .map(|count| dir.join(format!(".hatchling-write-{}-{count}", std::process::id())))
+            .collect();
+        for path in &planted {
+            std::fs::write(path, "a job's").unwrap();
+        }
+        assert!(wrote(&dir.join("other.txt"), b"x", false).is_err());
+        assert!(!dir.join("other.txt").exists());
+        for path in &planted {
+            assert_eq!(std::fs::read(path).unwrap(), b"a job's", "{path:?}");
+        }
     }
 
     /// A new file is written whole, with the directories it is under, as

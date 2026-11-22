@@ -175,12 +175,14 @@ impl Place {
     }
 }
 
-/// A file only the Room's user may read, made anew.
+/// A file only the Room's user may read, made anew by this call: made
+/// only where nothing is (`O_EXCL`), so a file or a link a job put at
+/// `path` first is never opened, nor truncated (#573). A job's name is
+/// never given twice, so its own files are never there before.
 fn private(path: &Path) -> io::Result<File> {
     OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(path)
 }
