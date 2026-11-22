@@ -55,4 +55,5 @@ Filled in at close.
 - Slices: (1) the runner, the result format, five conformance fixtures and the tasks, with their stand-ins; (2) the behaviour families; (3) the first real runs, published; (4) after #534, the direct OpenAI and Anthropic configurations.
 - The local models need their own copy in the harness's install: a one-time download, done with the maintainer's approval.
 - A free hosted model can change or be rate-limited by its provider at any time: each result records the date and the provider's model id, and the published table says so.
-- Comes last on v0.10.0's agent track, by the maintainer's decision of 2026-11-22: after WO-046 (signed playbook skills), #533, #595, #531, #535 and #534, so the benchmarks measure the agent people will run.
+- Comes last, at the end of v0.11.0, by the maintainer's decisions of 2026-11-22: after v0.10.0 (WO-046, WO-047, #533, #595, #531, #535, #534) and WO-048, so the benchmarks measure the agent people will run, recall included.
+- The queue's candidate *Evaluations of whole tasks* is part of this: a requirement changed over several turns, a large tool result, injected instructions in retrieved content, a tool failing halfway, an action that succeeded just before an interruption, an approval expired or changed, and memory that conflicts with a correction are among the task and behaviour fixtures.
