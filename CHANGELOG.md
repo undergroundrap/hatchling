@@ -9,6 +9,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 ### Fixed
 
 - **Windows Setup never shows the app's address** ([#583](https://github.com/undergroundrap/hatchling/issues/583)). The address holds the token every app connection needs, so Setup keeps it off the screen and the Start menu opens the app. On a first install with a hosted model, the console that asks for the model's key showed everything the installer printed, the address too. Now the installer leaves it out when Setup runs it.
+- **`doctor` says what installs the agent's computer** ([#584](https://github.com/undergroundrap/hatchling/issues/584)). When the Room couldn't start, it said Windows Setup installs its image and Linux has no package for it, whatever stopped it. Since 0.9.0 the Linux installer adds the image too, on x86_64. Now it says what answers the cause: install a release with the image, on Linux or Windows; run on x86_64; or give cells a cgroup.
 
 ## [0.9.0] - 2026-11-22
 
