@@ -127,6 +127,16 @@ fn a_v1_manifest_is_refused_with_how_to_fix_it() {
     let reason = err.to_string();
     assert!(reason.contains("format v1"), "{reason}");
     assert!(reason.contains("format 2"), "{reason}");
+    // Only a manifest with v1's field and without v2's is called v1: one
+    // with both, or with neither, is simply malformed.
+    for other in [
+        br#"{"format":2,"name":"s","entry_point":"m.py"}"#.as_slice(),
+        br#"{"name":"s","version":"1"}"#.as_slice(),
+    ] {
+        let reason = SignedManifest::from_json(other).unwrap_err().to_string();
+        assert!(reason.contains("parse:"), "{reason}");
+        assert!(!reason.contains("format v1"), "{reason}");
+    }
 }
 
 #[test]

@@ -640,7 +640,7 @@ fn closed_to_others(dir: &Path) -> Result<(), String> {
         return Err(format!("{shown} is not a directory (symlinks are refused)"));
     }
     let euid = hatchling_sys::euid();
-    if meta.uid() != 0 && meta.uid() != euid {
+    if !owned_by_root_or(meta.uid(), euid) {
         return Err(format!(
             "{shown} must be owned by root or the broker's uid {euid}, not uid {}",
             meta.uid()
@@ -653,6 +653,13 @@ fn closed_to_others(dir: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Whether a directory `owner` may hold skills for a broker running as
+/// `euid`: root's, or the broker's own. A test can't make a directory of
+/// another uid without root, so the rule is a function its tests reach.
+const fn owned_by_root_or(owner: u32, euid: u32) -> bool {
+    owner == 0 || owner == euid
 }
 
 /// Read `relative` inside `root` without following a symlink anywhere.
@@ -1170,6 +1177,16 @@ mod tests {
             "{reason}"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_skill_dir_is_root_s_or_the_broker_s_and_no_one_else_s() {
+        // As the broker's uid, as root, and another uid.
+        assert!(owned_by_root_or(1000, 1000));
+        assert!(owned_by_root_or(0, 1000));
+        assert!(owned_by_root_or(0, 0));
+        assert!(!owned_by_root_or(1001, 1000));
+        assert!(!owned_by_root_or(1000, 0));
     }
 
     #[test]
