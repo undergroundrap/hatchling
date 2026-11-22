@@ -29,6 +29,8 @@ pub(crate) const IMAGE_DIR: &str = "/usr/local/share/hatchling/room";
 const UNSHARE: &str = "/usr/bin/unshare";
 const SUPERVISOR: &str = "/usr/local/libexec/hatchling-room";
 const SUPERVISOR_FD: i32 = 3;
+/// The Room's host name, in its own UTS namespace: never the machine's.
+pub(crate) const HOST_NAME: &str = "hatchling-room";
 const READY: &[u8; 9] = b"\0\0\0\x05ready";
 const UNSUPPORTED_ARCH: &str = "the Room supervisor requires x86_64 Linux";
 const DEADLINE: Duration = Duration::from_secs(30);
@@ -390,7 +392,19 @@ fn mount_command(program: &Path, launcher: UnixStream) -> Command {
     // The original socket stays close-on-exec in the spawner. Only this
     // child's stdio setup installs the launch end as descriptor zero.
     command
-        .args(["--pid", "--fork", "--kill-child", "--net", "--ipc"])
+        // Its own host name and cgroup root too: the machine's name and
+        // where the Room sits in the host's cgroups aren't the Room's to
+        // read (#572). It joins its cgroup before this runs, so that
+        // cgroup is its root.
+        .args([
+            "--pid",
+            "--fork",
+            "--kill-child",
+            "--net",
+            "--ipc",
+            "--uts",
+            "--cgroup",
+        ])
         .arg(program)
         .arg(ROOM_MOUNT_SUBCOMMAND)
         .env_clear()
@@ -404,6 +418,7 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
         .set_read_timeout(Some(DEADLINE))
         .map_err(|error| error.to_string())?;
     let namespace = RoomMounts::prepare_namespace().map_err(|error| error.to_string())?;
+    hatchling_sys::set_host_name(HOST_NAME).map_err(|error| error.to_string())?;
     let pidfd = hatchling_sys::self_pidfd().map_err(|error| error.to_string())?;
     hatchling_sys::net::send_fd(channel.as_fd(), pidfd.as_fd())
         .map_err(|error| error.to_string())?;

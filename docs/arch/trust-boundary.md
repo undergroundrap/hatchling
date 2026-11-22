@@ -110,7 +110,10 @@ fails verification. The trusted helper receives the private socket as
 stdin and takes it out of stdio. The spawner requires a pidfd for the
 namespace helper before sending the volume and mapper. The launcher joins
 its own required cgroup before its first exec, so the namespace helper
-inherits the limits. The group allows 512 tasks, no swap, memory up to
+inherits the limits. The helper starts in namespaces of its own: PID,
+network (loopback alone), IPC, mount, UTS and cgroup. The last two keep
+the machine's name and the host's cgroup paths from the Room: it is
+named `hatchling-room`, and its cgroup is the root of what it sees. The group allows 512 tasks, no swap, memory up to
 the smaller of 4 GiB and one quarter of physical memory, and CPU time
 equal to half the cores available to the spawner. Admission fails if the
 group cannot be configured or joined. The spawner confirms helper exit

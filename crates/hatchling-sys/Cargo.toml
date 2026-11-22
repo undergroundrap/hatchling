@@ -34,7 +34,8 @@ libc = "0.2"
 # unsafe surface to fork/exec/prctl only.
 # `net`: SCM_RIGHTS fd passing for a cell's relay listener.
 # `pipe`: a helper's stdio, made by the broker for the spawner to hand on.
-rustix = { version = "0.38", features = ["event", "fs", "mount", "net", "pipe", "process", "stdio", "termios", "thread"] }
+# `system`: the Room's own host name, in its own UTS namespace.
+rustix = { version = "0.38", features = ["event", "fs", "mount", "net", "pipe", "process", "stdio", "system", "termios", "thread"] }
 # Bind the whole pinned room image to its attested digest before dm-verity.
 sha2 = "0.10"
 thiserror = "2"

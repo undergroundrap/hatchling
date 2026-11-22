@@ -995,6 +995,21 @@ pub fn set_not_dumpable() -> Result<(), Error> {
     prctl_checked(libc::PR_SET_DUMPABLE, [0, 0, 0, 0], "prctl(SET_DUMPABLE)")
 }
 
+/// Names the host `name` in this process's UTS namespace: for one that
+/// has just unshared its own, which starts with its host's name, so what
+/// runs there reads `name` instead (#572).
+///
+/// # Errors
+///
+/// [`Error::Process`] if the kernel refuses: without `CAP_SYS_ADMIN` in
+/// the namespace's user namespace, or a name past 64 bytes.
+pub fn set_host_name(name: &str) -> Result<(), Error> {
+    rustix::system::sethostname(name.as_bytes()).map_err(|source| Error::Process {
+        operation: "sethostname",
+        source: source.into(),
+    })
+}
+
 /// Holds this process, and every process it starts, to a core-file size
 /// of exactly one byte, soft and hard: a crash leaves the host no core.
 ///

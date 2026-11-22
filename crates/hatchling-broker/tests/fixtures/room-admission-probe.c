@@ -1,8 +1,11 @@
 /* Benign kernel observations at the actual Room supervisor exec boundary. */
 #define _GNU_SOURCE
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
@@ -56,6 +59,59 @@ int main(int argc, char **argv, char **environment) {
         return 49;
     if (stat("/proc/self/ns/ipc", &info) || info.st_ino == HOST_IPC_NS)
         return 50;
+
+    /* Its own host name and cgroup root (#572): the machine's name, and
+     * where the Room sits in the host's cgroups, aren't its to read. */
+    if (stat("/proc/self/ns/uts", &info) || info.st_ino == HOST_UTS_NS)
+        return 51;
+    char name[65] = {0};
+    if (gethostname(name, sizeof name - 1) || strcmp(name, ROOM_HOST_NAME))
+        return 52;
+    if (stat("/proc/self/ns/cgroup", &info) || info.st_ino == HOST_CGROUP_NS)
+        return 53;
+    char cgroup[256] = {0};
+    int cgroup_fd = open("/proc/self/cgroup", O_RDONLY);
+    if (cgroup_fd < 0 || read(cgroup_fd, cgroup, sizeof cgroup - 1) <= 0 || close(cgroup_fd) ||
+        strcmp(cgroup, "0::/\n"))
+        return 54;
+
+    /* No network: loopback is its only interface, and the filter
+     * refuses any socket but a Unix one, as the Room's profile says. */
+    char devices[4096] = {0};
+    int devices_fd = open("/proc/self/net/dev", O_RDONLY);
+    if (devices_fd < 0 || read(devices_fd, devices, sizeof devices - 1) <= 0 || close(devices_fd))
+        return 55;
+    int interfaces = 0;
+    for (char *line = strtok(devices, "\n"); line; line = strtok(NULL, "\n")) {
+        if (!strchr(line, ':'))
+            continue;
+        while (*line == ' ')
+            ++line;
+        if (strncmp(line, "lo:", 3))
+            return 55;
+        ++interfaces;
+    }
+    if (interfaces != 1)
+        return 55;
+    if (socket(AF_INET, SOCK_STREAM, 0) != -1 || errno != EAFNOSUPPORT ||
+        socket(AF_INET6, SOCK_DGRAM, 0) != -1 || errno != EAFNOSUPPORT ||
+        socket(AF_NETLINK, SOCK_RAW, 0) != -1 || errno != EAFNOSUPPORT)
+        return 56;
+
+    /* No descriptor of the host's but the supervisor's socket: every one
+     * open is 0 to 3, or the one this reads them through. */
+    DIR *open_fds = opendir("/proc/self/fd");
+    if (!open_fds)
+        return 57;
+    for (struct dirent *entry; (entry = readdir(open_fds));) {
+        if (entry->d_name[0] == '.')
+            continue;
+        int fd = atoi(entry->d_name);
+        if (fd > 3 && fd != dirfd(open_fds))
+            return 57;
+    }
+    if (closedir(open_fds))
+        return 57;
 
     if (ROOM_PROBE_MODE == 0) {
         const char *marker = "/workspace/admission-marker";
