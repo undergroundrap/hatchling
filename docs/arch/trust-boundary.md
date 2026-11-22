@@ -30,13 +30,14 @@ profile ends the process. The Room's profile decides each of them, in the
 Room alone, and the source says of each what it can and can't do and
 which program asked.
 
-Twenty are allowed. Thirteen are an operation the profile already allows,
-asked another way (`fchdir` for `chdir`, `creat` for `open`, `fstatfs` for
-`statfs`, `symlinkat` for `symlink`, `dup3` for `dup2`, `openat2` for
-`openat`, `llistxattr` and `flistxattr` for `listxattr`, `sendfile` for
-`copy_file_range`, `fchownat` for `fchown`, `fchmodat2` for `fchmodat`,
-`inotify_init` for `inotify_init1`), or a hint that changes nothing
-(`fadvise64`). Seven are small things of a process's own: waiting for a
+Twenty-one are allowed. Fourteen are an operation the profile already
+allows, asked another way (`fchdir` for `chdir`, `creat` for `open`,
+`fstatfs` for `statfs`, `symlinkat` for `symlink`, `dup3` for `dup2`,
+`openat2` for `openat`, `llistxattr` and `flistxattr` for `listxattr`,
+`sendfile` for `copy_file_range`, `fchownat` for `fchown`, `fchmodat2`
+for `fchmodat`, `inotify_init` for `inotify_init1`, `waitid` for `wait4`,
+which the Room's supervisor asks when its search program can't start),
+or a hint that changes nothing (`fadvise64`). Seven are small things of a process's own: waiting for a
 signal (`rt_sigsuspend`), a timer that signals the process that made it
 (`timer_create`, `timer_settime`, `timer_delete`), reading how a process
 is scheduled or what capabilities it has (`getpriority`, `capget`), and
