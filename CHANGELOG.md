@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **The agent's computer answers a search it can't run** ([#578](https://github.com/undergroundrap/hatchling/issues/578)). When its search program couldn't start, the Room's supervisor was ended by its own syscall filter, and the agent's computer stopped answering. The image always has the program, so it wasn't met in use. Now the filter lets the supervisor reap the program that failed, as it already could any other, and the search is answered as failed.
+
 ## [0.9.0] - 2026-11-22
 
 ### Added
