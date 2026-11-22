@@ -11,7 +11,7 @@ Hatchling's agent is as good as the model behind it, and nothing measures that. 
 
 A few chats miss what matters most. On the same real tasks, one local model said it had found things it never searched for and that it had made thirty files when it had made nineteen, while another reported its partial progress exactly. Both call the tools well. The difference is whether the agent's claims are true, and that is the difference an owner most needs to know before leaving an agent on.
 
-The next work on the agent changes how it behaves: hosted OpenAI and Anthropic keys ([#534](https://github.com/undergroundrap/hatchling/issues/534)), runs bounded by time, cost and context rather than 25 turns ([#533](https://github.com/undergroundrap/hatchling/issues/533)), and *Keep going* ([#531](https://github.com/undergroundrap/hatchling/issues/531)). Each should be measured before and after. The scorecard's *Per-model conformance, published* and *Benchmark* rows are ❌ for the same reason.
+Each change to how the agent behaves, such as hosted OpenAI and Anthropic keys ([#534](https://github.com/undergroundrap/hatchling/issues/534)), runs bounded by time, cost and context rather than 25 turns ([#533](https://github.com/undergroundrap/hatchling/issues/533)), and *Keep going* ([#531](https://github.com/undergroundrap/hatchling/issues/531)), should be measurable before and after. The scorecard's *Per-model conformance, published* and *Benchmark* rows are ❌ for the same reason.
 
 ## Scope
 
@@ -55,4 +55,4 @@ Filled in at close.
 - Slices: (1) the runner, the result format, five conformance fixtures and the tasks, with their stand-ins; (2) the behaviour families; (3) the first real runs, published; (4) after #534, the direct OpenAI and Anthropic configurations.
 - The local models need their own copy in the harness's install: a one-time download, done with the maintainer's approval.
 - A free hosted model can change or be rate-limited by its provider at any time: each result records the date and the provider's model id, and the published table says so.
-- Follows WO-046 (signed playbook skills), by the maintainer's decision of 2026-11-22: benchmarks are published once Hatchling's skills are at parity, so they measure the agent people will run.
+- Comes last on v0.10.0's agent track, by the maintainer's decision of 2026-11-22: after WO-046 (signed playbook skills), #533, #595, #531, #535 and #534, so the benchmarks measure the agent people will run.

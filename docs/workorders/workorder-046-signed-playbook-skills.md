@@ -57,4 +57,4 @@ Filled in at close.
 
 ## Notes
 
-- Comes before WO-045 (the evaluation harness), by the maintainer's decision: Hatchling's model benchmarks are published once its skills are at parity, so they measure the agent people will run.
+- First on v0.10.0's agent track, by the maintainer's decision of 2026-11-22; WO-045 (the evaluation harness) comes last, so Hatchling's model benchmarks measure the agent people will run.
