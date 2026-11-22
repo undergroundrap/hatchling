@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows Setup never shows the app's address** ([#583](https://github.com/undergroundrap/hatchling/issues/583)). The address holds the token every app connection needs, so Setup keeps it off the screen and the Start menu opens the app. On a first install with a hosted model, the console that asks for the model's key showed everything the installer printed, the address too. Now the installer leaves it out when Setup runs it.
+
 ## [0.9.0] - 2026-11-22
 
 ### Added
