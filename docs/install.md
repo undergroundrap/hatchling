@@ -63,11 +63,11 @@ Any other WSL distro that runs systemd can get in the way of one thing, not only
 From a clone of the version you install, download its release into `release/` and install from it. `scripts/install.sh` checks every file against the release's `SHA256SUMS` before installing anything. With the GitHub CLI (`gh`) installed and signed in, it also checks that `SHA256SUMS` is attested by this project's release workflow, which then covers every file that matches it, and stops if it isn't; without `gh`, it says it couldn't check.
 
 ```bash
-git -c advice.detachedHead=false clone --branch v0.8.0 https://github.com/undergroundrap/hatchling && cd hatchling
+git -c advice.detachedHead=false clone --branch v0.9.0 https://github.com/undergroundrap/hatchling && cd hatchling
 ```
 
 ```bash
-gh release download v0.8.0 --repo undergroundrap/hatchling --dir release
+gh release download v0.9.0 --repo undergroundrap/hatchling --dir release
 ```
 
 ```bash
