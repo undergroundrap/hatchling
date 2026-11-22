@@ -168,10 +168,13 @@ try {
     if ($BundledRoom) {
         $install += @('-u', 'http_proxy', '-u', 'https_proxy', '-u', 'all_proxy', '-u', 'HTTP_PROXY', '-u', 'HTTPS_PROXY', '-u', 'ALL_PROXY')
     }
-    $install += @("SUDO_UID=$ownerUid", 'sh', "$from/installer/scripts/install.sh", '--from', $from) + $model
+    # --windows-setup: the app's address, a key, isn't printed (#583); the
+    # Start menu fetches it.
+    $install += @("SUDO_UID=$ownerUid", 'sh', "$from/installer/scripts/install.sh", '--from', $from, '--windows-setup') + $model
     if ($BundledRoom) { $install += '--windows-room-bundle' }
     if ($Hosted -and -not $updating) {
         # Left alone: it asks for a key, at a prompt that needs this console.
+        # The app's address isn't among what it prints (--windows-setup).
         & wsl.exe @install
     }
     else {

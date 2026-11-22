@@ -25,6 +25,11 @@
 # --keep-model updates an install, leaving its model and its server as they
 # are: it needs the configuration of the install it updates.
 #
+# --windows-setup is Windows Setup's: the Start menu opens the app, fetching
+# its address each time, so the address, a key to the agent, isn't printed
+# (#583). Setup shows what it prints as it comes, so the hosted model's
+# prompt for its key works.
+#
 # When that's Ollama, running as its systemd service, it sizes the model's
 # window to this machine: 65,536 tokens when the model fits on the GPU with
 # it, else 32,768 (Ollama's default can be 4,096, too small for an agent).
@@ -73,7 +78,7 @@ fail() {
 }
 say() { echo "== $*"; }
 
-FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED= KEEP_MODEL= WINDOWS_ROOM_BUNDLE=
+FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED= KEEP_MODEL= WINDOWS_ROOM_BUNDLE= WINDOWS_SETUP=
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) FROM=${2:-}; shift 2 || usage ;;
@@ -84,6 +89,7 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1; shift ;;
     --keep-model) KEEP_MODEL=1; shift ;;
     --windows-room-bundle) WINDOWS_ROOM_BUNDLE=1; shift ;;
+    --windows-setup) WINDOWS_SETUP=1; shift ;;
     *) usage ;;
   esac
 done
@@ -557,6 +563,7 @@ fi
 
 echo
 echo "Hatchling is running, and starts at boot."
+[ -z "$WINDOWS_SETUP" ] || exit 0
 echo "Open the app in a browser on this machine (the address is a key to your agent: don't share it):"
 echo
 echo "  http://127.0.0.1:7340/#hatchling-ui=$(cat "$TOKEN")"

@@ -497,6 +497,12 @@ jobs:
           sudo hatchling-broker secret add --for openrouter.ai:443 --if-missing < /dev/null 2>&1 | tee "$RUNNER_TEMP/secrets.log"
           grep -q "egress-openrouter-ai-443 is in the vault already" "$RUNNER_TEMP/secrets.log"
           if sudo grep -rq "stand-in-key-for-ci" /etc/hatchling /var/lib/hatchling; then exit 1; fi
+          # As Windows Setup runs it (#583): the install finishes, and the
+          # app's address, a key, isn't printed, since Setup shows all it
+          # prints and the Start menu opens the app.
+          sudo sh "$RUNNER_TEMP/release-installer/scripts/install.sh" --from "$RUNNER_TEMP/release" --keep-model --windows-setup < /dev/null | tee "$RUNNER_TEMP/install-windows-setup.log"
+          grep -q "^Hatchling is running, and starts at boot.$" "$RUNNER_TEMP/install-windows-setup.log"
+          if grep -q "hatchling-ui=" "$RUNNER_TEMP/install-windows-setup.log"; then exit 1; fi
           # A provider it doesn't know is refused.
           if sudo sh "$RUNNER_TEMP/release-installer/scripts/install.sh" --from "$RUNNER_TEMP/release" --hosted elsewhere < /dev/null; then exit 1; fi
 
