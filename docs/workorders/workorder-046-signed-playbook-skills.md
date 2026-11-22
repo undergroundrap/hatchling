@@ -139,7 +139,7 @@ A person writes a directory and signs it with `hatchling skill sign`. The agent 
 
 Supporting files are listed in the manifest and referred to by name, never inlined: the playbook is read in the middle of someone's task, so it stays short.
 
-**Two rules follow from the design.** A playbook grants nothing, so it never has a step that needs an approval, a grant or a tool the run may not hold: it writes the fallback instead ("if this site isn't granted, ask through the usual request and go on with what you have"). And it serves the owner's task: a playbook that tells the agent to hide its reasoning, skip a check, or present something unverified as verified is hostile, whoever signed it. `hatchling skill check` warns on the patterns it can find, and the owner sees the playbook before enabling it.
+**Two rules follow from the design.** A playbook grants nothing, so it never has a step that needs an approval, a grant or a tool the run may not hold: it writes the fallback instead ("if this site isn't granted, ask through the usual request and go on with what you have"). And it serves the owner's task: a playbook that tells the agent to hide its reasoning, skip a check, or present something unverified as verified is hostile, whoever signed it. No scanner is trusted to find one: what holds is that a skill grants nothing, and that the owner reads the playbook before enabling it.
 
 ### Slices
 
