@@ -1433,7 +1433,7 @@ pub(crate) fn handle_egress_op(
             let Some(body) = pages.body(*staged, &rest) else {
                 tracing::warn!(
                     cell_id = %cell_id,
-                    destination = %destination,
+                    destination = ?destination,
                     "egress request refused: its staged body doesn't match the stage"
                 );
                 return Ok(EgressResult::EgressError);
@@ -1493,8 +1493,8 @@ fn refused_reply(refusal: &Refusal, cell_id: &CellId, request: &EgressRequest) -
         RefusalKind::NoAnswer => {
             tracing::error!(
                 cell_id = %cell_id,
-                destination = %destination,
-                reason = %refusal.reason,
+                destination = ?destination,
+                reason = ?refusal.reason,
                 "egress request got no answer in time"
             );
             if crate::usage::is_model_call(&request.method, &request.path) {
@@ -1505,8 +1505,8 @@ fn refused_reply(refusal: &Refusal, cell_id: &CellId, request: &EgressRequest) -
         RefusalKind::Failed => {
             tracing::error!(
                 cell_id = %cell_id,
-                destination = %destination,
-                reason = %refusal.reason,
+                destination = ?destination,
+                reason = ?refusal.reason,
                 "egress request failed"
             );
             EgressResult::EgressError
@@ -1514,8 +1514,8 @@ fn refused_reply(refusal: &Refusal, cell_id: &CellId, request: &EgressRequest) -
         RefusalKind::NotAllowed | RefusalKind::Policy | RefusalKind::BadSurrogate => {
             tracing::warn!(
                 cell_id = %cell_id,
-                destination = %destination,
-                reason = %refusal.reason,
+                destination = ?destination,
+                reason = ?refusal.reason,
                 "egress request denied"
             );
             EgressResult::Denied
@@ -1537,7 +1537,7 @@ fn mint_for(
         Ok(surrogate_b64) => {
             tracing::info!(
                 cell_id = %cell_id,
-                destination = %destination,
+                destination = ?destination,
                 "minted egress surrogate"
             );
             EgressResult::Surrogate { surrogate_b64 }
@@ -1545,8 +1545,8 @@ fn mint_for(
         Err(refusal) => {
             tracing::warn!(
                 cell_id = %cell_id,
-                destination = %destination,
-                reason = %refusal.reason,
+                destination = ?destination,
+                reason = ?refusal.reason,
                 "egress surrogate mint failed"
             );
             crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::NotAllowed);
@@ -2875,6 +2875,100 @@ mod gate_scope_tests {
         }
 
         let _ = std::fs::remove_dir_all(&usage);
+    }
+
+    /// What a cell asked egress for, and why it was refused, are logged
+    /// escaped: a newline in either forges no line of the broker's log,
+    /// whatever became of the request (#571).
+    #[test]
+    fn an_egress_refusal_forges_no_line_of_the_log() {
+        struct Refusing;
+        impl EgressPath for Refusing {
+            fn mint(&self, _: u32, _: &str, _: u64) -> Result<String, Refusal> {
+                Err(Refusal::failed("no surrogate\nFORGED by the reason"))
+            }
+
+            fn forward(
+                &self,
+                _: u32,
+                _: &EgressRequest,
+            ) -> Result<hatchling_egress::EgressResponse, Refusal> {
+                Err(Refusal::failed("gone"))
+            }
+        }
+        struct Minting;
+        impl EgressPath for Minting {
+            fn mint(&self, _: u32, _: &str, _: u64) -> Result<String, Refusal> {
+                Ok(String::from("s"))
+            }
+
+            fn forward(
+                &self,
+                _: u32,
+                _: &EgressRequest,
+            ) -> Result<hatchling_egress::EgressResponse, Refusal> {
+                Err(Refusal::no_answer())
+            }
+        }
+        let cell_id: CellId = "cell-forging".parse().unwrap();
+        let request = EgressRequest {
+            method: String::from("GET"),
+            destination: String::from("a.example:443\nFORGED by the destination"),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::new(),
+        };
+        for kind in [
+            RefusalKind::NoAnswer,
+            RefusalKind::Failed,
+            RefusalKind::NotAllowed,
+            RefusalKind::Policy,
+            RefusalKind::BadSurrogate,
+        ] {
+            let refusal = Refusal {
+                kind,
+                reason: String::from("why\nFORGED by the reason"),
+            };
+            let logged = crate::test_log::captured(|| {
+                let _ = refused_reply(&refusal, &cell_id, &request);
+            });
+            crate::test_log::assert_no_forged_line(&logged, "FORGED by the destination");
+            crate::test_log::assert_no_forged_line(&logged, "FORGED by the reason");
+        }
+        let logged = crate::test_log::captured(|| {
+            let _ = mint_for(&Refusing, &cell_id, 1000, &request.destination, 60);
+        });
+        crate::test_log::assert_no_forged_line(&logged, "FORGED by the destination");
+        crate::test_log::assert_no_forged_line(&logged, "FORGED by the reason");
+        let logged = crate::test_log::captured(|| {
+            let _ = mint_for(&Minting, &cell_id, 1000, &request.destination, 60);
+        });
+        crate::test_log::assert_no_forged_line(&logged, "FORGED by the destination");
+        // A body that doesn't match its stage, to a destination granted as
+        // it was asked for.
+        let egress = EgressConfig {
+            allowlist: crate::EgressAllowlist::new(""),
+            grants: vec![request.destination.clone()],
+        };
+        let op = EgressOp::Egress {
+            method: String::from("POST"),
+            destination: request.destination,
+            path: String::from("/"),
+            headers: Vec::new(),
+            body_b64: encode_secret(b"x"),
+            surrogate_b64: String::new(),
+            staged: 1,
+        };
+        let mut pages = crate::egress_pages::Pages::default();
+        let mut trail = crate::run_trail::Trail::new(None, "session", "cell-forging");
+        let logged = crate::test_log::captured(|| {
+            let told = handle_egress_op(
+                &Refusing, &egress, &op, &cell_id, 1000, &mut pages, &mut trail,
+            );
+            assert_eq!(told.unwrap(), EgressResult::EgressError);
+        });
+        crate::test_log::assert_no_forged_line(&logged, "FORGED by the destination");
     }
 
     /// A model call no answer came for in time is remembered against its

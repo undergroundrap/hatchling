@@ -245,7 +245,7 @@ impl<'r> RoomSession<'r> {
                 }
                 tracing::info!(
                     job = job.as_str(),
-                    program = argv.first().map_or("", String::as_str),
+                    program = ?argv.first().map_or("", String::as_str),
                     arguments = argv.len().saturating_sub(1),
                     "a session runs a command in the Room"
                 );
