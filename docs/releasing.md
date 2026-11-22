@@ -43,7 +43,13 @@ How a Hatchling version is cut and published, and how a new crate gets onto crat
      - every crate on crates.io: each is packaged and built from its package in a job with no token, then a short-lived token through trusted publishing, and [`scripts/publish-crates.sh --existing-only --no-verify`](../scripts/publish-crates.sh), which publishes each crate in dependency order without building it, and skips any already there at this version.
 
    No crates.io token is stored anywhere, and no job that builds, or runs a dependency's build script or macro, holds a token that can write, sign or publish. Watch the run under Actions.
-5. **Check** that the release has its 32 files, including the five room image assets and `SHA256SUMS`. Verify one binary as [below](#verifying-a-release) and check that each crate shows the new version on crates.io and builds on docs.rs. A warning on the crates.io job means a crate new to crates.io was skipped. See [Adding a crate](#adding-a-crate).
+5. **Check** that the release has its 32 files, including the five room image assets and `SHA256SUMS`. Verify one binary as [below](#verifying-a-release), and the [room image](#room-system-image) and its root hash the same way:
+
+   ```bash
+   for f in room-system-x86_64.squashfs room-system-x86_64.root-hash; do gh attestation verify "$f" --repo undergroundrap/hatchling --signer-workflow undergroundrap/hatchling/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z || break; done
+   ```
+
+   The root hash is what the Room's dm-verity mount trusts, so a release whose image or root hash fails this is pulled, not shipped. Then check that each crate shows the new version on crates.io and builds on docs.rs. A warning on the crates.io job means a crate new to crates.io was skipped. See [Adding a crate](#adding-a-crate).
 
 If the workflow fails before the GitHub release, nothing was published: fix the cause on `main`, delete the tag (`git push origin :vX.Y.Z`, then `git tag -d vX.Y.Z`) and tag the fixed commit. If it fails in the crates.io job, the crates it already published stay published (crates.io never deletes a version): fix the cause, then re-run the job; the script skips what's already there and publishes the rest. A bad version can be **yanked** on crates.io (`cargo yank --version X.Y.Z <crate>`), which stops new projects from picking it up without breaking existing lockfiles; then release a fixed version.
 

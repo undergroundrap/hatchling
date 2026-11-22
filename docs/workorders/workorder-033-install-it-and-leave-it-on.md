@@ -1,6 +1,6 @@
 # WO-033: Install it and leave it on
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `packaging/`, `scripts/install.sh`, `crates/hatchling-broker` (configuration, a `doctor` command), `.github/workflows/`, `README.md`, `docs/`
 **Issue:** [#482](https://github.com/undergroundrap/hatchling/issues/482)
 **Trust boundary:** yes (the broker's configuration, and what runs as root at install)
@@ -67,7 +67,15 @@ Reconciled against what shipped on 2026-11-16, after the work had gone out in 0.
 - [x] **On a fresh Ubuntu 24.04, one command gives a running broker and host that survive a reboot, and the app answers at the address printed.** CI's `service` job (every pull request, Ubuntu 24.04) installs this commit's build, laid out as a release, with `sh get-hatchling.sh --from-url file://...`, checks the printed address answers, gets an answer from the agent, restarts `hatchling.service` and gets one again. The reboot: a real install from a release build on Ubuntu 24.04.5 in WSL, rebooted (the distro's systemd started from nothing), came back with both services started at boot, `doctor` clean, the app's address answering and the agent answering ([real-install-drill.md](../evidence/real-install-drill.md)). A physical machine's reboot wasn't done. The shipped command is `curl` of `get-hatchling.sh`, run as the user, not `sudo sh install.sh` as first written.
 - [x] **Every file is checked against the release's `SHA256SUMS` first, and one that differs stops it before anything is installed.** `scripts/test_get.py` (`test_a_file_that_differs_stops_it_before_anything_is_installed`, `test_a_file_not_in_sha256sums_stops_it`, the installer tarball's refusals), in the `service` job on every pull request; #351 broke each defence by hand. Not done from the scope: verifying the release's attestation (`get.sh` prints the `gh attestation verify` command); a local build with no `SHA256SUMS` isn't checked.
 - [x] **The broker's whole configuration is `/etc/hatchling/hatchling.env`: no shell, no `id -u`.** The service reads it with `EnvironmentFile`, the file is plain `KEY=value`, `HATCHLING_AGENT_UID` takes a name (#280), operator commands read it and refuse it when anyone but root can write it (#290, a CI step), and `HATCHLING_OWNER_UID` takes a name too ([owner-by-name.md](../evidence/owner-by-name.md)). `HATCHLING_CELL_CGROUP` stays in the service's drop-in, beside the delegation that makes it true, which is installed only where systemd has it: it isn't a setting the owner chooses (the same record says why).
-- [ ] **`hatchling-broker doctor` names each missing requirement and how to fix it, and exits non-zero when one is missing.** Partly proven: exit 1 and a fix for each problem (#287, mutation 105 caught, 0 missed); CI checks it clean, then names a stopped model, and names AppArmor's refusal in the `rootless` job. **Not yet:** the kernel version, seccomp, Landlock, the system users, and directories' owners and modes, which the scope listed ([WO-037](workorder-037-say-when-a-protection-is-off.md) and [WO-038](workorder-038-know-what-is-installed.md) take the last).
+- [x] **`hatchling-broker doctor` names each missing requirement and how to fix it, and exits non-zero when one is missing.** Exit 1 and a fix for each problem (#287, mutation 105 caught, 0 missed); CI checks it clean, then names a stopped model, and names AppArmor's refusal in the `rootless` job. Each requirement the scope listed:
+  - user namespaces, and AppArmor's restriction on them: the cell probe makes a real cell's namespaces (#287);
+  - seccomp: the probe installs the agent's own syscall filter, and a refusal is its own finding ([doctor-probes.md](../evidence/doctor-probes.md));
+  - Landlock: the broker's own confinement said on or off ([doctor-says-off.md](../evidence/doctor-says-off.md), [WO-037](workorder-037-say-when-a-protection-is-off.md));
+  - cgroup v2 and `cgroup.kill`: the cell limits check, through the delegation check, which opens `cgroup.kill` in a probe cgroup;
+  - the system users: the broker's, the vault keeper's and the egress authority's, each missing or root named ([doctor-system-users.md](../evidence/doctor-system-users.md));
+  - the directories' owners and modes: each store's, as its reader takes it ([store-modes.md](../evidence/store-modes.md), [WO-038](workorder-038-know-what-is-installed.md));
+  - the configuration: it parses as the broker parses it, from the file the service reads.
+  - **The kernel version isn't checked, on purpose.** A version says little about what a distro's kernel has: backports add features, and a build can leave them out. `doctor` tests each feature the broker uses, which is the question a version stands in for.
 - [x] **A hosted model's key goes into the vault from a hidden prompt, and no plaintext copy is ever written (checked with a file-open trace).** `secret add` reads with echo off or from a pipe and seals at once (#289); CI pipes a key through the installer, checks the vault holds it, and finds its text nowhere under `/etc/hatchling` or `/var/lib/hatchling`. The trace, on a real install: the kernel recorded every file any process opened to write, renamed or linked while a piped stand-in key was sealed (a temporary file renamed onto the sealed entry, and a line of the activity log), and none of the distro's 37,024 files, nor the journal, held the key afterwards ([real-install-drill.md](../evidence/real-install-drill.md)). The prompt with echo off reads the same line by another route and wasn't traced.
 - [x] **CI installs from the commit's own build, restarts the service and gets an answer, on every pull request that touches packaging or the broker's configuration.** The `service` job, on every pull request; the `upgrade` job also upgrades from the last release and checks nothing kept is lost (#310, #336).
 - [x] **The README's first screen says what Hatchling is and how to try it in three commands.** README.md's opening and its "Try it" line (#298).
@@ -82,7 +90,7 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+Each pull request carries its own; the records for the items above are [real-install-drill.md](../evidence/real-install-drill.md), [owner-by-name.md](../evidence/owner-by-name.md), [doctor-probes.md](../evidence/doctor-probes.md), [doctor-says-off.md](../evidence/doctor-says-off.md), [doctor-system-users.md](../evidence/doctor-system-users.md) and [store-modes.md](../evidence/store-modes.md), with the pull requests under What shipped. Closed 2026-11-21 with every item proven. Two smaller things weren't done, and each is said in its item: a local build with no `SHA256SUMS` isn't checked, and the prompt with echo off wasn't traced.
 
 ## Notes
 
