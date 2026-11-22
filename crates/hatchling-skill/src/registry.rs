@@ -290,12 +290,14 @@ mod tests {
 
     fn signed_manifest(signing: &SigningKey, name: &str) -> SignedManifest {
         use crate::{Manifest, SignedManifest};
-        let manifest = Manifest {
-            name: name.to_string(),
-            version: "1.0.0".to_string(),
-            capabilities: vec!["fs.read".parse().unwrap()],
-            entry_point: "main.py".to_string(),
-        };
+        let manifest = Manifest::for_program(
+            name,
+            "1.0.0",
+            "A test skill.",
+            "main.py",
+            b"v1 code",
+            vec!["fs.read".parse().unwrap()],
+        );
         let canonical = manifest.canonical_bytes().unwrap();
         let signature = signing.sign(&canonical);
         SignedManifest {

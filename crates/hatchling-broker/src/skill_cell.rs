@@ -220,7 +220,18 @@ impl SkillCellHandle {
 /// copied.
 pub fn prepare_skill_cell(config: &SkillCellConfig) -> Result<(CellConfig, VerifiedCode), Error> {
     let skill = config.skill_id().to_string();
-    let entry_point = config.skill.admission().manifest().entry_point.clone();
+    // A playbook without a program has nothing to run: its calls are
+    // already refused, since it declares no capability.
+    let entry_point = config
+        .skill
+        .admission()
+        .manifest()
+        .entry_point()
+        .map(str::to_owned)
+        .ok_or_else(|| Error::SkillLoad {
+            skill: skill.clone(),
+            reason: String::from("it has no program to run"),
+        })?;
     let code =
         crate::skills::read_skill_file(&config.code_dir, &entry_point, &skill, "skill code")?;
     let found = hatchling_skill::CodeHash::of(&code);
@@ -296,12 +307,14 @@ mod tests {
     fn registered_skill_at(entry_point: &str) -> RegisteredSkill {
         use ed25519_dalek::{Signer, SigningKey};
         let signing = SigningKey::from_bytes(&[0x05; 32]);
-        let manifest = hatchling_skill::Manifest {
-            name: String::from("cell-skill"),
-            version: String::from("1.0.0"),
-            capabilities: vec!["fs.read".parse().unwrap()],
-            entry_point: entry_point.to_owned(),
-        };
+        let manifest = hatchling_skill::Manifest::for_program(
+            "cell-skill",
+            "1.0.0",
+            "A test skill.",
+            entry_point,
+            b"v1",
+            vec!["fs.read".parse().unwrap()],
+        );
         let sig = signing.sign(&manifest.canonical_bytes().unwrap());
         let signed = hatchling_skill::SignedManifest {
             manifest,

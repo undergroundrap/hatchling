@@ -588,12 +588,16 @@ pub(crate) fn fixture_skill_config(root: &Path) -> Result<hatchling_broker::Skil
     let capability: hatchling_core::CapabilityName = FIXTURE_CAPABILITY
         .parse()
         .map_err(|e| format!("capability: {e}"))?;
-    let manifest = hatchling_skill::Manifest {
-        name: String::from("fixture"),
-        version: String::from("1.0.0"),
-        capabilities: vec![capability.clone()],
-        entry_point: String::from("skill"),
-    };
+    let binary = skill_fixture_binary()?;
+    let code = std::fs::read(&binary).map_err(|e| format!("entry point: {e}"))?;
+    let manifest = hatchling_skill::Manifest::for_program(
+        "fixture",
+        "1.0.0",
+        "The test fixture skill.",
+        "skill",
+        &code,
+        vec![capability.clone()],
+    );
     let payload = manifest.canonical_bytes().map_err(|e| e.to_string())?;
     let signed = hatchling_skill::SignedManifest {
         manifest,
@@ -607,8 +611,7 @@ pub(crate) fn fixture_skill_config(root: &Path) -> Result<hatchling_broker::Skil
     std::fs::create_dir_all(&package).map_err(|e| format!("package dir: {e}"))?;
     let json = signed.to_json().map_err(|e| e.to_string())?;
     std::fs::write(package.join("manifest.json"), json).map_err(|e| format!("manifest: {e}"))?;
-    std::fs::copy(skill_fixture_binary()?, package.join("skill"))
-        .map_err(|e| format!("entry point: {e}"))?;
+    std::fs::copy(&binary, package.join("skill")).map_err(|e| format!("entry point: {e}"))?;
     let trust_roots_file = fixture_roots_file(root);
     write_roots_file(&trust_roots_file, &[signing.verifying_key().to_bytes()])?;
     Ok(hatchling_broker::SkillConfig {
@@ -680,12 +683,15 @@ fn write_skill_package(
 ) -> Result<(), String> {
     use ed25519_dalek::{Signer, SigningKey};
     let signing = SigningKey::from_bytes(&FIXTURE_SIGNING_KEY);
-    let manifest = hatchling_skill::Manifest {
-        name: name.to_owned(),
-        version: String::from("1.0.0"),
-        capabilities: vec![capability.clone()],
-        entry_point: String::from("skill"),
-    };
+    let code = std::fs::read(binary).map_err(|e| format!("entry point: {e}"))?;
+    let manifest = hatchling_skill::Manifest::for_program(
+        name,
+        "1.0.0",
+        "A test skill.",
+        "skill",
+        &code,
+        vec![capability.clone()],
+    );
     let payload = manifest.canonical_bytes().map_err(|e| e.to_string())?;
     let signed = hatchling_skill::SignedManifest {
         manifest,

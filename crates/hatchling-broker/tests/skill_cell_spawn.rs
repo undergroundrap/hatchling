@@ -25,12 +25,14 @@ use hatchling_core::LogLevel;
 fn registered_skill(code: &[u8]) -> Result<hatchling_skill::RegisteredSkill, String> {
     use ed25519_dalek::{Signer, SigningKey};
     let signing = SigningKey::from_bytes(&[0x09; 32]);
-    let manifest = hatchling_skill::Manifest {
-        name: String::from("spawn-skill"),
-        version: String::from("1.0.0"),
-        capabilities: vec!["fs.read".parse().map_err(|e| format!("{e}"))?],
-        entry_point: String::from("probe"),
-    };
+    let manifest = hatchling_skill::Manifest::for_program(
+        "spawn-skill",
+        "1.0.0",
+        "A test skill.",
+        "probe",
+        code,
+        vec!["fs.read".parse().map_err(|e| format!("{e}"))?],
+    );
     let payload = manifest.canonical_bytes().map_err(|e| e.to_string())?;
     let signed = hatchling_skill::SignedManifest {
         manifest,

@@ -21,6 +21,9 @@ mod registry;
 mod verify;
 
 pub use error::Error;
-pub use manifest::{Manifest, SIGNING_CONTEXT, SignedManifest};
+pub use manifest::{
+    FORMAT, FileEntry, MANIFEST_FILE, MAX_DESCRIPTION_BYTES, MAX_FILES, MAX_INSTRUCTIONS_BYTES,
+    MAX_PROGRAM_BYTES, MAX_SKILL_BYTES, Manifest, Program, SIGNING_CONTEXT, SignedManifest,
+};
 pub use registry::{CodeHash, RegisteredSkill, SkillId, SkillRegistry};
 pub use verify::{Admission, check_trust_root, verify_admission};

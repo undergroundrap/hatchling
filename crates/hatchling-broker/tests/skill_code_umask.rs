@@ -15,12 +15,14 @@ use hatchling_broker::skill_cell::{SkillCellConfig, prepare_skill_cell};
 fn registered_skill(entry_point: &str) -> Result<hatchling_skill::RegisteredSkill, String> {
     use ed25519_dalek::{Signer, SigningKey};
     let signing = SigningKey::from_bytes(&[0x0b; 32]);
-    let manifest = hatchling_skill::Manifest {
-        name: String::from("umask-skill"),
-        version: String::from("1.0.0"),
-        capabilities: vec!["fs.read".parse().map_err(|e| format!("{e}"))?],
-        entry_point: entry_point.to_owned(),
-    };
+    let manifest = hatchling_skill::Manifest::for_program(
+        "umask-skill",
+        "1.0.0",
+        "A test skill.",
+        entry_point,
+        b"code",
+        vec!["fs.read".parse().map_err(|e| format!("{e}"))?],
+    );
     let payload = manifest.canonical_bytes().map_err(|e| e.to_string())?;
     let signed = hatchling_skill::SignedManifest {
         manifest,

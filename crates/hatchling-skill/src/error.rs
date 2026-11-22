@@ -54,6 +54,16 @@ pub enum Error {
     #[error("skill manifest invalid: {0}")]
     InvalidManifest(String),
 
+    /// A file of the skill isn't the file its signed manifest lists: a
+    /// different size or SHA-256, or not there to read.
+    #[error("skill '{name}' refused: file '{path}' isn't the file its signed manifest lists")]
+    FileMismatch {
+        /// The skill name from the manifest.
+        name: String,
+        /// The listed path.
+        path: String,
+    },
+
     /// The trust root (public key) is malformed or unknown.
     #[error("trust root invalid: {0}")]
     InvalidTrustRoot(String),

@@ -53,15 +53,17 @@ fn test_root(name: &str) -> io::Result<PathBuf> {
 }
 
 fn signed(name: &str, capabilities: &[&str]) -> io::Result<SignedManifest> {
-    let manifest = Manifest {
-        name: name.to_owned(),
-        version: String::from("1.0.0"),
-        capabilities: capabilities
+    let manifest = Manifest::for_program(
+        name,
+        "1.0.0",
+        "A test skill.",
+        "main.py",
+        b"print('hi')",
+        capabilities
             .iter()
             .map(|raw| cap(raw))
             .collect::<io::Result<_>>()?,
-        entry_point: String::from("main.py"),
-    };
+    );
     let payload = manifest.canonical_bytes().map_err(io::Error::other)?;
     let signature = SigningKey::from_bytes(&SIGNING_SECRET).sign(&payload);
     Ok(SignedManifest {

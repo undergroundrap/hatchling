@@ -6,7 +6,7 @@
 //!
 //! Admission gates, in order:
 //! 1. **Signature present**: unsigned → refused.
-//! 2. **Signature verifies** (`verify_strict`) over the domain-tagged v1
+//! 2. **Signature verifies** (`verify_strict`) over the domain-tagged v2
 //!    payload, under the trust root: bad or foreign signature, or a weak
 //!    trust root → refused.
 //! 3. **Manifest valid**: the signed fields a loader acts on are sane
@@ -166,7 +166,7 @@ pub fn verify_admission<S: std::hash::BuildHasher>(
 
     // Gate 4: declarations must be a subset of user grants.
     let excess: Vec<CapabilityName> = manifest
-        .capabilities
+        .capabilities()
         .iter()
         .filter(|cap| !user_grants.contains(*cap))
         .cloned()
@@ -178,7 +178,7 @@ pub fn verify_admission<S: std::hash::BuildHasher>(
         });
     }
 
-    let declared: HashSet<CapabilityName> = manifest.capabilities.iter().cloned().collect();
+    let declared: HashSet<CapabilityName> = manifest.capabilities().iter().cloned().collect();
     Ok(Admission {
         manifest: signed.clone(),
         granted: declared,
@@ -214,12 +214,14 @@ mod tests {
     }
 
     fn sample_manifest() -> Manifest {
-        Manifest {
-            name: String::from("test-skill"),
-            version: String::from("1.0.0"),
-            capabilities: vec![cap("net.egress")],
-            entry_point: String::from("main.py"),
-        }
+        Manifest::for_program(
+            "test-skill",
+            "1.0.0",
+            "A test skill.",
+            "main.py",
+            b"print(1)",
+            vec![cap("net.egress")],
+        )
     }
 
     fn cap(raw: &str) -> CapabilityName {
@@ -312,7 +314,7 @@ mod tests {
 
     #[test]
     fn signature_without_the_domain_tag_is_refused() {
-        // A signature over the bare JSON (no v1 domain tag) must not
+        // A signature over the bare JSON (no v2 domain tag) must not
         // verify: the tag is part of what is signed.
         let (signing, verifying) = test_keypair();
         let manifest = sample_manifest();
@@ -365,7 +367,7 @@ mod tests {
         // Signing does not make an unsafe entry point safe.
         let (signing, verifying) = test_keypair();
         let mut manifest = sample_manifest();
-        manifest.entry_point = String::from("../evil.py");
+        manifest.program.as_mut().unwrap().path = String::from("../evil.py");
         let signed = sign_manifest(&manifest, &signing);
         let err = verify_admission(&signed, &verifying, &net_grants()).unwrap_err();
         assert!(matches!(err, Error::InvalidManifest(_)), "{err:?}");
@@ -375,7 +377,7 @@ mod tests {
     fn over_privileged_is_refused_at_admission() {
         let (signing, verifying) = test_keypair();
         let mut manifest = sample_manifest();
-        manifest.capabilities = vec![cap("net.egress"), cap("fs.write")];
+        manifest.program.as_mut().unwrap().capabilities = vec![cap("net.egress"), cap("fs.write")];
         let signed = sign_manifest(&manifest, &signing);
         // User only granted net.egress, not fs.write.
         let err = verify_admission(&signed, &verifying, &net_grants()).unwrap_err();
