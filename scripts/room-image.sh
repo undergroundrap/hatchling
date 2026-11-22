@@ -4,9 +4,9 @@ set -euo pipefail
 export LC_ALL=C TZ=UTC
 umask 022
 
-snapshot=20261107T000000Z
+snapshot=20261122T000000Z
 node_version=24.22.2
-epoch=${SOURCE_DATE_EPOCH:-1794009600}
+epoch=${SOURCE_DATE_EPOCH:-1795305600}
 image=room-system-x86_64.squashfs
 hashes=room-system-x86_64.verity
 root_hash=room-system-x86_64.root-hash
@@ -24,10 +24,10 @@ sources=(
 # so a release's supervisor can be rebuilt byte for byte whatever machine
 # builds it. The packages its bytes come from, and the files a static link
 # takes, each pinned: a build root that differs is refused.
-toolchain_packages=$'binutils-x86-64-linux-gnu\t2.44-3\ngcc-14\t14.2.0-19\nlibc6-dev\t2.41-12+deb13u4\nlibgcc-14-dev\t14.2.0-19'
+toolchain_packages=$'binutils-x86-64-linux-gnu\t2.44-3\ngcc-14\t14.2.0-19\nlibc6-dev\t2.41-12+deb13u5\nlibgcc-14-dev\t14.2.0-19'
 toolchain_files() {
     cat <<EOF
-679612af043ab6a3eb9af24136b8d0c9ba1e10114f047271386ee7fa37031326  usr/lib/x86_64-linux-gnu/libc.a
+c2cf5fc8524706421ab6d6af3d997e9f898dcb7c0a43e676bcaea3d8cf4e0a14  usr/lib/x86_64-linux-gnu/libc.a
 4ca31259aee8415b60fe566c00cecfa5858f1103296b8043f175ccf2489f00ec  usr/lib/x86_64-linux-gnu/rcrt1.o
 78acef26a7007f5320c98633376f2903e33895e694fbc2b91d189b38addbca8a  usr/lib/x86_64-linux-gnu/crti.o
 121f2a5f12b13471dd8c7dabe3ff334df08540c270564d1a2b3c47ecbd8d3101  usr/lib/x86_64-linux-gnu/crtn.o
@@ -51,8 +51,8 @@ download() {
 check_debian_indexes() (
     cd "$1/var/lib/apt/lists"
     sha256sum --check --strict <<EOF
-0584fba32e13e0ab8285fb16c27adea1ec03a73669c18702821094fd6ca86675  snapshot.debian.org_archive_debian_${snapshot}_dists_trixie_InRelease
-478e896e696eab873d40f0a31937edeec37192f2a35a26f97a04744805fd1521  snapshot.debian.org_archive_debian-security_${snapshot}_dists_trixie-security_InRelease
+bfacad4ca61899ce20d4a0d439f29339f66541561b67506364efb88e27dee870  snapshot.debian.org_archive_debian_${snapshot}_dists_trixie_InRelease
+3d31c58caa2397eda1af459a0db092bb3b8f5abb31c67e50e1dd491958c2ddb9  snapshot.debian.org_archive_debian-security_${snapshot}_dists_trixie-security_InRelease
 EOF
 )
 
