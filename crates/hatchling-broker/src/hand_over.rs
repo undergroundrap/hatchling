@@ -326,7 +326,13 @@ impl<'k> Handing<'k> {
             Ok(name) => name,
             Err(why) => return unread(why),
         };
-        let bytes = match rooms.take(&crate::room_ops::placed(path)) {
+        // Checked here, as a folder is, so a path the Room would refuse
+        // is told in its own words: the Room's refusal isn't (#570).
+        let placed = crate::room_ops::placed(path);
+        if let Err(why) = hatchling_core::room::check_take(&placed, 0) {
+            return unread(why);
+        }
+        let bytes = match rooms.take(&placed) {
             Ok(bytes) => bytes,
             Err(reason) => return self.ended(None, 0, FileOutEnded::Refused, &reason),
         };
