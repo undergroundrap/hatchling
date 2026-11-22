@@ -3268,8 +3268,10 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         // What a session's Room asks through is these same asks.
         {
             use crate::room_ops::Rooms;
+            // A check's refusal is said before a run is sent (`room_ops`),
+            // so through the Room it is only a failure (#570).
             let refused = Rooms::run(&spawner, &run("j", &["./relative"])).unwrap_err();
-            assert!(refused.contains("interpreter"), "{refused}");
+            assert_eq!(refused, crate::room_session::UNSAID);
             for asked in [
                 Rooms::job(&spawner, &job("j"), 0),
                 Rooms::stop(&spawner, &job("j")),
@@ -4559,6 +4561,85 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             serve_connection(&theirs, Path::new("/bin/sh"), &policy(), None, &sessions).is_err()
         );
         assert!(gone("x").to_string().contains("cannot be reached: x"));
+    }
+
+    /// A Room that can't start, asked through the spawner for anything,
+    /// tells the agent it failed, and nothing of the host's paths or OS
+    /// errors the failure named (#570).
+    #[test]
+    fn a_room_that_cannot_start_tells_the_agent_nothing_of_the_host() {
+        use crate::room_ops::Rooms;
+        const LEAKED: &str = "/var/lib/hatchling/room: Permission denied (os error 13)";
+        let sessions = Arc::new(Sessions::new(Arc::default(), |_| {
+            Err(std::io::Error::other(LEAKED))
+        }));
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        // Unfiltered, the spawner says why, as the broker's log does.
+        assert!(
+            spawner
+                .room_page("/workspace/a", 1, 10)
+                .unwrap_err()
+                .contains(LEAKED)
+        );
+        let search = RoomSearch {
+            pattern: String::from("x"),
+            path: String::from("/workspace"),
+            glob: None,
+            ignore_case: false,
+            literal: true,
+        };
+        let change = RoomChange::Write {
+            path: String::from("/workspace/a"),
+            bytes: b"a".to_vec(),
+            replace: false,
+        };
+        let told = [
+            Rooms::run(&spawner, &crate::room_job::tests::run("a", &["true"])).map(|_| ()),
+            Rooms::page(&spawner, "/workspace/a", 1, 10).map(|_| ()),
+            Rooms::search(&spawner, &search).map(|_| ()),
+            Rooms::change(&spawner, &change).map(|_| ()),
+            Rooms::take(&spawner, "/workspace/a").map(|_| ()),
+            Rooms::list(&spawner, "/workspace").map(|_| ()),
+        ];
+        for (asked, said) in told.into_iter().enumerate() {
+            assert_eq!(
+                said,
+                Err(String::from(crate::room_session::UNSAID)),
+                "ask {asked}"
+            );
+        }
+        drop(spawner);
+        served.join().unwrap();
+        // A spawner that can't be reached fails every ask with an OS
+        // error: the agent is told only that it failed.
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        drop(theirs);
+        let gone = Spawner::over(ours);
+        let job = crate::room_job::tests::job("a");
+        let told = [
+            Rooms::run(&gone, &crate::room_job::tests::run("a", &["true"])).map(|_| ()),
+            Rooms::job(&gone, &job, 0).map(|_| ()),
+            Rooms::stop(&gone, &job).map(|_| ()),
+            Rooms::output(&gone, &job, Stream::Stdout, End::Head).map(|_| ()),
+            Rooms::page(&gone, "/workspace/a", 1, 10).map(|_| ()),
+            Rooms::search(&gone, &search).map(|_| ()),
+            Rooms::change(&gone, &change).map(|_| ()),
+            Rooms::take(&gone, "/workspace/a").map(|_| ()),
+            Rooms::list(&gone, "/workspace").map(|_| ()),
+        ];
+        for (asked, said) in told.into_iter().enumerate() {
+            assert_eq!(
+                said,
+                Err(String::from(crate::room_session::UNSAID)),
+                "ask {asked} of a spawner gone"
+            );
+        }
     }
 
     /// A helper's watch reads how it ended, or that the spawner went
