@@ -55,3 +55,4 @@ Filled in at close.
 - Slices: (1) the runner, the result format, five conformance fixtures and the tasks, with their stand-ins; (2) the behaviour families; (3) the first real runs, published; (4) after #534, the direct OpenAI and Anthropic configurations.
 - The local models need their own copy in the harness's install: a one-time download, done with the maintainer's approval.
 - A free hosted model can change or be rate-limited by its provider at any time: each result records the date and the provider's model id, and the published table says so.
+- Follows WO-046 (signed playbook skills), by the maintainer's decision of 2026-11-22: benchmarks are published once Hatchling's skills are at parity, so they measure the agent people will run.
