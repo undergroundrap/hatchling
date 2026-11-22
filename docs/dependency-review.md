@@ -605,3 +605,9 @@ own. It brings nothing new: it was already in the tree, through `curve25519-dale
 (for `ed25519-dalek`) and `digest` 0.10 (for `hmac`);
 `hatchling-vault` now takes it directly. `hatchling-broker` takes it too: a harness relay checks each request's surrogate key with
 `ConstantTimeEq`.
+
+## The Room's image
+
+The agent's own computer runs a read-only system image built by `scripts/room-image.sh` (Debian 13 from a dated snapshot, its signed indexes pinned by SHA-256), with Node and Python wheels pinned by hash (`scripts/room-image-wheels.lock`). None of it is a crate, so `cargo deny` doesn't check it; the image's SBOM and package inventory list it, release by release ([Verifying a release](releasing.md#room-system-image)).
+
+Why it's there: the agent's tools in its own computer (WO-035) are the ordinary ones, `git`, `ripgrep`, Python, Node and SQLite, and a few file readers (`lxml`, `pillow`, `pypdfium2`, `pdfplumber`) so it can read what the owner gives it. What holds them: the Room has no network and no secret, runs under its own syscall filter as a user of its own, and its root is verified at mount (dm-verity). What they can still do: a bug in a file reader is reachable by a file the owner sends in, within the Room. Each release reads the advisories for what changed ([the checklist's item 8](release-security-checklist.md#8-dependencies)).
