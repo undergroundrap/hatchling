@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Fixed
+
+- **`doctor` says what installs the agent's computer** ([#584](https://github.com/undergroundrap/hatchling/issues/584)). When the Room couldn't start, it said Windows Setup installs its image and Linux has no package for it, whatever stopped it. Since 0.9.0 the Linux installer adds the image too, on x86_64. Now it says what answers the cause: install a release with the image, on Linux or Windows; run on x86_64; or give cells a cgroup.
+
 ## [0.9.0] - 2026-11-22
 
 ### Added
