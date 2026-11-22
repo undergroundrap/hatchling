@@ -4510,3 +4510,76 @@ fn a_listing_starts_a_session_and_the_next_uses_it() {
     let tried = started.load(Atomic::SeqCst);
     assert!((2..=ATTEMPTS).contains(&tried), "started {tried} sessions");
 }
+
+/// What the Room says of a failure reaches the agent as it is, whatever
+/// it counts, and around why a session ended or is still there (#570).
+#[test]
+fn a_failure_in_the_rooms_words_reaches_the_agent_as_it_is() {
+    let said = |reason: &str| for_the_agent(reason.to_owned());
+    let ours = [
+        String::from(FULL),
+        String::from(LOST),
+        String::from(BAD_LISTED),
+        String::from(UNSETTLED),
+        String::from(OVERSIZED),
+        String::from(not_started(NotStarted::NoSuchProgram)),
+        no_write(NoWrite::Exists),
+        no_take(NoTake::Outside),
+        no_list(NoList::TooMany),
+        no_search(NoSearch::Refused),
+        no_page(NoPage::PastEnd(0)),
+        no_page(NoPage::PastEnd(48_213)),
+        no_edit(NoEdit::Ambiguous {
+            places: 9,
+            lines: vec![3, 17, 120],
+        }),
+        no_edit(NoEdit::Ambiguous {
+            places: 2,
+            lines: vec![40],
+        }),
+        format!("{CLOSED}{UNHEARD}"),
+        held(IDLE),
+        String::from(UNSAID),
+    ];
+    for reason in ours {
+        assert_eq!(said(&reason), reason);
+    }
+}
+
+/// A failure the Room has no words for, which can name the host's paths,
+/// a device or an OS error, reaches the agent as one fixed sentence, and
+/// its detail is in the broker's log, escaped (#570). Around why a session
+/// ended or is still there, the Room's own words stay.
+#[test]
+fn a_failure_without_the_rooms_words_is_said_plainly_and_logged() {
+    let leaked =
+        "cannot start the Room session: /var/lib/hatchling/room: Permission denied (os error 13)";
+    let logged = crate::test_log::captured(|| {
+        assert_eq!(for_the_agent(leaked.to_owned()), UNSAID);
+        for other in [
+            "the Room supervisor exited with status 49",
+            "cannot remove room mapper /dev/mapper/hatchling-room-7: Device or resource busy (os error 16)",
+            "spawner: cannot be reached: Broken pipe (os error 32)",
+            // One of the Room's words with more after it isn't one, after a
+            // number in them too.
+            "the Room has no such file: /workspace/x",
+            "the file's last line is line 7: /var/lib/hatchling (os error 13)",
+            "the text to replace is in the file at 3 places /dev/mapper/x",
+            "",
+        ] {
+            assert_eq!(for_the_agent(other.to_owned()), UNSAID, "{other}");
+        }
+        assert_eq!(
+            for_the_agent(format!("{leaked}{UNHEARD}")),
+            format!("{UNSAID}{UNHEARD}")
+        );
+        assert_eq!(for_the_agent(held(leaked)), held(UNSAID));
+        assert_eq!(for_the_agent(held(LOST)), held(LOST));
+    });
+    assert!(logged.contains("os error 13"), "{logged}");
+    let forged = "FORGED a line of the log";
+    let logged = crate::test_log::captured(|| {
+        assert_eq!(for_the_agent(format!("bad\n{forged}")), UNSAID);
+    });
+    crate::test_log::assert_no_forged_line(&logged, forged);
+}
