@@ -1455,3 +1455,17 @@ fn a_folder_and_a_file_are_each_handed_over_as_themselves() {
     );
     let _ = crate::follow_ups::ended(cell.as_str());
 }
+
+/// The program a session runs is its own text, logged escaped: a newline
+/// in it forges no line of the broker's log (#571).
+#[test]
+fn a_programs_name_forges_no_line_of_the_log() {
+    let fake = Fake::default();
+    fake.answers_run(Ok(ended(0, kept(0, 0, 0), kept(0, 0, 0))));
+    let forged = "FORGED a line of the log";
+    let logged = crate::test_log::captured(|| {
+        let mut room = session(&fake);
+        let _ = room.handle(&run(&[&format!("sh\n{forged}"), "-c", "true"]));
+    });
+    crate::test_log::assert_no_forged_line(&logged, forged);
+}
