@@ -14,7 +14,7 @@ What Hatchling really does on a fresh install, one row at a time.
 | 🚧 | Built, but off by default, or part of it is missing |
 | ❌ | Not there |
 
-**Last checked:** Windows setup, 2026-11-07, ahead of 0.8.0, by Ocean on the setup and by an agent on the final build. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
+**Last checked:** 2026-11-22, ahead of 0.9.0: its three new rows, by an agent on the release candidate, installed with Windows setup's own script. The rest: Windows setup, 2026-11-07, ahead of 0.8.0, by Ocean on the setup and by an agent on the final build. Linux installs are covered by CI, which isn't a person, so their rows wait for someone to do them.
 
 ## Install and vault
 
@@ -61,10 +61,10 @@ What Hatchling really does on a fresh install, one row at a time.
 | What | Status | Notes |
 |---|---|---|
 | Subagents | ⬜ | |
-| A computer of its own | ⬜ | Only where Windows Setup installed its image, on x86_64: commands, and reading, searching, writing and editing its files, which it keeps. No network or installs; a program it writes runs through `python3`, `node` or `sh` |
-| Read files you attach | ❌ | Next: 0.9 |
-| Give you files, in chat and the Library | ❌ | Next: 0.9 |
-| Documents: markdown and plain HTML | 🚧 | Builders aren't installed, and no file reaches you |
+| A computer of its own | 🔵 | Only where the installer or Windows Setup installed its image, on x86_64: commands, and reading, searching, writing and editing its files, which it keeps. No network or installs; a program it writes runs through `python3`, `node` or `sh`. Commands, and a file kept across a restart, on a fresh install of 0.9.0's release candidate, through the app's local API with a scripted stand-in for the model |
+| Read files you attach | 🔵 | Into its computer's inbox, where it reads them. The same bytes, read with `read`, on a fresh install of 0.9.0's release candidate, through the app's local API with a scripted stand-in for the model |
+| Give you files, in chat and the Library | 🔵 | A file or a folder, offered in the chat and kept in the Library. Each downloaded the same as made, on a fresh install of 0.9.0's release candidate, through the app's local API with a scripted stand-in for the model |
+| Documents: markdown and plain HTML | 🚧 | Builders aren't installed |
 | Other document types | ❌ | |
 | Read the web, and search | 🚧 | Off until you set it up |
 | Browser you can watch and take over | 🚧 | Off until you set it up, and Chromium isn't installed |
