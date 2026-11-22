@@ -48,4 +48,4 @@ Filled in at close.
 
 ## Notes
 
-- On v0.12.0, before the first connectors (v0.13.0), by the maintainer's decision of 2026-11-22: voice runs entirely on the owner's machine, while connectors wait on the credential design (#604), which is written during v0.12.0.
+- On v0.12.0, before the app's parity with the demo (v0.13.0) and the first connectors (v0.14.0), by the maintainer's decisions of 2026-11-22: voice runs entirely on the owner's machine, while connectors wait on the credential design (#604).
