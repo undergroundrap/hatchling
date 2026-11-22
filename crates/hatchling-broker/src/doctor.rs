@@ -555,6 +555,21 @@ impl RoomMissing {
             Self::Cgroup => "cells are held by process limits alone, and it needs a cgroup",
         }
     }
+
+    /// What the owner can do about it (#584): the installer adds the image
+    /// on Linux as Windows Setup does on Windows, and neither helps a
+    /// machine that isn't `x86_64` or has no cgroup for cells.
+    const fn fix(self) -> &'static str {
+        match self {
+            Self::Arch => {
+                "run Hatchling on an x86_64 machine; everything else works here without it"
+            }
+            Self::Admission | Self::Image => {
+                "install a release that has its image, on x86_64: the installer adds it on Linux (docs/install.md), Windows Setup on Windows (docs/windows.md)"
+            }
+            Self::Cgroup => "give cells a cgroup, as the cell limits line above says",
+        }
+    }
 }
 
 /// The first of `checks` that fails, in order: what stops the Room.
@@ -579,9 +594,7 @@ fn room_image_said(missing: Option<RoomMissing>) -> Finding {
                 "the agent's computer (the Room) can't start here: {}",
                 missing.said()
             ),
-            fix: String::from(
-                "Windows Setup installs it (docs/windows.md); on Linux, it isn't packaged yet",
-            ),
+            fix: String::from(missing.fix()),
         },
     )
 }
@@ -2051,19 +2064,36 @@ mod tests {
             "the first first"
         );
         assert_eq!(said(&room_image_said(None)).0, "fine");
-        for (missing, why) in [
-            (Arch, "it needs x86_64 Linux"),
-            (Admission, "no image is installed"),
-            (Image, "its image isn't in place"),
-            (Cgroup, "it needs a cgroup"),
+        // Each cause with the fix that answers it (#584): the installer and
+        // Windows Setup only for a missing image, and no install advice
+        // where an install wouldn't help.
+        for (missing, why, fix) in [
+            (
+                Arch,
+                "it needs x86_64 Linux",
+                "| run Hatchling on an x86_64 machine",
+            ),
+            (
+                Admission,
+                "no image is installed",
+                "| install a release that has its image, on x86_64: the installer adds it on Linux (docs/install.md), Windows Setup on Windows (docs/windows.md)",
+            ),
+            (
+                Image,
+                "its image isn't in place",
+                "| install a release that has its image, on x86_64: the installer adds it on Linux",
+            ),
+            (Cgroup, "it needs a cgroup", "| give cells a cgroup"),
         ] {
             let (kind, words) = said(&room_image_said(Some(missing)));
             assert_eq!(kind, "note", "{words}");
             assert!(
                 words.starts_with("the agent's computer (the Room) can't start here: ")
-                    && words.contains(why),
+                    && words.contains(why)
+                    && words.contains(fix),
                 "{why}: {words}"
             );
+            assert!(!words.contains("isn't packaged"), "{words}");
         }
     }
 
