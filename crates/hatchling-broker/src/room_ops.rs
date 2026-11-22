@@ -30,6 +30,7 @@ use hatchling_core::{
 
 use crate::config::Config;
 use crate::room_job::{RoomJob, RoomJobAnswer, RoomJobState, RoomJobStopped, RoomRun};
+use crate::room_session::for_the_agent;
 use crate::spawner::{RoomChange, RoomChanged, RoomSearch};
 
 /// What a session without its person there is told.
@@ -61,41 +62,43 @@ pub(crate) trait Rooms {
     fn list(&self, path: &str) -> Result<crate::spawner::Listing, String>;
 }
 
+/// The real Room's answers, each failure in words the agent may be told
+/// ([`for_the_agent`], #570).
 impl Rooms for crate::spawner::Spawner {
     fn run(&self, run: &RoomRun) -> Result<RoomJobAnswer, String> {
-        self.room_run(run)
+        self.room_run(run).map_err(for_the_agent)
     }
 
     fn job(&self, job: &JobId, wait_secs: u32) -> Result<RoomJobAnswer, String> {
-        self.room_job(job, wait_secs)
+        self.room_job(job, wait_secs).map_err(for_the_agent)
     }
 
     fn stop(&self, job: &JobId) -> Result<RoomJobAnswer, String> {
-        self.room_stop(job)
+        self.room_stop(job).map_err(for_the_agent)
     }
 
     fn output(&self, job: &JobId, stream: Stream, end: End) -> Result<Vec<u8>, String> {
-        self.room_output(job, stream, end)
+        self.room_output(job, stream, end).map_err(for_the_agent)
     }
 
     fn page(&self, path: &str, from: u64, lines: u32) -> Result<Page, String> {
-        self.room_page(path, from, lines)
+        self.room_page(path, from, lines).map_err(for_the_agent)
     }
 
     fn search(&self, search: &RoomSearch) -> Result<Found, String> {
-        self.room_search(search)
+        self.room_search(search).map_err(for_the_agent)
     }
 
     fn change(&self, change: &RoomChange) -> Result<RoomChanged, String> {
-        self.room_change(change)
+        self.room_change(change).map_err(for_the_agent)
     }
 
     fn take(&self, path: &str) -> Result<Vec<u8>, String> {
-        self.room_take(path)
+        self.room_take(path).map_err(for_the_agent)
     }
 
     fn list(&self, path: &str) -> Result<crate::spawner::Listing, String> {
-        self.room_list(path)
+        self.room_list(path).map_err(for_the_agent)
     }
 }
 

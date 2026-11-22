@@ -398,6 +398,26 @@ fn what_is_refused_before_the_file_is_read_asks_the_room_nothing() {
     }
 }
 
+/// A path no file in the Room can be at is refused in the check's own
+/// words before the Room is asked, as a folder's is: the Room's own
+/// refusal reaches the agent only in its words (#570).
+#[test]
+fn a_path_no_file_can_be_at_is_refused_before_the_room_is_asked() {
+    let install = install("past-a-path");
+    let long = format!("{}a.txt", "d/".repeat(600));
+    let said = hatchling_core::room::check_take(&crate::room_ops::placed(&long), 0).unwrap_err();
+    let room = Room::with(Ok(b"x".to_vec()));
+    let handing = install.handing(Some(&install.cell), chat, clear("a.txt"));
+    assert_eq!(
+        handing.hand(&room, &long),
+        RoomResult::NotHandedOver {
+            reason: String::from(said)
+        }
+    );
+    assert!(room.asked().is_empty(), "the Room was asked");
+    assert!(install.crossings().is_empty());
+}
+
 /// The Room's refusal is said as the Room said it; a file the Library
 /// won't keep is said in the Library's words before the file is checked,
 /// so by no name: nothing was spent.

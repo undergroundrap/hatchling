@@ -35,13 +35,13 @@
 //! and refuses new work. A job still running when its session ends is
 //! lost with it, and is said to be.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::convert::Infallible;
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::{AsFd as _, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -89,11 +89,18 @@ const UNHEARD: &str =
 const UNANSWERED: &str = "the Room supervisor didn't answer in time";
 const UNSTOPPED: &str = "a Room job didn't end when it was stopped";
 const UNSENT: &str = "could not send to the Room supervisor";
+const OVERSIZED: &str = "oversized Room supervisor frame";
 const DISK_CLOSING: &str = "the Room was stopped: its disk is being closed";
 const UNOWNED: &str = "the Room session lost its owner";
 const UNSETTLED: &str = "the Room session kept ending; try again";
 const LEAVING: &str = "the spawner is leaving";
 const READY: &[u8] = b"ready";
+/// Said before why the last session is still there.
+const HELD: &str = "the last Room session isn't cleared yet: ";
+/// What the agent is told of a Room failure the Room has no words
+/// for: its detail can name the host's paths, a device or an OS error,
+/// so it goes to the broker's log instead.
+pub(crate) const UNSAID: &str = "the computer couldn't do that: Hatchling's log says why";
 
 /// How many times a request is handed to a session that ends before
 /// answering it, or starts one, before it is refused.
@@ -821,7 +828,7 @@ fn frame(heard: &mut Vec<u8>, limit: usize) -> Result<Option<Vec<u8>>, String> {
     };
     let size = usize::try_from(u32::from_be_bytes(*size)).map_err(|error| error.to_string())?;
     if size > limit {
-        return Err(String::from("oversized Room supervisor frame"));
+        return Err(String::from(OVERSIZED));
     }
     let Some(body) = body.get(..size) else {
         return Ok(None);
@@ -833,7 +840,186 @@ fn frame(heard: &mut Vec<u8>, limit: usize) -> Result<Option<Vec<u8>>, String> {
 
 /// Why nothing can use the Room while its last session is still there.
 fn held(reason: &str) -> String {
-    format!("the last Room session isn't cleared yet: {reason}")
+    format!("{HELD}{reason}")
+}
+
+/// `reason`, why the Room didn't do what was asked, as the agent is
+/// told it (#570): as it is when it's in the Room's own words, and
+/// otherwise [`UNSAID`], with `reason` in the broker's log.
+///
+/// A launch that fails, a supervisor that can't be read and a spawner
+/// that can't be reached each give their error's own text, which can
+/// name a host directory, a device or an OS error: the agent's cell,
+/// and a hosted model, never see that. Only the numbers in the Room's
+/// words may differ from them. Said after why a session ended, or
+/// before why the last one is still there, the words around stay.
+/// A request is checked before it's sent to the Room, so a check's
+/// refusal never comes back here.
+pub(crate) fn for_the_agent(reason: String) -> String {
+    if words().contains(&shape(&reason)) {
+        return reason;
+    }
+    if let Some(why) = reason.strip_suffix(UNHEARD) {
+        return format!("{}{UNHEARD}", for_the_agent(why.to_owned()));
+    }
+    if let Some(why) = reason.strip_prefix(HELD) {
+        return held(&for_the_agent(why.to_owned()));
+    }
+    tracing::warn!(
+        reason = ?reason,
+        "the Room failed without words for the agent, which was told only that it failed"
+    );
+    String::from(UNSAID)
+}
+
+/// `text` with each number, and each list of numbers, as `#`: the shape
+/// the Room's words have, whatever they count.
+fn shape(text: &str) -> String {
+    fn past_number(text: &str) -> &str {
+        text.trim_start_matches(|c: char| c.is_ascii_digit())
+    }
+    let mut shaped = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(next) = rest.chars().next() {
+        if next.is_ascii_digit() {
+            rest = past_number(rest);
+            while let Some(after) = rest.strip_prefix(", ") {
+                if !after.starts_with(|c: char| c.is_ascii_digit()) {
+                    break;
+                }
+                rest = past_number(after);
+            }
+            shaped.push('#');
+        } else {
+            shaped.push(next);
+            rest = rest.get(next.len_utf8()..).unwrap_or_default();
+        }
+    }
+    shaped
+}
+
+/// Every sentence the Room says of a failure, each as [`shape`] has it.
+fn words() -> &'static BTreeSet<String> {
+    static WORDS: OnceLock<BTreeSet<String>> = OnceLock::new();
+    WORDS.get_or_init(|| {
+        use crate::room_job::not_started;
+        use hatchling_core::room::NotStarted;
+        let fixed = [
+            FULL,
+            NO_JOB,
+            NOT_OVER,
+            LOST,
+            EXPIRED,
+            UNREADY,
+            CAPPED,
+            IDLE,
+            REQUESTER_GONE,
+            LAUNCHER_ENDED,
+            OUT_OF_TURN,
+            CLOSED,
+            CLOSED_EARLY,
+            BAD_READY,
+            BAD_SAY,
+            BAD_END,
+            BAD_PIECE,
+            BAD_PAGE,
+            BAD_FOUND,
+            BAD_WROTE,
+            BAD_EDITED,
+            BAD_TOOK,
+            BAD_LISTED,
+            UNANSWERED,
+            UNSTOPPED,
+            UNSENT,
+            DISK_CLOSING,
+            UNOWNED,
+            UNSETTLED,
+            LEAVING,
+            UNSAID,
+            OVERSIZED,
+        ]
+        .map(String::from);
+        let unstarted = [
+            NotStarted::Known,
+            NotStarted::Full,
+            NotStarted::NoSuchDir,
+            NotStarted::NoSuchProgram,
+            NotStarted::NoSession,
+        ]
+        .map(|why| String::from(not_started(why)));
+        fixed
+            .into_iter()
+            .chain(unstarted)
+            .chain(supervisors_refusals())
+            .map(|said| shape(&said))
+            .collect()
+    })
+}
+
+/// Every way the supervisor's refusals are said ([`no_write`] and the
+/// rest), with numbers where they have them.
+fn supervisors_refusals() -> impl Iterator<Item = String> {
+    let unwritten = [
+        NoWrite::Exists,
+        NoWrite::NotAFile,
+        NoWrite::Denied,
+        NoWrite::Failed,
+    ]
+    .map(no_write);
+    let unedited = [
+        NoEdit::NoSuchFile,
+        NoEdit::Denied,
+        NoEdit::NotAFile,
+        NoEdit::NotText,
+        NoEdit::TooBig,
+        NoEdit::NotFound,
+        NoEdit::Ambiguous {
+            places: 2,
+            lines: vec![1, 2],
+        },
+        NoEdit::Failed,
+    ]
+    .map(no_edit);
+    let unsought = [NoSearch::NoSuchPath, NoSearch::Refused, NoSearch::Failed].map(no_search);
+    let untaken = [
+        NoTake::NoSuchFile,
+        NoTake::Denied,
+        NoTake::NotAFile,
+        NoTake::Link,
+        NoTake::Outside,
+        NoTake::Changed,
+        NoTake::Failed,
+    ]
+    .map(no_take);
+    let unlisted = [
+        NoList::NoSuchFolder,
+        NoList::Denied,
+        NoList::NotAFolder,
+        NoList::Link,
+        NoList::Outside,
+        NoList::TooMany,
+        NoList::Changed,
+        NoList::Failed,
+    ]
+    .map(no_list);
+    let unpaged = [
+        NoPage::NoSuchFile,
+        NoPage::Denied,
+        NoPage::NotAFile,
+        NoPage::NotText,
+        NoPage::TooFar,
+        NoPage::PastEnd(0),
+        NoPage::PastEnd(1),
+        NoPage::Failed,
+    ]
+    .map(no_page);
+    unwritten
+        .into_iter()
+        .chain(unedited)
+        .chain(unsought)
+        .chain(untaken)
+        .chain(unlisted)
+        .chain(unpaged)
 }
 
 /// One Room session, as the thread that holds it keeps it.
