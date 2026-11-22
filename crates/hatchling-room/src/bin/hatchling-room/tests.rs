@@ -743,6 +743,63 @@ fn a_stop_kills_everything_in_the_jobs_group() {
     assert!(bench.close());
 }
 
+/// A file or a link a job put where a later job's input or output is to
+/// go is never opened: what it names is left as it was, and the job runs
+/// all the same (#573).
+#[test]
+fn what_a_job_put_where_a_later_jobs_files_go_is_never_opened() {
+    let mut bench = Bench::new("planted");
+    let target = bench.dir.join("kept");
+    std::fs::write(&target, "kept").unwrap();
+    std::fs::create_dir_all(bench.dir.join("jobs")).unwrap();
+    std::os::unix::fs::symlink(&target, bench.file("later", "stdout")).unwrap();
+    std::fs::write(bench.file("later", "stderr"), "a job's").unwrap();
+    bench.shell("later", "echo over; echo also >&2");
+    assert_eq!(bench.ended("later").0, Ended::Exited(0));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept");
+    assert_eq!(
+        std::fs::read_to_string(bench.file("later", "stderr")).unwrap(),
+        "a job's"
+    );
+    assert!(bench.close());
+}
+
+/// Once a job's first process has been said to have ended, stopping the
+/// job signals nothing: by then its pid, and the group it named, may be
+/// another's (#573). Until then, the same stop ends the whole group.
+#[test]
+fn a_job_whose_first_process_has_ended_signals_no_group() {
+    let sleeper = |group: u32| {
+        Command::new("sleep")
+            .arg("20")
+            .process_group(i32::try_from(group).unwrap())
+            .spawn()
+            .unwrap()
+    };
+    let leader = sleeper(0);
+    let mut member = sleeper(leader.id());
+    let (leader_pid, member_pid) = (leader.id().to_string(), member.id().to_string());
+    let pidfd = pidfd_open(Pid::from_child(&leader), PidfdFlags::empty()).unwrap();
+    let quiet = || Capture::new(File::open("/dev/null").unwrap(), None);
+    let mut job = Job {
+        child: leader,
+        pidfd,
+        streams: [quiet(), quiet()],
+        end: Some((Ended::Exited(0), Instant::now())),
+    };
+    job.kill();
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(
+        runs(&leader_pid) && runs(&member_pid),
+        "an ended job's group was signalled"
+    );
+    job.end = None;
+    job.kill();
+    assert!(gone(&member_pid), "the group outlived the stop");
+    let _ = member.wait();
+    let _ = job.child.wait();
+}
+
 #[test]
 fn what_a_job_leaves_running_in_its_group_ends_with_it() {
     let mut bench = Bench::new("left");
@@ -892,7 +949,11 @@ fn a_stream_is_kept_piece_by_piece() {
     // The reading end: bytes, then the end of the pipe closes it.
     let fed = dir.join("fed");
     std::fs::write(&fed, b"abc").unwrap();
-    let mut capture = Capture::new(File::open(&fed).unwrap(), Some(private(&spill).unwrap()));
+    // A file of its own: one is never opened over one already there.
+    let mut capture = Capture::new(
+        File::open(&fed).unwrap(),
+        Some(private(&dir.join("fed-spill")).unwrap()),
+    );
     capture.read().unwrap();
     assert_eq!(
         (capture.head.as_slice(), capture.pipe.is_some()),
