@@ -6,7 +6,13 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Changed
+
+- **Skills are format 2, and format 1 is retired** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). A skill's signed manifest now says when the skill applies, points at its playbook and its program (at least one of the two), and lists every file it holds with its size and SHA-256. A format 1 manifest is refused, with a message to sign it again. No format 1 skill shipped. `hatchling-skill`'s API changes with it, so the workspace is 0.10.0 from here.
+
 ### Fixed
+
+- **A skill's signature covers every byte it holds** ([#613](https://github.com/undergroundrap/hatchling/issues/613)). A format 1 signature covered the manifest and not the program it named, which was bound only by a hash taken the first time the broker saw it, until a restart, and nothing checked who could write the skills directory. Now every listed file is checked against its signed hash on every load, a file the manifest doesn't list is never read, and the skills directory and each skill's own directory must be root's or the broker's and writable by no one else.
 
 - **Windows Setup never shows the app's address** ([#583](https://github.com/undergroundrap/hatchling/issues/583)). The address holds the token every app connection needs, so Setup keeps it off the screen and the Start menu opens the app. On a first install with a hosted model, the console that asks for the model's key showed everything the installer printed, the address too. Now the installer leaves it out when Setup runs it.
 - **`doctor` says what installs the agent's computer** ([#584](https://github.com/undergroundrap/hatchling/issues/584)). When the Room couldn't start, it said Windows Setup installs its image and Linux has no package for it, whatever stopped it. Since 0.9.0 the Linux installer adds the image too, on x86_64. Now it says what answers the cause: install a release with the image, on Linux or Windows; run on x86_64; or give cells a cgroup.
