@@ -644,12 +644,14 @@ mod tests {
     fn registered_skill() -> RegisteredSkill {
         use ed25519_dalek::{Signer, SigningKey};
         let signing = SigningKey::from_bytes(&[0x0d; 32]);
-        let manifest = hatchling_skill::Manifest {
-            name: String::from("run-skill"),
-            version: String::from("1.0.0"),
-            capabilities: vec!["text.transform".parse().unwrap()],
-            entry_point: String::from("skill"),
-        };
+        let manifest = hatchling_skill::Manifest::for_program(
+            "run-skill",
+            "1.0.0",
+            "A test skill.",
+            "skill",
+            b"code",
+            vec!["text.transform".parse().unwrap()],
+        );
         let sig = signing.sign(&manifest.canonical_bytes().unwrap());
         let signed = hatchling_skill::SignedManifest {
             manifest,

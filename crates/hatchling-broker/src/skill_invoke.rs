@@ -110,12 +110,14 @@ mod tests {
         let signing = SigningKey::from_bytes(&secret);
         let verifying = signing.verifying_key().to_bytes();
 
-        let manifest = hatchling_skill::Manifest {
-            name: "test-skill".to_string(),
-            version: "1.0.0".to_string(),
-            capabilities: vec![cap("fs.read")],
-            entry_point: "main.py".to_string(),
-        };
+        let manifest = hatchling_skill::Manifest::for_program(
+            "test-skill",
+            "1.0.0",
+            "A test skill.",
+            "main.py",
+            b"code",
+            vec![cap("fs.read")],
+        );
         let canonical = manifest.canonical_bytes().unwrap();
         let signature = signing.sign(&canonical);
         let signed = SignedManifest {

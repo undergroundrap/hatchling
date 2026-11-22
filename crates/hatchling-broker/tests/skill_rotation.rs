@@ -78,12 +78,14 @@ struct Package<'a> {
 
 /// Writes `<root>/skills/<dir>`: the signed manifest and its code.
 fn package(root: &Path, pkg: &Package<'_>) -> R<()> {
-    let manifest = Manifest {
-        name: pkg.name.to_owned(),
-        version: pkg.version.to_owned(),
-        capabilities: vec![cap()?],
-        entry_point: String::from("main.py"),
-    };
+    let manifest = Manifest::for_program(
+        pkg.name,
+        pkg.version,
+        "A test skill.",
+        "main.py",
+        pkg.code,
+        vec![cap()?],
+    );
     let payload = manifest.canonical_bytes().map_err(err)?;
     let signature = SigningKey::from_bytes(pkg.signer).sign(&payload);
     let signed = SignedManifest {
@@ -362,15 +364,18 @@ fn a_file_with_no_roots_drops_every_skill() -> R<()> {
     Ok(())
 }
 
-/// The same `name@version` with new bytes is drift: refused at reload.
-/// A new version is an update: admitted at the same reload.
+/// A program changed under its signature is refused at load: the file no
+/// longer matches the hash the signature lists (#613), so the skill drops
+/// out, and comes back with its signed bytes. The same `name@version`
+/// signed again over other bytes is drift: refused at reload, until a
+/// restart. A new version is an update: admitted at the same reload.
 #[test]
 fn drift_under_a_pinned_id_is_refused_and_a_new_version_admits() -> R<()> {
     let root = test_root("drift")?;
     package(&root, &alpha())?;
     write_roots(&root, &[public(&KEY_A)])?;
     let skills = load(&root, &["alpha"])?;
-    // Same id, new bytes; and a genuine update beside it.
+    // New bytes under the old signature; and a genuine update beside it.
     std::fs::write(
         root.join("skills").join("alpha").join("main.py"),
         b"changed",
@@ -389,16 +394,26 @@ fn drift_under_a_pinned_id_is_refused_and_a_new_version_admits() -> R<()> {
     write_roots(&root, &[public(&KEY_A), public(&KEY_B)])?;
     assert_eq!(
         skills.reload(),
-        applied(&["alpha@2.0.0"], &["alpha@1.0.0"], &["alpha@1.0.0"])?
+        applied(&["alpha@2.0.0"], &["alpha@1.0.0"], &[])?
     );
     assert_eq!(ids(&skills.snapshot()), vec!["alpha@2.0.0"]);
-    // Still refused at the next reload: the pin is the first admitted
-    // hash, not whatever the last set held, so drift cannot slip back in.
+    // The same id signed again over the new bytes: drift, refused.
+    package(
+        &root,
+        &Package {
+            code: b"changed",
+            ..alpha()
+        },
+    )?;
     write_roots(&root, &[public(&KEY_A)])?;
     assert_eq!(skills.reload(), applied(&[], &[], &["alpha@1.0.0"])?);
-    // The original bytes back: the pinned id matches again and admits.
-    std::fs::write(root.join("skills").join("alpha").join("main.py"), b"a").map_err(err)?;
+    // Still refused at the next reload: the pin is the first admitted
+    // hash, not whatever the last set held, so drift cannot slip back in.
     write_roots(&root, &[public(&KEY_A), public(&KEY_B)])?;
+    assert_eq!(skills.reload(), applied(&[], &[], &["alpha@1.0.0"])?);
+    // The original package back: the pinned id matches again and admits.
+    package(&root, &alpha())?;
+    write_roots(&root, &[public(&KEY_A)])?;
     assert_eq!(skills.reload(), applied(&["alpha@1.0.0"], &[], &[])?);
     assert_eq!(ids(&skills.snapshot()), vec!["alpha@1.0.0", "alpha@2.0.0"]);
     let _ = std::fs::remove_dir_all(&root);

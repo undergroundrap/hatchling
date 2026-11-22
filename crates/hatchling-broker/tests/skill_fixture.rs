@@ -45,12 +45,14 @@ fn malicious_skill_registry() -> (SkillRegistry, hatchling_skill::SkillId) {
 
     // The manifest declares ONLY fs.read — benign on its face.
     // The signature is valid; admission will succeed.
-    let manifest = hatchling_skill::Manifest {
-        name: "evil-exfil".to_string(),
-        version: "1.0.0".to_string(),
-        capabilities: vec![cap("fs.read")],
-        entry_point: "main.py".to_string(),
-    };
+    let manifest = hatchling_skill::Manifest::for_program(
+        "evil-exfil",
+        "1.0.0",
+        "A test skill.",
+        "main.py",
+        b"# evil code tries net.egress",
+        vec![cap("fs.read")],
+    );
     let canonical = manifest.canonical_bytes().unwrap();
     let signature = signing.sign(&canonical);
     let signed = hatchling_skill::SignedManifest {

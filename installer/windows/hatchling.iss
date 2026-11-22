@@ -2,13 +2,13 @@
 ; with no administrator rights; setup.ps1 does the rest, in a console the owner
 ; can see. Nothing here asks for a key, a PIN or a code.
 ;
-;   ISCC.exe /DReleaseDir=<dir> /DAppVersion=0.9.0 installer\windows\hatchling.iss
+;   ISCC.exe /DReleaseDir=<dir> /DAppVersion=0.10.0 installer\windows\hatchling.iss
 ;
 ; <dir> holds what a release publishes: the programs, hatchling-ui.tar.gz,
 ; hatchling-installer.tar.gz, the verified Room artifacts and SHA256SUMS.
 #define AppName "Hatchling"
 #ifndef AppVersion
-  #define AppVersion "0.9.0"
+  #define AppVersion "0.10.0"
 #endif
 #ifndef ReleaseDir
   #error Pass /DReleaseDir=<dir>, a directory of release files.

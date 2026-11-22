@@ -409,8 +409,10 @@ serialization in tests. MIT/Apache-2.0 (via the RustCrypto project).
 ## hatchling-skill
 
 Workspace crate, not an external dependency. The skill trust core
-(/): signed skill manifests, SHA-256 code pinning at
-registration, call-time capability enforcement (`check_skill_call`),
+(/): signed skill manifests (format 2, WO-046) that list every file
+with its size and SHA-256, so a signature covers every byte a skill can
+put in front of the agent or run, checked on every load; SHA-256 code
+pinning at registration; call-time capability enforcement (`check_skill_call`),
 and the `SkillRegistry` with identity-drift detection. The broker
 depends on it for skill admission — the cell never self-attests.
 External deps are the reviewed `ed25519-dalek` (signatures),

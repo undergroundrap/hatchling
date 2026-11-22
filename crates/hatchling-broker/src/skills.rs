@@ -2,8 +2,11 @@
 //!
 //! At broker startup, the broker reads each skill subdirectory under
 //! the configured skills dir, verifies the signed manifest against the
-//! trust root, pins the code hash ( registry), and
-//! registers the skill. Any failure — bad signature, over-privileged
+//! trust root, checks every file the manifest lists against its signed
+//! size and SHA-256, pins the program's hash (the registry), and
+//! registers the skill. The skills dir and each skill's own directory
+//! must be root's or the broker's and closed to other writers, as the
+//! trust-roots file is (#613). Any failure — bad signature, over-privileged
 //! manifest, unreadable code — refuses that skill loudly and continues
 //! with the rest. A broken skill never stops the broker; it just never
 //! runs.
@@ -18,14 +21,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Duration;
 
-use hatchling_skill::{Admission, CodeHash, SkillId, SkillRegistry, verify_admission};
+use hatchling_skill::{
+    Admission, CodeHash, MANIFEST_FILE, SkillId, SkillRegistry, verify_admission,
+};
 
 use crate::skill_run::{SkillRunError, SkillRuntime, run_skill};
 use crate::trust_roots::{TrustRoots, read_trust_roots_file};
 use crate::{Error, SkillConfig};
-
-/// The manifest filename within each skill directory.
-const MANIFEST_FILE: &str = "manifest.json";
 
 /// A skill as loaded from disk: the verified admission plus the code
 /// bytes that were hashed at registration.
@@ -64,10 +66,10 @@ pub struct LoadOutcome {
 /// Load all skills from the configured directory into the registry.
 ///
 /// Each subdirectory must contain `manifest.json` (the signed manifest,
-/// strict JSON) and the skill code file referenced by the manifest's
-/// `entry_point`. The manifest is verified via [`verify_admission`]
-/// against the trust root and user grants; the code is read and its
-/// hash pinned at registration.
+/// strict JSON, format 2) and every file it lists. The manifest is
+/// verified via [`verify_admission`] against the trust root and user
+/// grants; every listed file is read and checked against its signed size
+/// and SHA-256, and the program's hash pinned at registration.
 ///
 /// Every signature is verified under `roots`, primary first; a skill
 /// admits under whichever root signed it. A skill that fails to load is
@@ -100,6 +102,19 @@ pub fn load_skills(config: &SkillConfig, roots: &TrustRoots) -> LoadOutcome {
             return outcome;
         }
     };
+
+    if let Err(reason) = closed_to_others(&config.skills_dir) {
+        tracing::error!(
+            dir = %config.skills_dir.display(),
+            %reason,
+            "skills dir refused: all skills refused"
+        );
+        outcome.refused.push(Refusal {
+            dir_name: config.skills_dir.display().to_string(),
+            reason: format!("skills dir refused: {reason}"),
+        });
+        return outcome;
+    }
 
     for entry in entries {
         let entry = match entry {
@@ -512,8 +527,13 @@ fn load_one(
     roots: &TrustRoots,
 ) -> Result<(Admission, Vec<u8>), Error> {
     // Refuse symlinked skill directories: a symlink at the root would
-    // let the loader read outside the skills dir.
+    // let the loader read outside the skills dir. And refuse one anyone
+    // but root or the broker could write, as the trust-roots file is.
     refuse_symlink(dir, dir_name, "skill directory")?;
+    closed_to_others(dir).map_err(|reason| Error::SkillLoad {
+        skill: dir_name.to_owned(),
+        reason,
+    })?;
 
     // Read the signed manifest (refusing symlinks).
     let manifest_path = dir.join(MANIFEST_FILE);
@@ -524,11 +544,13 @@ fn load_one(
     })?;
 
     // Parse the signed manifest (strict: unknown/duplicate fields refused).
-    let signed: hatchling_skill::SignedManifest =
-        serde_json::from_slice(&manifest_bytes).map_err(|err| Error::SkillLoad {
+    // (A retired format v1 manifest is refused here, saying how to fix it.)
+    let signed = hatchling_skill::SignedManifest::from_json(&manifest_bytes).map_err(|err| {
+        Error::SkillLoad {
             skill: dir_name.to_owned(),
-            reason: format!("manifest JSON invalid: {err}"),
-        })?;
+            reason: err.to_string(),
+        }
+    })?;
 
     // The grants for THIS skill only, keyed by the manifest's name. The
     // name is read before verification, but `verify_admission` checks
@@ -543,16 +565,26 @@ fn load_one(
         .unwrap_or_default();
     let admission = admit_under_roots(&signed, roots, &user_grants, dir_name)?;
 
-    // Read the code file (entry_point, validated as a safe relative path
-    // by Manifest::validate during verify_admission). Refuse symlinks:
-    // a symlinked entry point would let the loader read outside the
-    // skill directory.
-    let code = read_skill_file(
-        dir,
-        &admission.manifest().entry_point,
-        dir_name,
-        "code file",
-    )?;
+    // Read every listed file (each a safe relative path, by
+    // Manifest::validate during verify_admission), refusing symlinks
+    // anywhere in its path, and check it against its signed size and
+    // SHA-256: the signature covers every byte the skill can put in front
+    // of the agent or run (#613). The program's bytes are kept for the
+    // registry's pin; a playbook without one pins nothing to run.
+    let manifest = admission.manifest();
+    let mut code = Vec::new();
+    for entry in &manifest.files {
+        let bytes = read_skill_file(dir, &entry.path, dir_name, "listed file")?;
+        entry
+            .check(&manifest.name, &bytes)
+            .map_err(|err| Error::SkillLoad {
+                skill: dir_name.to_owned(),
+                reason: err.to_string(),
+            })?;
+        if manifest.entry_point() == Some(entry.path.as_str()) {
+            code = bytes;
+        }
+    }
 
     Ok((admission, code))
 }
@@ -589,6 +621,38 @@ fn admit_under_roots(
     Err(refused(String::from(
         "admission refused: signature verification failed under every trust root",
     )))
+}
+
+/// Checks that `dir` is a real directory owned by root or the broker's
+/// uid and writable by no one else: the trust-roots file's rule, held for
+/// the skills dir and each skill's own directory (#613). Anyone who could
+/// write one could put files beside a signed skill's, or swap the skill.
+///
+/// # Errors
+///
+/// Returns why it can't be trusted.
+fn closed_to_others(dir: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt as _;
+    let shown = dir.display();
+    let meta =
+        std::fs::symlink_metadata(dir).map_err(|err| format!("cannot stat {shown}: {err}"))?;
+    if !meta.file_type().is_dir() {
+        return Err(format!("{shown} is not a directory (symlinks are refused)"));
+    }
+    let euid = hatchling_sys::euid();
+    if meta.uid() != 0 && meta.uid() != euid {
+        return Err(format!(
+            "{shown} must be owned by root or the broker's uid {euid}, not uid {}",
+            meta.uid()
+        ));
+    }
+    if meta.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{shown} must not be group- or world-writable (mode {:o})",
+            meta.mode() & 0o777
+        ));
+    }
+    Ok(())
 }
 
 /// Read `relative` inside `root` without following a symlink anywhere.
@@ -668,13 +732,22 @@ mod tests {
         dir
     }
 
+    /// The program every fixture's `main.py` holds, as its manifest lists.
+    const CODE: &str = "print(1)";
+
     fn manifest(name: &str, caps: &[&str]) -> Manifest {
-        Manifest {
-            name: name.to_owned(),
-            version: String::from("1.0.0"),
-            capabilities: caps.iter().map(|cap| cap.parse().unwrap()).collect(),
-            entry_point: String::from("main.py"),
-        }
+        manifest_with(name, caps, "main.py", CODE.as_bytes())
+    }
+
+    fn manifest_with(name: &str, caps: &[&str], path: &str, code: &[u8]) -> Manifest {
+        Manifest::for_program(
+            name,
+            "1.0.0",
+            "A test skill.",
+            path,
+            code,
+            caps.iter().map(|cap| cap.parse().unwrap()).collect(),
+        )
     }
 
     fn sign(manifest: Manifest) -> SignedManifest {
@@ -763,12 +836,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("main.py"), b"outside").unwrap();
-        let mut linked = manifest("linked", &["fs.read"]);
-        linked.entry_point = String::from("sub/main.py");
+        let linked = manifest_with("linked", &["fs.read"], "sub/main.py", b"outside");
         write_skill(&root, "linked", &sign(linked), None);
         std::os::unix::fs::symlink(&outside, root.join("linked").join("sub")).unwrap();
-        let mut nested = manifest("nested", &["fs.read"]);
-        nested.entry_point = String::from("sub/main.py");
+        let nested = manifest_with("nested", &["fs.read"], "sub/main.py", b"inside");
         write_skill(&root, "nested", &sign(nested), None);
         std::fs::create_dir_all(root.join("nested").join("sub")).unwrap();
         std::fs::write(root.join("nested").join("sub").join("main.py"), b"inside").unwrap();
@@ -790,13 +861,13 @@ mod tests {
             &root,
             "notes",
             &sign(manifest("notes", &["fs.write", "net.egress"])),
-            Some("n"),
+            Some(CODE),
         );
         write_skill(
             &root,
             "web",
             &sign(manifest("web", &["net.egress"])),
-            Some("w"),
+            Some(CODE),
         );
         let LoadOutcome {
             registry, loaded, ..
@@ -816,7 +887,7 @@ mod tests {
             &root,
             "web-dir",
             &sign(manifest("web", &["net.egress"])),
-            Some("print('web')"),
+            Some(CODE),
         );
         let LoadOutcome {
             registry, loaded, ..
@@ -824,7 +895,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         let skill = loaded.first().unwrap();
         assert_eq!(skill.dir_name, "web-dir");
-        assert_eq!(skill.code, b"print('web')");
+        assert_eq!(skill.code, CODE.as_bytes());
         let id = SkillId::new("web", "1.0.0");
         assert!(registry.verify_code(&id, &skill.code).is_ok());
         let _ = std::fs::remove_dir_all(&root);
@@ -840,9 +911,14 @@ mod tests {
         ];
         let mut unsigned = sign(manifest("unsigned", &["fs.read"]));
         unsigned.signature = None;
-        write_skill(&root, "a", &unsigned, Some("u"));
+        write_skill(&root, "a", &unsigned, Some(CODE));
         write_skill(&root, "b", &sign(manifest("codeless", &["fs.read"])), None);
-        write_skill(&root, "c", &sign(manifest("good", &["fs.read"])), Some("g"));
+        write_skill(
+            &root,
+            "c",
+            &sign(manifest("good", &["fs.read"])),
+            Some(CODE),
+        );
         std::fs::create_dir_all(root.join("d")).unwrap();
         std::fs::write(root.join("d").join(MANIFEST_FILE), b"{not json").unwrap();
         // A plain file beside the skill dirs is not a skill.
@@ -861,7 +937,7 @@ mod tests {
         // Bad signature: signed, then a signed field changed.
         let mut tampered = sign(manifest("tampered", &["fs.read"]));
         tampered.manifest.version = String::from("9.9.9");
-        write_skill(&root, "tampered", &tampered, Some("t"));
+        write_skill(&root, "tampered", &tampered, Some(CODE));
         // Unreadable code: the entry point is a directory.
         write_skill(
             &root,
@@ -875,20 +951,20 @@ mod tests {
             &root,
             "greedy",
             &sign(manifest("greedy", &["fs.read", "net.egress"])),
-            Some("g"),
+            Some(CODE),
         );
         // A malformed capability name never parses.
         std::fs::create_dir_all(root.join("malformed")).unwrap();
-        std::fs::write(
-            root.join("malformed").join(MANIFEST_FILE),
-            br#"{"name":"malformed","version":"1.0.0","capabilities":["fs read"],"entry_point":"main.py","signature":null}"#,
-        )
-        .unwrap();
+        let malformed =
+            String::from_utf8(sign(manifest("malformed", &["fs.read"])).to_json().unwrap())
+                .unwrap()
+                .replace("\"fs.read\"", "\"fs read\"");
+        std::fs::write(root.join("malformed").join(MANIFEST_FILE), malformed).unwrap();
         write_skill(
             &root,
             "good",
             &sign(manifest("good", &["fs.read"])),
-            Some("ok"),
+            Some(CODE),
         );
         let grants: &[(&str, &[&str])] = &[
             ("tampered", &["fs.read"]),
@@ -906,7 +982,7 @@ mod tests {
             ("greedy", "beyond user grants: net.egress"),
             ("malformed", "capability name"),
             ("tampered", "signature verification failed"),
-            ("unreadable", "cannot read code file"),
+            ("unreadable", "cannot read listed file"),
         ];
         assert_eq!(refused.len(), expected.len(), "{refused:?}");
         for (refusal, (dir, why)) in refused.iter().zip(expected) {
@@ -941,7 +1017,7 @@ mod tests {
             &root,
             "web",
             &sign(manifest("web", &["net.egress"])),
-            Some("w"),
+            Some(CODE),
         );
         let cfg = config(&root, &[("web", &["net.egress"])]);
         std::fs::write(&cfg.trust_roots_file, roots_text(&[public(&SECRET)])).unwrap();
@@ -970,7 +1046,7 @@ mod tests {
             &root,
             "web",
             &sign(manifest("web", &["net.egress"])),
-            Some("w"),
+            Some(CODE),
         );
         let LoadOutcome {
             registry, loaded, ..
@@ -982,15 +1058,156 @@ mod tests {
 
     #[test]
     fn a_second_skill_with_the_same_id_and_other_code_is_refused() {
+        // The same signed manifest twice: beside its own program it loads;
+        // beside other code it's refused, since the signature lists the
+        // program's hash (#613), not a pin taken on first sight.
         let root = skills_dir("drift");
         let signed = sign(manifest("dup", &["fs.read"]));
-        write_skill(&root, "one", &signed, Some("first"));
-        write_skill(&root, "two", &signed, Some("second"));
+        write_skill(&root, "one", &signed, Some(CODE));
+        write_skill(&root, "two", &signed, Some("print(2)"));
         let LoadOutcome {
-            registry, loaded, ..
+            registry,
+            loaded,
+            refused,
         } = load(&config(&root, &[("dup", &["fs.read"])]));
         assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded.first().unwrap().dir_name, "one");
         assert_eq!(registry.len(), 1);
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert!(
+            refused
+                .first()
+                .unwrap()
+                .reason
+                .contains("isn't the file its signed manifest lists"),
+            "{refused:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn every_listed_file_is_checked_and_nothing_unlisted_matters() {
+        // A playbook with a program: every listed file is checked against
+        // its signed size and hash. A changed playbook, or a missing one,
+        // is refused; a file the manifest doesn't list is never read.
+        let root = skills_dir("files");
+        let playbook: &[u8] = b"# Steps\n";
+        let both = |name: &str| {
+            let mut m = manifest(name, &["fs.read"]);
+            m.instructions = Some(String::from("SKILL.md"));
+            m.files
+                .push(hatchling_skill::FileEntry::of("SKILL.md", playbook));
+            sign(m)
+        };
+        let other: &[u8] = b"# Other steps\n";
+        for (dir, content) in [
+            ("good", Some(playbook)),
+            ("changed", Some(other)),
+            ("missing", None),
+        ] {
+            write_skill(&root, dir, &both(dir), Some(CODE));
+            if let Some(content) = content {
+                std::fs::write(root.join(dir).join("SKILL.md"), content).unwrap();
+            }
+        }
+        std::fs::write(root.join("good").join("unlisted.sh"), b"rm -rf ~").unwrap();
+        let grants: &[(&str, &[&str])] = &[
+            ("good", &["fs.read"]),
+            ("changed", &["fs.read"]),
+            ("missing", &["fs.read"]),
+        ];
+        let mut outcome = load(&config(&root, grants));
+        assert_eq!(loaded_names(&outcome.loaded), vec![String::from("good")]);
+        outcome.refused.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
+        let reasons: Vec<(&str, &str)> = outcome
+            .refused
+            .iter()
+            .map(|r| (r.dir_name.as_str(), r.reason.as_str()))
+            .collect();
+        assert!(
+            matches!(
+                reasons.as_slice(),
+                [("changed", changed), ("missing", missing)]
+                    if changed.contains("'SKILL.md' isn't the file")
+                        && missing.contains("listed file")
+                        && missing.contains("SKILL.md")
+            ),
+            "{reasons:?}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_playbook_without_a_program_loads_and_pins_nothing_to_run() {
+        let root = skills_dir("playbook");
+        let mut m = manifest("notes", &[]);
+        m.program = None;
+        m.instructions = Some(String::from("main.py"));
+        write_skill(&root, "notes", &sign(m), Some(CODE));
+        let LoadOutcome {
+            loaded, refused, ..
+        } = load(&config(&root, &[]));
+        assert!(refused.is_empty(), "{refused:?}");
+        let skill = loaded.first().unwrap();
+        assert!(skill.code.is_empty());
+        assert!(skill.admission.manifest().capabilities().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_format_v1_manifest_is_refused_saying_to_sign_it_again() {
+        let root = skills_dir("v1");
+        std::fs::create_dir_all(root.join("old")).unwrap();
+        std::fs::write(
+            root.join("old").join(MANIFEST_FILE),
+            br#"{"name":"old","version":"1.0.0","capabilities":[],"entry_point":"main.py","signature":"AAAA"}"#,
+        )
+        .unwrap();
+        let outcome = load(&config(&root, &[]));
+        let reason = &outcome.refused.first().unwrap().reason;
+        assert!(
+            reason.contains("format v1") && reason.contains("format 2"),
+            "{reason}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_skills_dir_or_skill_dir_others_can_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let root = skills_dir("writable");
+        mode(&root, 0o755);
+        for dir in ["open", "shut"] {
+            write_skill(&root, dir, &sign(manifest(dir, &["fs.read"])), Some(CODE));
+            mode(&root.join(dir), 0o755);
+        }
+        let grants: &[(&str, &[&str])] = &[("open", &["fs.read"]), ("shut", &["fs.read"])];
+        // A skill's own directory others can write: that skill alone.
+        for writable in [0o775, 0o757] {
+            mode(&root.join("open"), writable);
+            let outcome = load(&config(&root, grants));
+            assert_eq!(loaded_names(&outcome.loaded), vec![String::from("shut")]);
+            let reason = &outcome.refused.first().unwrap().reason;
+            assert!(
+                reason.contains("must not be group- or world-writable"),
+                "{reason}"
+            );
+        }
+        mode(&root.join("open"), 0o755);
+        assert_eq!(load(&config(&root, grants)).loaded.len(), 2);
+        // The skills dir itself: every skill.
+        for writable in [0o775, 0o757] {
+            mode(&root, writable);
+            let outcome = load(&config(&root, grants));
+            assert!(outcome.loaded.is_empty());
+            let reason = &outcome.refused.first().unwrap().reason;
+            assert!(reason.contains("skills dir refused"), "{reason}");
+        }
+        mode(&root, 0o755);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1008,7 +1225,7 @@ mod tests {
             &root,
             "web",
             &sign(manifest("web", &["net.egress"])),
-            Some("w"),
+            Some(CODE),
         );
         let outcome = load_skills(&config(&root, &[("web", &["net.egress"])]), &roots_of(&[]));
         assert!(outcome.loaded.is_empty() && outcome.registry.is_empty());
@@ -1026,7 +1243,7 @@ mod tests {
             &root,
             "web",
             &sign(manifest("web", &["net.egress"])),
-            Some("w"),
+            Some(CODE),
         );
         let cfg = config(&root, &[("web", &["net.egress"])]);
         let other = public(&[0x3c; 32]);
