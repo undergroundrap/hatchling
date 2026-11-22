@@ -514,7 +514,7 @@ const CLI_CALLS: [&str; 63] = [
 /// hint. The rest are small, and each says what it reaches. They are the
 /// Room's alone: no other profile has them from here.
 #[cfg(target_arch = "x86_64")]
-const ROOM_TOOL_CALLS: [&str; 20] = [
+const ROOM_TOOL_CALLS: [&str; 21] = [
     // A hint about how a file will be read. It reads, writes and changes
     // nothing. (`cat`, `cp`, `sort`, `wc`, and ten more.)
     "fadvise64",
@@ -574,6 +574,13 @@ const ROOM_TOOL_CALLS: [&str; 20] = [
     // Reads a process's capabilities, and changes none. The Room's
     // processes have none. (Node, as it starts.)
     "capget",
+    // `wait4`, asked another way: waits for a child of the caller's own,
+    // and reaps it. It reaches no process `wait4` doesn't: not another's
+    // child, and through a pidfd only a child's. (The Room's supervisor,
+    // when its search program can't start: glibc's `posix_spawn` reaps
+    // the child that failed with it. Killed for it, the supervisor ended,
+    // #578.)
+    "waitid",
 ];
 
 /// What the Room's programs ask for in everyday work and the Room doesn't
@@ -2099,7 +2106,8 @@ mod tests {
                 "timer_delete",
                 "getpriority",
                 "setpriority",
-                "capget"
+                "capget",
+                "waitid"
             ]
         );
         assert_eq!(
@@ -2138,6 +2146,7 @@ mod tests {
             ("getpriority", libc::SYS_getpriority),
             ("setpriority", libc::SYS_setpriority),
             ("capget", libc::SYS_capget),
+            ("waitid", libc::SYS_waitid),
             ("fsetxattr", libc::SYS_fsetxattr),
             ("fgetxattr", libc::SYS_fgetxattr),
             ("getxattr", libc::SYS_getxattr),
@@ -2198,7 +2207,7 @@ mod tests {
     }
 
     /// No other profile has any of this from the Room's lists. The cells'
-    /// profiles kill every one of these calls. The browser's decides five
+    /// profiles kill every one of these calls. The browser's decides six
     /// of them by lists of its own, as it did.
     #[cfg(target_arch = "x86_64")]
     #[test]
@@ -2233,6 +2242,7 @@ mod tests {
                 ("inotify_init", SECCOMP_RET_ERRNO + ENOSYS),
                 ("getpriority", SECCOMP_RET_ERRNO + EPERM),
                 ("setpriority", SECCOMP_RET_ERRNO + EPERM),
+                ("waitid", SECCOMP_RET_ALLOW),
                 ("link", SECCOMP_RET_ERRNO + EPERM),
             ],
             "the browser's own"
@@ -2379,6 +2389,24 @@ mod tests {
             set_no_new_privs().unwrap();
             install(&SeccompProfile::room().unwrap()).unwrap();
             run_room_tools(&dir.join("filtered"), true);
+            // A program that isn't there fails to start, and whoever
+            // started it goes on (#578): the failed start's own calls,
+            // as the Room's supervisor starts its search program.
+            {
+                use std::os::unix::process::CommandExt as _;
+                let started = std::process::Command::new(dir.join("no-such-program"))
+                    .process_group(0)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+                assert!(
+                    started
+                        .as_ref()
+                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound),
+                    "{started:?}"
+                );
+            }
             // Distinguish a completed probe from libtest selecting zero tests.
             exit_child(42);
         }
