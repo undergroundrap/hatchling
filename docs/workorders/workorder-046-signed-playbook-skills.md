@@ -29,10 +29,10 @@ The maintainer chose, on 2026-11-22, that Hatchling's skills be **signed playboo
 2. **Manifest v2.** A signed description (what the skill is for, for discovery) and signed instructions (the playbook, and any reference files it names), with the v1 program optional. Every byte the agent can be given is covered by the signature and pinned by hash. v1 manifests still load.
 3. **A signer.** A command that makes a signing key and signs a package, run by its author in a terminal of their own. The private key never passes through the broker, an argument or the environment.
 4. **Discovery.** A skill operation that lists what's admitted, with each description; the agent's prompt says what's installed from the live registry, not a fixed paragraph; and a tool that reads an admitted skill's instructions.
-5. **The first skills.** At least the two builders as signed packages, and a few playbooks for everyday work, each signed and admitted end to end.
+5. **The first skills.** A few playbooks for everyday work, each signed and admitted end to end. The two builders moved to [#622](https://github.com/undergroundrap/hatchling/issues/622) (the maintainer, 2026-11-23): a signed program is pinned by hash, and theirs change with every release.
 6. **Authoring documented.** How to write, sign and install a skill, for a person and for the agent itself.
 
-**Decided by the maintainer, not by this work order:** whether an install ships a trust root (a key Hatchling's releases sign skills with) and a skills directory. Today the default is to trust nothing; changing it is a trust decision of its own.
+**Decided by the maintainer, not by this work order:** whether an install ships a trust root (a key Hatchling's releases sign skills with) and a skills directory. Today the default is to trust nothing; changing it is a trust decision of its own. **Decided 2026-11-23:** an install ships the maintainer's public key and Hatchling's skills, each off until the owner enables it; the owner can take the key out, and an update keeps their trust-roots file as it is.
 
 **Not in scope:** skills that learn or write themselves from use; a public skill registry; credentials for skills (today a skill cell gets none, [#593](https://github.com/undergroundrap/hatchling/issues/593)).
 
@@ -120,9 +120,9 @@ Today a skill runs if its signer's key is in the trust-roots file and its capabi
 
 ### The first skills
 
-- `hatchling-build-document` and `hatchling-build-page`, as v2 skills with a program.
+- `hatchling-build-document` and `hatchling-build-page`, as v2 skills with a program: moved to [#622](https://github.com/undergroundrap/hatchling/issues/622).
 - Three playbooks for everyday work, from the maintainer's drafts: *write-a-report* (material and sources into a report file whose every load-bearing claim traces to a source read), *tidy-a-folder* (inventory, a plan of moves, removals and what's left alone, shown and approved before anything changes, then verified), and *research-a-question* (the workspace first, then granted web sources read in full, cross-checked, answered in the chat with what couldn't be verified said plainly). Each is written against tools a run already has, and says what to do when one isn't there.
-- Signed with a key the maintainer makes. Whether installs ship that key as a trust root stays the maintainer's separate decision; until then an owner adds it, or their own.
+- Signed with a key the maintainer makes, and shipped with that key as a trust root (the maintainer's decision above), in the installer's `packaging/`.
 
 ### Authoring
 
@@ -146,7 +146,7 @@ Supporting files are listed in the manifest and referred to by name, never inlin
 1. v2 format, the loader's checks on every file, the skills directory's ownership rule, v1 retired, and the signer commands (#613 closed).
 2. Owner enablement: the app's list, enable and disable, sealed enablements, re-approval on change.
 3. Discovery: the prompt from the registry, `skill_read`, the Room mount, Activity.
-4. The first skills, signed, used on a fresh install; authoring documented.
+4. The first skills, signed, used on a fresh install; authoring documented. The builders follow in #622.
 
 ## Acceptance criteria
 
@@ -155,7 +155,7 @@ Supporting files are listed in the manifest and referred to by name, never inlin
 - [ ] A skill's instructions can't widen the agent's tools, grants or approvals: a playbook that tells the agent to do what it isn't granted is refused at the grant, as any request is, and a test shows it.
 - [ ] The signer makes a key and signs a package that the loader admits; no private key appears in an argument, the environment or a log, and a test checks it.
 - [ ] An admitted skill is listed with its description, appears in the agent's prompt, and its instructions are read through the new tool, on a real install.
-- [ ] The two builders and at least three playbooks ship as signed packages, each admitted and used on a fresh install.
+- [ ] At least three playbooks ship as signed packages, each admitted and used on a fresh install. (The two builders moved to #622, the maintainer's choice on 2026-11-23.)
 - [ ] v1 manifests are refused with a message to re-sign as v2 (no v1 package exists outside the tests, and v1's signature doesn't cover its program, #613); the v1 tests move to v2.
 - [ ] Every listed file is checked against its signed hash on every load, a changed or unlisted file is refused or never served, and the skills directory is refused when anyone but root or the broker can write it; tests change each.
 - [ ] The owner enables each skill in the app, bound to its signed digest; a changed skill waits for the owner again; a test changes one file and checks the skill is held.
