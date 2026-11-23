@@ -78,7 +78,9 @@ def main():
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto(address)
         enable(page, fingerprint)
-        page.goto(address)
+        # Settings is a dialog over the chat: a reload opens the app afresh,
+        # where going to the same address only changes its hash.
+        page.reload()
         page.locator("#message-input").fill(TASK)
         page.get_by_role("button", name="Send message", exact=True).click()
         said = page.locator(".message-row.kind-text").filter(has_text=READ)
@@ -87,7 +89,7 @@ def main():
         if MARKER not in " ".join(answer.split()):
             raise AssertionError(f"the agent's answer: {answer!r}")
         screenshot(page, "skills-3-used.png")
-        page.goto(address)
+        page.reload()
         pane = skills_pane(page)
         expect(pane.locator(f'.skill-row[data-skill="{ENABLED}"]')).to_have_attribute("data-state", "enabled")
         left = {name: state for name, state in states(pane).items() if name != ENABLED}
