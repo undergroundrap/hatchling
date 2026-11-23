@@ -33,6 +33,9 @@ serde_json = "1"
 # external dependency; dev-only direction (dev -> sys) is allowed by
 # the dep_direction guard.
 hatchling-sys.workspace = true
+# Verifying the skills an install ships, as the broker's loader will
+# (`checks::skills`). Workspace crate; dev -> skill is allowed.
+hatchling-skill.workspace = true
 # Parsing Rust sources for the mutation pre-flight gate:
 # functions, their lines, and the calls in their bodies. Already in
 # the lockfile (proc-macro dependencies use it); dev-only here.
