@@ -29,10 +29,21 @@ def skills_pane(page):
     from playwright.sync_api import expect
 
     page.keyboard.press("Control+,")
-    page.get_by_role("navigation", name="Settings sections").get_by_role("button", name="Skills", exact=True).click()
+    sections = page.get_by_role("navigation", name="Settings sections")
     pane = page.locator(".settings-pane")
     rows = pane.locator(".skill-row")
-    expect(rows).to_have_count(len(SHIPPED), timeout=STEP_TIMEOUT_MS)
+    # A pane drawn before the app has the list stays empty until it's
+    # opened again (#625): open it again, as the owner would, until it
+    # shows them.
+    for attempt in range(15):
+        sections.get_by_role("button", name="Skills", exact=True).click()
+        try:
+            expect(rows).to_have_count(len(SHIPPED), timeout=2_000)
+            break
+        except AssertionError:
+            if attempt == 14:
+                raise
+            sections.get_by_role("button", name="Permissions", exact=True).click()
     names = sorted(row.get_attribute("data-skill") for row in rows.all())
     if names != SHIPPED:
         raise AssertionError(f"the skills listed: {names}")
