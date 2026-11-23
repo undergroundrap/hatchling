@@ -29,7 +29,10 @@ def listing(*names):
 
 
 def read(marker, signer):
-    return tool(f'[skill write-a-report@1 file="SKILL.md" signer="{signer}"]\nguidance\n{marker}\n[end]')
+    """A skill_read result as the agent gives it to the model: its tool
+    output as JSON, the broker's fenced text in `text`."""
+    text = f'[skill write-a-report@1 file="SKILL.md" signer="{signer}"]\nguidance\n{marker}\n[end]'
+    return tool(json.dumps({"skill": "write-a-report", "text": text}))
 
 
 class SkillsModelTurns(unittest.TestCase):
@@ -56,6 +59,14 @@ class SkillsModelTurns(unittest.TestCase):
         for got in (read("some other text", FINGERPRINT), read(skills_model.MARKER, "cd" * 32)):
             said = skills_model.next_message(base + [got], FINGERPRINT)["content"]
             self.assertTrue(said.startswith(skills_model.NOT_READ), said)
+
+    def test_a_read_given_as_its_raw_text_is_read_too(self):
+        base = [listing(skills_model.ENABLED), user(skills_model.TASK)]
+        raw = tool(f'[skill write-a-report@1 file="SKILL.md" signer="{FINGERPRINT}"]\n{skills_model.MARKER}\n[end]')
+        self.assertEqual(
+            skills_model.next_message(base + [raw], FINGERPRINT)["content"],
+            f"{skills_model.READ} {skills_model.MARKER}",
+        )
 
     def test_the_signer_is_the_shipped_primary_keys_fingerprint(self):
         fingerprint = skills_model.signer()

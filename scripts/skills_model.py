@@ -67,6 +67,19 @@ def results(messages):
     return texts
 
 
+def read_text(result):
+    """The text of a skill_read result: the agent gives the model its
+    output as JSON, `{"skill": ..., "text": ...}`, so the read's own text
+    is the `text` field, its quotes unescaped. Anything else, as it came."""
+    try:
+        value = json.loads(result)
+    except ValueError:
+        return result
+    if isinstance(value, dict) and isinstance(value.get("text"), str):
+        return value["text"]
+    return result
+
+
 def call(name, arguments):
     return {"role": "assistant", "content": None, "tool_calls": [{
         "id": f"call-{time.monotonic_ns()}", "type": "function",
@@ -89,7 +102,7 @@ def next_message(messages, fingerprint):
         if waiting:
             return answer(f"{LISTED_WAITING} {', '.join(waiting)}")
         return call("skill_read", {"skill": ENABLED})
-    got = seen[-1]
+    got = read_text(seen[-1])
     if MARKER in got and f'signer="{fingerprint}"' in got:
         return answer(f"{READ} {MARKER}")
     return answer(f"{NOT_READ} {got[:400]}")
