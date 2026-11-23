@@ -6,6 +6,8 @@
 #   sudo scripts/install.sh --from <dir> --hosted openrouter [--model <id>] [--force]
 #   sudo scripts/install.sh --from <dir> --keep-model
 #
+# Each takes [--unverified] and [--allow-older]: see below.
+#
 # Run it as root, with sudo, from a clone of the version you install: the
 # user who ran sudo is the owner, the one the app answers.
 #
@@ -13,7 +15,13 @@
 # and so on) or as a build leaves them (target/release), and the app, as
 # hatchling-ui.tar.gz or a built directory named ui. When it holds the
 # release's SHA256SUMS, every file is checked against it before anything is
-# installed, and one that differs stops the install.
+# installed, and one that differs stops the install. Then who built them is
+# checked with gh, as the owner (packaging/release-provenance.sh): a release
+# its project's workflow didn't build stops the install, and so does one
+# that can't be checked (no gh, signed out, offline), unless --unverified
+# asks to install it unchecked (#627). A release older than the one
+# installed stops it too, unless --allow-older asks for it. Windows Setup
+# verifies its own files, so it skips the gh check.
 #
 # The model is an OpenAI-compatible endpoint on this machine, such as
 # Ollama's (http://localhost:11434/v1), or, with --hosted, a hosted one with
@@ -69,6 +77,8 @@ usage() {
   echo "usage: sudo scripts/install.sh --from <dir> --model-endpoint <url> --model <name> [--ollama-context <tokens>] [--force]" >&2
   echo "       sudo scripts/install.sh --from <dir> --hosted openrouter [--model <id>] [--force]" >&2
   echo "       sudo scripts/install.sh --from <dir> --keep-model" >&2
+  echo "       each also takes --unverified (install a release whose builder can't be checked)" >&2
+  echo "       and --allow-older (install a release older than the one installed)" >&2
   exit 64
 }
 # Set while a protected install's service is stopped for an upgrade: a
@@ -85,6 +95,7 @@ fail() {
 say() { echo "== $*"; }
 
 FROM= ENDPOINT= MODEL= FORCE= OLLAMA_CONTEXT= HOSTED= KEEP_MODEL= WINDOWS_ROOM_BUNDLE= WINDOWS_SETUP=
+PROVENANCE_UNVERIFIED= PROVENANCE_ALLOW_OLDER=
 while [ $# -gt 0 ]; do
   case "$1" in
     --from) FROM=${2:-}; shift 2 || usage ;;
@@ -96,6 +107,8 @@ while [ $# -gt 0 ]; do
     --keep-model) KEEP_MODEL=1; shift ;;
     --windows-room-bundle) WINDOWS_ROOM_BUNDLE=1; shift ;;
     --windows-setup) WINDOWS_SETUP=1; shift ;;
+    --unverified) PROVENANCE_UNVERIFIED=1; shift ;;
+    --allow-older) PROVENANCE_ALLOW_OLDER=1; shift ;;
     *) usage ;;
   esac
 done
@@ -175,6 +188,7 @@ if [ -f "$FROM/hatchling-ui.tar.gz" ]; then UI=$FROM/hatchling-ui.tar.gz
 elif [ -d "$FROM/ui" ]; then UI=$FROM/ui
 else fail "$FROM holds no app: hatchling-ui.tar.gz, or a built ui directory"
 fi
+. "$PACKAGING/release-provenance.sh"
 if [ -f "$FROM/SHA256SUMS" ]; then
   say "checking every file against SHA256SUMS"
   (cd "$FROM" && sha256sum --check --ignore-missing --quiet SHA256SUMS) \
@@ -184,16 +198,19 @@ if [ -f "$FROM/SHA256SUMS" ]; then
     grep -q "  $(basename "$file")\$" "$FROM/SHA256SUMS" \
       || fail "$(basename "$file") isn't in SHA256SUMS: nothing was installed"
   done
-  # Who built them (#556): SHA256SUMS attested by the release workflow, when
-  # gh is here to check. Windows Setup's payload is verified with Setup.
-  if [ -z "$WINDOWS_ROOM_BUNDLE" ]; then
+  # Who built them (#556): SHA256SUMS attested by the release workflow,
+  # checked with gh; one that can't be checked stops here unless
+  # --unverified (#627). Windows Setup's payload is verified with Setup.
+  if [ -z "$WINDOWS_ROOM_BUNDLE$WINDOWS_SETUP" ]; then
     OWNER_HOME=$(getent passwd "$OWNER_NAME" | cut -d: -f6)
-    . "$PACKAGING/release-provenance.sh"
     release_provenance
   fi
 else
   say "no SHA256SUMS in $FROM: the files aren't checked (a build of your own)"
 fi
+# Never older than what's installed, unless asked (#627).
+refuse_older "$(broker_version /usr/local/bin/hatchling-broker /usr/local/bin)" \
+  "$(broker_version "$BROKER" /usr/local/bin)"
 # The agent's computer's image, from a release that has one (WO-038): its
 # SHA256SUMS lists it, and this is x86_64. Admitted below, once
 # cryptsetup-bin is here to check it.

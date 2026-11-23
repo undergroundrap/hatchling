@@ -216,19 +216,24 @@ else
   esac
 fi
 
-# 4. Install, with the release's own installer.
+# 4. Install, with the release's own installer. It checks who built the
+# files with gh when gh is here and signed in, and refuses them if they
+# aren't this project's. Without gh it can't check, and this script asks it
+# to go on (--unverified), saying so: whoever could replace the release's
+# files could replace this script too, so only checking this script first
+# protects a first install (docs/install.md, "Quick install") (#627).
 say "installing: sudo asks for your password"
 if [ -n "$HOSTED" ]; then
   if [ -n "$MODEL" ]; then
-    sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --hosted "$HOSTED" --model "$MODEL"
+    sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --unverified --hosted "$HOSTED" --model "$MODEL"
   else
-    sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --hosted "$HOSTED"
+    sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --unverified --hosted "$HOSTED"
   fi
   echo
   echo "A model on this machine too, for private work or offline? With Ollama and a model,"
   echo "in your own terminal:  sudo hatchling-broker use-local --model qwen3.5:9b"
 else
-  sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --model-endpoint "$ENDPOINT" --model "$MODEL"
+  sudo sh "$DIR/installer/scripts/install.sh" --from "$DIR" --unverified --model-endpoint "$ENDPOINT" --model "$MODEL"
   echo
   echo "A hosted model too, with a far larger window? Switch to one in your own terminal,"
   echo "which asks for its key there:  sudo hatchling-broker use-hosted openrouter"

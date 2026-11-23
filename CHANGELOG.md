@@ -20,6 +20,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **The installer stops when it can't check a release, and before an older one** ([#627](https://github.com/undergroundrap/hatchling/issues/627)). `scripts/install.sh` checks who built a release's files with `gh` when it can. Without `gh` signed in it used to say it couldn't check and install them anyway; now it stops, says how to check, and installs them unchecked only when you pass `--unverified`. It also stops before installing a release older than the one installed, which can carry a vulnerability fixed since, unless you pass `--allow-older`. The one-line quick install passes `--unverified` itself and says so (checking `get-hatchling.sh` first is what protects a first install), and Windows Setup, which verifies its own files, is unchanged.
+
 - **Skill grants by setting are retired** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). `HATCHLING_SKILL_GRANTS` is refused at start, saying what to do instead: a skill runs with what it declares once you enable it, and a coding harness is granted with `HATCHLING_HARNESS_GRANTS=claude-code,codex-cli` (by name). A skill's code is no longer pinned from the broker's first sight of it: the digest you enabled fixes every byte.
 - **Skills are format 2, and format 1 is retired** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). A skill's signed manifest now says when the skill applies, points at its playbook and its program (at least one of the two), and lists every file it holds with its size and SHA-256. A format 1 manifest is refused, with a message to sign it again. No format 1 skill shipped. `hatchling-skill`'s API changes with it, so the workspace is 0.10.0 from here.
 
