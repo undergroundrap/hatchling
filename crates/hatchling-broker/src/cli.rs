@@ -111,6 +111,9 @@ pub fn main(program: &str, args: &[String]) -> ExitCode {
         Some("sign-in") => {
             return crate::sign_in_cli::sign_in_main(program, args.get(1..).unwrap_or_default());
         }
+        Some("skills") => {
+            return crate::skills_cli::skills_main(program, args.get(1..).unwrap_or_default());
+        }
         Some(_) | None => {}
     }
     // The guided setup, and the authenticator enrollment on a service
@@ -188,7 +191,7 @@ pub fn help(program: &str) -> String {
     render_help(
         program,
         "[subcommand] | --help | -h | --version | -V",
-        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    setup   (security keys, guided; run again, it carries on)\n    lost-key   (a key that's lost or stolen, guided)\n    change-pin   (a new PIN on the key plugged in)\n    reminders-off, reminders-on   (the reminder to try a key that's gone quiet)\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  unlock   (a vault with a security key or codes waits, locked, after a\n    start as a service: open it here, with the key or a code)\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  lock   (the vault's key out of memory and the room disk closed, now, until it's unlocked)\n  room-disk close   (the agent's room disk closed, now: what stopping the service does)\n  room-disk grow <size>   (a closed room disk grown, keeping what's on it: 20G, or bytes)\n  backup [<file>]   (one sealed file)\n  restore <file>\n  reset conversation | agent | everything [--yes] [--no-backup]\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
+        "Serve agents with no subcommand. Operator subcommands:\n  doctor [--env <file>]   (what stops it working here, and the fix)\n  migrate-vault\n  rekey-vault [<new-key-file>]   (no file with a keyring)\n  vault-keyring <action>\n    setup   (security keys, guided; run again, it carries on)\n    lost-key   (a key that's lost or stolen, guided)\n    change-pin   (a new PIN on the key plugged in)\n    reminders-off, reminders-on   (the reminder to try a key that's gone quiet)\n    init, enroll-totp, enroll-keys, use-file-tier, backup-codes,\n    status, add-key, remove-key, label-key\n  unlock   (a vault with a security key or codes waits, locked, after a\n    start as a service: open it here, with the key or a code)\n  redactions list | stats | categories\n  redactions show <id> | raw <id> | override <id> [--any-scope]\n  vault-audit [log [count]]\n  tools list | add <path> | remove <path>   (what a CLI cell may run)\n  secret add <name> | --for <host:port> [--replace | --if-missing]   (a key, shown as *)\n  use-hosted openrouter | --endpoint <url> [--model <id>] [--window <tokens>] [--thinking off|on]\n  use-local --model <name> [--endpoint <url>] [--window <tokens>] [--thinking off|on]\n    (switch the model, its server and its egress together, and restart)\n  clean [--dry-run]   (a dead broker's leftovers; never your data)\n  lock   (the vault's key out of memory and the room disk closed, now, until it's unlocked)\n  room-disk close   (the agent's room disk closed, now: what stopping the service does)\n  room-disk grow <size>   (a closed room disk grown, keeping what's on it: 20G, or bytes)\n  backup [<file>]   (one sealed file)\n  restore <file>\n  reset conversation | agent | everything [--yes] [--no-backup]\n  schedule list | add <task> <when> | remove <id>   (as yourself, not sudo)\n  skills list | enable <name> | disable <name>   (as yourself, not sudo)\n  browser-digest <browser>   (the digest HATCHLING_BROWSER_SHA256 pins)\n\nThe broker builds and supervises the agent's cell. Internal spawner\ncommands skill-cell <spec-file>, agent-run <spec-file>, browser-cell <spec-file>,\nharness-tree, vault-keeper, egress-authority and spawner are broker-owned.",
         crate::environment::ENVIRONMENT,
     )
 }
@@ -246,6 +249,7 @@ fn valid_args(args: &[String]) -> bool {
             "reset"
             | "schedule"
             | "sign-in"
+            | "skills"
             | crate::model_switch::USE_HOSTED
             | crate::model_switch::USE_LOCAL,
             ..,
