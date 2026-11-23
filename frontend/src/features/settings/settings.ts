@@ -13,7 +13,7 @@ import { connectorsTab, walletTab } from './connections.js';
 import { secureStoreTab } from './credentials.js';
 import { securityTab } from './security.js';
 import { permissionsTab } from './permissions.js';
-import { skillsTab } from './skills.js';
+import { skillsTab, watchSkills } from './skills.js';
 import type { SettingsNavigation } from './settings-navigation.js';
 import { iconButton } from '../../components/ui.js';
 import { openShortcuts, openDownloads, openIssueReport } from '../../app/support.js';
@@ -43,6 +43,17 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
     };
     const layout = h('div', { class: 'settings-layout' });
     const ref = ctx.dialogs.open('Settings', layout, 'settings-dialog');
+    // The skills can arrive after the Skills pane was drawn (#625): draw it
+    // again when they change, while the dialog is open.
+    const stopWatching = watchSkills(ctx.adapter, () => ctx.state.skills, () => {
+        if (!ref.element.isConnected) {
+            stopWatching();
+            return;
+        }
+        if (active === 'skills')
+            refresh();
+    });
+    ref.element.addEventListener('close', stopWatching);
     const refresh = (top?: number): void => {
         const scroll = top ?? layout.querySelector('.settings-pane')?.scrollTop ?? 0;
         const nested: SettingsNavigation = { detail, id: detailId,

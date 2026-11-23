@@ -4,7 +4,7 @@ import { createFixtures } from '../../dist/app/adapters/fixtures.js';
 import { ScriptedAdapter } from '../../dist/app/adapters/scripted-adapter.js';
 import { parseCommand } from '../../dist/app/protocol/codec.js';
 import { actionPolicy } from '../../dist/app/automation/policy.js';
-import { grants, short, size } from '../../dist/app/features/settings/skills.js';
+import { grants, short, size, watchSkills } from '../../dist/app/features/settings/skills.js';
 const storage = () => {
     const map = new Map();
     return { getItem: key => map.get(key) ?? null, setItem: (key, value) => map.set(key, value), removeItem: key => map.delete(key) };
@@ -59,4 +59,43 @@ test('a skill is shown in the owner\'s words: what enabling grants, its sizes, s
     assert.deepEqual([0, 1023, 1024, 1536, 1024 * 1024, 412096].map(size), ['0 B', '1023 B', '1.0 KB', '1.5 KB', '1.0 MB', '402.4 KB']);
     assert.equal(short('ab'.repeat(32)), 'abababab…abababab');
     assert.equal(short('abcdef'), 'abcdef');
+});
+test('the Skills pane is drawn again when the skills change, and only then (#625)', () => {
+    const listeners = new Set();
+    const adapter = { subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); } };
+    const publish = () => {
+        for (const listener of [...listeners])
+            listener();
+    };
+    let skills = [];
+    let drawn = 0;
+    const stop = watchSkills(adapter, () => skills, () => { drawn += 1; });
+    publish();
+    assert.equal(drawn, 0, 'a publish that changed nothing draws nothing');
+    // The list arrives after the pane was drawn empty.
+    skills = [{ name: 'write-a-report', state: 'waiting' }];
+    publish();
+    assert.equal(drawn, 1);
+    // The same skills again, in a new array: not drawn again.
+    skills = [{ name: 'write-a-report', state: 'waiting' }];
+    publish();
+    assert.equal(drawn, 1);
+    skills = [{ name: 'write-a-report', state: 'enabled' }];
+    publish();
+    assert.equal(drawn, 2);
+    stop();
+    assert.equal(listeners.size, 0, 'stopping unsubscribes');
+    skills = [];
+    publish();
+    assert.equal(drawn, 2);
+});
+test('a skill enabled is seen by the Skills pane through the adapter it subscribes to', async () => {
+    const adapter = new ScriptedAdapter({ animate: false, storage: storage() });
+    let drawn = 0;
+    const stop = watchSkills(adapter, () => adapter.getSnapshot().skills, () => { drawn += 1; });
+    const review = named(adapter.getSnapshot(), 'weekly-review');
+    assert.equal((await adapter.execute({ type: 'skill.enable', name: 'weekly-review', digest: review.digest })).ok, true);
+    assert.ok(drawn >= 1, 'enabling a skill publishes a change the pane draws');
+    stop();
+    adapter.dispose();
 });
