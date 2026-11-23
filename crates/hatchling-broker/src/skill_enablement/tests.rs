@@ -1,4 +1,5 @@
 use std::os::unix::fs::PermissionsExt as _;
+use std::path::PathBuf;
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use hatchling_core::ui::SkillState;
@@ -129,6 +130,29 @@ fn every_op_is_off_when_skills_are() {
     // And the start hands nothing over.
     load_enabled(&config, &keys, &skills);
     assert!(skills.enabled().is_empty());
+    // A directory for enablements with skills off opens nothing either.
+    let mut config = config;
+    config.skills.enablements = PathBuf::from("/srv/skills-enabled");
+    assert!(Enablements::of(&config, &keys).is_none());
+    assert_eq!(
+        op(&config, &keys, &skills, &SkillsOp::List),
+        SkillsResult::Off
+    );
+}
+
+/// The store names its directory when debugged, and holds nothing more to
+/// show: never a key.
+#[test]
+fn the_store_debugs_as_its_directory() {
+    let (config, _scratch, keys) = on("debug");
+    let store = Enablements::of(&config, &keys).unwrap();
+    assert_eq!(
+        format!("{store:?}"),
+        format!(
+            "Enablements {{ root: {:?}, .. }}",
+            config.skills.enablements
+        )
+    );
 }
 
 /// Found, a skill waits; enabled at the digest the owner saw, it runs, kept
