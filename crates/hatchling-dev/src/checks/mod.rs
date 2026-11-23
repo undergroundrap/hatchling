@@ -17,6 +17,7 @@ pub mod pins;
 pub mod preflight;
 pub mod protocol_schema;
 pub mod sha256;
+pub mod skills;
 pub mod space_surface;
 pub mod vault_surface;
 pub mod verdict;

@@ -43,6 +43,12 @@
 # It installs:
 #   /usr/local/bin/hatchling-{broker,agent,host,browser}
 #   /usr/local/share/hatchling/ui                      the app
+#   /usr/local/share/hatchling/skills/<name>           the skills Hatchling ships,
+#                                                      each off until the owner
+#                                                      enables it (a skill of
+#                                                      the owner's own is left)
+#   /etc/hatchling/skill-trust-roots                   who signs them (kept if
+#                                                      it's there)
 #   /etc/hatchling/hatchling.env                       the configuration (kept
 #                                                      if it's there; --force
 #                                                      writes it again)
@@ -221,12 +227,41 @@ else tar -xzf "$UI" -C /usr/local/share/hatchling
 fi
 chmod -R a+rX /usr/local/share/hatchling
 
+# The skills Hatchling ships (WO-046), signed by its maintainer: each
+# replaced whole, by name, root's and nobody else's to write, as the broker
+# requires. A skill of the owner's own, in the same directory, is left.
+# None is used until the owner enables it in the app.
+say "installing Hatchling's skills: each is off until you enable it (Settings, Skills)"
+SKILLS=/usr/local/share/hatchling/skills
+mkdir -p "$SKILLS"
+chown root:root "$SKILLS"
+chmod 755 "$SKILLS"
+for skill in "$PACKAGING"/skills/*/; do
+  name=$(basename "$skill")
+  stage=/usr/local/share/hatchling/.skill-$name.new
+  rm -rf "$stage"
+  cp -R "$skill" "$stage"
+  chown -R root:root "$stage"
+  chmod -R u=rwX,go=rX "$stage"
+  rm -rf "${SKILLS:?}/$name"
+  mv "$stage" "$SKILLS/$name"
+done
+# Who signs them: the maintainer's public key. One that's there is the
+# owner's to keep, as it is: taking the key out turns Hatchling's skills off.
+ROOTS=/etc/hatchling/skill-trust-roots
+mkdir -p -m 755 /etc/hatchling
+if [ -e "$ROOTS" ] || [ -L "$ROOTS" ]; then
+  say "keeping the skill signers you trust: $ROOTS"
+else
+  install -m 644 -o root -g root "$PACKAGING/skill-trust-roots" "$ROOTS"
+fi
+
 say "making Hatchling's users and its state directory"
 install -D -m 644 "$PACKAGING/sysusers.d/hatchling.conf" /etc/sysusers.d/hatchling.conf
 systemd-sysusers /etc/sysusers.d/hatchling.conf
 install -D -m 644 "$PACKAGING/tmpfiles.d/hatchling.conf" /etc/tmpfiles.d/hatchling.conf
 systemd-tmpfiles --create /etc/tmpfiles.d/hatchling.conf
-for dir in sock vault schedules conversation library goals memory; do
+for dir in sock vault schedules conversation library goals memory skills-enabled; do
   [ -d "/var/lib/hatchling/$dir" ] || mkdir -m 700 "/var/lib/hatchling/$dir"
 done
 
@@ -236,7 +271,7 @@ ENV=/etc/hatchling/hatchling.env
 # empty was turned off, and stays off). A store added this way comes with
 # the grants its packaged configuration gives it, the chat's among them;
 # one already configured is left as it is. The file is backed up first.
-KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR HATCHLING_LIBRARY_DIR HATCHLING_GOALS_DIR HATCHLING_MEMORY_DIR"
+KEPT_BY_DEFAULT="HATCHLING_CONVERSATION_DIR HATCHLING_LIBRARY_DIR HATCHLING_GOALS_DIR HATCHLING_MEMORY_DIR HATCHLING_SKILLS_DIR HATCHLING_SKILL_TRUST_ROOTS HATCHLING_SKILL_ENABLEMENTS_DIR"
 keep_up() {
   added= grants=
   for key in $KEPT_BY_DEFAULT; do

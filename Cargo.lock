@@ -485,6 +485,7 @@ name = "hatchling-dev"
 version = "0.10.0"
 dependencies = [
  "hatchling-core",
+ "hatchling-skill",
  "hatchling-sys",
  "proc-macro2",
  "schemars",

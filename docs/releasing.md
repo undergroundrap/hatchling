@@ -188,3 +188,23 @@ A development or test crate sets `publish = false` and stops there. A published 
 4. **Trusted publishing** for the new crate: run `scripts/setup-trusted-publishing.sh` again, as above (it skips the crates already set up). From then on, releases publish it with the rest.
 
 The first publish of all 21 crates (0.1.1, 2026-10-11) went this way, and took about two and a half hours because of that rate limit.
+
+## Signing Hatchling's skills
+
+The skills an install ships ([skills](skills.md)) are in `packaging/skills`, each signed with the maintainer's key, whose public half is in `packaging/skill-trust-roots`. The private key is the maintainer's alone: it never goes in a repository, an argument, the environment or CI, and it's kept in a Linux machine or WSL distro used for nothing but signing, with a backup off the machine.
+
+**After a playbook changes:** raise its `version` in `manifest.json` (any change to any file is a new version, which owners enable again), then sign it in that terminal and check it:
+
+```bash
+hatchling skill sign packaging/skills/<name> --key <key-file>
+```
+
+```bash
+hatchling skill check packaging/skills/<name> --root <public key from packaging/skill-trust-roots>
+```
+
+Only `manifest.json` changes. `hatchling-dev audit` fails while any shipped skill doesn't verify under `packaging/skill-trust-roots`, so a playbook edited without being signed again can't be released.
+
+**Restoring the key from its backup:** write it back as a file of its two lines (the header, then the key), readable by you alone (`chmod 600`: the signer refuses any other mode), and check a shipped skill verifies with `hatchling skill check` as above.
+
+**If the key is lost or leaked:** make a new one with `hatchling skill key new` and sign every shipped skill again. An update keeps an owner's `/etc/hatchling/skill-trust-roots` as it is, so existing installs don't trust a new key until their owner adds it: a release that changes the key says so in its notes. A leaked key is a security incident ([SECURITY.md](../SECURITY.md)): owners take it out of that file, which drops every skill it signed.
