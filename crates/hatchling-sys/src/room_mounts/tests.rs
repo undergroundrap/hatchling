@@ -127,6 +127,7 @@ fn room_mount_plan_rejects_a_non_mount_root_before_attachment() {
             duplicate(),
             duplicate(),
             duplicate(),
+            duplicate(),
             65534,
             65534
         ),

@@ -2900,7 +2900,7 @@ mod tests {
         };
         let text = value.get("skills").and_then(Value::as_str).unwrap();
         assert!(
-            text.contains("[SKILLS]\n- notes@1: Use when asked. (playbook: skill_read)\n[/SKILLS]"),
+            text.contains("[SKILLS]\n- notes@1: Use when asked. (playbook: skill_read) (its files, read-only, in your computer at /workspace/skills/notes/)\n[/SKILLS]"),
             "{text}"
         );
         let agent = answer_once(hatchling_core::SkillResult::Listed {

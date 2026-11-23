@@ -1,7 +1,8 @@
 //! Build the WO-034 room view from descriptors held by the trusted launcher.
 //!
-//! The verified system image becomes `/`. The encrypted workspace and
-//! its separately supplied read-only inbox are attached below it. This
+//! The verified system image becomes `/`. The encrypted workspace, its
+//! separately supplied read-only inbox and the read-only skills the owner
+//! enabled (WO-046) are attached below it. This
 //! plan is separate from the ordinary agent cell's tmpfs root.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
@@ -44,6 +45,8 @@ pub struct RoomMounts {
     pub workspace: OwnedFd,
     /// The separate spawner-owned inbox directory on the encrypted disk.
     pub inbox: OwnedFd,
+    /// The separate spawner-owned skills directory on the encrypted disk.
+    pub skills: OwnedFd,
     /// An empty staging directory held exclusively by the trusted launcher.
     pub staging: OwnedFd,
     /// Owner of the private session tmpfs, in the mounting user namespace.
@@ -65,8 +68,10 @@ impl RoomMounts {
         let inbox = ensure_directory_at(volume, "inbox")?;
         require_root_control(inbox.as_fd(), "verify room inbox ownership")?;
         crate::room_inbox::let_the_room_read(volume)?;
+        crate::room_skills::prepare(volume)?;
         let workspace = ensure_directory_at(volume, "workspace")?;
-        ensure_directory_at(workspace.as_fd(), "inbox").map(drop)
+        ensure_directory_at(workspace.as_fd(), "inbox")?;
+        skills_anchor(workspace.as_fd())
     }
 
     /// Create the room's private mount namespace in a disposable launch child.
@@ -119,12 +124,13 @@ impl RoomMounts {
             image,
             workspace,
             inbox,
+            skills,
             staging,
             uid,
             gid,
         } = self;
         drop(image);
-        Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
+        Self::enter_with_root(root, workspace, inbox, skills, staging, uid, gid)
     }
 
     /// Mount the authenticated image in the prepared launch namespace,
@@ -136,11 +142,16 @@ impl RoomMounts {
     ///
     /// Refuses an invalid mapper or mount source and returns any setup error.
     /// The launch child must exit on failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each of the room's mount sources, pinned by the caller, and its identity"
+    )]
     pub fn enter_verified(
         _namespace: RoomMountNamespace,
         image: &RoomImageMapper,
         workspace: OwnedFd,
         inbox: OwnedFd,
+        skills: OwnedFd,
         staging: OwnedFd,
         uid: u32,
         gid: u32,
@@ -150,7 +161,7 @@ impl RoomMounts {
             source,
         })?;
         let root = mount_verified_image(block, expected_device)?;
-        Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
+        Self::enter_with_root(root, workspace, inbox, skills, staging, uid, gid)
     }
 
     /// Enter with the verified image and the data directories from the
@@ -172,8 +183,10 @@ impl RoomMounts {
         uid: u32,
         gid: u32,
     ) -> Result<(), Error> {
-        let (workspace, inbox) = pin_encrypted_sources(volume, device)?;
-        Self::enter_verified(namespace, image, workspace, inbox, staging, uid, gid)
+        let (workspace, inbox, skills) = pin_encrypted_sources(volume, device)?;
+        Self::enter_verified(
+            namespace, image, workspace, inbox, skills, staging, uid, gid,
+        )
     }
 
     /// Enter from a mapper pin received over the spawner's dedicated private
@@ -201,16 +214,17 @@ impl RoomMounts {
     ) -> Result<(), Error> {
         let (block, expected_device) = crate::room_image::receive_launcher_device(&control)?;
         drop(control);
-        let (workspace, inbox) = pin_encrypted_sources(volume, device)?;
+        let (workspace, inbox, skills) = pin_encrypted_sources(volume, device)?;
         let root = mount_verified_image(block, expected_device)?;
         grant_workspace_write(workspace.as_fd(), gid)?;
-        Self::enter_with_root(root, workspace, inbox, staging, uid, gid)
+        Self::enter_with_root(root, workspace, inbox, skills, staging, uid, gid)
     }
 
     fn enter_with_root(
         root: OwnedFd,
         workspace_source: OwnedFd,
         inbox_source: OwnedFd,
+        skills_source: OwnedFd,
         staging: OwnedFd,
         uid: u32,
         gid: u32,
@@ -222,6 +236,9 @@ impl RoomMounts {
         let inbox_at = directory_at(workspace.as_fd(), "inbox")?;
         let inbox = clone_mount(inbox_source.as_fd())?;
         attach(inbox.as_fd(), inbox_at.as_fd(), READ_ONLY_DATA)?;
+        let skills_at = directory_at(workspace.as_fd(), "skills")?;
+        let skills = clone_mount(skills_source.as_fd())?;
+        attach(skills.as_fd(), skills_at.as_fd(), READ_ONLY_DATA)?;
 
         let uid = uid.to_string();
         let gid = gid.to_string();
@@ -263,10 +280,13 @@ impl RoomMounts {
         drop(staging);
         drop(workspace_source);
         drop(inbox_source);
+        drop(skills_source);
         drop(workspace_at);
         drop(inbox_at);
+        drop(skills_at);
         drop(workspace);
         drop(inbox);
+        drop(skills);
         enter_root(root.as_fd())?;
         drop(root);
         verify_view()
@@ -293,13 +313,60 @@ fn mount_verified_image(block: OwnedFd, expected_device: u64) -> Result<OwnedFd,
     Ok(root)
 }
 
-fn pin_encrypted_sources(volume: &Path, device: &str) -> Result<(OwnedFd, OwnedFd), Error> {
+fn pin_encrypted_sources(
+    volume: &Path,
+    device: &str,
+) -> Result<(OwnedFd, OwnedFd, OwnedFd), Error> {
     let disk = crate::locked_mount::pin_locked_ext4_root(volume, device)?;
     require_root_control(disk.as_fd(), "verify room volume root ownership")?;
     let workspace = directory_at(disk.as_fd(), "workspace")?;
     let inbox = directory_at(disk.as_fd(), "inbox")?;
     require_root_control(inbox.as_fd(), "verify room inbox ownership")?;
-    Ok((workspace, inbox))
+    let skills = directory_at(disk.as_fd(), "skills")?;
+    require_root_control(skills.as_fd(), "verify room skills ownership")?;
+    Ok((workspace, inbox, skills))
+}
+
+/// Makes the workspace's attachment point for the Room's skills root's
+/// (WO-046). A `skills` there that isn't, one the Room made before its
+/// skills were attached, is moved aside as `skills.moved-<n>`, never
+/// removed: the Room's files stay its own.
+fn skills_anchor(workspace: BorrowedFd<'_>) -> Result<(), Error> {
+    const OPERATION: &str = "make the room skills attachment";
+    match rustix::fs::statat(workspace, "skills", rustix::fs::AtFlags::SYMLINK_NOFOLLOW) {
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(errno) => return Err(failed(OPERATION)(errno)),
+        Ok(stat) => {
+            let rooted = FileType::from_raw_mode(stat.st_mode) == FileType::Directory
+                && stat.st_uid == 0
+                && stat.st_mode & 0o022 == 0;
+            if rooted {
+                return Ok(());
+            }
+            move_aside(workspace, "skills")?;
+        }
+    }
+    ensure_directory_at(workspace, "skills").map(drop)
+}
+
+/// Renames `name` in `directory` to the first free `name.moved-<n>`.
+fn move_aside(directory: BorrowedFd<'_>, name: &str) -> Result<(), Error> {
+    const OPERATION: &str = "move aside the room's own skills folder";
+    for n in 1..=99 {
+        let aside = format!("{name}.moved-{n}");
+        match rustix::fs::renameat_with(
+            directory,
+            name,
+            directory,
+            aside.as_str(),
+            rustix::fs::RenameFlags::NOREPLACE,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(errno) => return Err(failed(OPERATION)(errno)),
+        }
+    }
+    Err(refused(OPERATION, "every name to move it to is taken"))
 }
 
 fn require_root_control(directory: BorrowedFd<'_>, operation: &'static str) -> Result<(), Error> {
@@ -346,6 +413,8 @@ fn grant_workspace_write(workspace: BorrowedFd<'_>, gid: u32) -> Result<(), Erro
 
     let anchor = directory_at(directory.as_fd(), "inbox")?;
     require_root_control(anchor.as_fd(), "verify room inbox attachment ownership")?;
+    let anchor = directory_at(directory.as_fd(), "skills")?;
+    require_root_control(anchor.as_fd(), "verify room skills attachment ownership")?;
     if stat.st_mode & 0o7777 == WORKSPACE_MODE {
         return Ok(());
     }
@@ -557,6 +626,7 @@ fn verify_view() -> Result<(), Error> {
         ("/", base.union(Flags::RDONLY), Flags::NOEXEC),
         ("/workspace", data, Flags::RDONLY),
         ("/workspace/inbox", read_only, Flags::empty()),
+        ("/workspace/skills", read_only, Flags::empty()),
         ("/session", data, Flags::RDONLY),
         ("/proc", read_only, Flags::empty()),
         ("/dev", read_only, Flags::empty()),

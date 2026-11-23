@@ -115,7 +115,7 @@ Today a skill runs if its signer's key is in the trust-roots file and its capabi
 - **`skill_list`, a new tool:** every enabled skill's name and description, for when the prompt's list is full.
 - **`skill_read`, a new tool:** gives the agent a skill's instructions, or one of its listed files, on demand, fenced by markers the broker neutralizes inside the text, and labelled with the skill and its signer. Only what the agent asks for enters the context.
 - **`skill_invoke`** stays for a skill with a program, unchanged.
-- **A skill's files in the Room:** in a chat, an enabled skill's listed files are mounted read-only at `/skills/<name>/` in the agent's computer, from the broker's verified copy, so a playbook's helper scripts run there under the Room's rules (`python3 /skills/write-a-report/scripts/outline.py`). Nothing a skill brings runs anywhere else.
+- **A skill's files in the Room:** in a chat, an enabled skill's listed files are mounted read-only at `/workspace/skills/<name>/` in the agent's computer, from the broker's verified copy, so a playbook's helper scripts run there under the Room's rules (`python3 /workspace/skills/write-a-report/scripts/outline.py`). The maintainer chose `/workspace/skills` over `/skills`, which would need a new Room image ([evidence](../evidence/skill-room-mount.md)). Nothing a skill brings runs anywhere else.
 - **Activity** records each skill read and used.
 
 ### The first skills

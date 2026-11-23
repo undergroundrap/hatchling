@@ -614,6 +614,14 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             history,
             earlier,
         };
+        // The Room's copy of the skills the owner enabled, brought in line
+        // before the run that may use it (WO-046).
+        crate::skill_room::before_chat_run(
+            crate::room_ops::offered(true, crate::room_ops::open),
+            crate::spawner::spawner()
+                .map(|spawner| -> &dyn crate::skill_room::RoomSkills { spawner }),
+            crate::skills::live(),
+        );
         match launcher.launch(request) {
             Ok(run) => {
                 if let (Some(hub), Some(cell)) = (&self.waiting, run.cell_id()) {

@@ -126,13 +126,17 @@ WSL checks the bundled files against Setup's embedded manifest and publishes
 the record last. Linux installation from a separate release directory
 requires its own manifest attestation path.
 The encrypted-volume entry pins the expected ext4 root, then resolves the
-fixed workspace and inbox siblings on that same mount. Root controls the
-volume root and inbox. A symlink or nested mount cannot supply either source.
+fixed workspace, inbox and skills siblings on that same mount. Root controls
+the volume root, the inbox and the skills folder. A symlink or nested mount
+cannot supply any of them.
 It mounts the encrypted workspace and 512 MiB session scratch with
 `nodev,nosuid,noexec`, and attaches the spawner's inbox read-only at
-`/workspace/inbox`. Installed admission grants the dedicated Room group
+`/workspace/inbox` and its copy of the skills the owner enabled read-only at
+`/workspace/skills` (WO-046), both `noexec`. Installed admission grants the dedicated Room group
 write access to the authenticated workspace root. Root owns that directory
-and its inbox attachment. The workspace's sticky bit protects the attachment
+and its inbox and skills attachments. A `skills` the Room made in its
+workspace before its skills were attached is moved aside, as
+`skills.moved-<n>`, the first time the disk opens, never removed. The workspace's sticky bit protects the attachment
 while the Room creates and manages its own files. Existing root-private
 workspaces receive the grant without changing their contents. It refuses
 links in mount targets, leaves source
@@ -523,6 +527,20 @@ those names, and leaves existing directory contents in place. Newly made
 directories are private to root until the launcher provisions room access,
 except the inbox, which every open leaves root's and `0755`, so the Room's
 user can read it and change nothing in it.
+
+The skills the owner enabled are put on the volume by the spawner, as
+root, through the volume's own `skills` directory, before each chat run
+with a Room (WO-046): the broker brings the copy in line with what the
+owner enabled, taking out a skill no longer enabled or enabled at another
+digest, and putting in one the Room lacks, from its own verified copy,
+every file checked against its signed hash as it is read. A skill's
+program isn't copied: it runs in a cell of its own. Each skill is written
+whole as `.new-<name>`, every file `0444` and synced, then renamed into
+place; its digest is kept beside its files. Names and paths are held to
+ASCII letters, digits, `.`, `_` and `-`, no step starting with a dot, at
+most eight steps; a skill the Room can't name that way is left out and
+logged. The Room holds at most 64 skills of at most 64 files and 1 MiB
+each.
 
 A file the owner hands the agent is put in the inbox by the spawner, as
 root, through the volume's own `inbox` directory, never through the

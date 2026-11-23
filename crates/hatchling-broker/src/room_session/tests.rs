@@ -70,7 +70,10 @@ fn new_rig(limits: Limits) -> (Rig, Kept<Disk, Put>) {
         Ok(match op {
             InboxOp::Put { stem, .. } => InboxAnswer::Placed(format!("{count:04}-{stem}")),
             InboxOp::List => InboxAnswer::Listed(Vec::new()),
-            InboxOp::Remove { .. } => InboxAnswer::Removed,
+            InboxOp::Remove { .. } | InboxOp::SkillPut { .. } | InboxOp::SkillRemove { .. } => {
+                InboxAnswer::Removed
+            }
+            InboxOp::SkillsHeld => InboxAnswer::SkillsHeld(Vec::new()),
         })
     });
     let ledger: Arc<Mutex<Ledger>> = Arc::default();
@@ -264,6 +267,9 @@ fn op_said(op: &InboxOp) -> String {
         InboxOp::Put { stem, bytes } => format!("put {stem} {}", bytes.len()),
         InboxOp::List => String::from("list"),
         InboxOp::Remove { name } => format!("remove {name}"),
+        InboxOp::SkillsHeld => String::from("skills held"),
+        InboxOp::SkillPut { name, files, .. } => format!("put skill {name} {}", files.len()),
+        InboxOp::SkillRemove { name } => format!("remove skill {name}"),
     }
 }
 
