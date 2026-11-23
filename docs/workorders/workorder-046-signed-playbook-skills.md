@@ -1,6 +1,6 @@
 # WO-046: Signed playbook skills: manifest v2, a signer, discovery, and the first skills
 
-**Status:** QUEUED
+**Status:** CLOSED
 **Area:** `crates/hatchling-skill` (the manifest, admission, the registry), `crates/hatchling-broker` (loading, the skill ops, the agent's prompt), `crates/hatchling-core` (the session wire), `crates/hatchling-agent` (the skill tools), a signing command, `docs/`
 **Issue:** [#594](https://github.com/undergroundrap/hatchling/issues/594)
 **Trust boundary:** yes
@@ -150,16 +150,16 @@ Supporting files are listed in the manifest and referred to by name, never inlin
 
 ## Acceptance criteria
 
-- [ ] The design and threat model are written and approved by the maintainer before any code lands.
-- [ ] A v2 skill whose description, instructions or program changed after signing is refused, and a test changes each.
-- [ ] A skill's instructions can't widen the agent's tools, grants or approvals: a playbook that tells the agent to do what it isn't granted is refused at the grant, as any request is, and a test shows it.
-- [ ] The signer makes a key and signs a package that the loader admits; no private key appears in an argument, the environment or a log, and a test checks it.
-- [ ] An admitted skill is listed with its description, appears in the agent's prompt, and its instructions are read through the new tool, on a real install.
-- [ ] At least three playbooks ship as signed packages, each admitted and used on a fresh install. (The two builders moved to #622, the maintainer's choice on 2026-11-23.)
-- [ ] v1 manifests are refused with a message to re-sign as v2 (no v1 package exists outside the tests, and v1's signature doesn't cover its program, #613); the v1 tests move to v2.
-- [ ] Every listed file is checked against its signed hash on every load, a changed or unlisted file is refused or never served, and the skills directory is refused when anyone but root or the broker can write it; tests change each.
-- [ ] The owner enables each skill in the app, bound to its signed digest; a changed skill waits for the owner again; a test changes one file and checks the skill is held.
-- [ ] Each new guard fails its test when removed.
+- [x] The design and threat model are written and approved by the maintainer before any code lands. (The design above, merged with the maintainer's approval in #614 before slice 1.)
+- [x] A v2 skill whose description, instructions or program changed after signing is refused, and a test changes each. ([slice 1a](../evidence/skill-manifest-v2.md): a changed manifest field fails its signature, and a changed playbook or program fails its listed hash; [slice 4](../evidence/first-skills.md): a shipped playbook changed by one line is refused by a root broker.)
+- [x] A skill's instructions can't widen the agent's tools, grants or approvals: a playbook that tells the agent to do what it isn't granted is refused at the grant, as any request is, and a test shows it. ([slice 4](../evidence/first-skills.md): `a_playbook_the_owner_enabled_widens_no_grant`; [slice 3a](../evidence/skill-discovery.md): a run's skill ops reach no harness.)
+- [x] The signer makes a key and signs a package that the loader admits; no private key appears in an argument, the environment or a log, and a test checks it. ([slice 1b](../evidence/skill-signer.md); and the maintainer signed the first skills with it, [slice 4](../evidence/first-skills.md).)
+- [x] An admitted skill is listed with its description, appears in the agent's prompt, and its instructions are read through the new tool, on a real install. ([slice 3a](../evidence/skill-discovery.md) through a real broker session; [slice 4](../evidence/first-skills.md): CI's installs find each shipped skill, and the browser job enables one in the app and the agent reads it. The use runs on a root broker given the installed layout, not through `install.sh` itself.)
+- [x] At least three playbooks ship as signed packages, each admitted and used on a fresh install. (The two builders moved to #622, the maintainer's choice on 2026-11-23.) ([slice 4](../evidence/first-skills.md): all three admitted on CI's install; `write-a-report` used from the app, the other two shown waiting.)
+- [x] v1 manifests are refused with a message to re-sign as v2 (no v1 package exists outside the tests, and v1's signature doesn't cover its program, #613); the v1 tests move to v2. ([slice 1a](../evidence/skill-manifest-v2.md).)
+- [x] Every listed file is checked against its signed hash on every load, a changed or unlisted file is refused or never served, and the skills directory is refused when anyone but root or the broker can write it; tests change each. ([slice 1a](../evidence/skill-manifest-v2.md), and at each read, [slice 3a](../evidence/skill-discovery.md).)
+- [x] The owner enables each skill in the app, bound to its signed digest; a changed skill waits for the owner again; a test changes one file and checks the skill is held. ([slice 2a](../evidence/skill-enablement.md), [slice 2b](../evidence/skills-settings.md).)
+- [x] Each new guard fails its test when removed. (Each slice's hand-breaks: [1a](../evidence/skill-manifest-v2.md), [1b](../evidence/skill-signer.md), [2a](../evidence/skill-enablement.md), [2b](../evidence/skills-settings.md), [3a](../evidence/skill-discovery.md), [3b](../evidence/skill-room-mount.md), [4](../evidence/first-skills.md). Two breaks failed nothing, and each note says why: 3a's filter was removed, and 3b's second mount check stays.)
 
 ## Gates
 
