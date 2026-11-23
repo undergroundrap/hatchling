@@ -1162,6 +1162,52 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn a_skill_the_signer_signed_loads_under_its_key_alone() {
+        // The author's side and the broker's side agree: what
+        // `hatchling skill sign` writes, the loader admits under the
+        // signer's key, and under no other.
+        let root = skills_dir("signer");
+        let skill = root.join("notes");
+        std::fs::create_dir_all(skill.join("scripts")).unwrap();
+        std::fs::write(skill.join("SKILL.md"), b"# Steps\n").unwrap();
+        std::fs::write(skill.join("scripts").join("tidy.py"), b"print(1)\n").unwrap();
+        std::fs::write(
+            skill.join(MANIFEST_FILE),
+            br#"{"name":"notes","version":"1","description":"Use when asked.","instructions":"SKILL.md"}"#,
+        )
+        .unwrap();
+        let keys = std::env::temp_dir().join(format!(
+            "hatchling-skills-{}-signer-keys",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&keys);
+        std::fs::create_dir_all(&keys).unwrap();
+        let public = hatchling_skill::author::new_key(&keys.join("k")).unwrap();
+        hatchling_skill::author::sign(&skill, &keys.join("k")).unwrap();
+        let signer: [u8; 32] =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &public.base64)
+                .unwrap()
+                .try_into()
+                .unwrap();
+        let outcome = load_skills(&config(&root, &[]), &roots_of(&[signer]));
+        assert!(outcome.refused.is_empty(), "{:?}", outcome.refused);
+        assert_eq!(loaded_names(&outcome.loaded), vec![String::from("notes")]);
+        assert_eq!(
+            outcome
+                .loaded
+                .first()
+                .unwrap()
+                .admission
+                .signer_fingerprint(),
+            public.fingerprint
+        );
+        assert!(load(&config(&root, &[])).loaded.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&keys);
+    }
+
+    #[test]
     fn a_format_v1_manifest_is_refused_saying_to_sign_it_again() {
         let root = skills_dir("v1");
         std::fs::create_dir_all(root.join("old")).unwrap();

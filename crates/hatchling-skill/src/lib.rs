@@ -15,6 +15,8 @@
 //! trust core. The broker verifies signatures before admission; the
 //! cell never self-attests.
 
+#[cfg(unix)]
+pub mod author;
 mod error;
 mod manifest;
 mod registry;

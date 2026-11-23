@@ -644,6 +644,7 @@ dependencies = [
  "hatchling-agent",
  "hatchling-broker",
  "hatchling-isolation",
+ "hatchling-skill",
 ]
 
 [[package]]
@@ -663,11 +664,13 @@ version = "0.10.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
+ "getrandom 0.4.3",
  "hatchling-core",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+ "zeroize",
 ]
 
 [[package]]

@@ -416,7 +416,11 @@ pinning at registration; call-time capability enforcement (`check_skill_call`),
 and the `SkillRegistry` with identity-drift detection. The broker
 depends on it for skill admission — the cell never self-attests.
 External deps are the reviewed `ed25519-dalek` (signatures),
-`sha2` (code hashing), and `serde`/`serde_json` (manifests).
+`sha2` (code hashing), and `serde`/`serde_json` (manifests); and, for
+`hatchling skill` on the author's side (WO-046), `getrandom` (a new signing
+key's bytes, from the operating system) and `zeroize` (the key's bytes,
+wiped when dropped), both already reviewed for the vault and the egress
+proxy.
 
 ## hatchling-scheduler
 

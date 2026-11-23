@@ -27,3 +27,8 @@ serde_json = "1"
 thiserror = "2"
 # SHA-256 for code identity pinning (registry drift detection).
 sha2 = "0.10"
+# A new signing key's 32 random bytes, from the operating system
+# (`hatchling skill key new`, on the author's side).
+getrandom = "0.4"
+# The signing key's bytes, wiped when dropped.
+zeroize = "1"

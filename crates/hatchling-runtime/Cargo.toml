@@ -26,3 +26,5 @@ hatchling-broker.workspace = true
 hatchling-agent.workspace = true
 # The cell program's name (`/agent`), which marks an in-cell start.
 hatchling-isolation.workspace = true
+# `hatchling skill`: making and signing skills, on the author's side.
+hatchling-skill.workspace = true
