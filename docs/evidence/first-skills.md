@@ -83,6 +83,15 @@ installer lays them out:
     two not, reads its playbook with `skill_read`, labelled with the
     shipped signer, and answers with a line of it.
 
+**Found on the way,** each filed and left to its own fix:
+- [#624](https://github.com/undergroundrap/hatchling/issues/624): a pinned
+  model fixture that arrives short fails CI's hosted-model job, where it
+  should be fetched again.
+- [#625](https://github.com/undergroundrap/hatchling/issues/625): Settings ›
+  Skills, opened before the app has the list, says there are none until
+  it's opened again. The end-to-end test opens it again, as an owner would,
+  until #625 is fixed.
+
 **New tests:**
 - **The audit check:** a signed skill passes, and with nothing shipped there
   is nothing to check. Each is found:
