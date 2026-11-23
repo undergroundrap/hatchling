@@ -369,8 +369,10 @@ fn adversarial_channel_text_stays_the_user_task_below_the_system_prompt() {
                 channel: String::from("local"),
                 text: String::from(HOSTILE),
             },
-            // The loop's memory recall asks next; a wrong-kind reply fails
-            // the recall closed and the loop proceeds without memory.
+            // The run asks for the skills the owner enabled first, then
+            // the loop's memory recall: a wrong-kind reply fails each
+            // closed, and the run goes on with neither.
+            ChannelResult::NoMessage,
             ChannelResult::NoMessage,
             ChannelResult::Sent,
         ],

@@ -18,7 +18,9 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use common::{TestDir, broker_config, guard_cell_available, harness_fixture_binary, test_dir};
-use hatchling_broker::{Config, Harnesses, SkillRuntime, Skills, handle_skill_op};
+use hatchling_broker::{
+    Config, Harnesses, SkillRuntime, Skills, handle_run_skill_op, handle_skill_op,
+};
 use hatchling_core::subagent::{ActivityEvent, HarnessOutcome, SubagentEvent};
 use hatchling_core::{CellId, SkillOp, SkillResult};
 use hatchling_skill::CodeHash;
@@ -158,7 +160,12 @@ fn invoke_with(
         SkillResult::Output { output } => serde_json::from_str(&output).map_err(|e| e.to_string()),
         refused @ (SkillResult::UnknownSkill
         | SkillResult::CapabilityDenied
-        | SkillResult::SkillError) => Err(format!("{refused:?}")),
+        | SkillResult::SkillError
+        | SkillResult::Listed { .. }
+        | SkillResult::Text { .. }
+        | SkillResult::NoSuchFile
+        | SkillResult::TooLarge { .. }
+        | SkillResult::NotText) => Err(format!("{refused:?}")),
     }
 }
 
@@ -721,24 +728,34 @@ fn a_changed_binary_is_refused_never_substituted() -> Result<(), String> {
 }
 
 #[test]
-fn nothing_but_the_main_session_reaches_a_harness() {
-    // Runs and subagents are served with no harnesses (their Skills are
-    // the default), so a harness skill is unknown to them; a harness
-    // cell has no broker socket at all (see the scope test).
+fn nothing_but_the_main_session_reaches_a_harness() -> Result<(), String> {
+    // A run's session reaches the broker's skills (WO-046) but no harness:
+    // a harness skill is unknown to it, with the very skills the main
+    // session reaches it through. A harness cell has no broker socket at
+    // all (see the scope test).
+    let deployment = Deployment::new("harness-reach")?;
+    let skills = deployment.skills("20")?;
+    let cell = "run".parse::<CellId>().map_err(|_| "cell id")?;
+    // A capability the harness doesn't take: nothing runs either way.
     let op = SkillOp::Invoke {
         skill: String::from("claude-code@1"),
-        capability: "code".parse().unwrap(),
+        capability: "text.read".parse().map_err(|_| "capability")?,
         input: String::from("[]"),
     };
     assert_eq!(
-        handle_skill_op(
-            &Skills::default(),
-            &op,
-            &"run".parse::<CellId>().unwrap(),
-            &no_keys
-        ),
+        handle_run_skill_op(&skills, &op, &cell, &no_keys),
         SkillResult::UnknownSkill
     );
+    assert_ne!(
+        handle_skill_op(&skills, &op, &cell, &no_keys),
+        SkillResult::UnknownSkill,
+        "the main session reaches it"
+    );
+    assert_eq!(
+        handle_skill_op(&Skills::default(), &op, &cell, &no_keys),
+        SkillResult::UnknownSkill
+    );
+    Ok(())
 }
 
 #[test]

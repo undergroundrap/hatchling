@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 10;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 33;
+export const SESSION_PROTOCOL_VERSION = 34;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -3720,6 +3720,19 @@ export type SessionRequest = {
      * verbatim: a bare name or another version matches nothing.
      */
     readonly skill: string;
+} | {
+    readonly op: 'list';
+} | {
+    readonly op: 'read';
+    /**
+     * A file the skill lists, by its path in the skill; its playbook
+     * when absent.
+     */
+    readonly path?: string | null;
+    /**
+     * The skill's name, as listed.
+     */
+    readonly skill: string;
 }) | {
     readonly kind: 'goals';
 } & ({
@@ -4734,6 +4747,36 @@ export type SiteSignIn = {
     readonly sign_in_id: string;
 };
 /**
+ * A skill the owner enabled, as the agent is told it.
+ */
+export type SkillEntry = {
+    /**
+     * The capabilities its program declares; none without one.
+     */
+    readonly capabilities: readonly (CapabilityName)[];
+    /**
+     * When it applies, in its signer's words. Untrusted.
+     */
+    readonly description: string;
+    /**
+     * Whether it lists files beside its playbook and program: helpers
+     * meant for the agent's computer.
+     */
+    readonly files: boolean;
+    /**
+     * Its name.
+     */
+    readonly name: string;
+    /**
+     * Whether it has a playbook to read.
+     */
+    readonly playbook: boolean;
+    /**
+     * Its version: `name@version` is the id `invoke` takes.
+     */
+    readonly version: string;
+};
+/**
  * One file of a skill, as its signed manifest lists it.
  */
 export type SkillFile = {
@@ -4795,11 +4838,12 @@ export type SkillListing = {
 /**
  * A skill operation: the agent's post-handshake skill vocabulary.
  *
- * One op, one action: invoke one registered skill, exercising one
- * capability it declared, on one input. The broker owns the registry;
- * the agent names a skill and the broker decides. There is no list or
- * describe op: the agent learns which skills exist from its
- * configuration, not by asking the broker to enumerate them.
+ * One op, one action: list the skills the owner enabled, read one's
+ * playbook or a file it lists, or invoke one registered skill,
+ * exercising one capability it declared, on one input (WO-046). The
+ * broker owns the registry; the agent names a skill and the broker
+ * decides. Listing and reading grant nothing: what a playbook says is
+ * guidance, and every request it leads to is checked as any other.
  *
  * Public because the skill protocol is a cross-crate contract.
  */
@@ -4818,6 +4862,19 @@ export type SkillOp = {
     /**
      * The exact registered skill id, `name@version`. Looked up
      * verbatim: a bare name or another version matches nothing.
+     */
+    readonly skill: string;
+} | {
+    readonly op: 'list';
+} | {
+    readonly op: 'read';
+    /**
+     * A file the skill lists, by its path in the skill; its playbook
+     * when absent.
+     */
+    readonly path?: string | null;
+    /**
+     * The skill's name, as listed.
      */
     readonly skill: string;
 };
@@ -4840,6 +4897,32 @@ export type SkillResult = {
     readonly r: 'capability-denied';
 } | {
     readonly r: 'skill-error';
+} | {
+    /**
+     * How many more there are than fit.
+     */
+    readonly more: number;
+    readonly r: 'listed';
+    /**
+     * They, as many as fit one frame.
+     */
+    readonly skills: readonly (SkillEntry)[];
+} | {
+    readonly r: 'text';
+    /**
+     * The fenced text.
+     */
+    readonly text: string;
+} | {
+    readonly r: 'no-such-file';
+} | {
+    /**
+     * Its size.
+     */
+    readonly bytes: number;
+    readonly r: 'too-large';
+} | {
+    readonly r: 'not-text';
 };
 /**
  * Where a skill the broker found stands.

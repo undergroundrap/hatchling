@@ -445,6 +445,12 @@ impl Cell<Ready> {
             registry.register(Box::new(crate::tools::SkillInvokeTool::new(
                 self.connection(),
             )));
+            registry.register(Box::new(crate::tools::SkillListTool::new(
+                self.connection(),
+            )));
+            registry.register(Box::new(crate::tools::SkillReadTool::new(
+                self.connection(),
+            )));
         }
         if on(hatchling_core::run_tools::ToolGroup::Schedule) {
             registry.register(Box::new(crate::tools::SchedulePropose::new(
@@ -573,6 +579,13 @@ impl Cell<Ready> {
         // word, so it neither offers nor tries what's off.
         let note = crate::capabilities::note(self.config().run_tools.as_ref());
         let asking = hatchling_loop::Loop::new(&registry, kind).with_system_note(&note);
+        // The skills the owner enabled, from the broker's list at the
+        // run's start, fenced as data (WO-046).
+        let skills = self.skills_note();
+        let asking = match &skills {
+            Some(skills) => asking.with_system_note(skills),
+            None => asking,
+        };
         // A chat run is given what its owner sends while it works. No
         // other run asks: the broker would give it nothing.
         let asking = if self.config().run_chat {
@@ -609,6 +622,29 @@ impl Cell<Ready> {
         // The orphan rule: no child outlives the run that spawned it.
         let _ = children.reap(self.connection(), hatchling_core::subagent::ORPHANED);
         result
+    }
+
+    /// What the run is told of the skills the owner enabled: `None` with
+    /// skills off, none enabled, or a list the broker couldn't give.
+    fn skills_note(&self) -> Option<String> {
+        let on = |group| {
+            self.config()
+                .run_tools
+                .as_ref()
+                .is_none_or(|on| on.contains(&group))
+        };
+        if !on(hatchling_core::run_tools::ToolGroup::Skills) {
+            return None;
+        }
+        let (skills, more) = skill::list(self.connection())
+            .inspect_err(|error| tracing::debug!(%error, "the enabled skills weren't listed"))
+            .ok()?;
+        hatchling_core::skill_text::render_list(
+            &skills,
+            more,
+            on(hatchling_core::run_tools::ToolGroup::Room),
+            hatchling_core::skill_text::SKILL_LIST_BUDGET,
+        )
     }
 
     /// Runs a research run for `question` against `model`.

@@ -445,6 +445,31 @@ pub enum Error {
         skill: String,
     },
 
+    /// The skill lists no such file, or has no playbook.
+    #[error("skill {skill:?} has no file {path:?}; skill_list says what each has")]
+    SkillNoSuchFile {
+        /// The skill's name.
+        skill: String,
+        /// The file asked for; its playbook when empty.
+        path: String,
+    },
+
+    /// The skill's file is larger than one read gives.
+    #[error("skill {skill:?}'s file is {bytes} bytes, more than one read gives")]
+    SkillFileTooLarge {
+        /// The skill's name.
+        skill: String,
+        /// The file's size.
+        bytes: u64,
+    },
+
+    /// The skill's file isn't text.
+    #[error("skill {skill:?}'s file isn't text")]
+    SkillNotText {
+        /// The skill's name.
+        skill: String,
+    },
+
     /// The request is too large to send. Refused before any I/O.
     #[error("skill request is {len} bytes, over the {max}-byte limit")]
     SkillInputTooLarge {

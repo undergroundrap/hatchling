@@ -8944,6 +8944,44 @@
                 "input"
               ],
               "type": "object"
+            },
+            {
+              "description": "Lists the skills the owner enabled, each with when it applies.",
+              "properties": {
+                "op": {
+                  "const": "list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Reads an enabled skill's playbook, or one of the files it lists,\nfenced and labelled by the broker.",
+              "properties": {
+                "op": {
+                  "const": "read",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "A file the skill lists, by its path in the skill; its playbook\nwhen absent.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "skill": {
+                  "description": "The skill's name, as listed.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "skill"
+              ],
+              "type": "object"
             }
           ],
           "properties": {
@@ -11473,6 +11511,48 @@
       ],
       "type": "object"
     },
+    "SkillEntry": {
+      "additionalProperties": false,
+      "description": "A skill the owner enabled, as the agent is told it.",
+      "properties": {
+        "capabilities": {
+          "description": "The capabilities its program declares; none without one.",
+          "items": {
+            "$ref": "#/$defs/CapabilityName"
+          },
+          "type": "array"
+        },
+        "description": {
+          "description": "When it applies, in its signer's words. Untrusted.",
+          "type": "string"
+        },
+        "files": {
+          "description": "Whether it lists files beside its playbook and program: helpers\nmeant for the agent's computer.",
+          "type": "boolean"
+        },
+        "name": {
+          "description": "Its name.",
+          "type": "string"
+        },
+        "playbook": {
+          "description": "Whether it has a playbook to read.",
+          "type": "boolean"
+        },
+        "version": {
+          "description": "Its version: `name@version` is the id `invoke` takes.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "description",
+        "playbook",
+        "capabilities",
+        "files"
+      ],
+      "type": "object"
+    },
     "SkillFile": {
       "description": "One file of a skill, as its signed manifest lists it.",
       "properties": {
@@ -11562,7 +11642,7 @@
       "type": "object"
     },
     "SkillOp": {
-      "description": "A skill operation: the agent's post-handshake skill vocabulary.\n\nOne op, one action: invoke one registered skill, exercising one\ncapability it declared, on one input. The broker owns the registry;\nthe agent names a skill and the broker decides. There is no list or\ndescribe op: the agent learns which skills exist from its\nconfiguration, not by asking the broker to enumerate them.\n\nPublic because the skill protocol is a cross-crate contract.",
+      "description": "A skill operation: the agent's post-handshake skill vocabulary.\n\nOne op, one action: list the skills the owner enabled, read one's\nplaybook or a file it lists, or invoke one registered skill,\nexercising one capability it declared, on one input (WO-046). The\nbroker owns the registry; the agent names a skill and the broker\ndecides. Listing and reading grant nothing: what a playbook says is\nguidance, and every request it leads to is checked as any other.\n\nPublic because the skill protocol is a cross-crate contract.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -11590,6 +11670,46 @@
             "skill",
             "capability",
             "input"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Lists the skills the owner enabled, each with when it applies.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Reads an enabled skill's playbook, or one of the files it lists,\nfenced and labelled by the broker.",
+          "properties": {
+            "op": {
+              "const": "read",
+              "type": "string"
+            },
+            "path": {
+              "description": "A file the skill lists, by its path in the skill; its playbook\nwhen absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skill": {
+              "description": "The skill's name, as listed.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "skill"
           ],
           "type": "object"
         }
@@ -11647,6 +11767,98 @@
           "properties": {
             "r": {
               "const": "skill-error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "r"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The skills the owner enabled, by name.",
+          "properties": {
+            "more": {
+              "description": "How many more there are than fit.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "const": "listed",
+              "type": "string"
+            },
+            "skills": {
+              "description": "They, as many as fit one frame.",
+              "items": {
+                "$ref": "#/$defs/SkillEntry"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "r",
+            "skills",
+            "more"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "What was read, fenced and labelled by the broker: guidance, never\na grant.",
+          "properties": {
+            "r": {
+              "const": "text",
+              "type": "string"
+            },
+            "text": {
+              "description": "The fenced text.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "r",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The skill lists no such file, or has no playbook.",
+          "properties": {
+            "r": {
+              "const": "no-such-file",
+              "type": "string"
+            }
+          },
+          "required": [
+            "r"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file is larger than one read gives the agent.",
+          "properties": {
+            "bytes": {
+              "description": "Its size.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "r": {
+              "const": "too-large",
+              "type": "string"
+            }
+          },
+          "required": [
+            "r",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The file isn't text.",
+          "properties": {
+            "r": {
+              "const": "not-text",
               "type": "string"
             }
           },
@@ -16399,7 +16611,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 33,
+    "session_protocol": 34,
     "ui_schema_version": 10
   },
   "x-roots": {

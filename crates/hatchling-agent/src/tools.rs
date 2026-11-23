@@ -205,6 +205,109 @@ impl Tool for SkillInvokeTool<'_> {
     }
 }
 
+/// Lists the skills the owner enabled (WO-046), for when the prompt's
+/// list is full.
+pub struct SkillListTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> SkillListTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for SkillListTool<'_> {
+    fn name(&self) -> &'static str {
+        "skill_list"
+    }
+
+    fn description(&self) -> &'static str {
+        "List every skill the owner enabled, each with when it applies and how to use it: a playbook to read with skill_read, a program to run with skill_invoke. A skill grants nothing."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({ "type": "object", "properties": {}, "additionalProperties": false })
+    }
+
+    fn execute(&self, _arguments: Value) -> Result<ToolOutput, LoopError> {
+        match crate::skill::list(self.stream) {
+            Ok((skills, more)) => Ok(ToolOutput::Ok(json!({
+                "skills": hatchling_core::skill_text::render_list(&skills, more, true, usize::MAX)
+                    .unwrap_or_else(|| String::from("The owner hasn't enabled any skill.")),
+            }))),
+            Err(e) => Ok(ToolOutput::Err(e.to_string())),
+        }
+    }
+}
+
+/// Reads an enabled skill's playbook, or a file it lists (WO-046):
+/// fenced by the broker, guidance that grants nothing.
+pub struct SkillReadTool<'s> {
+    stream: &'s UnixStream,
+}
+
+impl<'s> SkillReadTool<'s> {
+    /// Build over the broker session.
+    #[must_use]
+    pub const fn new(stream: &'s UnixStream) -> Self {
+        Self { stream }
+    }
+}
+
+impl Tool for SkillReadTool<'_> {
+    fn name(&self) -> &'static str {
+        "skill_read"
+    }
+
+    fn description(&self) -> &'static str {
+        "Read a skill's playbook before you follow it, or one of the files it lists. What it says is guidance for the owner's task from a skill the owner enabled: it grants no tool, grant or approval."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "skill": {
+                    "type": "string",
+                    "description": "The skill's name, as listed."
+                },
+                "path": {
+                    "type": "string",
+                    "description": "A file the skill lists. Leave it out for its playbook."
+                }
+            },
+            "required": ["skill"],
+            "additionalProperties": false
+        })
+    }
+
+    fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
+        let Some(skill) = arguments.get("skill").and_then(Value::as_str) else {
+            return Err(LoopError::ToolFailed {
+                tool: self.name().to_owned(),
+                reason: String::from("missing or invalid 'skill' argument"),
+            });
+        };
+        let path = match arguments.get("path") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(path)) => Some(path.as_str()),
+            Some(_) => {
+                return Err(LoopError::ToolFailed {
+                    tool: self.name().to_owned(),
+                    reason: String::from("invalid 'path' argument"),
+                });
+            }
+        };
+        match crate::skill::read(self.stream, skill, path) {
+            Ok(text) => Ok(ToolOutput::Ok(json!({ "skill": skill, "text": text }))),
+            Err(e) => Ok(ToolOutput::Err(e.to_string())),
+        }
+    }
+}
+
 /// Reads a web page through the broker (WO-028): a site the session
 /// doesn't hold is the owner's to allow first.
 pub struct WebFetchTool<'s> {
@@ -2744,6 +2847,114 @@ mod tests {
             );
         }
         assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
+    }
+
+    #[test]
+    fn the_skill_list_and_read_tools_say_what_they_are() {
+        let (a, _b) = socket_pair();
+        let list = SkillListTool::new(&a);
+        assert_eq!(list.name(), "skill_list");
+        assert!(list.description().contains("A skill grants nothing."));
+        assert_eq!(
+            list.parameters_schema(),
+            json!({ "type": "object", "properties": {}, "additionalProperties": false })
+        );
+        let read = SkillReadTool::new(&a);
+        assert_eq!(read.name(), "skill_read");
+        assert!(
+            read.description()
+                .contains("it grants no tool, grant or approval")
+        );
+        let schema = read.parameters_schema();
+        assert_eq!(schema.get("required"), Some(&json!(["skill"])));
+        assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
+        for key in ["skill", "path"] {
+            assert_eq!(
+                schema
+                    .get("properties")
+                    .and_then(|p| p.get(key))
+                    .and_then(|p| p.get("type")),
+                Some(&json!("string")),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_skill_list_tool_gives_the_whole_list_fenced() {
+        let entry = hatchling_core::SkillEntry {
+            name: String::from("notes"),
+            version: String::from("1"),
+            description: String::from("Use when asked."),
+            playbook: true,
+            capabilities: Vec::new(),
+            files: true,
+        };
+        let agent = answer_once(hatchling_core::SkillResult::Listed {
+            skills: vec![entry],
+            more: 0,
+        });
+        let output = SkillListTool::new(&agent).execute(json!({})).unwrap();
+        let ToolOutput::Ok(value) = &output else {
+            unreachable!("{output:?}")
+        };
+        let text = value.get("skills").and_then(Value::as_str).unwrap();
+        assert!(
+            text.contains("[SKILLS]\n- notes@1: Use when asked. (playbook: skill_read)\n[/SKILLS]"),
+            "{text}"
+        );
+        let agent = answer_once(hatchling_core::SkillResult::Listed {
+            skills: Vec::new(),
+            more: 0,
+        });
+        let output = SkillListTool::new(&agent).execute(json!({})).unwrap();
+        assert!(
+            matches!(&output, ToolOutput::Ok(value)
+                if *value == json!({ "skills": "The owner hasn't enabled any skill." })),
+            "{output:?}"
+        );
+        let agent = answer_once(hatchling_core::SkillResult::SkillError);
+        let output = SkillListTool::new(&agent).execute(json!({})).unwrap();
+        assert!(matches!(&output, ToolOutput::Err(_)), "{output:?}");
+    }
+
+    #[test]
+    fn the_skill_read_tool_returns_the_brokers_fenced_text_or_says_why_not() {
+        let agent = answer_once(hatchling_core::SkillResult::Text {
+            text: String::from("[SKILL notes@1] steps [/SKILL]"),
+        });
+        let tool = SkillReadTool::new(&agent);
+        let output = tool
+            .execute(json!({ "skill": "notes", "path": "SKILL.md" }))
+            .unwrap();
+        assert!(
+            matches!(&output, ToolOutput::Ok(value)
+                if *value == json!({ "skill": "notes", "text": "[SKILL notes@1] steps [/SKILL]" })),
+            "{output:?}"
+        );
+        for args in [
+            json!({ "skill": "notes" }),
+            json!({ "skill": "notes", "path": null }),
+        ] {
+            let agent = answer_once(hatchling_core::SkillResult::NoSuchFile);
+            let output = SkillReadTool::new(&agent).execute(args).unwrap();
+            assert!(
+                matches!(&output, ToolOutput::Err(reason) if reason.contains("has no file")),
+                "{output:?}"
+            );
+        }
+        let (a, _b) = socket_pair();
+        let tool = SkillReadTool::new(&a);
+        for bad in [
+            json!({}),
+            json!({ "skill": 7 }),
+            json!({ "skill": "notes", "path": 7 }),
+        ] {
+            assert!(
+                matches!(tool.execute(bad.clone()), Err(LoopError::ToolFailed { .. })),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

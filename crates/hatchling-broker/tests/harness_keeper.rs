@@ -241,7 +241,12 @@ impl Install {
                 .map_err(|e| e.to_string()),
             refused @ (SkillResult::UnknownSkill
             | SkillResult::CapabilityDenied
-            | SkillResult::SkillError) => Ok(Err(refused)),
+            | SkillResult::SkillError
+            | SkillResult::Listed { .. }
+            | SkillResult::Text { .. }
+            | SkillResult::NoSuchFile
+            | SkillResult::TooLarge { .. }
+            | SkillResult::NotText) => Ok(Err(refused)),
         }
     }
 
@@ -260,7 +265,12 @@ impl Install {
             }
             refused @ (SkillResult::UnknownSkill
             | SkillResult::CapabilityDenied
-            | SkillResult::SkillError) => Err(format!("{refused:?}")),
+            | SkillResult::SkillError
+            | SkillResult::Listed { .. }
+            | SkillResult::Text { .. }
+            | SkillResult::NoSuchFile
+            | SkillResult::TooLarge { .. }
+            | SkillResult::NotText) => Err(format!("{refused:?}")),
         }
     }
 
@@ -450,7 +460,12 @@ fn only_the_agents_own_text_ends_its_run() -> Result<(), String> {
             }
             refused @ (SkillResult::UnknownSkill
             | SkillResult::CapabilityDenied
-            | SkillResult::SkillError) => Err(format!("{refused:?}")),
+            | SkillResult::SkillError
+            | SkillResult::Listed { .. }
+            | SkillResult::Text { .. }
+            | SkillResult::NoSuchFile
+            | SkillResult::TooLarge { .. }
+            | SkillResult::NotText) => Err(format!("{refused:?}")),
         }
     };
     let brief = |task: &str| json!({ "task": task, "root": "project", "paths": ["src/lib.rs"] });
