@@ -820,6 +820,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_browser_end_to_end.py' -v
           python3 -m unittest discover -s scripts -p 'test_idea_model.py' -v
           python3 -m unittest discover -s scripts -p 'test_turns_model.py' -v
+          python3 -m unittest discover -s scripts -p 'test_skills_model.py' -v
 
       - name: Drive the agent's browser from the app
         run: |
@@ -832,6 +833,10 @@ jobs:
       - name: Propose a build from the chat
         run: |
           sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/chat_build_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/chat-build-e2e"
+
+      - name: Enable a shipped skill in the app, and see the agent use it
+        run: |
+          sudo env "PATH=$PATH" "PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright"             unshare --mount --pid --fork --kill-child --mount-proc             scripts/skills_end_to_end.sh "$RUNNER_TEMP/app-venv/bin/python" "$RUNNER_TEMP/skills-e2e"
 
       - name: Keep the conversation across restarts, and start a new one, from the app
         run: |
@@ -846,6 +851,7 @@ jobs:
             ${{ runner.temp }}/browser-e2e
             ${{ runner.temp }}/approval-e2e
             ${{ runner.temp }}/chat-build-e2e
+            ${{ runner.temp }}/skills-e2e
             ${{ runner.temp }}/conversation-e2e
 
   rootless:
