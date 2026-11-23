@@ -1,4 +1,5 @@
-//! Binary edge for `hatchling`: routes to the broker or the agent (see
+//! Binary edge for `hatchling`: routes to the broker, the agent or the
+//! skill author's commands (see
 //! [`hatchling_runtime::route`]).
 //!
 //! Note the denied lints: no `println!`/`eprint!`/`process::exit`. Output
@@ -20,6 +21,11 @@ fn main() -> ExitCode {
     match route(&argv0, &args) {
         Route::Broker(rest) => hatchling_broker::cli::main("hatchling broker", rest),
         Route::Agent(rest) => hatchling_agent::cli::main("hatchling agent", rest),
+        Route::Skill(rest) => ExitCode::from(hatchling_skill::author::cli(
+            rest,
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        )),
         Route::Help => {
             let _ = write!(std::io::stdout().lock(), "{}", help());
             ExitCode::SUCCESS

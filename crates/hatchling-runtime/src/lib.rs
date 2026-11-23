@@ -2,7 +2,8 @@
 //!
 //! One binary for the whole runtime: `hatchling broker` runs the broker
 //! and `hatchling agent` runs the agent, each with exactly the command
-//! line of `hatchling-broker` and `hatchling-agent`. Install it with
+//! line of `hatchling-broker` and `hatchling-agent`; `hatchling skill`
+//! makes and signs skills, on their author's side (WO-046). Install it with
 //! `cargo install hatchling-runtime`.
 //!
 //! Licensed AGPL-3.0-or-later, with the additional terms in
@@ -37,6 +38,7 @@ hatchling: personal AI agents in kernel-isolated cells
 Usage:
   hatchling broker [subcommand]   serve agents, or run one operator subcommand
   hatchling agent [run \"task\"]    run the agent (the broker starts it inside a cell)
+  hatchling skill <command>       make a signing key, sign a skill, check one (--help)
   hatchling --help                print this help
   hatchling --version             print the version, its commit and how it was built
 
@@ -65,6 +67,8 @@ pub enum Route<'a> {
     Broker(&'a [String]),
     /// The agent's command line, with these arguments.
     Agent(&'a [String]),
+    /// `hatchling skill`, with these arguments.
+    Skill(&'a [String]),
     /// `--help`: usage on stdout, exit 0.
     Help,
     /// `--version`: the version, its commit and how it was built, on
@@ -85,6 +89,7 @@ pub fn route<'a>(argv0: &str, args: &'a [String]) -> Route<'a> {
     match args.first().map(String::as_str) {
         Some("broker") => Route::Broker(rest),
         Some("agent") => Route::Agent(rest),
+        Some("skill") => Route::Skill(rest),
         Some(
             SKILL_CELL_SUBCOMMAND
             | AGENT_RUN_SUBCOMMAND
@@ -125,6 +130,9 @@ mod tests {
         );
         let given = args(&["broker"]);
         assert_eq!(route("hatchling", &given), Route::Broker(&[]));
+        let given = args(&["skill", "sign", "dir", "--key", "k"]);
+        assert_eq!(route("hatchling", &given), Route::Skill(tail(&given)));
+        assert!(USAGE.contains("hatchling skill <command>"));
     }
 
     #[test]

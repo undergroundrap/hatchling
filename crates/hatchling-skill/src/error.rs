@@ -64,6 +64,11 @@ pub enum Error {
         path: String,
     },
 
+    /// Making or signing a skill failed: the key, a file, or the
+    /// directory (`hatchling skill`, on the author's side).
+    #[error("{0}")]
+    Author(String),
+
     /// The trust root (public key) is malformed or unknown.
     #[error("trust root invalid: {0}")]
     InvalidTrustRoot(String),

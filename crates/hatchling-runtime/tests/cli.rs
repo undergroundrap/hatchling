@@ -91,6 +91,36 @@ fn agent_reaches_the_agents_command_line() {
 }
 
 #[test]
+fn skill_reaches_the_skill_authors_commands() {
+    let out = hatchling(None, &["skill", "--help"]).expect("hatchling runs");
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("hatchling skill sign"),
+        "{}",
+        stdout(&out)
+    );
+    let out = hatchling(None, &["skill", "frobnicate"]).expect("hatchling runs");
+    assert_eq!(out.status.code(), Some(64));
+    assert!(out.stdout.is_empty());
+    assert!(
+        stderr(&out).contains("hatchling skill key new"),
+        "{}",
+        stderr(&out)
+    );
+    let out = hatchling(
+        None,
+        &["skill", "sign", "/nonexistent", "--key", "/nonexistent.key"],
+    )
+    .expect("hatchling runs");
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).starts_with("hatchling skill: "),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
 fn started_as_the_cell_program_it_is_the_agent() {
     let out = hatchling(Some("/agent"), &["frobnicate"]).expect("hatchling runs");
     assert_eq!(out.status.code(), Some(64));
