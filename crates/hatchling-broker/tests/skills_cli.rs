@@ -38,7 +38,10 @@ fn listed() -> SkillsResult {
 }
 
 fn place(name: &str) -> Result<PathBuf, Failed> {
-    let dir = std::env::temp_dir().join(format!("hatchling-skills-cli-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "hatchling-skills-cli-{}-{name}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
@@ -120,7 +123,10 @@ fn enable_shows_the_skill_takes_a_typed_yes_and_enables_the_digest_shown() -> Re
     let done = skills(&socket, &["enable", "write-a-report"], "yes\n")?;
     let said = String::from_utf8_lossy(&done.stderr);
     assert!(done.status.success(), "{said}");
-    assert!(said.contains("which isn't a terminal"), "a piped answer is said to be one: {said}");
+    assert!(
+        said.contains("which isn't a terminal"),
+        "a piped answer is said to be one: {said}"
+    );
     assert!(said.contains(&format!("digest    {DIGEST}")), "{said}");
     assert!(said.contains("Type yes to enable it"), "{said}");
     assert!(String::from_utf8_lossy(&done.stdout).contains("Enabled write-a-report, as shown"));
@@ -145,8 +151,13 @@ fn anything_but_yes_enables_nothing_and_fails() -> Result<(), Failed> {
     let broker = api(&socket, vec![listed()])?;
     let done = skills(&socket, &["enable", "write-a-report"], "no\n")?;
     assert_eq!(done.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&done.stderr).contains("not enabled: write-a-report is as it was"));
-    assert_eq!(broker.join().map_err(|_| "the API thread panicked")?, [SkillsOp::List]);
+    assert!(
+        String::from_utf8_lossy(&done.stderr).contains("not enabled: write-a-report is as it was")
+    );
+    assert_eq!(
+        broker.join().map_err(|_| "the API thread panicked")?,
+        [SkillsOp::List]
+    );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }
@@ -157,7 +168,9 @@ fn a_command_that_doesnt_parse_or_a_broker_not_there_is_said() -> Result<(), Fai
     let socket = dir.join("api.sock");
     let done = skills(&socket, &["show", "write-a-report"], "")?;
     assert_eq!(done.status.code(), Some(64), "usage");
-    assert!(String::from_utf8_lossy(&done.stderr).contains("hatchling-broker skills enable <name>"));
+    assert!(
+        String::from_utf8_lossy(&done.stderr).contains("hatchling-broker skills enable <name>")
+    );
     let done = skills(&socket, &["list"], "")?;
     assert_eq!(done.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&done.stderr).contains("can't reach Hatchling's API"));
