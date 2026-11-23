@@ -1,4 +1,13 @@
-import type { AppState, NetworkPermission } from '../protocol/models.js';
+import type { AppState, NetworkPermission, Skill } from '../protocol/models.js';
+/** Sample signed skills for the demo: made up here, signed by no real key. */
+export function sampleSkills(): Skill[] {
+    const hex = (seed: string): string => seed.repeat(64).slice(0, 64);
+    return [
+        { name: 'release-check', version: '1.2.0', description: 'Use before a release: runs the project checks and lists what still fails.', signer: hex('5e1'), digest: hex('c4a'), capabilities: ['fs.read'], instructions: 'SKILL.md', program: 'scripts/check.py', files: [{ path: 'SKILL.md', bytes: 2140 }, { path: 'scripts/check.py', bytes: 3812 }], state: 'changed' },
+        { name: 'tidy-notes', version: '1.0.0', description: 'Use when asked to tidy, merge or retitle notes, keeping every line the owner wrote.', signer: hex('5e1'), digest: hex('a17'), capabilities: [], instructions: 'SKILL.md', program: null, files: [{ path: 'SKILL.md', bytes: 1630 }], state: 'enabled' },
+        { name: 'weekly-review', version: '0.3.0', description: 'Use on Fridays, or when asked what changed this week: reads the week’s goals and notes and drafts a short review.', signer: hex('5e1'), digest: hex('9b2'), capabilities: ['memory.read', 'goals.query'], instructions: 'SKILL.md', program: 'review', files: [{ path: 'SKILL.md', bytes: 2875 }, { path: 'review', bytes: 412096 }], state: 'waiting' },
+    ];
+}
 /** Synthetic settings examples, not claims of linked real accounts. */
 export function defaultNetworkPermissions(): NetworkPermission[] {
     return [

@@ -272,6 +272,48 @@ export const commandSchemas: Readonly<Record<Command['type'], ActionSchema>> = {
         ],
         "additionalProperties": false
     },
+    "skill.enable": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "skill.enable"
+                ]
+            },
+            "name": {
+                "type": "string"
+            },
+            "digest": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "name",
+            "digest"
+        ],
+        "additionalProperties": false
+    },
+    "skill.disable": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "enum": [
+                    "skill.disable"
+                ]
+            },
+            "name": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "name"
+        ],
+        "additionalProperties": false
+    },
     "permission.website": {
         "type": "object",
         "properties": {

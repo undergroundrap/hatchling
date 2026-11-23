@@ -50,7 +50,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library', 'list_covered'].includes(frame.action.action) && !(['manage_suggestions', 'manage_grants', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library', 'list_covered'].includes(frame.action.action) && !(['manage_suggestions', 'manage_grants', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory', 'manage_skills'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -1074,6 +1074,67 @@ test('signed-in sites: the broker\'s list, loaded on connecting; signed out of a
     adapter.dispose();
     assert.equal((await adapter.execute({ type: 'profile.delete', id: 'profile-1' })).ok, false);
 });
+test('skills: the broker\'s list, loaded on connecting; enabled at the digest shown and disabled by the owner, and listed again', async () => {
+    const { transport, adapter } = connected();
+    const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'manage_skills');
+    assert.deepEqual(listing?.action, { action: 'manage_skills', op: { op: 'list' } }, 'asked for on connecting');
+    assert.deepEqual(adapter.getSnapshot().skills, [], 'empty until the broker answers');
+    const digest = 'ab'.repeat(32);
+    const notes = { name: 'notes', version: '1', description: 'Use when asked.', signer: 'cd'.repeat(32), digest, capabilities: [], instructions: 'SKILL.md', files: [{ path: 'SKILL.md', bytes: 8 }], state: 'waiting' };
+    const web = { name: 'web', version: '2', description: 'Reads pages.', signer: 'cd'.repeat(32), digest: 'ef'.repeat(32), capabilities: ['net.egress'], program: 'main', files: [{ path: 'main', bytes: 9 }], state: 'enabled' };
+    answer(transport, listing.request_id, { result: 'skills', outcome: { result: 'listed', skills: [notes, web] } });
+    await flush();
+    assert.deepEqual(adapter.getSnapshot().skills, [
+        { name: 'notes', version: '1', description: 'Use when asked.', signer: 'cd'.repeat(32), digest, capabilities: [], instructions: 'SKILL.md', program: null, files: [{ path: 'SKILL.md', bytes: 8 }], state: 'waiting' },
+        { name: 'web', version: '2', description: 'Reads pages.', signer: 'cd'.repeat(32), digest: 'ef'.repeat(32), capabilities: ['net.egress'], instructions: null, program: 'main', files: [{ path: 'main', bytes: 9 }], state: 'enabled' },
+    ], 'a missing playbook or program is none');
+    for (const [command, op, done, words] of [
+        [{ type: 'skill.enable', name: 'notes', digest }, { op: 'enable', name: 'notes', digest }, 'enabled', /Enabled\. The agent can use it/],
+        [{ type: 'skill.disable', name: 'web' }, { op: 'disable', name: 'web' }, 'disabled', /Disabled\. The agent can no longer use it/],
+    ]) {
+        const pending = adapter.execute(command);
+        await flush();
+        const change = transport.last();
+        assert.deepEqual(change.action, { action: 'manage_skills', op }, 'the digest as shown');
+        answer(transport, change.request_id, { result: 'skills', outcome: { result: done } });
+        await flush();
+        const relisting = transport.last();
+        assert.deepEqual(relisting.action, { action: 'manage_skills', op: { op: 'list' } });
+        answer(transport, relisting.request_id, { result: 'skills', outcome: { result: 'listed', skills: [] } });
+        const settled = await pending;
+        assert.equal(settled.ok, true);
+        assert.match(settled.message, words);
+        assert.deepEqual(adapter.getSnapshot().skills, []);
+    }
+    // Every other answer is told as what it is; changed and not found list again.
+    for (const [outcome, words, relists] of [
+        [{ result: 'skills', outcome: { result: 'disabled' } }, /not confirmed/, false],
+        [{ result: 'skills', outcome: { result: 'changed' } }, /changed since you were shown it, so nothing was enabled/, true],
+        [{ result: 'skills', outcome: { result: 'not_found' } }, /no longer finds this skill/, true],
+        [{ result: 'skills', outcome: { result: 'off' } }, /has no skills/, false],
+        [{ result: 'skills', outcome: { result: 'failed' } }, /nothing changed/, false],
+        [{ result: 'skills', outcome: { result: 'listed', skills: [] } }, /nothing changed/, false],
+        [{ result: 'refused', reason: 'not_granted' }, /may not change the skills/, false],
+        [{ result: 'grants', outcome: { result: 'revoked' } }, /not confirmed/, false],
+    ]) {
+        const pending = adapter.execute({ type: 'skill.enable', name: 'notes', digest });
+        await flush();
+        answer(transport, transport.last().request_id, outcome);
+        await flush();
+        if (relists) {
+            assert.deepEqual(transport.last().action.op, { op: 'list' });
+            answer(transport, transport.last().request_id, { result: 'refused', reason: 'unavailable' });
+        }
+        const settled = await pending;
+        assert.equal(settled.ok, false);
+        assert.match(settled.message, words);
+    }
+    // A list the broker didn't give leaves the last one as it was.
+    assert.deepEqual(adapter.getSnapshot().skills, []);
+    // Offline, nothing is sent and the owner is told.
+    adapter.dispose();
+    assert.equal((await adapter.execute({ type: 'skill.disable', name: 'web' })).ok, false);
+});
 test('sign-ins: listed by label on each signed-in site, deleted by the owner, and never added here', async () => {
     const { transport, adapter } = connected();
     const listing = action => transport.sent.find(frame => frame.type === 'action' && frame.action.action === action);
@@ -1394,7 +1455,7 @@ test('the adapter: product commands go to the broker or are refused, never simul
 test('the snapshot is honest: only what the broker said, display preferences kept locally', async () => {
     const { transport, adapter } = connected();
     const state = adapter.getSnapshot();
-    for (const key of ['artifacts', 'goals', 'ideas', 'posts', 'purchases', 'browserTasks', 'devices', 'jobs', 'notifications', 'memory', 'connectors', 'channels', 'providers', 'permissions', 'websitePermissions', 'signedInSites', 'networkPermissions', 'approvalHistory', 'publications', 'systemEntries', 'secureItems'])
+    for (const key of ['skills', 'artifacts', 'goals', 'ideas', 'posts', 'purchases', 'browserTasks', 'devices', 'jobs', 'notifications', 'memory', 'connectors', 'channels', 'providers', 'permissions', 'websitePermissions', 'signedInSites', 'networkPermissions', 'approvalHistory', 'publications', 'systemEntries', 'secureItems'])
         assert.deepEqual(state[key], [], `${key} is empty, not sample data`);
     assert.deepEqual([state.version, state.spendingLimit, state.spentToday, state.settings.allowlist, state.turn, state.clock], [1, 0, 0, [], 'idle', '']);
     let heard = 0;

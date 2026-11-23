@@ -11,6 +11,22 @@ export function reduceTrust(state: AppState, command: Command): CommandResult | 
             item.policy = command.policy;
             return ok(`Website permission set to ${command.policy} in the local demo.`);
         }
+        case 'skill.enable': {
+            const skill = state.skills.find(entry => entry.name === command.name);
+            if (!skill)
+                return fail('This sample skill is no longer here.');
+            if (skill.digest !== command.digest)
+                return fail('This sample skill changed since you were shown it, so nothing was enabled. Review it again.');
+            skill.state = 'enabled';
+            return ok('Enabled in the local demo. No skill runs here.');
+        }
+        case 'skill.disable': {
+            const skill = state.skills.find(entry => entry.name === command.name);
+            if (!skill)
+                return fail('This sample skill is no longer here.');
+            skill.state = 'waiting';
+            return ok('Disabled in the local demo.');
+        }
         case 'permission.network': {
             const item = state.networkPermissions.find(entry => entry.id === command.id);
             if (!item)

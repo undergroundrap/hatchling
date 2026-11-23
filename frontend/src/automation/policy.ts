@@ -87,6 +87,8 @@ export const actionPolicy: Readonly<Record<Command['type'], Exposure>> = {
     'purchase.requote': 'internal',
     'purchase.submit': 'human-only',
     'sign-in.delete': 'human-only',
+    'skill.disable': 'human-only',
+    'skill.enable': 'human-only',
     'secure.add': 'human-only',
     'secure.remove': 'human-only',
     'settings.accent': 'review',

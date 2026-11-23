@@ -41,6 +41,8 @@ export function parseCommand(value: unknown): Command | null {
             case 'identity.avatar': return { type, value: str(value, 'value'), ...(value['accent'] !== undefined ? { accent: str(value, 'accent') } : {}) };
             case 'support.download': return { type, title: str(value, 'title'), body: str(value, 'body') };
             case 'permission.network': return { type, id: str(value, 'id'), enabled: bool(value, 'enabled') };
+            case 'skill.enable': return { type, name: str(value, 'name'), digest: str(value, 'digest') };
+            case 'skill.disable': return { type, name: str(value, 'name') };
             case 'permission.website': {
                 const policy = value['policy'];
                 return policy === 'allow' || policy === 'ask' || policy === 'block' ? { type, host: str(value, 'host'), policy } : null;
