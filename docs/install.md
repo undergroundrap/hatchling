@@ -137,6 +137,7 @@ To use a hosted model instead, with a far larger window, run `sudo hatchling-bro
 | --- | --- |
 | The programs | `/usr/local/bin/hatchling-broker`, `-agent`, `-host`, `-browser` |
 | The app | `/usr/local/share/hatchling/ui` |
+| Hatchling's skills, signed by its maintainer, each off until you enable it in **Settings › Skills** ([skills](skills.md)), and the maintainer's public key, which an update leaves as you keep it | `/usr/local/share/hatchling/skills/`, `/etc/hatchling/skill-trust-roots` |
 | The configuration, the whole of it | `/etc/hatchling/hatchling.env`: every setting is in `hatchling-broker --help` |
 | The broker's service, run as root, dropping to `hatchling-broker` once started | `hatchling.service` |
 | The app's host, a system service run as you, confined by systemd (no privileges, the system read-only) | `hatchling-host@<you>.service` |
