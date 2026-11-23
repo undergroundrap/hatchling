@@ -45,6 +45,24 @@ export function grants(skill: {
     return skill.capabilities.map(capability => CAPABILITIES[capability] ?? capability);
 }
 /** The signed skills Hatchling found: read here, then enabled or disabled by the owner alone. */
+/**
+ * Calls `changed` each time the skills `read` gives differ from the last it
+ * saw, as `adapter` publishes, until the function it returns is called. The
+ * skills can arrive after the Skills pane was drawn, and change while it's
+ * open (#625): Settings draws the pane again when they do, and only then.
+ */
+export function watchSkills(adapter: {
+    subscribe(listener: () => void): () => void;
+}, read: () => readonly unknown[], changed: () => void): () => void {
+    let seen = JSON.stringify(read());
+    return adapter.subscribe(() => {
+        const now = JSON.stringify(read());
+        if (now === seen)
+            return;
+        seen = now;
+        changed();
+    });
+}
 export function skillsTab(ctx: AppContext, nav: SettingsNavigation): HTMLElement {
     if (nav.detail === 'skill')
         return detail(ctx, nav);

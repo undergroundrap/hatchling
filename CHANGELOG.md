@@ -25,6 +25,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **Settings › Skills shows your skills when they arrive** ([#625](https://github.com/undergroundrap/hatchling/issues/625)). Opened right after the app loaded, before it had the list, it said there were no skills, and kept saying it until you went to another section and back. It now shows them as soon as the app has them, and any change while it's open.
+
 - **A skill's signature covers every byte it holds** ([#613](https://github.com/undergroundrap/hatchling/issues/613)). A format 1 signature covered the manifest and not the program it named, which was bound only by a hash taken the first time the broker saw it, until a restart, and nothing checked who could write the skills directory. Now every listed file is checked against its signed hash on every load, a file the manifest doesn't list is never read, and the skills directory and each skill's own directory must be root's or the broker's and writable by no one else.
 
 - **Windows Setup never shows the app's address** ([#583](https://github.com/undergroundrap/hatchling/issues/583)). The address holds the token every app connection needs, so Setup keeps it off the screen and the Start menu opens the app. On a first install with a hosted model, the console that asks for the model's key showed everything the installer printed, the address too. Now the installer leaves it out when Setup runs it.
