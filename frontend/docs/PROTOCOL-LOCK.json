@@ -5,9 +5,9 @@
   "adapterExport": "ProtocolAdapter",
   "entry": "src/protocol/models.ts",
   "files": {
-    "src/protocol/codec.ts": "a1270292f3f6cf55c7718e400b8b5bf0e42c0ff1c1556c7c450a3dc9fcb851ad",
+    "src/protocol/codec.ts": "9957bbb11ab3e6f8ce997dfa82d7843dad37c848da4a37cdb04c0f15809bf237",
     "src/protocol/identity-document.ts": "401cb95b852cb78e8119d85971286fe141533f94666fe6a5d3e65607734f0924",
-    "src/protocol/models.ts": "2ccdbbeec03959d4af2471c3eb1f42a39333797903349f21e91747e84e439f85",
+    "src/protocol/models.ts": "81f60525b1778ebe410edf7f4eb309144224702706e1558cd24546aaa5f5458e",
     "src/protocol/rules.ts": "6ae575eed661d202f316ec911d1787cb0b2c2a0b084946d8177dd00f887a4bfa"
   },
   "history": [
@@ -66,6 +66,20 @@
       "from": "0a989d8141a3eb2c5bcfc6e12e7e49bb330b66492e7231922abece35a6771c08",
       "to": "2ccdbbeec03959d4af2471c3eb1f42a39333797903349f21e91747e84e439f85",
       "change": "WebsitePermission gains an optional grant (with WebsiteGrant: key, scope day or always, madeAt, endsAt, covering): the standing grant behind an allowed website, its scope and age, as the broker keeps it (WO-036, slice 2b; local UI API v9). It adds no Command: revoking still sends permission.website, which the live adapter revokes by the grant's key. Approved by the maintainer, 2026-11-19, for WO-036 slice 2."
+    },
+    {
+      "date": "2026-11-23",
+      "file": "src/protocol/models.ts",
+      "from": "2ccdbbeec03959d4af2471c3eb1f42a39333797903349f21e91747e84e439f85",
+      "to": "81f60525b1778ebe410edf7f4eb309144224702706e1558cd24546aaa5f5458e",
+      "change": "AppState gains skills (with Skill: name, version, description, signer, digest, capabilities, instructions, program, files, and state enabled, waiting or changed; SkillFile: path, bytes), and Command gains skill.enable (name and the digest the owner was shown) and skill.disable (name): the signed skills the broker found and which the owner enabled, the enabling bound to the digest (WO-046, slice 2b; local UI API v10). Approved by the maintainer, 2026-11-22, for WO-046 slice 2. skill.enable and skill.disable are human-only."
+    },
+    {
+      "date": "2026-11-23",
+      "file": "src/protocol/codec.ts",
+      "from": "a1270292f3f6cf55c7718e400b8b5bf0e42c0ff1c1556c7c450a3dc9fcb851ad",
+      "to": "9957bbb11ab3e6f8ce997dfa82d7843dad37c848da4a37cdb04c0f15809bf237",
+      "change": "parseCommand reads skill.enable (name, digest) and skill.disable (name), so the demo replays them like a website permission (WO-046, slice 2b). Approved by the maintainer, 2026-11-22, for WO-046 slice 2."
     }
   ]
 }

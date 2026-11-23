@@ -78,6 +78,9 @@
 .execution-details[open] summary::after { content: '−'; }
 .execution-details dl { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); gap: 7px 12px; margin: 12px 0; }
 .execution-details dd { margin: 0; font-variant-numeric: tabular-nums; color: var(--text); overflow-wrap: anywhere; }
+.skill-facts { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 2fr); gap: 7px 12px; margin: 12px 0 0; }
+.skill-facts dd { margin: 0; overflow-wrap: anywhere; }
+.skill-grants, .skill-files { display: grid; gap: var(--space-2); margin: 0; padding-left: 18px; overflow-wrap: anywhere; }
 .activity-provenance { margin-top: 18px; font-size: calc(11px * var(--ui-scale, 1)); line-height: calc(16px * var(--ui-scale, 1)); color: var(--context-muted); }
 .activity-file-list { display: flex; flex-direction: column; gap: 28px; margin-top: 32px; }
 .activity-file-card { background: var(--surface); border-radius: 24px; width: 320px; max-width: 100%; overflow: hidden; }

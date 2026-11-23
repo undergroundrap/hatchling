@@ -13,10 +13,11 @@ import { connectorsTab, walletTab } from './connections.js';
 import { secureStoreTab } from './credentials.js';
 import { securityTab } from './security.js';
 import { permissionsTab } from './permissions.js';
+import { skillsTab } from './skills.js';
 import type { SettingsNavigation } from './settings-navigation.js';
 import { iconButton } from '../../components/ui.js';
 import { openShortcuts, openDownloads, openIssueReport } from '../../app/support.js';
-const allSections = [{ id: 'general', title: 'General' }, { id: 'security', title: 'Your security' }, { id: 'connectors', title: 'Connectors' }, { id: 'wallet', title: 'Wallet' }, { id: 'secure', title: 'Secure store' }, { id: 'permissions', title: 'Permissions' }, { id: 'channels', title: 'Messaging channels' }, { id: 'devices', title: 'Devices' }, { id: 'data', title: 'Data controls' }, { id: 'help', title: 'Help & support' }, { id: 'legal', title: 'Legal info' }];
+const allSections = [{ id: 'general', title: 'General' }, { id: 'security', title: 'Your security' }, { id: 'connectors', title: 'Connectors' }, { id: 'wallet', title: 'Wallet' }, { id: 'secure', title: 'Secure store' }, { id: 'permissions', title: 'Permissions' }, { id: 'skills', title: 'Skills' }, { id: 'channels', title: 'Messaging channels' }, { id: 'devices', title: 'Devices' }, { id: 'data', title: 'Data controls' }, { id: 'help', title: 'Help & support' }, { id: 'legal', title: 'Legal info' }];
 /** What a real install has no use for yet, so it isn't offered. */
 const NOT_LIVE = new Set(['secure', 'channels', 'devices']);
 export function openSettings(ctx: AppContext, initial = 'general'): void {
@@ -82,7 +83,7 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
                     welcome.append(button('Return to workspace', paused.close, { variant: 'primary' }));
                 }, { label: 'Leave workspace' });
             }, { icon: 'logout', variant: 'ghost' })));
-        const title = detail === 'connector' ? ctx.state.connectors.find(item => item.id === detailId)?.name ?? 'Connector' : detail === 'wallet-provider' ? ctx.state.providers.find(item => item.id === detailId)?.name ?? 'Payment methods' : titles[detail] ?? (active === 'secure' ? 'Secure credentials store' : sections.find(section => section.id === active)?.title ?? 'General');
+        const title = detail === 'skill' ? ctx.state.skills.find(item => item.name === detailId)?.name ?? 'Skill' : detail === 'connector' ? ctx.state.connectors.find(item => item.id === detailId)?.name ?? 'Connector' : detail === 'wallet-provider' ? ctx.state.providers.find(item => item.id === detailId)?.name ?? 'Payment methods' : titles[detail] ?? (active === 'secure' ? 'Secure credentials store' : sections.find(section => section.id === active)?.title ?? 'General');
         const pane = h('section', { class: 'settings-pane', 'data-scroll': 'settings-pane', 'data-section': active, 'data-detail': detail }, h('div', { class: `settings-pane-heading ${detail ? 'is-nested' : ''}` }, detail ? iconButton('chevron', 'Back in settings', nested.back, 'settings-back') : null, h('h2', { tabindex: -1 }, title)));
         switch (active) {
             case 'connectors':
@@ -96,6 +97,9 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
                 break;
             case 'permissions':
                 pane.append(permissionsTab(ctx, nested));
+                break;
+            case 'skills':
+                pane.append(skillsTab(ctx, nested));
                 break;
             case 'channels':
                 pane.append(channelsTab(ctx, () => refresh()));

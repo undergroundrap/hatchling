@@ -6,7 +6,7 @@ function view(name: string, title: string, properties: Record<string, InputField
 }
 const text: InputField = { type: 'string' };
 export const routes = ['chat', 'search', 'feed', 'ideas', 'goals', 'library', 'browser', 'memory', 'schedule', 'notifications', 'published'] as const;
-export const settingsSections = ['general', 'connectors', 'wallet', 'secure', 'permissions', 'channels', 'devices', 'data', 'help', 'legal'] as const;
+export const settingsSections = ['general', 'connectors', 'wallet', 'secure', 'permissions', 'skills', 'channels', 'devices', 'data', 'help', 'legal'] as const;
 export const viewActions: readonly ActionDescription[] = [
     view('ui.navigate', 'Navigate to a workspace area', { route: { type: 'string', enum: routes }, detail: text }, ['route']),
     view('ui.settings', 'Open Settings', { section: { type: 'string', enum: settingsSections } }),

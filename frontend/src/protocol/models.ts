@@ -442,7 +442,34 @@ export interface SiteSignInLabel {
     /** `https://host[:port]`. */
     origin: string;
 }
+/** Where a skill the broker found stands (WO-046): it runs only while enabled as it is. */
+export type SkillState = 'enabled' | 'waiting' | 'changed';
+/** One file a skill's signed manifest lists. */
+export interface SkillFile {
+    path: string;
+    bytes: number;
+}
+/** A signed skill the broker found, for the owner to read before enabling it. */
+export interface Skill {
+    name: string;
+    version: string;
+    /** When it applies, in its signer's words. */
+    description: string;
+    /** The signing key's fingerprint: SHA-256, lowercase hex. */
+    signer: string;
+    /** The SHA-256 of its signed manifest, which lists every file's hash: what enabling is bound to. */
+    digest: string;
+    /** What its program may do: what enabling it grants. */
+    capabilities: string[];
+    /** Its playbook's file, if it has one. */
+    instructions: string | null;
+    /** Its program's file, if it has one. */
+    program: string | null;
+    files: SkillFile[];
+    state: SkillState;
+}
 export interface AppState {
+    skills: Skill[];
     websitePermissions: WebsitePermission[];
     signedInSites: SignedInSite[];
     networkPermissions: NetworkPermission[];
@@ -522,6 +549,14 @@ export type Command = {
     type: 'identity.avatar';
     value: string;
     accent?: string;
+} | {
+    type: 'skill.enable';
+    name: string;
+    /** The digest the owner was shown: a skill that is another now is not enabled. */
+    digest: string;
+} | {
+    type: 'skill.disable';
+    name: string;
 } | {
     type: 'permission.website';
     host: string;

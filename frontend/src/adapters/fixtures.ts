@@ -1,4 +1,4 @@
-import { applySettingsFixtures } from './settings-fixtures.js';
+import { applySettingsFixtures, sampleSkills } from './settings-fixtures.js';
 import { applyActivityFixtures } from './activity-fixtures.js';
 import type { ActivityRow, AppState, Artifact, Idea, IdeaDomain, IconName, Message } from '../protocol/models.js';
 import { applySurfaceFixtures } from './surface-fixtures.js';
@@ -55,7 +55,7 @@ export function createFixtures(): AppState {
     const audio = artifact('audio', 'A small pause', 'audio', 'An original, four-second soft audio cue for this demonstration.', 'A short sample audio artifact.');
     audio.asset = './media/sample-audio.wav';
     const state: AppState = {
-        websitePermissions: [], signedInSites: [], networkPermissions: [],
+        skills: sampleSkills(), websitePermissions: [], signedInSites: [], networkPermissions: [],
         version: 1, mode: 'scripted', revision: 0, turn: 'idle', clock: DEMO_TIME,
         chats: [
             { id: 'main', title: 'Main chat', channelId: null, pinned: true, archived: false, unread: false },

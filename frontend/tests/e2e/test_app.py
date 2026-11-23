@@ -106,7 +106,7 @@ class FrontendTests(TouchupCases, ReleaseCases, NavigationCases, PolishCases, Co
         expect(self.page.locator('meter[aria-label]')).to_have_count(2)
         self.screenshot('settings-desktop')
         sections = self.page.get_by_role('navigation', name='Settings sections')
-        for title in ['Connectors', 'Wallet', 'Secure store', 'Permissions', 'Messaging channels', 'Devices', 'Data controls', 'Help & support', 'Legal info', 'General']:
+        for title in ['Connectors', 'Wallet', 'Secure store', 'Permissions', 'Skills', 'Messaging channels', 'Devices', 'Data controls', 'Help & support', 'Legal info', 'General']:
             sections.get_by_role('button', name=title, exact=True).click()
             if title == 'General':
                 expect(self.page.locator('.settings-pane .account-card')).to_be_visible()
