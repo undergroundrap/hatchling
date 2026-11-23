@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 9;
+export const UI_SCHEMA_VERSION = 10;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 33;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -352,7 +352,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'list_decisions' | 'list_covered' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'manage_skills' | 'list_decisions' | 'list_covered' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -4734,6 +4734,65 @@ export type SiteSignIn = {
     readonly sign_in_id: string;
 };
 /**
+ * One file of a skill, as its signed manifest lists it.
+ */
+export type SkillFile = {
+    /**
+     * Its size in bytes.
+     */
+    readonly bytes: number;
+    /**
+     * Its path inside the skill.
+     */
+    readonly path: string;
+};
+/**
+ * A skill the broker found, for the owner to read before enabling it.
+ */
+export type SkillListing = {
+    /**
+     * The capabilities its program declares: what enabling it grants.
+     */
+    readonly capabilities: readonly (string)[];
+    /**
+     * When it applies, in its signer's words.
+     */
+    readonly description: string;
+    /**
+     * Its digest: the SHA-256 of its signed manifest, which lists every
+     * file's hash. Enabling is bound to it.
+     */
+    readonly digest: string;
+    /**
+     * Every file it holds.
+     */
+    readonly files: readonly (SkillFile)[];
+    /**
+     * Its playbook's file, if it has one.
+     */
+    readonly instructions?: string | null;
+    /**
+     * Its name.
+     */
+    readonly name: string;
+    /**
+     * Its program's file, if it has one.
+     */
+    readonly program?: string | null;
+    /**
+     * The fingerprint of the key that signed it: SHA-256, lowercase hex.
+     */
+    readonly signer: string;
+    /**
+     * Where it stands.
+     */
+    readonly state: SkillState;
+    /**
+     * Its signer's version.
+     */
+    readonly version: string;
+};
+/**
  * A skill operation: the agent's post-handshake skill vocabulary.
  *
  * One op, one action: invoke one registered skill, exercising one
@@ -4781,6 +4840,56 @@ export type SkillResult = {
     readonly r: 'capability-denied';
 } | {
     readonly r: 'skill-error';
+};
+/**
+ * Where a skill the broker found stands.
+ */
+export type SkillState = 'enabled' | 'waiting' | 'changed';
+/**
+ * An operation on the skills the broker found (WO-046): the owner's
+ * alone. A skill runs only while the owner has enabled it, and the
+ * enabling is bound to the digest the owner saw.
+ */
+export type SkillsOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * Its digest, as listed: what the owner saw.
+     */
+    readonly digest: string;
+    /**
+     * The skill's name, as listed.
+     */
+    readonly name: string;
+    readonly op: 'enable';
+} | {
+    /**
+     * The skill's name, as listed.
+     */
+    readonly name: string;
+    readonly op: 'disable';
+};
+/**
+ * The result of a [`SkillsOp`].
+ */
+export type SkillsResult = {
+    readonly result: 'listed';
+    /**
+     * They.
+     */
+    readonly skills: readonly (SkillListing)[];
+} | {
+    readonly result: 'enabled';
+} | {
+    readonly result: 'disabled';
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'changed';
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
 };
 /**
  * Why a space op was refused.
@@ -5400,6 +5509,12 @@ export type UiAction = {
      */
     readonly op: KeptOp;
 } | {
+    readonly action: 'manage_skills';
+    /**
+     * The operation.
+     */
+    readonly op: SkillsOp;
+} | {
     readonly action: 'list_decisions';
 } | {
     readonly action: 'list_covered';
@@ -5722,6 +5837,12 @@ export type UiActionResult = {
      */
     readonly outcome: KeptResult;
     readonly result: 'memory';
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: SkillsResult;
+    readonly result: 'skills';
 } | {
     /**
      * They.

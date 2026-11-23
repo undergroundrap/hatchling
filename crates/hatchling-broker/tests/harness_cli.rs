@@ -28,7 +28,7 @@
 )]
 mod common;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -38,7 +38,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use common::{TestDir, broker_config, guard_cell_available, harness_fixture_binary, test_dir};
-use hatchling_broker::harness::{HARNESS_CAPABILITY, HarnessKeys, HarnessKind};
+use hatchling_broker::harness::{HarnessKeys, HarnessKind};
 use hatchling_broker::{Config, Harnesses, SkillRuntime, Skills, VaultConfig, handle_skill_op};
 use hatchling_core::subagent::{ActivityEvent, HarnessNetworkUse, SubagentEvent};
 use hatchling_core::{CellId, SkillOp, SkillResult};
@@ -465,11 +465,7 @@ impl Deployment {
         config.vault.key_file = VaultConfig::default_key_file(&config.vault.root);
         config.artifacts.workspace = Some(dir.join("workspace"));
         config.scheduler.root = dir.join("schedules");
-        let code: HashSet<_> = [HARNESS_CAPABILITY
-            .parse()
-            .map_err(|e| format!("capability: {e}"))?]
-        .into();
-        config.skills.grants = HashMap::from([(String::from(kind.name()), code)]);
+        vars.insert("HATCHLING_HARNESS_GRANTS", String::from(kind.name()));
         Ok(Self { dir, config, vars })
     }
 
@@ -512,11 +508,9 @@ impl Deployment {
             "HATCHLING_HARNESS_MANIFESTS",
             manifests.display().to_string(),
         );
-        let code: HashSet<_> = [HARNESS_CAPABILITY
-            .parse()
-            .map_err(|e| format!("capability: {e}"))?]
-        .into();
-        deployment.config.skills.grants = HashMap::from([(String::from(harness), code)]);
+        deployment
+            .vars
+            .insert("HATCHLING_HARNESS_GRANTS", String::from(harness));
         Ok(deployment)
     }
 

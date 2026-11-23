@@ -12,7 +12,7 @@
 //! answers the opaque `skill-error`: in these tests that means "admitted".
 //! Real runs across a swap are in `skill_run.rs`.
 
-use std::collections::{HashMap, HashSet};
+use hatchling_broker::skills::Enabled;
 use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixStream;
@@ -142,21 +142,40 @@ fn write_raw(root: &Path, bytes: &[u8]) -> R<()> {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(err)
 }
 
-/// Grants `text.read` to each named skill.
-fn config(root: &Path, skills: &[&str]) -> R<SkillConfig> {
-    let mut grants: HashMap<String, HashSet<CapabilityName>> = HashMap::new();
-    for name in skills {
-        grants.insert((*name).to_owned(), HashSet::from([cap()?]));
-    }
-    Ok(SkillConfig {
+fn config(root: &Path) -> SkillConfig {
+    SkillConfig {
         skills_dir: root.join("skills"),
         trust_roots_file: roots_path(root),
-        grants,
-    })
+        enablements: root.join("skills-enabled"),
+    }
 }
 
-fn load(root: &Path, skills: &[&str]) -> R<Skills> {
-    Skills::load(&config(root, skills)?).map_err(err)
+/// The digest `pkg` is signed at: what the owner enables.
+fn digest(pkg: &Package<'_>) -> R<String> {
+    Manifest::for_program(
+        pkg.name,
+        pkg.version,
+        "A test skill.",
+        "main.py",
+        pkg.code,
+        vec![cap()?],
+    )
+    .digest()
+    .map_err(err)
+}
+
+/// What the owner enabled: each package, at its digest.
+fn enabled(pkgs: &[Package<'_>]) -> R<Enabled> {
+    pkgs.iter()
+        .map(|pkg| Ok((pkg.name.to_owned(), digest(pkg)?)))
+        .collect()
+}
+
+/// Loads the skills dir as the broker starts, each of `pkgs` enabled.
+fn load(root: &Path, pkgs: &[Package<'_>]) -> R<Skills> {
+    let skills = Skills::load(&config(root)).map_err(err)?;
+    skills.set_enabled(enabled(pkgs)?);
+    Ok(skills)
 }
 
 fn ids(set: &SkillSet) -> Vec<String> {
@@ -170,12 +189,11 @@ fn ids(set: &SkillSet) -> Vec<String> {
     ids
 }
 
-fn applied(added: &[&str], dropped: &[&str], refused_drift: &[&str]) -> R<Reload> {
+fn applied(added: &[&str], dropped: &[&str]) -> R<Reload> {
     let all = |list: &[&str]| list.iter().map(|raw| id(raw)).collect::<R<Vec<_>>>();
     Ok(Reload::Applied {
         added: all(added)?,
         dropped: all(dropped)?,
-        refused_drift: all(refused_drift)?,
     })
 }
 
@@ -274,18 +292,18 @@ fn a_rotation_takes_effect_on_a_live_session_without_a_restart() -> R<()> {
     package(&root, &alpha())?;
     package(&root, &beta())?;
     write_roots(&root, &[public(&KEY_A)])?;
-    let skills = Arc::new(load(&root, &["alpha", "beta"])?);
+    let skills = Arc::new(load(&root, &[alpha(), beta()])?);
     let client = session(&root, Arc::clone(&skills))?;
     assert_eq!(invoke(&client, "alpha@1.0.0")?, ADMITTED);
     assert_eq!(invoke(&client, "beta@1.0.0")?, SkillResult::UnknownSkill);
 
     write_roots(&root, &[public(&KEY_B), public(&KEY_A)])?;
-    assert_eq!(skills.reload(), applied(&["beta@1.0.0"], &[], &[])?);
+    assert_eq!(skills.reload(), applied(&["beta@1.0.0"], &[])?);
     assert_eq!(invoke(&client, "alpha@1.0.0")?, ADMITTED);
     assert_eq!(invoke(&client, "beta@1.0.0")?, ADMITTED);
 
     write_roots(&root, &[public(&KEY_B)])?;
-    assert_eq!(skills.reload(), applied(&[], &["alpha@1.0.0"], &[])?);
+    assert_eq!(skills.reload(), applied(&[], &["alpha@1.0.0"])?);
     assert_eq!(invoke(&client, "alpha@1.0.0")?, SkillResult::UnknownSkill);
     assert_eq!(invoke(&client, "beta@1.0.0")?, ADMITTED);
     // Nothing changed on disk: the next poll does nothing.
@@ -301,7 +319,7 @@ fn a_bad_file_keeps_the_current_set_and_is_reported_once() -> R<()> {
     let root = test_root("bad-file")?;
     package(&root, &alpha())?;
     write_roots(&root, &[public(&KEY_A)])?;
-    let skills = load(&root, &["alpha"])?;
+    let skills = load(&root, &[alpha()])?;
     let good = std::fs::read(roots_path(&root)).map_err(err)?;
 
     write_raw(&root, b"not a trust-roots file\n")?;
@@ -338,7 +356,7 @@ fn a_bad_file_keeps_the_current_set_and_is_reported_once() -> R<()> {
 
     // Valid again (the same roots as before): applied, and the set holds.
     write_raw(&root, &good)?;
-    assert_eq!(skills.reload(), applied(&[], &[], &[])?);
+    assert_eq!(skills.reload(), applied(&[], &[])?);
     assert_eq!(skills.reload(), Reload::Unchanged);
     assert_eq!(ids(&skills.snapshot()), vec!["alpha@1.0.0"]);
     let _ = std::fs::remove_dir_all(&root);
@@ -352,12 +370,12 @@ fn a_file_with_no_roots_drops_every_skill() -> R<()> {
     package(&root, &alpha())?;
     package(&root, &beta())?;
     write_roots(&root, &[public(&KEY_A), public(&KEY_B)])?;
-    let skills = load(&root, &["alpha", "beta"])?;
+    let skills = load(&root, &[alpha(), beta()])?;
     assert_eq!(ids(&skills.snapshot()), vec!["alpha@1.0.0", "beta@1.0.0"]);
     write_roots(&root, &[])?;
     assert_eq!(
         skills.reload(),
-        applied(&[], &["alpha@1.0.0", "beta@1.0.0"], &[])?
+        applied(&[], &["alpha@1.0.0", "beta@1.0.0"])?
     );
     assert!(ids(&skills.snapshot()).is_empty());
     let _ = std::fs::remove_dir_all(&root);
@@ -366,56 +384,56 @@ fn a_file_with_no_roots_drops_every_skill() -> R<()> {
 
 /// A program changed under its signature is refused at load: the file no
 /// longer matches the hash the signature lists (#613), so the skill drops
-/// out, and comes back with its signed bytes. The same `name@version`
-/// signed again over other bytes is drift: refused at reload, until a
-/// restart. A new version is an update: admitted at the same reload.
+/// out. A new version, or the same `name@version` signed again over other
+/// bytes, is another digest: it waits for the owner, at every reload, until
+/// they enable it as it is (WO-046).
 #[test]
-fn drift_under_a_pinned_id_is_refused_and_a_new_version_admits() -> R<()> {
-    let root = test_root("drift")?;
+fn a_skill_runs_only_at_the_digest_the_owner_enabled() -> R<()> {
+    let root = test_root("digest")?;
     package(&root, &alpha())?;
     write_roots(&root, &[public(&KEY_A)])?;
-    let skills = load(&root, &["alpha"])?;
-    // New bytes under the old signature; and a genuine update beside it.
+    let skills = load(&root, &[alpha()])?;
+    assert_eq!(ids(&skills.snapshot()), vec!["alpha@1.0.0"]);
+    // New bytes under the old signature; and a new version beside it.
     std::fs::write(
         root.join("skills").join("alpha").join("main.py"),
         b"changed",
     )
     .map_err(err)?;
-    package(
-        &root,
-        &Package {
-            dir: "alpha-2",
-            version: "2.0.0",
-            code: b"v2",
-            ..alpha()
-        },
-    )?;
-    // A roots change triggers the reload (B added as previous).
+    let two = Package {
+        dir: "alpha-2",
+        version: "2.0.0",
+        code: b"v2",
+        ..alpha()
+    };
+    package(&root, &two)?;
+    // A roots change triggers the reload (B added as previous): the
+    // changed program drops out, and the new version waits.
     write_roots(&root, &[public(&KEY_A), public(&KEY_B)])?;
-    assert_eq!(
-        skills.reload(),
-        applied(&["alpha@2.0.0"], &["alpha@1.0.0"], &[])?
-    );
+    assert_eq!(skills.reload(), applied(&[], &["alpha@1.0.0"])?);
+    assert!(ids(&skills.snapshot()).is_empty());
+    // The owner enables the new version: it runs.
+    skills.set_enabled(enabled(&[two])?);
     assert_eq!(ids(&skills.snapshot()), vec!["alpha@2.0.0"]);
-    // The same id signed again over the new bytes: drift, refused.
-    package(
-        &root,
-        &Package {
-            code: b"changed",
-            ..alpha()
-        },
-    )?;
+    // The old id signed again over the new bytes: another digest, which
+    // waits, at this reload and the next.
+    let resigned = Package {
+        code: b"changed",
+        ..alpha()
+    };
+    package(&root, &resigned)?;
     write_roots(&root, &[public(&KEY_A)])?;
-    assert_eq!(skills.reload(), applied(&[], &[], &["alpha@1.0.0"])?);
-    // Still refused at the next reload: the pin is the first admitted
-    // hash, not whatever the last set held, so drift cannot slip back in.
+    assert_eq!(skills.reload(), applied(&[], &[])?);
     write_roots(&root, &[public(&KEY_A), public(&KEY_B)])?;
-    assert_eq!(skills.reload(), applied(&[], &[], &["alpha@1.0.0"])?);
-    // The original package back: the pinned id matches again and admits.
+    assert_eq!(skills.reload(), applied(&[], &[])?);
+    assert_eq!(ids(&skills.snapshot()), vec!["alpha@2.0.0"]);
+    // Enabled as it is now, it runs in place of the new version.
+    skills.set_enabled(enabled(&[resigned])?);
+    assert_eq!(ids(&skills.snapshot()), vec!["alpha@1.0.0"]);
+    // The original package back is the digest first enabled, not this one.
     package(&root, &alpha())?;
-    write_roots(&root, &[public(&KEY_A)])?;
-    assert_eq!(skills.reload(), applied(&["alpha@1.0.0"], &[], &[])?);
-    assert_eq!(ids(&skills.snapshot()), vec!["alpha@1.0.0", "alpha@2.0.0"]);
+    skills.refresh();
+    assert!(ids(&skills.snapshot()).is_empty());
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
 }
@@ -427,7 +445,7 @@ fn the_watcher_applies_a_rotation_by_itself() -> R<()> {
     let root = test_root("watcher")?;
     package(&root, &beta())?;
     write_roots(&root, &[public(&KEY_A)])?;
-    let skills = Arc::new(load(&root, &["beta"])?);
+    let skills = Arc::new(load(&root, &[beta()])?);
     assert!(ids(&skills.snapshot()).is_empty());
     let watcher = Arc::clone(&skills);
     std::thread::spawn(move || watcher.watch(Duration::from_millis(20)));
@@ -448,7 +466,7 @@ fn the_watcher_applies_a_rotation_by_itself() -> R<()> {
 fn startup_refuses_a_missing_or_bad_file_and_disabled_skills_read_nothing() -> R<()> {
     let root = test_root("startup")?;
     package(&root, &alpha())?;
-    let cfg = config(&root, &["alpha"])?;
+    let cfg = config(&root);
     let refused = |what: &str| {
         let result = Skills::load(&cfg);
         assert!(
@@ -487,7 +505,7 @@ fn a_snapshot_taken_before_a_swap_is_unaffected_by_it() -> R<()> {
     let root = test_root("snapshot")?;
     package(&root, &alpha())?;
     write_roots(&root, &[public(&KEY_A)])?;
-    let skills = load(&root, &["alpha"])?;
+    let skills = load(&root, &[alpha()])?;
     let before = skills.snapshot();
     write_roots(&root, &[])?;
     assert!(matches!(skills.reload(), Reload::Applied { .. }));

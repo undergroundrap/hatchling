@@ -89,7 +89,10 @@ pub use surfaces::{
 /// `grant_key` and `scopes` in place of `session` and `always`, the
 /// `approve_day` decision, whether a standing yes was kept,
 /// `manage_grants` in place of `manage_sites`, and `list_covered`.
-pub const UI_SCHEMA_VERSION: u16 = 9;
+/// 10: the skills the owner enables (WO-046): `manage_skills`, to list
+/// what the broker found, enable one bound to the digest the owner saw,
+/// and disable one.
+pub const UI_SCHEMA_VERSION: u16 = 10;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -1321,6 +1324,106 @@ pub enum KeptResult {
     Failed,
 }
 
+/// An operation on the skills the broker found (WO-046): the owner's
+/// alone. A skill runs only while the owner has enabled it, and the
+/// enabling is bound to the digest the owner saw.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SkillsOp {
+    /// List every skill the broker found that verifies, and where each
+    /// stands.
+    List,
+    /// Enable a skill: it runs, with the capabilities its program
+    /// declares. Refused as changed unless `digest` is the skill's now.
+    Enable {
+        /// The skill's name, as listed.
+        name: String,
+        /// Its digest, as listed: what the owner saw.
+        digest: String,
+    },
+    /// Disable a skill: it stops running at once.
+    Disable {
+        /// The skill's name, as listed.
+        name: String,
+    },
+}
+
+/// Where a skill the broker found stands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum SkillState {
+    /// Enabled as it is: it runs.
+    Enabled,
+    /// Never enabled: it waits for the owner.
+    Waiting,
+    /// Enabled before, and changed since: it waits for the owner again.
+    Changed,
+}
+
+/// One file of a skill, as its signed manifest lists it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SkillFile {
+    /// Its path inside the skill.
+    pub path: String,
+    /// Its size in bytes.
+    pub bytes: u64,
+}
+
+/// A skill the broker found, for the owner to read before enabling it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct SkillListing {
+    /// Its name.
+    pub name: String,
+    /// Its signer's version.
+    pub version: String,
+    /// When it applies, in its signer's words.
+    pub description: String,
+    /// The fingerprint of the key that signed it: SHA-256, lowercase hex.
+    pub signer: String,
+    /// Its digest: the SHA-256 of its signed manifest, which lists every
+    /// file's hash. Enabling is bound to it.
+    pub digest: String,
+    /// The capabilities its program declares: what enabling it grants.
+    pub capabilities: Vec<String>,
+    /// Its playbook's file, if it has one.
+    pub instructions: Option<String>,
+    /// Its program's file, if it has one.
+    pub program: Option<String>,
+    /// Every file it holds.
+    pub files: Vec<SkillFile>,
+    /// Where it stands.
+    pub state: SkillState,
+}
+
+/// The result of a [`SkillsOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum SkillsResult {
+    /// Every skill found that verifies, by name.
+    Listed {
+        /// They.
+        skills: Vec<SkillListing>,
+    },
+    /// It's enabled, and runs.
+    Enabled,
+    /// It's disabled, and stopped.
+    Disabled,
+    /// No skill found has the name.
+    NotFound,
+    /// The skill isn't the one the owner saw: its digest is another now.
+    /// Nothing was enabled.
+    Changed,
+    /// Skills are off: the operator hasn't given the broker any.
+    Off,
+    /// The broker couldn't read or change it; its log says why.
+    Failed,
+}
+
 /// An operation on the owner's signed-in profiles (WO-030).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1697,6 +1800,12 @@ pub enum UiAction {
         /// The operation.
         op: KeptOp,
     },
+    /// List, enable or disable the skills the broker found (WO-046): the
+    /// owner's alone.
+    ManageSkills {
+        /// The operation.
+        op: SkillsOp,
+    },
     /// List the decisions the owner made, the newest first: the owner's
     /// alone.
     ListDecisions {},
@@ -1962,6 +2071,11 @@ pub enum UiActionResult {
     Memory {
         /// The result.
         outcome: KeptResult,
+    },
+    /// A skills operation's result (WO-046).
+    Skills {
+        /// The result.
+        outcome: SkillsResult,
     },
     /// The decisions the owner made, the newest first.
     Decisions {
@@ -2442,7 +2556,78 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 9);
+        assert_eq!(UI_SCHEMA_VERSION, 10);
+    }
+
+    #[test]
+    fn the_skills_action_and_results_have_their_wire_form() {
+        let digest = "ab".repeat(32);
+        for (op, expected) in [
+            (SkillsOp::List, json!({"op": "list"})),
+            (
+                SkillsOp::Enable {
+                    name: s("notes"),
+                    digest: digest.clone(),
+                },
+                json!({"op": "enable", "name": "notes", "digest": digest}),
+            ),
+            (
+                SkillsOp::Disable { name: s("notes") },
+                json!({"op": "disable", "name": "notes"}),
+            ),
+        ] {
+            pinned(
+                &UiAction::ManageSkills { op },
+                &json!({"action": "manage_skills", "op": expected}),
+            );
+        }
+        let listing = SkillListing {
+            name: s("notes"),
+            version: s("1"),
+            description: s("Use when asked."),
+            signer: "cd".repeat(32),
+            digest: digest.clone(),
+            capabilities: vec![s("fs.read")],
+            instructions: Some(s("SKILL.md")),
+            program: None,
+            files: vec![SkillFile {
+                path: s("SKILL.md"),
+                bytes: 8,
+            }],
+            state: SkillState::Changed,
+        };
+        pinned(
+            &UiActionResult::Skills {
+                outcome: SkillsResult::Listed {
+                    skills: vec![listing],
+                },
+            },
+            &json!({"result": "skills", "outcome": {"result": "listed", "skills": [{
+                "name": "notes", "version": "1", "description": "Use when asked.",
+                "signer": "cd".repeat(32), "digest": digest,
+                "capabilities": ["fs.read"], "instructions": "SKILL.md", "program": null,
+                "files": [{"path": "SKILL.md", "bytes": 8}], "state": "changed"
+            }]}}),
+        );
+        for (outcome, tag) in [
+            (SkillsResult::Enabled, "enabled"),
+            (SkillsResult::Disabled, "disabled"),
+            (SkillsResult::NotFound, "not_found"),
+            (SkillsResult::Changed, "changed"),
+            (SkillsResult::Off, "off"),
+            (SkillsResult::Failed, "failed"),
+        ] {
+            pinned(
+                &UiActionResult::Skills { outcome },
+                &json!({"result": "skills", "outcome": {"result": tag}}),
+            );
+        }
+        for (state, tag) in [
+            (SkillState::Enabled, "enabled"),
+            (SkillState::Waiting, "waiting"),
+        ] {
+            pinned(&state, &json!(tag));
+        }
     }
 
     #[test]

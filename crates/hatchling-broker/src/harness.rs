@@ -89,7 +89,7 @@ use zeroize::Zeroizing;
 
 use hatchling_core::subagent::{ActivityEvent, HarnessOutcome, SubagentEvent};
 use hatchling_core::ui::operator::CellKind;
-use hatchling_core::{CapabilityName, SkillOp, SkillResult};
+use hatchling_core::{SkillOp, SkillResult};
 use hatchling_scheduler::{SentTo, Timestamp};
 use hatchling_skill::CodeHash;
 use serde::{Deserialize, Serialize};
@@ -1097,8 +1097,8 @@ impl Harnesses {
     /// - `HATCHLING_HARNESS_MANIFESTS`: a directory of manifests, each a
     ///   harness of the operator's ([`crate::harness_manifest`]).
     ///
-    /// A harness runs only with its skill grant (`HATCHLING_SKILL_GRANTS`,
-    /// e.g. `claude-code:code`), and needs `HATCHLING_ARTIFACT_WORKSPACE`
+    /// A harness runs only when granted (`HATCHLING_HARNESS_GRANTS`, its
+    /// name, e.g. `claude-code`), and needs `HATCHLING_ARTIFACT_WORKSPACE`
     /// for its patches. Runs are recorded in the activity log when
     /// scheduling is on.
     ///
@@ -1177,17 +1177,12 @@ impl Harnesses {
                 ));
             }
         }
-        let capability = harness_capability();
-        let granted =
-            binaries
-                .keys()
-                .filter(|name| {
-                    config.skills.grants.get(name.as_str()).is_some_and(|caps| {
-                        capability.as_ref().is_some_and(|cap| caps.contains(cap))
-                    })
-                })
-                .cloned()
-                .collect();
+        let grants = parse_grants(get(env::HATCHLING_HARNESS_GRANTS.name).as_deref())?;
+        let granted = binaries
+            .keys()
+            .filter(|name| grants.contains(name.as_str()))
+            .cloned()
+            .collect();
         Ok(Self {
             binaries,
             vendors,
@@ -1698,8 +1693,35 @@ impl Harnesses {
 }
 
 /// The capability every harness call must name.
-fn harness_capability() -> Option<CapabilityName> {
-    HARNESS_CAPABILITY.parse().ok()
+/// The harnesses granted, by name: comma-separated, each a harness's name
+/// alone. A grant naming no configured harness is nothing.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfig`] for an entry that isn't a name: the
+/// old `<name>:code` form among them, saying what to write instead.
+fn parse_grants(raw: Option<&str>) -> Result<BTreeSet<String>, Error> {
+    let mut grants = BTreeSet::new();
+    for entry in raw.unwrap_or_default().split(',').map(str::trim) {
+        if entry.is_empty() {
+            continue;
+        }
+        let named = entry.len() <= 32
+            && entry
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        if !named {
+            return Err(Error::InvalidConfig {
+                key: "HATCHLING_HARNESS_GRANTS",
+                reason: format!(
+                    "{entry:?} isn't a harness's name: grant one by its name alone, \
+                     e.g. claude-code"
+                ),
+            });
+        }
+        grants.insert(entry.to_owned());
+    }
+    Ok(grants)
 }
 
 /// A configuration refusal.
@@ -2930,7 +2952,7 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use hatchling_core::{LogLevel, PeerUid};
@@ -3046,11 +3068,13 @@ mod tests {
         Harnesses::parse(config, |key| vars.get(key).cloned())
     }
 
-    fn grant(config: &mut Config, skill: &str, capability: &str) {
-        config.skills.grants.insert(
-            String::from(skill),
-            HashSet::from([capability.parse().unwrap()]),
-        );
+    /// `vars` with `harness` granted too.
+    fn grant(vars: &mut HashMap<&'static str, String>, harness: &str) {
+        let all = vars.entry(env::HATCHLING_HARNESS_GRANTS.name).or_default();
+        if !all.is_empty() {
+            all.push(',');
+        }
+        all.push_str(harness);
     }
 
     /// The setting a configuration refusal names, and why.
@@ -3152,10 +3176,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            harness_capability()
-                .map(|cap| cap.as_str().to_owned())
-                .as_deref(),
-            Some("code")
+            HARNESS_CAPABILITY
+                .parse::<hatchling_core::CapabilityName>()
+                .unwrap()
+                .as_str(),
+            "code"
         );
         assert!(matches!(
             invalid("KEY", String::from("why")),
@@ -4369,13 +4394,29 @@ mod tests {
         assert_eq!(ungranted.timeout, Duration::from_secs(7));
         assert_eq!(ungranted.workspace, Some(scratch.join("workspace")));
         assert_eq!(ungranted.activity_log, None, "scheduling is off");
-        grant(&mut config, "claude-code", "text.transform");
-        assert!(
-            parsed(&config, &vars).unwrap().granted.is_empty(),
-            "another capability is not code"
-        );
-        grant(&mut config, "claude-code", HARNESS_CAPABILITY);
-        grant(&mut config, "codex-cli", HARNESS_CAPABILITY);
+        // The old form, or anything else that isn't a name, is refused.
+        for bad in [
+            "claude-code:code",
+            "Claude-Code",
+            "claude code",
+            &"a".repeat(33),
+        ] {
+            let mut old = vars.clone();
+            old.insert(env::HATCHLING_HARNESS_GRANTS.name, bad.to_owned());
+            let (key, reason) = refusal(parsed(&config, &old));
+            assert_eq!(key, "HATCHLING_HARNESS_GRANTS", "{bad}");
+            assert!(
+                reason.contains("by its name alone"),
+                "the refusal says to grant a harness by its name"
+            );
+        }
+        let mut vars = vars;
+        vars.insert(env::HATCHLING_HARNESS_GRANTS.name, String::from(" , "));
+        assert!(parsed(&config, &vars).unwrap().granted.is_empty());
+        vars.remove(env::HATCHLING_HARNESS_GRANTS.name);
+        grant(&mut vars, "claude-code");
+        grant(&mut vars, &"c".repeat(32));
+        grant(&mut vars, "codex-cli");
         config.scheduler.root = scratch.join("schedules");
         let granted = parsed(&config, &vars).unwrap();
         assert_eq!(
@@ -4409,11 +4450,12 @@ mod tests {
     #[test]
     fn a_call_is_refused_unless_its_harness_is_configured_granted_and_runnable() {
         let scratch = Scratch::new("handle");
-        let mut config = config(&scratch);
+        let config = config(&scratch);
         let (_, vars) = settings(&scratch);
         let runtime = SkillRuntime::new(PathBuf::from("/nonexistent/hatchling-spawner"));
         let ungranted = parsed(&config, &vars).unwrap();
-        grant(&mut config, "claude-code", HARNESS_CAPABILITY);
+        let mut vars = vars;
+        grant(&mut vars, "claude-code");
         let harnesses = parsed(&config, &vars).unwrap();
         let brief = r#"{"task":"Go.","root":"project","paths":["a"]}"#;
         assert_eq!(
@@ -4526,7 +4568,7 @@ mod tests {
     #[test]
     fn a_manifests_harness_is_configured_granted_and_named_as_a_built_in_one() {
         let scratch = Scratch::new("manifests");
-        let (mut config, vars, _, helper) = with_manifests(&scratch);
+        let (config, vars, _, helper) = with_manifests(&scratch);
         let ungranted = parsed(&config, &vars).unwrap();
         assert_eq!(
             ungranted
@@ -4537,7 +4579,8 @@ mod tests {
             ["aider", "claude-code", "opencode"]
         );
         assert!(ungranted.granted.is_empty());
-        grant(&mut config, "opencode", HARNESS_CAPABILITY);
+        let mut vars = vars;
+        grant(&mut vars, "opencode");
         let harnesses = parsed(&config, &vars).unwrap();
         assert_eq!(
             harnesses.granted,
@@ -4597,7 +4640,8 @@ mod tests {
     fn a_manifests_harness_runs_with_its_own_key_companions_and_grant() {
         let scratch = Scratch::new("manifest-runs");
         let (mut config, vars, dir, helper) = with_manifests(&scratch);
-        grant(&mut config, "opencode", HARNESS_CAPABILITY);
+        let mut vars = vars;
+        grant(&mut vars, "opencode");
         let harnesses = parsed(&config, &vars).unwrap();
         let (opencode, _) = harnesses.binaries.get("opencode").unwrap();
         let (aider, _) = harnesses.binaries.get("aider").unwrap();
@@ -4694,9 +4738,10 @@ mod tests {
     #[test]
     fn skills_hand_harness_calls_to_their_harnesses_and_nothing_else() {
         let scratch = Scratch::new("skills");
-        let mut config = config(&scratch);
+        let config = config(&scratch);
         let (_, vars) = settings(&scratch);
-        grant(&mut config, "claude-code", HARNESS_CAPABILITY);
+        let mut vars = vars;
+        grant(&mut vars, "claude-code");
         let call = invoke("claude-code@1", "code", "[]");
         assert_eq!(
             crate::Skills::default().handle_harness(&call, &no_keys),
@@ -4740,7 +4785,8 @@ mod tests {
         let scratch = Scratch::new("refused");
         let mut config = config(&scratch);
         let (binary, vars) = settings(&scratch);
-        grant(&mut config, "claude-code", HARNESS_CAPABILITY);
+        let mut vars = vars;
+        grant(&mut vars, "claude-code");
         config.scheduler.root = scratch.join("schedules");
         let harnesses = parsed(&config, &vars).unwrap();
         let input = r#"{"task":"Go.","root":"elsewhere","paths":["a"]}"#;

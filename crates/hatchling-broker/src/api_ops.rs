@@ -42,7 +42,7 @@ use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
     Decision, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal, FileOutRefusal, FolderEntry,
     GoalOp, GrantOp, Handoff, InboxFile, KeptOp, LibraryFile, LibraryFolder, LibraryStanding,
-    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SuggestionOp, UiAction,
+    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SkillsOp, SuggestionOp, UiAction,
     UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -80,6 +80,8 @@ enum Owned<'a> {
     Feed,
     /// Their Ideas page.
     Suggestions(&'a SuggestionOp),
+    /// The skills they enable (WO-046).
+    Skills(&'a SkillsOp),
 }
 
 /// The one chat the API offers: the local channel's conversation.
@@ -311,6 +313,7 @@ impl<'a> Ops<'a> {
             }
             UiAction::ManageGoals { op } => self.owned(owns, Owned::Goals(op)),
             UiAction::ManageMemory { op } => self.owned(owns, Owned::Memory(op)),
+            UiAction::ManageSkills { op } => self.owned(owns, Owned::Skills(op)),
             UiAction::ListDecisions {} => self.owned(owns, Owned::Decisions),
             UiAction::ListCovered {} => self.owned(owns, Owned::Covered),
             UiAction::ReadFeed {} => self.owned(owns, Owned::Feed),
@@ -414,6 +417,15 @@ impl<'a> Ops<'a> {
             },
             Owned::Memory(op) => UiActionResult::Memory {
                 outcome: crate::memory_keep::handle_kept_op(self.config, op),
+            },
+            Owned::Skills(op) => UiActionResult::Skills {
+                outcome: crate::skill_enablement::handle_skills_op(
+                    self.config,
+                    self.key,
+                    self.skills,
+                    op,
+                    Timestamp::now().as_second(),
+                ),
             },
             Owned::Covered => UiActionResult::Covered {
                 covered: crate::covered::list(self.config),
@@ -3621,6 +3633,25 @@ mod tests {
             (
                 UiActionResult::Memory {
                     outcome: hatchling_core::ui::KeptResult::Off
+                },
+                ApiOutcome::Served
+            )
+        );
+        let skills = UiAction::ManageSkills { op: SkillsOp::List };
+        assert_eq!(
+            ops.handle(&partial, &skills, &mut replies),
+            (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted
+                },
+                ApiOutcome::Refused
+            )
+        );
+        assert_eq!(
+            ops.handle(&owner, &skills, &mut replies),
+            (
+                UiActionResult::Skills {
+                    outcome: hatchling_core::ui::SkillsResult::Off
                 },
                 ApiOutcome::Served
             )

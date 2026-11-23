@@ -165,6 +165,7 @@ pub mod serve;
 pub mod service_settings;
 pub mod site_grants;
 pub mod skill_cell;
+pub mod skill_enablement;
 pub mod skill_invoke;
 pub mod skill_ops;
 pub mod skill_run;

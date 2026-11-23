@@ -522,9 +522,11 @@ mod tests {
             Store::CREDENTIALS,
             Store::CONVERSATION,
             Store::LIBRARY,
+            Store::SKILLS,
         ] {
             assert_eq!(Store::from_label(store.label()), Some(store));
         }
+        assert_eq!(Store::SKILLS.label(), "skills");
         assert_eq!(Store::CONVERSATION.label(), "conversation");
         assert_eq!(Store::LIBRARY.label(), "library");
     }

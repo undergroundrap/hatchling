@@ -30,7 +30,7 @@
 )]
 mod common;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixStream;
@@ -50,7 +50,6 @@ use hatchling_broker::browser_ops::{Browser, BrowserSession, Browsers, handle_br
 use hatchling_broker::browser_proxy::Sites;
 use hatchling_broker::cell::ScheduledRun;
 use hatchling_broker::chat_run::{Chat, Step, stopped_told};
-use hatchling_broker::harness::HARNESS_CAPABILITY;
 use hatchling_broker::held_check::{CheckFor, HeldHit, MAX_CHECK_BYTES};
 use hatchling_broker::keeper::{self, Keeper};
 use hatchling_broker::schedule_ops::{HubDelivery, handle_schedule_op};
@@ -958,9 +957,8 @@ fn harnessed(install: &Install, spawner: PathBuf, name: &str) -> Result<(Config,
     config.agent_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
     config.artifacts.workspace = Some(install.dir.join("tmp"));
     config.scheduler.root = dir.join("schedules");
-    let code: HashSet<_> = [HARNESS_CAPABILITY.parse().map_err(|_| "cap")?].into();
-    config.skills.grants = HashMap::from([(String::from("claude-code"), code)]);
     let vars = HashMap::from([
+        ("HATCHLING_HARNESS_GRANTS", String::from("claude-code")),
         (
             "HATCHLING_HARNESS_CLAUDE_CODE",
             binary.display().to_string(),

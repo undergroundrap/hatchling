@@ -559,6 +559,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "manage_skills",
+                "type": "string"
+            },
+            {
                 "const": "list_decisions",
                 "type": "string"
             },
@@ -4341,6 +4345,79 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "SkillFile": {
+        "properties": {
+            "bytes": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "path": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "path",
+            "bytes"
+        ],
+        "type": "object"
+    },
+    "SkillListing": {
+        "properties": {
+            "capabilities": {
+                "items": {
+                    "type": "string"
+                },
+                "type": "array"
+            },
+            "description": {
+                "type": "string"
+            },
+            "digest": {
+                "type": "string"
+            },
+            "files": {
+                "items": {
+                    "$ref": "#/$defs/SkillFile"
+                },
+                "type": "array"
+            },
+            "instructions": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "name": {
+                "type": "string"
+            },
+            "program": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "signer": {
+                "type": "string"
+            },
+            "state": {
+                "$ref": "#/$defs/SkillState"
+            },
+            "version": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "name",
+            "version",
+            "description",
+            "signer",
+            "digest",
+            "capabilities",
+            "files",
+            "state"
+        ],
+        "type": "object"
+    },
     "SkillOp": {
         "oneOf": [
             {
@@ -4421,6 +4498,169 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 },
                 "required": [
                     "r"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "SkillState": {
+        "oneOf": [
+            {
+                "const": "enabled",
+                "type": "string"
+            },
+            {
+                "const": "waiting",
+                "type": "string"
+            },
+            {
+                "const": "changed",
+                "type": "string"
+            }
+        ]
+    },
+    "SkillsOp": {
+        "oneOf": [
+            {
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "digest": {
+                        "type": "string"
+                    },
+                    "name": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "enable",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "name",
+                    "digest"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "name": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "disable",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "name"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "SkillsResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    },
+                    "skills": {
+                        "items": {
+                            "$ref": "#/$defs/SkillListing"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "result",
+                    "skills"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "enabled",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "disabled",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "changed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
                 ],
                 "type": "object"
             }
@@ -5327,6 +5567,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "manage_skills",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/SkillsOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "list_decisions",
                         "type": "string"
                     }
@@ -6077,6 +6333,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "result": {
                         "const": "memory",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/SkillsResult"
+                    },
+                    "result": {
+                        "const": "skills",
                         "type": "string"
                     }
                 },
