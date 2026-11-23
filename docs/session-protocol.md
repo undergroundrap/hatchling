@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v33 (current). This doc is the human-readable reference
+**Status:** v34 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -713,3 +713,29 @@ The frontend's generated types must cover every variant listed
 here; the drift test fails if the schema and these types
 diverge. When a new op family lands, this doc is updated in the
 same commit.
+
+## v34 — The skills the owner enabled
+
+- **`SkillOp::List`** answers **`SkillResult::Listed { skills, more }`**:
+  each skill the owner enabled and the broker runs, by name, as a
+  `SkillEntry` (`name`, `version`, `description` in its signer's words,
+  whether it has a `playbook`, the `capabilities` its program declares,
+  and whether it lists `files` beside its playbook and program), as many
+  as one frame carries; `more` counts the rest (WO-046).
+- **`SkillOp::Read { skill, path }`**: an enabled skill's playbook, or a
+  file it lists (`path`), read and checked against its signed hash at the
+  read, answered with **`SkillResult::Text { text }`**: fenced in
+  `[SKILL …]` and `[/SKILL]`, labelled with the skill, the file and its
+  signer's fingerprint, a forged marker inside made inert, and said to be
+  guidance that grants no tool, grant or approval. A file it doesn't
+  list, or no playbook, is **`NoSuchFile`**; one over 32 KiB
+  (`MAX_SKILL_READ_BYTES`) or a reply one frame can't carry is
+  **`TooLarge { bytes }`**; one that isn't UTF-8 is **`NotText`**; a
+  name no enabled skill has is `UnknownSkill`; a file changed since it
+  was loaded is `SkillError`.
+- **Every run's session reaches the skills the owner enabled**, chat
+  and scheduled alike: listing, reading and invoking. A coding harness's
+  id names no skill in a run's session: its grant is the main session's.
+- At a run's start the agent lists them, and its prompt says which are
+  enabled, fenced as data, within 12 KiB; `skill_list` and `skill_read`
+  are its tools for them.

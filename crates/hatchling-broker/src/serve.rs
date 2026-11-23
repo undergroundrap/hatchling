@@ -105,16 +105,18 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // The browser, if the operator set one up (WO-029): checked now, so a
     // bad setting stops the broker here, not on the agent's first page.
     crate::browser_ops::configure_from_env(spawner.clone())?;
-    let skills = Skills::load(&config.skills)?
-        .with_runtime(SkillRuntime::new(spawner))
-        .with_harnesses(
-            crate::harness::Harnesses::from_env(config)?
-                .with_tls(&tls)
-                .pin_tools()?,
-        );
+    let skills = crate::skills::publish(
+        Skills::load(&config.skills)?
+            .with_runtime(SkillRuntime::new(spawner))
+            .with_harnesses(
+                crate::harness::Harnesses::from_env(config)?
+                    .with_tls(&tls)
+                    .pin_tools()?,
+            ),
+    );
     // What the owner enabled, from its sealed store: until it's handed
     // over, every skill found waits (WO-046).
-    crate::skill_enablement::load_enabled(config, &key, &skills);
+    crate::skill_enablement::load_enabled(config, &key, skills);
     // The output gate, when there is an ingress for it to guard:
     // from the operator's environment only, its settings recorded before
     // anything is served.
@@ -223,7 +225,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
         }
         if let Some(api) = &api {
             let hub = ingress.as_ref().map(crate::ingress::Ingress::hub);
-            let (key, skills) = (&key, &skills);
+            let key = &key;
             scope.spawn(move || api.serve(config, key, skills, hub));
             // The worker that runs what the owner approves in the app
             // (WO-027): approvals come only from the owner's sockets, so
@@ -236,7 +238,7 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
             agents,
             config,
             &key,
-            &skills,
+            skills,
             ingress.as_ref(),
             devices.as_ref(),
         )
@@ -638,6 +640,7 @@ pub fn serve_connection_with_runs(
         hub,
         runs,
         &HeldHit::default(),
+        SkillReach::WithHarnesses,
     )
 }
 
@@ -664,6 +667,29 @@ pub fn serve_cell_connection(
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
 ) -> Result<(), Error> {
+    serve_spawned(
+        cell,
+        config,
+        key,
+        skills,
+        hub,
+        runs,
+        SkillReach::WithHarnesses,
+    )
+}
+
+/// Serves `cell`'s session on its own connection, its skill ops reaching
+/// as `reach` says. Logged as every agent session is: the log is read by
+/// operators' tools, the hosted-model proof among them.
+fn serve_spawned(
+    cell: &AgentCell,
+    config: &Config,
+    key: &dyn OpensStores,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+    runs: Option<crate::RunEnv>,
+    reach: SkillReach,
+) -> Result<(), Error> {
     let stream = &cell.connection;
     let cell_id = handshake(stream, Some(&cell.cell_id))?;
     let creds = PeerCredentials::of_spawned(config.agent_uid, PeerPid::from_kernel(cell.pid));
@@ -674,7 +700,41 @@ pub fn serve_cell_connection(
         "agent session established"
     );
     serve_session(
-        stream, config, key, skills, &cell_id, true, creds, hub, runs, &cell.hit,
+        stream, config, key, skills, &cell_id, true, creds, hub, runs, &cell.hit, reach,
+    )
+}
+
+/// What a session's skill ops reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SkillReach {
+    /// The skills, and the coding harnesses the operator granted.
+    WithHarnesses,
+    /// The skills alone: a run's session (WO-046). A harness spends the
+    /// operator's vendor key, and its grant was never a run's.
+    SkillsOnly,
+}
+
+/// Serves a run's session on `cell`'s own connection, as
+/// [`serve_cell_connection`] does, reaching the broker's skills but no
+/// harness ([`SkillReach::SkillsOnly`]).
+///
+/// # Errors
+///
+/// As [`serve_cell_connection`].
+pub(crate) fn serve_run_connection(
+    cell: &AgentCell,
+    config: &Config,
+    key: &dyn OpensStores,
+    skills: &Skills,
+) -> Result<(), Error> {
+    serve_spawned(
+        cell,
+        config,
+        key,
+        skills,
+        None,
+        None,
+        SkillReach::SkillsOnly,
     )
 }
 
@@ -839,6 +899,7 @@ fn serve_session(
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
     hit: &HeldHit,
+    reach: SkillReach,
 ) -> Result<(), Error> {
     let run_cell = known.then_some(cell_id);
     // The session's egress, opened once per session, with a surrogate key
@@ -985,9 +1046,14 @@ fn serve_session(
                     let keys = crate::harness::vault_keys(config, key)
                         .in_run(hit)
                         .of_cell(run_cell);
-                    SessionResponse::Skill(crate::skill_ops::handle_skill_op(
-                        skills, &op, cell_id, &keys,
-                    ))
+                    SessionResponse::Skill(match reach {
+                        SkillReach::WithHarnesses => {
+                            crate::skill_ops::handle_skill_op(skills, &op, cell_id, &keys)
+                        }
+                        SkillReach::SkillsOnly => {
+                            crate::skill_ops::handle_run_skill_op(skills, &op, cell_id, &keys)
+                        }
+                    })
                 }
                 SessionRequest::Goals(op) => SessionResponse::Goals(
                     crate::goals_ops::handle_goals_op(&config.goals, &op, &principal)?,
@@ -2456,6 +2522,7 @@ mod gate_scope_tests {
                     Some(&hub),
                     None,
                     &HeldHit::default(),
+                    SkillReach::WithHarnesses,
                 )
             });
             let _ = hub.inject(user("hello"));
@@ -2601,6 +2668,7 @@ mod gate_scope_tests {
                         None,
                         None,
                         &HeldHit::default(),
+                        SkillReach::WithHarnesses,
                     )
                 });
                 let mut given = vec![more(&agent)];
@@ -2707,6 +2775,7 @@ mod gate_scope_tests {
                         Some(&hub),
                         None,
                         &HeldHit::default(),
+                        SkillReach::WithHarnesses,
                     )
                 });
                 let _ = hub.inject(Message {

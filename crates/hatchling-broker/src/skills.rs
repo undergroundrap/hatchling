@@ -267,6 +267,12 @@ impl SkillSet {
         &self.listing
     }
 
+    /// The directory `id` was loaded from, when it is in this set.
+    #[must_use]
+    pub fn package(&self, id: &SkillId) -> Option<&Path> {
+        self.packages.get(id).map(PathBuf::as_path)
+    }
+
     /// The admitted skills, for call-time checks.
     #[must_use]
     pub const fn registry(&self) -> &SkillRegistry {
@@ -307,6 +313,25 @@ fn listed(found: &Found) -> SkillListing {
             .collect(),
         state: found.state,
     }
+}
+
+/// The broker's skills, once published at its start: what every run's
+/// session reaches (WO-046).
+static LIVE: std::sync::OnceLock<&'static Skills> = std::sync::OnceLock::new();
+
+/// Makes `skills` the broker's for as long as it serves, and what the
+/// runs it launches reach ([`live`]). The first published stays: a
+/// broker publishes once.
+pub fn publish(skills: Skills) -> &'static Skills {
+    let skills: &'static Skills = Box::leak(Box::new(skills));
+    LIVE.get_or_init(|| skills)
+}
+
+/// The broker's skills, when it has published them: none in a process
+/// that serves no broker, a test's included.
+#[must_use]
+pub fn live() -> Option<&'static Skills> {
+    LIVE.get().copied()
 }
 
 /// What one trust-roots poll did (see [`crate::trust_roots`]).

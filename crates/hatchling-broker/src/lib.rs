@@ -205,7 +205,7 @@ pub use serve::{
     serve_connection_with_ingress, serve_connection_with_runs, serve_forever, spawn_agent_cell,
 };
 pub use skill_invoke::{SkillDenial, check_skill_call};
-pub use skill_ops::handle_skill_op;
+pub use skill_ops::{handle_run_skill_op, handle_skill_op};
 pub use skill_run::SkillRuntime;
 pub use skills::{Reload, SkillSet, Skills};
 pub use subagent_ops::{Ledger, Subagents, WITHHELD, check_spawn, child_config, partial_of};

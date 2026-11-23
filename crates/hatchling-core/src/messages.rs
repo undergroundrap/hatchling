@@ -3220,11 +3220,12 @@ pub enum DeliveryRefusal {
 
 /// A skill operation: the agent's post-handshake skill vocabulary.
 ///
-/// One op, one action: invoke one registered skill, exercising one
-/// capability it declared, on one input. The broker owns the registry;
-/// the agent names a skill and the broker decides. There is no list or
-/// describe op: the agent learns which skills exist from its
-/// configuration, not by asking the broker to enumerate them.
+/// One op, one action: list the skills the owner enabled, read one's
+/// playbook or a file it lists, or invoke one registered skill,
+/// exercising one capability it declared, on one input (WO-046). The
+/// broker owns the registry; the agent names a skill and the broker
+/// decides. Listing and reading grant nothing: what a playbook says is
+/// guidance, and every request it leads to is checked as any other.
 ///
 /// Public because the skill protocol is a cross-crate contract.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3244,6 +3245,40 @@ pub enum SkillOp {
         /// The skill's input. Opaque to the broker.
         input: String,
     },
+    /// Lists the skills the owner enabled, each with when it applies.
+    #[serde(rename = "list")]
+    List,
+    /// Reads an enabled skill's playbook, or one of the files it lists,
+    /// fenced and labelled by the broker.
+    #[serde(rename = "read")]
+    Read {
+        /// The skill's name, as listed.
+        skill: String,
+        /// A file the skill lists, by its path in the skill; its playbook
+        /// when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+}
+
+/// A skill the owner enabled, as the agent is told it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct SkillEntry {
+    /// Its name.
+    pub name: String,
+    /// Its version: `name@version` is the id `invoke` takes.
+    pub version: String,
+    /// When it applies, in its signer's words. Untrusted.
+    pub description: String,
+    /// Whether it has a playbook to read.
+    pub playbook: bool,
+    /// The capabilities its program declares; none without one.
+    pub capabilities: Vec<CapabilityName>,
+    /// Whether it lists files beside its playbook and program: helpers
+    /// meant for the agent's computer.
+    pub files: bool,
 }
 
 /// The broker's reply to one [`SkillOp`].
@@ -3273,7 +3308,38 @@ pub enum SkillResult {
     /// The skill could not run, or failed. Deliberately opaque.
     #[serde(rename = "skill-error")]
     SkillError,
+    /// The skills the owner enabled, by name.
+    #[serde(rename = "listed")]
+    Listed {
+        /// They, as many as fit one frame.
+        skills: Vec<SkillEntry>,
+        /// How many more there are than fit.
+        more: u32,
+    },
+    /// What was read, fenced and labelled by the broker: guidance, never
+    /// a grant.
+    #[serde(rename = "text")]
+    Text {
+        /// The fenced text.
+        text: String,
+    },
+    /// The skill lists no such file, or has no playbook.
+    #[serde(rename = "no-such-file")]
+    NoSuchFile,
+    /// The file is larger than one read gives the agent.
+    #[serde(rename = "too-large")]
+    TooLarge {
+        /// Its size.
+        bytes: u64,
+    },
+    /// The file isn't text.
+    #[serde(rename = "not-text")]
+    NotText,
 }
+
+/// The most of one skill file a read gives the agent, in bytes: a
+/// playbook's bound.
+pub const MAX_SKILL_READ_BYTES: usize = 32 * 1024;
 
 /// Largest skill input the protocol carries, in bytes.
 ///
@@ -5013,10 +5079,73 @@ mod tests {
 
     #[test]
     fn skill_op_rejects_unknown_tag() {
-        let json = br#"{"op":"list"}"#;
+        let json = br#"{"op":"describe"}"#;
         assert!(serde_json::from_slice::<SkillOp>(json).is_err());
         let json = br#"{"r":"granted"}"#;
         assert!(serde_json::from_slice::<SkillResult>(json).is_err());
+    }
+
+    #[test]
+    fn the_skill_list_and_read_ops_and_their_results_have_their_wire_form() {
+        let pin = |value: serde_json::Value, json: &str| {
+            assert_eq!(
+                value,
+                serde_json::from_str::<serde_json::Value>(json).unwrap()
+            );
+        };
+        for (op, json) in [
+            (SkillOp::List, r#"{"op":"list"}"#),
+            (
+                SkillOp::Read {
+                    skill: String::from("notes"),
+                    path: None,
+                },
+                r#"{"op":"read","skill":"notes"}"#,
+            ),
+            (
+                SkillOp::Read {
+                    skill: String::from("notes"),
+                    path: Some(String::from("a.md")),
+                },
+                r#"{"op":"read","skill":"notes","path":"a.md"}"#,
+            ),
+        ] {
+            pin(serde_json::to_value(&op).unwrap(), json);
+            assert_eq!(serde_json::from_str::<SkillOp>(json).unwrap(), op);
+        }
+        let entry = SkillEntry {
+            name: String::from("notes"),
+            version: String::from("1"),
+            description: String::from("Use when asked."),
+            playbook: true,
+            capabilities: vec!["fs.read".parse().unwrap()],
+            files: false,
+        };
+        for (result, json) in [
+            (
+                SkillResult::Listed {
+                    skills: vec![entry],
+                    more: 2,
+                },
+                r#"{"r":"listed","skills":[{"name":"notes","version":"1","description":"Use when asked.","playbook":true,"capabilities":["fs.read"],"files":false}],"more":2}"#,
+            ),
+            (
+                SkillResult::Text {
+                    text: String::from("t"),
+                },
+                r#"{"r":"text","text":"t"}"#,
+            ),
+            (SkillResult::NoSuchFile, r#"{"r":"no-such-file"}"#),
+            (
+                SkillResult::TooLarge { bytes: 9 },
+                r#"{"r":"too-large","bytes":9}"#,
+            ),
+            (SkillResult::NotText, r#"{"r":"not-text"}"#),
+        ] {
+            pin(serde_json::to_value(&result).unwrap(), json);
+            assert_eq!(serde_json::from_str::<SkillResult>(json).unwrap(), result);
+        }
+        assert_eq!(MAX_SKILL_READ_BYTES, 32 * 1024);
     }
 
     #[test]
@@ -5554,7 +5683,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 33);
+        assert_eq!(crate::PROTOCOL_VERSION, 34);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5659,7 +5788,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 33);
+        assert_eq!(crate::PROTOCOL_VERSION, 34);
     }
 
     /// A hand-over and its results go on the wire as written, and a field
@@ -5738,7 +5867,7 @@ mod room_tests {
         assert!(
             serde_json::from_str::<LeftOut>(r#"{"links":0,"mounts":0,"others":0,"x":1}"#).is_err()
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 33);
+        assert_eq!(crate::PROTOCOL_VERSION, 34);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5797,6 +5926,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 33);
+        assert_eq!(crate::PROTOCOL_VERSION, 34);
     }
 }

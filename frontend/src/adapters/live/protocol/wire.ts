@@ -4345,6 +4345,41 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "SkillEntry": {
+        "additionalProperties": false,
+        "properties": {
+            "capabilities": {
+                "items": {
+                    "$ref": "#/$defs/CapabilityName"
+                },
+                "type": "array"
+            },
+            "description": {
+                "type": "string"
+            },
+            "files": {
+                "type": "boolean"
+            },
+            "name": {
+                "type": "string"
+            },
+            "playbook": {
+                "type": "boolean"
+            },
+            "version": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "name",
+            "version",
+            "description",
+            "playbook",
+            "capabilities",
+            "files"
+        ],
+        "type": "object"
+    },
     "SkillFile": {
         "properties": {
             "bytes": {
@@ -4444,6 +4479,42 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "input"
                 ],
                 "type": "object"
+            },
+            {
+                "additionalProperties": false,
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "additionalProperties": false,
+                "properties": {
+                    "op": {
+                        "const": "read",
+                        "type": "string"
+                    },
+                    "path": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "skill": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "skill"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -4493,6 +4564,87 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "properties": {
                     "r": {
                         "const": "skill-error",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "r"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "more": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "r": {
+                        "const": "listed",
+                        "type": "string"
+                    },
+                    "skills": {
+                        "items": {
+                            "$ref": "#/$defs/SkillEntry"
+                        },
+                        "type": "array"
+                    }
+                },
+                "required": [
+                    "r",
+                    "skills",
+                    "more"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "r": {
+                        "const": "text",
+                        "type": "string"
+                    },
+                    "text": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "r",
+                    "text"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "r": {
+                        "const": "no-such-file",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "r"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "bytes": {
+                        "minimum": 0,
+                        "type": "integer"
+                    },
+                    "r": {
+                        "const": "too-large",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "r",
+                    "bytes"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "r": {
+                        "const": "not-text",
                         "type": "string"
                     }
                 },

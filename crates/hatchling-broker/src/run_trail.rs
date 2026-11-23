@@ -454,9 +454,13 @@ const fn memory_ending(result: &MemoryResult) -> Ending {
 const fn skill_ending(result: &SkillResult) -> Ending {
     use Ending::{Done, Failed, Refused};
     match result {
-        SkillResult::UnknownSkill | SkillResult::CapabilityDenied => Refused,
+        SkillResult::UnknownSkill
+        | SkillResult::CapabilityDenied
+        | SkillResult::NoSuchFile
+        | SkillResult::TooLarge { .. }
+        | SkillResult::NotText => Refused,
         SkillResult::SkillError => Failed,
-        SkillResult::Output { .. } => Done,
+        SkillResult::Output { .. } | SkillResult::Listed { .. } | SkillResult::Text { .. } => Done,
     }
 }
 

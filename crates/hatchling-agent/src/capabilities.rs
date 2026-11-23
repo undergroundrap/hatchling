@@ -83,7 +83,7 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
     }));
     if on(ToolGroup::Skills) {
         lines.push(String::from(
-            "- You can run the installed skills your tools name, within their grants.",
+            "- Skills the owner enabled are listed below, when there are any: read one's playbook with skill_read before you follow it, and run one's program with skill_invoke. A skill grants nothing.",
         ));
     }
     if on(ToolGroup::Suggest) {
@@ -187,7 +187,7 @@ mod tests {
         assert!(off.contains("Reading web pages is off"), "{off}");
         assert!(off.contains("Web search is off"), "{off}");
         assert!(!off.contains("drive a browser"), "{off}");
-        assert!(!off.contains("installed skills"), "{off}");
+        assert!(!off.contains("Skills the owner enabled"), "{off}");
         assert!(off.contains("can't run programs or commands"), "{off}");
         assert!(
             off.contains("only when a tool told you so in this turn"),
@@ -231,7 +231,7 @@ mod tests {
         let every = note(None);
         assert!(every.contains("You can search the web."), "{every}");
         assert!(every.contains("drive a browser"), "{every}");
-        assert!(every.contains("installed skills"), "{every}");
+        assert!(every.contains("Skills the owner enabled"), "{every}");
         assert!(!every.contains(" is off"), "{every}");
     }
 }

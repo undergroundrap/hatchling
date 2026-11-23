@@ -15,6 +15,11 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v34 adds listing and reading the skills the owner enabled
+/// (`SkillOp::List`, `SkillOp::Read`, `SkillResult::Listed`,
+/// `SkillResult::Text`, `NoSuchFile`, `TooLarge`, `NotText`, WO-046): a
+/// skill's playbook, or a file it lists, fenced and labelled by the
+/// broker, granting nothing.
 /// v33 adds handing the owner a folder (`RoomOp::HandOverFolder`,
 /// `RoomResult::FolderHandedOver`, WO-043): a folder in the workspace,
 /// walked, each file copied out whole, every path and byte checked for
@@ -102,7 +107,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 33;
+pub const PROTOCOL_VERSION: u16 = 34;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

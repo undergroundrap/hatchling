@@ -76,8 +76,7 @@ use crate::cell::{Process, ScheduledRun};
 use crate::held_check::HeldHit;
 use crate::{
     AgentCell, ArtifactConfig, CellConfig, Config, Error, FollowupScope, GoalsAction, MemoryAction,
-    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultGrant, dispatch_once,
-    serve_cell_connection, spawn_cell,
+    MemoryGrant, SchedulerConfig, SkillConfig, SpaceConfig, VaultGrant, dispatch_once, spawn_cell,
 };
 
 /// The broker subcommand the run helper runs as.
@@ -290,7 +289,9 @@ impl RunEnv {
 /// Only grants the vocabulary can name survive (a grant that does not
 /// parse is dropped, never widened). Channels are limited to granted,
 /// credential-less ones. A run cannot create or cancel schedules or
-/// hooks, invoke skills, use channel accounts, or reach the ingress. A
+/// hooks, use channel accounts, run a coding harness, or reach the
+/// ingress; it reaches the skills the owner enabled, the broker's, and
+/// no others (WO-046). A
 /// chat run's build store holds ideas alone ([`run_artifacts`]); any
 /// other run has none.
 ///
@@ -837,6 +838,10 @@ pub(crate) fn captured(output: Vec<u8>) -> Result<String, String> {
         .map_err(|_| String::from("the run's output is not UTF-8"))
 }
 
+/// The skills a run reaches in a process that published none (a test's).
+static NO_SKILLS: std::sync::LazyLock<crate::Skills> =
+    std::sync::LazyLock::new(crate::Skills::default);
+
 /// Bytes of a run's token, its cell id and directory name: `run-` and 24
 /// hex digits, which is 96 random bits.
 pub const RUN_TOKEN_LEN: usize = 4 + 24;
@@ -1041,9 +1046,12 @@ fn serve_run_session(
         pid: 0,
         hit: hit.clone(),
     };
-    if let Err(error) =
-        serve_cell_connection(&cell, config, key, &crate::Skills::default(), None, None)
-    {
+    if let Err(error) = crate::serve::serve_run_connection(
+        &cell,
+        config,
+        key,
+        crate::skills::live().unwrap_or(&NO_SKILLS),
+    ) {
         // Escaped: a protocol error can quote what the cell sent.
         tracing::debug!(?error, "scheduled run session ended");
     }

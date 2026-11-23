@@ -1315,7 +1315,10 @@ impl Harnesses {
             skill,
             capability,
             input,
-        } = op;
+        } = op
+        else {
+            return None;
+        };
         let Some((harness, binary)) = self
             .binaries
             .values()
