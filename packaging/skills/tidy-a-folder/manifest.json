@@ -1,0 +1,16 @@
+{
+  "format": 2,
+  "name": "tidy-a-folder",
+  "version": "1",
+  "description": "Use when the owner asks to tidy, organise, sort out, or clean up a folder in the workspace, theirs or one a run made. Not for the inbox (never tidy the inbox), and not for deleting things as the main task: if the owner only wants things deleted, that is a removal list, and the removal step is the whole playbook.",
+  "instructions": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "bytes": 2384,
+      "sha256": "0aacbfae7a4a41d813963b57a69f2a11758a04f05b15dc271be17ae245c11548"
+    }
+  ],
+  "program": null,
+  "signature": "ggTKuySYOLhwfFQeNcMXFLfN3ZBqkCclnuuaEC5BmMohaaOycTEJEhTzgAPG5jectJHiwVyjisJvqVD3NtrTDg=="
+}

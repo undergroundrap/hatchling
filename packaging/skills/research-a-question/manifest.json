@@ -1,0 +1,16 @@
+{
+  "format": 2,
+  "name": "research-a-question",
+  "version": "1",
+  "description": "Use when the owner asks a question whose answer needs sources beyond this conversation (current facts, other people's findings, documentation, prices, dates, anything the run doesn't already hold) and wants the answer in the chat. Not for questions the workspace already answers (search there first), and not for producing a document (that is write-a-report).",
+  "instructions": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "bytes": 2293,
+      "sha256": "9b14cf72db145c9825450583e3f2fb545c8493bcd1c3dd054a32011433d7e3d1"
+    }
+  ],
+  "program": null,
+  "signature": "huVjJ2HLkwSRsqKheq9u0jm4iyxkwgDwYahLwH1dWhJPlQDx5X40puOZGUdkZ63RJvhnRxSK6LzVMGkMO8p3DA=="
+}

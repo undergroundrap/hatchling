@@ -639,6 +639,17 @@ jobs:
           if systemctl --user is-active --quiet hatchling-host.service; then exit 1; fi
           systemctl is-active --quiet "hatchling-host@$USER.service"
           curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:7340/ > /dev/null
+          # Hatchling's skills (WO-046), added to the kept configuration:
+          # installed root's, their signer trusted, each found and verified
+          # by the broker, and each off until the owner enables it.
+          sudo grep -q '^HATCHLING_SKILLS_DIR=/usr/local/share/hatchling/skills$' /etc/hatchling/hatchling.env
+          sudo grep -q '^HATCHLING_SKILL_ENABLEMENTS_DIR=/var/lib/hatchling/skills-enabled$' /etc/hatchling/hatchling.env
+          [ "$(sudo stat -c '%U %a' /etc/hatchling/skill-trust-roots)" = "root 644" ]
+          for skill in research-a-question tidy-a-folder write-a-report; do
+            [ "$(stat -c '%U %a' "/usr/local/share/hatchling/skills/$skill")" = "root 755" ]
+            sudo journalctl -u hatchling.service --no-pager \
+              | grep 'skill found, waiting for the owner' | grep -q "\"$skill\""
+          done
 
       - name: Upgrade a configuration from before the kept stores
         run: |

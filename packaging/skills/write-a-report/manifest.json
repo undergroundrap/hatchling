@@ -1,0 +1,16 @@
+{
+  "format": 2,
+  "name": "write-a-report",
+  "version": "1",
+  "description": "Use when the owner asks for a report, a write-up, or a summary document on a topic, from material in the workspace or Library items the owner hands back, from granted web sources, or both, and wants a file back, not just an answer in the chat. Not for a quick factual answer in conversation, and not for editing an existing document (that is ordinary write/edit work).",
+  "instructions": "SKILL.md",
+  "files": [
+    {
+      "path": "SKILL.md",
+      "bytes": 2256,
+      "sha256": "a8079954145d7cf57a102f669abd489f8724bf803dcb515a46d32e123b4c2719"
+    }
+  ],
+  "program": null,
+  "signature": "fAj4SjiDk3mEG0A+tQTWsQBaHBaBELHg+ozJD7jkPqX1/jxemw2sWBGL8vlDobQ6tz4kUhVls655tnOs/pVjBw=="
+}
