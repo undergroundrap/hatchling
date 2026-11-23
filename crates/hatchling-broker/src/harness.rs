@@ -4405,7 +4405,10 @@ mod tests {
             old.insert(env::HATCHLING_HARNESS_GRANTS.name, bad.to_owned());
             let (key, reason) = refusal(parsed(&config, &old));
             assert_eq!(key, "HATCHLING_HARNESS_GRANTS", "{bad}");
-            assert!(reason.contains("by its name alone"), "{reason}");
+            assert!(
+                reason.contains("by its name alone"),
+                "the refusal says to grant a harness by its name"
+            );
         }
         let mut vars = vars;
         vars.insert(env::HATCHLING_HARNESS_GRANTS.name, String::from(" , "));
