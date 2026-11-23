@@ -4,22 +4,63 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
 import tarfile
+import time
 import urllib.request
 
 
-def download(pin, destination):
+# A fixture that arrives short or garbled (a connection can end early with
+# no error) is fetched again, from scratch, at most this many times (#624).
+ATTEMPTS = 3
+PAUSE_SECONDS = 5
+
+
+class Oversize(ValueError):
+    """More bytes than the pin says: refused at once, never fetched again."""
+
+
+class Mismatch(ValueError):
+    """Not the pinned size and SHA-256: fetched again, then refused."""
+
+
+def fetch_once(pin, destination, opener):
     digest = hashlib.sha256()
     count = 0
-    with urllib.request.urlopen(pin['url'], timeout=120) as response, destination.open('xb') as output:
+    with opener(pin['url'], timeout=120) as response, destination.open('xb') as output:
         while chunk := response.read(1024 * 1024):
             count += len(chunk)
             if count > pin['bytes']:
-                raise ValueError('Fixture exceeds pinned size')
+                raise Oversize('Fixture exceeds pinned size')
             digest.update(chunk)
             output.write(chunk)
     if count != pin['bytes'] or digest.hexdigest() != pin['sha256']:
-        raise ValueError('Fixture does not match its pinned size and SHA-256')
+        raise Mismatch('Fixture does not match its pinned size and SHA-256')
+
+
+def download(pin, destination, opener=urllib.request.urlopen, sleep=time.sleep):
+    """Fetches `pin` to `destination`, a file that mustn't exist, checked
+    against its pinned size and SHA-256. A short or garbled download, or a
+    connection that fails, is fetched again from an empty file; one bigger
+    than its pin is refused at once. Nothing is left behind on failure."""
+    if destination.exists() or destination.is_symlink():
+        raise FileExistsError(destination)
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            fetch_once(pin, destination, opener)
+            return
+        except FileExistsError:
+            raise
+        except Oversize:
+            destination.unlink(missing_ok=True)
+            raise
+        except (Mismatch, OSError) as error:
+            destination.unlink(missing_ok=True)
+            if attempt == ATTEMPTS:
+                raise
+            print(f'{pin["url"]}: attempt {attempt} of {ATTEMPTS} failed ({error}); fetching it again',
+                  file=sys.stderr)
+            sleep(PAUSE_SECONDS)
 
 
 def main():
