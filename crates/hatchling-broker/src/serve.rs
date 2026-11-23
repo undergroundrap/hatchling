@@ -667,6 +667,29 @@ pub fn serve_cell_connection(
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
 ) -> Result<(), Error> {
+    serve_spawned(
+        cell,
+        config,
+        key,
+        skills,
+        hub,
+        runs,
+        SkillReach::WithHarnesses,
+    )
+}
+
+/// Serves `cell`'s session on its own connection, its skill ops reaching
+/// as `reach` says. Logged as every agent session is: the log is read by
+/// operators' tools, the hosted-model proof among them.
+fn serve_spawned(
+    cell: &AgentCell,
+    config: &Config,
+    key: &dyn OpensStores,
+    skills: &Skills,
+    hub: Option<&LocalHub>,
+    runs: Option<crate::RunEnv>,
+    reach: SkillReach,
+) -> Result<(), Error> {
     let stream = &cell.connection;
     let cell_id = handshake(stream, Some(&cell.cell_id))?;
     let creds = PeerCredentials::of_spawned(config.agent_uid, PeerPid::from_kernel(cell.pid));
@@ -677,17 +700,7 @@ pub fn serve_cell_connection(
         "agent session established"
     );
     serve_session(
-        stream,
-        config,
-        key,
-        skills,
-        &cell_id,
-        true,
-        creds,
-        hub,
-        runs,
-        &cell.hit,
-        SkillReach::WithHarnesses,
+        stream, config, key, skills, &cell_id, true, creds, hub, runs, &cell.hit, reach,
     )
 }
 
@@ -714,21 +727,13 @@ pub(crate) fn serve_run_connection(
     key: &dyn OpensStores,
     skills: &Skills,
 ) -> Result<(), Error> {
-    let stream = &cell.connection;
-    let cell_id = handshake(stream, Some(&cell.cell_id))?;
-    let creds = PeerCredentials::of_spawned(config.agent_uid, PeerPid::from_kernel(cell.pid));
-    tracing::info!(cell_id = %cell_id, "run session established");
-    serve_session(
-        stream,
+    serve_spawned(
+        cell,
         config,
         key,
         skills,
-        &cell_id,
-        true,
-        creds,
         None,
         None,
-        &cell.hit,
         SkillReach::SkillsOnly,
     )
 }
