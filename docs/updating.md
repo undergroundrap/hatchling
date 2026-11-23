@@ -70,7 +70,7 @@ gh release download vX.Y.Z --repo undergroundrap/hatchling --dir release
 sudo scripts/install.sh --from release --keep-model
 ```
 
-It checks every file against the release's `SHA256SUMS` before it changes anything, and a file that differs stops it there. Then it replaces the programs and the app, runs `doctor`, and restarts the services. With `gh` installed and signed in, it also checks that the files were built by this project's release workflow (`SHA256SUMS`'s attestation, which covers every file that matches it), and stops before changing anything if they weren't; without `gh`, it says it couldn't check, and [Verifying a release](releasing.md#verifying-a-release) has the steps by hand.
+It checks every file against the release's `SHA256SUMS` before it changes anything, and a file that differs stops it there. Then it replaces the programs and the app, runs `doctor`, and restarts the services. With `gh` installed and signed in, it also checks that the files were built by this project's release workflow (`SHA256SUMS`'s attestation, which covers every file that matches it), and stops before changing anything if they weren't. Without `gh` signed in it can't check, and stops: check them by hand ([Verifying a release](releasing.md#verifying-a-release)) and pass `--unverified`. A release older than the one installed stops it too, unless you pass `--allow-older`.
 
 `--keep-model` takes no model and no `--force`: it leaves your configuration, your model and its server alone. When the new version keeps something by default that your configuration doesn't name at all, it adds that setting, copies the old file beside it (`hatchling.env.before-<date>`), and says so. A setting you set empty stays off.
 
@@ -94,7 +94,7 @@ This is for trying a change before it's released. Nothing here is attested: only
 gh run download <run id> --repo undergroundrap/hatchling -n build-x86_64-unknown-linux-gnu-a -n ui-a --dir ci-build
 ```
 
-Each artifact lands in a folder of its own. Wait for the run's comparison jobs to pass before you use it, and check the commit in `build-info` is the one you mean to test. Put the programs and `hatchling-ui.tar.gz` in one directory and install from it with `--keep-model`, from a clone at that same commit, so the installer matches the programs.
+Each artifact lands in a folder of its own. Wait for the run's comparison jobs to pass before you use it, and check the commit in `build-info` is the one you mean to test. Put the programs and `hatchling-ui.tar.gz` in one directory and install from it with `--keep-model` (and `--unverified`, if you copy the run's `SHA256SUMS` too: a CI run's files aren't a release's), from a clone at that same commit, so the installer matches the programs.
 
 ## After an update
 
