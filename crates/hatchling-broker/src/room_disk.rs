@@ -1359,7 +1359,8 @@ fn open_volume(disk: &RoomDisk) -> Result<(PathBuf, String), String> {
     Ok((disk.mount_point(), device.trim_end().to_owned()))
 }
 
-/// What is asked of the room disk's inbox (WO-041).
+/// What is asked of the room disk's root-written folders: its inbox
+/// (WO-041), and the skills the owner enabled (WO-046).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InboxOp {
     /// Put `bytes` in it as a new file named for `stem`.
@@ -1376,6 +1377,33 @@ pub(crate) enum InboxOp {
         /// Its name in the inbox.
         name: String,
     },
+    /// Say what skills the Room holds, with their digests.
+    SkillsHeld,
+    /// Put the skill `name`, at `digest`, holding `files`, in place of any
+    /// the Room holds by that name.
+    SkillPut {
+        /// Its name.
+        name: String,
+        /// The digest the owner enabled.
+        digest: String,
+        /// Its files: each one's path in the skill, and its bytes.
+        files: Vec<(String, Vec<u8>)>,
+    },
+    /// Take the skill `name` out of the Room.
+    SkillRemove {
+        /// Its name.
+        name: String,
+    },
+}
+
+/// A skill the Room holds, as the spawner says it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HeldSkillEntry {
+    /// Its name.
+    pub name: String,
+    /// The digest it was put at; empty when unreadable.
+    pub digest: String,
 }
 
 /// A file in the room disk's inbox, as the owner is shown it.
@@ -1397,6 +1425,8 @@ pub(crate) enum InboxAnswer {
     Listed(Vec<InboxEntry>),
     /// The file was taken out.
     Removed,
+    /// The skills the Room holds, by name.
+    SkillsHeld(Vec<HeldSkillEntry>),
 }
 
 /// Does `op` on the room disk's inbox (WO-041). It takes the disk's turn,
@@ -1446,6 +1476,34 @@ fn inbox_at(mount: &Path, device: &str, op: &InboxOp) -> Result<InboxAnswer, Str
             .map_err(|error| said(&error)),
         InboxOp::Remove { name } => room_inbox::remove(volume.as_fd(), name)
             .map(|()| InboxAnswer::Removed)
+            .map_err(|error| said(&error)),
+        InboxOp::SkillsHeld => hatchling_sys::room_skills::held(volume.as_fd())
+            .map(|held| {
+                InboxAnswer::SkillsHeld(
+                    held.into_iter()
+                        .map(|skill| HeldSkillEntry {
+                            name: skill.name,
+                            digest: skill.digest,
+                        })
+                        .collect(),
+                )
+            })
+            .map_err(|error| said(&error)),
+        InboxOp::SkillPut {
+            name,
+            digest,
+            files,
+        } => {
+            let files: Vec<hatchling_sys::room_skills::SkillFile<'_>> = files
+                .iter()
+                .map(|(path, bytes)| hatchling_sys::room_skills::SkillFile { path, bytes })
+                .collect();
+            hatchling_sys::room_skills::put(volume.as_fd(), name, digest, &files)
+                .map(|()| InboxAnswer::Removed)
+                .map_err(|error| said(&error))
+        }
+        InboxOp::SkillRemove { name } => hatchling_sys::room_skills::remove(volume.as_fd(), name)
+            .map(|_| InboxAnswer::Removed)
             .map_err(|error| said(&error)),
     }
 }

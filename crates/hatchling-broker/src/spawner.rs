@@ -595,12 +595,31 @@ enum Request {
     RoomInboxList,
     /// Take the file `name` out of the Room's inbox (WO-041).
     RoomInboxRemove { name: String },
+    /// Do `op` on the Room's skills (WO-046).
+    RoomSkills { op: SkillsRequest },
     /// Hand back the whole of the file at `path` in the Room's workspace,
     /// for it to be handed to the owner (WO-041).
     RoomTake { path: String },
     /// Hand back what the folder at `path` in the Room's workspace holds,
     /// for it to be handed to the owner (WO-043).
     RoomList { path: String },
+}
+
+/// What is asked of the Room's skills (WO-046).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
+enum SkillsRequest {
+    /// Say what skills the Room holds.
+    Held,
+    /// Put the skill `name`, at `digest`: its files' paths and sizes, in
+    /// order; their bytes follow, in frames.
+    Put {
+        name: String,
+        digest: String,
+        files: Vec<(String, usize)>,
+    },
+    /// Take the skill `name` out.
+    Remove { name: String },
 }
 
 /// What the spawner answers.
@@ -637,6 +656,10 @@ enum Reply {
     /// The files the Room's inbox holds, by number.
     RoomInbox {
         files: Vec<crate::room_disk::InboxEntry>,
+    },
+    /// The skills the Room holds (WO-046).
+    RoomSkills {
+        held: Vec<crate::room_disk::HeldSkillEntry>,
     },
     /// The file asked for was read whole: its `size` bytes follow, in
     /// frames.
@@ -881,6 +904,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => {
                 return Err(String::from("the spawner answered out of step"));
@@ -961,6 +985,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1008,7 +1033,8 @@ impl Spawner {
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
-            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1034,7 +1060,82 @@ impl Spawner {
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
-            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. } => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Has the spawner say what skills the Room holds (WO-046), by name,
+    /// with their digests.
+    ///
+    /// # Errors
+    ///
+    /// Why not: a disk that isn't open, a skills folder that can't be read,
+    /// or a spawner that can't be reached.
+    pub fn room_skills_held(&self) -> Result<Vec<crate::room_disk::HeldSkillEntry>, String> {
+        let request = Request::RoomSkills {
+            op: SkillsRequest::Held,
+        };
+        skills_reply(self.room_inbox_ask(&request)?)?
+            .ok_or_else(|| String::from("the spawner answered out of step"))
+    }
+
+    /// Has the spawner put the skill `name`, at `digest`, holding `files`
+    /// (each one's path and bytes), in the Room (WO-046), in place of any
+    /// it holds by that name.
+    ///
+    /// # Errors
+    ///
+    /// Why not: the Room's refusal, a disk that isn't open, or a spawner
+    /// that can't be reached.
+    pub fn room_skill_put(
+        &self,
+        name: &str,
+        digest: &str,
+        files: &[(String, Vec<u8>)],
+    ) -> Result<(), String> {
+        let stream = self.connect().map_err(|error| error.to_string())?;
+        stream
+            .set_read_timeout(Some(ROOM_DISK_TIMEOUT))
+            .map_err(|error| format!("cannot bound the spawner's answer: {error}"))?;
+        let request = Request::RoomSkills {
+            op: SkillsRequest::Put {
+                name: name.to_owned(),
+                digest: digest.to_owned(),
+                files: files
+                    .iter()
+                    .map(|(path, bytes)| (path.clone(), bytes.len()))
+                    .collect(),
+            },
+        };
+        send(&stream, &request).map_err(|error| error.to_string())?;
+        for (_, bytes) in files {
+            for chunk in bytes.chunks(DELIVERY_CHUNK) {
+                write_frame(&stream, chunk).map_err(|error| gone(error).to_string())?;
+            }
+        }
+        let reply = receive(&stream).map_err(|error| error.to_string())?;
+        match skills_reply(reply)? {
+            None => Ok(()),
+            Some(_) => Err(String::from("the spawner answered out of step")),
+        }
+    }
+
+    /// Has the spawner take the skill `name` out of the Room (WO-046).
+    ///
+    /// # Errors
+    ///
+    /// Why not: a name a skill can't have in the Room, a disk that isn't
+    /// open, or a spawner that can't be reached.
+    pub fn room_skill_remove(&self, name: &str) -> Result<(), String> {
+        let request = Request::RoomSkills {
+            op: SkillsRequest::Remove {
+                name: name.to_owned(),
+            },
+        };
+        match skills_reply(self.room_inbox_ask(&request)?)? {
+            None => Ok(()),
+            Some(_) => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1063,7 +1164,8 @@ impl Spawner {
             | Reply::RoomFound { .. }
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
-            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1106,6 +1208,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1135,6 +1238,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1233,6 +1337,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1278,6 +1383,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1320,7 +1426,8 @@ impl Spawner {
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. }
             | Reply::RoomListed { .. }
-            | Reply::RoomTook { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1363,7 +1470,8 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomListed { .. }
-            | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
+            | Reply::RoomInbox { .. }
+            | Reply::RoomSkills { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
 
@@ -1415,6 +1523,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
     }
@@ -1458,6 +1567,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1485,6 +1595,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1527,6 +1638,7 @@ impl Spawner {
             | Reply::RoomChanged { .. }
             | Reply::RoomListed { .. }
             | Reply::RoomTook { .. }
+            | Reply::RoomSkills { .. }
             | Reply::RoomPlaced { .. }
             | Reply::RoomInbox { .. } => Err(String::from("the spawner answered out of step")),
         }
@@ -1576,6 +1688,7 @@ impl SpawnedProcess {
                     | Reply::RoomChanged { .. }
                     | Reply::RoomListed { .. }
                     | Reply::RoomTook { .. }
+                    | Reply::RoomSkills { .. }
                     | Reply::RoomPlaced { .. }
                     | Reply::RoomInbox { .. },
                 ) => Err(String::from("the spawner answered out of step")),
@@ -1977,11 +2090,7 @@ fn serve_connection(
                 };
                 crate::harness_tree::change_trees(program, op, &dirs, cell)
             };
-            let reply = match changed {
-                Ok(()) => Reply::Done,
-                Err(reason) => Reply::Refused { reason },
-            };
-            send(stream, &reply)
+            send(stream, &done_or_refused(changed))
         }
         Request::Kill => send(
             stream,
@@ -1992,22 +2101,15 @@ fn serve_connection(
         Request::Deliver { name, size } => {
             let delivered =
                 read_delivery(stream, size).and_then(|bytes| deliver(policy, &name, &bytes));
-            let reply = match delivered {
-                Ok(()) => Reply::Done,
-                Err(reason) => Reply::Refused { reason },
-            };
-            send(stream, &reply)
+            send(stream, &done_or_refused(delivered))
         }
         Request::RoomDisk { op } => {
             let done = sessions.disk(op, |op| room_disk_done(policy, keeper, op, false));
             send(stream, &room_disk_reply(done))
         }
         Request::RoomMount => {
-            let reply = match sessions.probe(|| room_launch(program, policy, keeper, None)) {
-                Ok(()) => Reply::Done,
-                Err(reason) => Reply::Refused { reason },
-            };
-            send(stream, &reply)
+            let probed = sessions.probe(|| room_launch(program, policy, keeper, None));
+            send(stream, &done_or_refused(probed))
         }
         Request::RoomRun { run } => send(stream, &room_job_reply(sessions.run(&run, stream))),
         Request::RoomJob { job, wait_secs } => {
@@ -2040,6 +2142,7 @@ fn serve_connection(
             let remove = Ok(InboxOp::Remove { name });
             inbox_told(stream, remove, policy, keeper, sessions)
         }
+        Request::RoomSkills { op } => skills_told(stream, op, policy, keeper, sessions),
         Request::RoomTake { path } => took_told(stream, &path, sessions),
         Request::RoomList { path } => listed_told(stream, &path, sessions, LIST_TIME),
     }
@@ -2280,6 +2383,7 @@ impl Reply {
             InboxAnswer::Placed(name) => Self::RoomPlaced { name },
             InboxAnswer::Listed(files) => Self::RoomInbox { files },
             InboxAnswer::Removed => Self::Done,
+            InboxAnswer::SkillsHeld(held) => Self::RoomSkills { held },
         }
     }
 }
@@ -2476,6 +2580,95 @@ fn room_inbox_done(
     } else {
         crate::room_disk::inbox(room, op)
     }
+}
+
+/// Done, or refused saying why.
+fn done_or_refused(result: Result<(), String>) -> Reply {
+    match result {
+        Ok(()) => Reply::Done,
+        Err(reason) => Reply::Refused { reason },
+    }
+}
+
+/// Does `op` to the Room's skills, through the live session or directly,
+/// and answers it on `stream`: a put's files are read from it first.
+fn skills_told(
+    stream: &UnixStream,
+    op: SkillsRequest,
+    policy: &Policy,
+    keeper: Option<&Keeper>,
+    sessions: &Sessions,
+) -> Result<(), Error> {
+    let op = match op {
+        SkillsRequest::Held => Ok(InboxOp::SkillsHeld),
+        SkillsRequest::Put {
+            name,
+            digest,
+            files,
+        } => read_skill(stream, &files).map(|files| InboxOp::SkillPut {
+            name,
+            digest,
+            files,
+        }),
+        SkillsRequest::Remove { name } => Ok(InboxOp::SkillRemove { name }),
+    };
+    inbox_told(stream, op, policy, keeper, sessions)
+}
+
+/// What the spawner answered a skills request (WO-046): the skills the
+/// Room holds, or done.
+///
+/// # Errors
+///
+/// Its refusal, or an answer out of step.
+fn skills_reply(reply: Reply) -> Result<Option<Vec<crate::room_disk::HeldSkillEntry>>, String> {
+    match reply {
+        Reply::RoomSkills { held } => Ok(Some(held)),
+        Reply::Done => Ok(None),
+        Reply::Refused { reason } => Err(reason),
+        Reply::Started { .. }
+        | Reply::Exited { .. }
+        | Reply::RoomDisk { .. }
+        | Reply::RoomJob { .. }
+        | Reply::RoomOutput { .. }
+        | Reply::RoomPage { .. }
+        | Reply::RoomFound { .. }
+        | Reply::RoomChanged { .. }
+        | Reply::RoomPlaced { .. }
+        | Reply::RoomInbox { .. }
+        | Reply::RoomTook { .. }
+        | Reply::RoomListed { .. } => Err(String::from("the spawner answered out of step")),
+    }
+}
+
+/// Reads a skill's files, sized as `files` says, in order: at most
+/// [`hatchling_sys::room_skills::SKILL_BYTES`] together.
+fn read_skill(
+    stream: &UnixStream,
+    files: &[(String, usize)],
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let total = files
+        .iter()
+        .map(|(_, size)| *size)
+        .fold(0usize, usize::saturating_add);
+    if total > hatchling_sys::room_skills::SKILL_BYTES
+        || files.len() > hatchling_sys::room_skills::SKILL_FILES
+    {
+        return Err(String::from(
+            "a skill holds at most 64 files and 1 MiB in the Room",
+        ));
+    }
+    let mut read = Vec::with_capacity(files.len());
+    for (path, size) in files {
+        let bytes = read_sized(
+            stream,
+            *size,
+            hatchling_sys::room_skills::SKILL_BYTES,
+            || String::from("a skill holds at most 1 MiB in the Room"),
+        )?;
+        read.push((path.clone(), bytes));
+    }
+    Ok(read)
 }
 
 /// The largest file the Room's inbox takes.

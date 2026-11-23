@@ -99,13 +99,15 @@ rm -- "$proof/key"
 mkfs.ext4 -q "/dev/mapper/$luks"
 # Deliberately no noexec here: inherited noexec would mask a broken room flag.
 mount -o nodev,nosuid "/dev/mapper/$luks" "$proof/disk"
-mkdir -m 0755 "$proof/disk/workspace" "$proof/disk/inbox"
+mkdir -m 0755 "$proof/disk/workspace" "$proof/disk/inbox" "$proof/disk/skills" "$proof/disk/skills/notes"
 mkdir "$proof/disk/workspace/"{host-mount,shadow}
 chown 65534:65534 "$proof/disk/workspace"
 mount -t tmpfs -o size=64K tmpfs "$proof/disk/workspace/host-mount"
 printf 'host-only\n' > "$proof/disk/workspace/host-mount/canary"
 printf inbox-content > "$proof/disk/inbox/fixture"
 chmod 0644 "$proof/disk/inbox/fixture"
+printf skill-content > "$proof/disk/skills/notes/SKILL.md"
+chmod 0444 "$proof/disk/skills/notes/SKILL.md"
 if [[ $mode != writable ]]; then
     install -m 0755 "$proof/image/bin/sh" "$proof/disk/workspace/payload"
 fi
@@ -120,7 +122,7 @@ run_probe() {
 }
 run_probe threads
 if [[ $mode == writable ]]; then
-    mkdir -m 0755 "$proof/disk/workspace/inbox"
+    mkdir -m 0755 "$proof/disk/workspace/inbox" "$proof/disk/workspace/skills"
     HATCHLING_ROOM_WRITABLE_IMAGE_FIXTURE=1 run_probe view
     test ! -e "$proof/image/room-mount-probe"
     echo 'Room root rejected writes with a writable source'
@@ -129,7 +131,7 @@ fi
 ln -s shadow "$proof/disk/workspace/inbox"
 HATCHLING_ROOM_BAD_INBOX=1 run_probe view
 rm -- "$proof/disk/workspace/inbox"
-mkdir -m 0755 "$proof/disk/workspace/inbox"
+mkdir -m 0755 "$proof/disk/workspace/inbox" "$proof/disk/workspace/skills"
 if [[ $mode == full ]]; then
     HATCHLING_ROOM_FILL_SCRATCH=1 run_probe view
     echo 'Room scratch write returned ENOSPC at 512 MiB'
@@ -158,6 +160,9 @@ chmod 0755 "$proof/disk/inbox"
 chown 65534:65534 "$proof/disk/inbox"
 HATCHLING_ROOM_PROOF_SOURCE_ERROR='verify room inbox ownership' run_probe verified
 chown 0:0 "$proof/disk/inbox"
+chmod 0775 "$proof/disk/skills"
+HATCHLING_ROOM_PROOF_SOURCE_ERROR='verify room skills ownership' run_probe verified
+chmod 0755 "$proof/disk/skills"
 chmod 0777 "$proof/disk"
 HATCHLING_ROOM_PROOF_SOURCE_ERROR='verify room volume root ownership' run_probe verified
 chmod 0755 "$proof/disk"

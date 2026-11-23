@@ -119,6 +119,7 @@ fn room_mount_verified_view() {
             &mapper,
             pin(&volume.join("workspace")).expect("pin fixture workspace"),
             pin(&volume.join("inbox")).expect("pin fixture inbox"),
+            pin(&volume.join("skills")).expect("pin fixture skills"),
             staging,
             65534,
             65534,
@@ -286,6 +287,7 @@ fn room_mount_view() {
         image: pin(&fixture.join("image")).expect("pin fixture image"),
         workspace: pin(&fixture.join("disk/workspace")).expect("pin fixture workspace"),
         inbox: pin(&fixture.join("disk/inbox")).expect("pin fixture inbox"),
+        skills: pin(&fixture.join("disk/skills")).expect("pin fixture skills"),
         staging: pin(&fixture.join("stage")).expect("pin staging directory"),
         uid: 65534,
         gid: 65534,
@@ -323,6 +325,13 @@ fn room_mount_view() {
     let inbox_write =
         fs::write("/workspace/inbox/refused", b"x").expect_err("inbox must be read-only");
     assert_eq!(inbox_write.raw_os_error(), Some(libc::EROFS));
+    assert_eq!(
+        fs::read_to_string("/workspace/skills/notes/SKILL.md").expect("read a skill"),
+        "skill-content"
+    );
+    let skills_write =
+        fs::write("/workspace/skills/refused", b"x").expect_err("skills must be read-only");
+    assert_eq!(skills_write.raw_os_error(), Some(libc::EROFS));
     assert!(fs::write("/etc/room-mount-probe", b"x").is_err());
     assert!(!Path::new("/proc/sys").exists());
     assert!(!Path::new("/dev/shm").exists());

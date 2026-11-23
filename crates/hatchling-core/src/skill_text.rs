@@ -86,6 +86,13 @@ fn line(skill: &SkillEntry) -> String {
     if skill.playbook {
         line.push_str(" (playbook: skill_read)");
     }
+    if skill.files {
+        let _ = write!(
+            line,
+            " (its files, read-only, in your computer at /workspace/skills/{}/)",
+            label(&skill.name)
+        );
+    }
     if !skill.capabilities.is_empty() {
         let capabilities: Vec<&str> = skill
             .capabilities
@@ -222,7 +229,9 @@ mod tests {
                 "- tool@1: Turns text into text. (program: skill_invoke, with text.read)\n"
             )
         );
-        assert!(list.contains("- helper@1: Runs its scripts. (playbook: skill_read)\n"));
+        assert!(list.contains(
+            "- helper@1: Runs its scripts. (playbook: skill_read) (its files, read-only, in your computer at /workspace/skills/helper/)\n"
+        ));
         assert!(!list.contains("more:"));
         // With no computer, a skill whose helpers need one isn't listed.
         let bare = render_list(&skills, 0, false, SKILL_LIST_BUDGET).unwrap();

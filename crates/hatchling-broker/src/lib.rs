@@ -168,6 +168,7 @@ pub mod skill_cell;
 pub mod skill_enablement;
 pub mod skill_invoke;
 pub mod skill_ops;
+pub mod skill_room;
 pub mod skill_run;
 pub mod skills;
 pub mod space_ops;

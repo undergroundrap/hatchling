@@ -593,6 +593,83 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
     Ok(())
 }
 
+/// The skills the owner enabled (WO-046): a folder of root's on the room
+/// disk, beside the inbox, with a root-owned attachment in the workspace;
+/// a skill put through the spawner whole and read-only, said held, and
+/// taken out. A `skills` the Room made itself in its workspace is moved
+/// aside, never removed, and a skills folder others could write refuses
+/// the disk.
+#[test]
+fn the_spawner_puts_the_owners_skills_on_the_room_disk() -> Result<(), Failed> {
+    let Some(_disk_tests) = as_root("the_spawner_puts_the_owners_skills_on_the_room_disk") else {
+        return Ok(());
+    };
+    let place = Place::new("skills")?;
+    let keeper = Keeper::start(&place, "keeper")?;
+    let program = Path::new(env!("CARGO_BIN_EXE_hatchling-broker"));
+    let spawner = installed_spawner(&place, &keeper, program, None)?;
+    let run = |op| spawner.0.room_disk(op);
+    run(RoomDiskOp::Create)?;
+    run(RoomDiskOp::Open)?;
+    let mount = place.disk.mount_point();
+    let skills = mount.join("skills");
+    let attachment = mount.join("workspace").join("skills");
+    for (directory, mode) in [(&skills, 0o755), (&attachment, 0o700)] {
+        let meta = std::fs::symlink_metadata(directory)?;
+        assert!(meta.is_dir(), "room layout lacks {}", directory.display());
+        assert_eq!((meta.uid(), meta.mode() & 0o777), (0, mode));
+    }
+
+    let digest = "a".repeat(64);
+    let files = vec![
+        (String::from("SKILL.md"), b"# Steps\n".to_vec()),
+        (String::from("scripts/outline.py"), b"print(1)\n".to_vec()),
+    ];
+    spawner.0.room_skill_put("notes", &digest, &files)?;
+    let put = skills.join("notes").join("scripts").join("outline.py");
+    assert_eq!(std::fs::read(&put)?, b"print(1)\n");
+    let meta = std::fs::metadata(&put)?;
+    assert_eq!((meta.uid(), meta.mode() & 0o777), (0, 0o444));
+    let held = spawner.0.room_skills_held()?;
+    assert_eq!(
+        held.iter()
+            .map(|skill| (skill.name.as_str(), skill.digest.as_str()))
+            .collect::<Vec<_>>(),
+        [("notes", digest.as_str())]
+    );
+    let refused = spawner
+        .0
+        .room_skill_put("../out", &digest, &files)
+        .unwrap_err();
+    assert!(refused.contains("isn't a name"), "{refused}");
+    spawner.0.room_skill_remove("notes")?;
+    assert!(spawner.0.room_skills_held()?.is_empty());
+    assert!(!skills.join("notes").exists());
+
+    // A `skills` the Room made itself: moved aside with what it holds.
+    run(RoomDiskOp::Close)?;
+    run(RoomDiskOp::Open)?;
+    std::fs::remove_dir(&attachment)?;
+    std::fs::create_dir(&attachment)?;
+    std::fs::write(attachment.join("mine.txt"), b"the agent's")?;
+    std::os::unix::fs::chown(&attachment, Some(1234), Some(1234))?;
+    run(RoomDiskOp::Open)?;
+    let aside = mount.join("workspace").join("skills.moved-1");
+    assert_eq!(std::fs::read(aside.join("mine.txt"))?, b"the agent's");
+    let meta = std::fs::symlink_metadata(&attachment)?;
+    assert_eq!((meta.uid(), meta.mode() & 0o777), (0, 0o700));
+
+    // A skills folder others could write refuses the disk.
+    std::fs::set_permissions(&skills, std::fs::Permissions::from_mode(0o775))?;
+    run(RoomDiskOp::Close)?;
+    let refused = run(RoomDiskOp::Open).unwrap_err();
+    assert!(
+        refused.contains("verify room skills ownership"),
+        "{refused}"
+    );
+    Ok(())
+}
+
 /// A file put in the inbox, with no Room to hold the disk, is root's,
 /// read-only, numbered, whole, and in the inbox alone. A link planted
 /// where it is written is taken away, not written through.
