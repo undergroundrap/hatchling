@@ -10,8 +10,11 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 - **`hatchling skill`: make a signing key, sign a skill, check one** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). `key new` makes a key in a file only you can read and prints its public half for a trust-roots file; `sign` lists every file in a skill's folder with its hash and signs the manifest you wrote; `check` verifies a skill as Hatchling will load it. Signing happens in your own terminal: the key is read from its file only, never from an argument, and Hatchling's broker never sees it.
 
+- **You enable each skill, bound to what you saw** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). A skill the broker finds waits until you enable it; enabling names the skill's digest, the hash of its signed manifest, which lists every file's hash and the capabilities its program declares. A skill changed after you enabled it stops and waits for you again. Your choices are kept sealed in `HATCHLING_SKILL_ENABLEMENTS_DIR`, required with skills. The app's API lists, enables and disables skills (`manage_skills`, UI schema 10); the Settings screen for it comes next.
+
 ### Changed
 
+- **Skill grants by setting are retired** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). `HATCHLING_SKILL_GRANTS` is refused at start, saying what to do instead: a skill runs with what it declares once you enable it, and a coding harness is granted with `HATCHLING_HARNESS_GRANTS=claude-code,codex-cli` (by name). A skill's code is no longer pinned from the broker's first sight of it: the digest you enabled fixes every byte.
 - **Skills are format 2, and format 1 is retired** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). A skill's signed manifest now says when the skill applies, points at its playbook and its program (at least one of the two), and lists every file it holds with its size and SHA-256. A format 1 manifest is refused, with a message to sign it again. No format 1 skill shipped. `hatchling-skill`'s API changes with it, so the workspace is 0.10.0 from here.
 
 ### Fixed
