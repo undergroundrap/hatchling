@@ -221,9 +221,14 @@ fn what_the_room_is_given_is_each_enabled_skills_verified_files_but_its_program(
         ],
         "its program isn't copied"
     );
-    // And brought in line through a Room.
+    // And brought in line through a Room, only when the run has one,
+    // there is a Room to put them in, and skills to put.
     let room = Fake::default();
-    refresh_from(&room, &skills);
+    assert!(!before_chat_run(false, Some(&room), Some(&skills)));
+    assert!(!before_chat_run(true, None, Some(&skills)));
+    assert!(!before_chat_run(true, Some(&room), None));
+    assert!(room.calls.borrow().is_empty());
+    assert!(before_chat_run(true, Some(&room), Some(&skills)));
     assert_eq!(room.calls.borrow().len(), 1);
     assert!(
         room.calls
@@ -232,4 +237,45 @@ fn what_the_room_is_given_is_each_enabled_skills_verified_files_but_its_program(
             .unwrap()
             .starts_with("put notes ")
     );
+}
+
+#[test]
+fn a_skill_of_exactly_the_rooms_bound_is_given_it() {
+    let scratch = crate::api_auth::tests::scratch("skill-room-bound");
+    let dir = scratch.0.join("skills");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A playbook is at most 32 KiB: the rest of the bound is a data file.
+    let playbook: &[u8] = b"# Steps\n";
+    let data = vec![b'x'; SKILL_BYTES - playbook.len()];
+    package(
+        &dir,
+        "full",
+        &[("SKILL.md", playbook), ("data.bin", &data)],
+        None,
+    );
+    let public = SigningKey::from_bytes(&SECRET).verifying_key().to_bytes();
+    let public = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, public);
+    let roots = scratch.0.join("roots");
+    std::fs::write(
+        &roots,
+        format!("{TRUST_ROOTS_HEADER}\nprimary {public}\nend\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&roots, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let skills = Skills::load(&SkillConfig {
+        skills_dir: dir,
+        trust_roots_file: roots,
+        enablements: scratch.0.join("enabled"),
+    })
+    .unwrap();
+    let enabled: Enabled = skills
+        .snapshot()
+        .listing()
+        .iter()
+        .map(|listing| (listing.name.clone(), listing.digest.clone()))
+        .collect();
+    skills.set_enabled(enabled);
+    let (wanted, left_out) = wanted(&skills.snapshot());
+    assert_eq!((wanted.len(), left_out), (1, 0));
 }

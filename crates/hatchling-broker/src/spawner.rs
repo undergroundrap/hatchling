@@ -3261,6 +3261,179 @@ pub(crate) mod tests {
         }
     }
 
+    /// The Room's skills are asked as one request each, and answered as
+    /// the spawner answers: what it holds, done, or why not; an answer out
+    /// of step is refused. The broker's refresh reaches it through them.
+    #[test]
+    fn the_rooms_skills_are_asked_and_answered_as_the_spawner_answers() {
+        use crate::room_disk::HeldSkillEntry;
+        use crate::skill_room::RoomSkills as _;
+        let answering = |reply: Reply| {
+            let (ours, theirs) = UnixStream::pair().unwrap();
+            let served = std::thread::spawn(move || {
+                let stream = UnixStream::from(hatchling_sys::net::recv_fd(theirs.as_fd()).unwrap());
+                let request: Request =
+                    serde_json::from_slice(&read_frame(&stream).unwrap()).unwrap();
+                let mut sent = Vec::new();
+                if let Request::RoomSkills {
+                    op: SkillsRequest::Put { files, .. },
+                } = &request
+                {
+                    for (_, size) in files {
+                        sent.push(read_sized(&stream, *size, 1 << 20, String::new).unwrap());
+                    }
+                }
+                send(&stream, &reply).unwrap();
+                (format!("{request:?}"), sent)
+            });
+            (Spawner::over(ours), served)
+        };
+        let held = HeldSkillEntry {
+            name: String::from("notes"),
+            digest: "a".repeat(64),
+        };
+        let (spawner, asked) = answering(Reply::RoomSkills {
+            held: vec![held.clone()],
+        });
+        assert_eq!(spawner.held(), Ok(vec![held]));
+        drop(spawner);
+        assert_eq!(asked.join().unwrap().0, "RoomSkills { op: Held }");
+        let files = vec![
+            (String::from("SKILL.md"), b"# Steps\n".to_vec()),
+            (String::from("a.py"), b"print(1)\n".to_vec()),
+        ];
+        let (spawner, asked) = answering(Reply::Done);
+        assert_eq!(spawner.put("notes", "d", &files), Ok(()));
+        drop(spawner);
+        let (said, sent) = asked.join().unwrap();
+        assert_eq!(
+            said,
+            "RoomSkills { op: Put { name: \"notes\", digest: \"d\", files: [(\"SKILL.md\", 8), (\"a.py\", 9)] } }"
+        );
+        assert_eq!(sent, [b"# Steps\n".to_vec(), b"print(1)\n".to_vec()]);
+        let (spawner, asked) = answering(Reply::Done);
+        assert_eq!(spawner.remove("notes"), Ok(()));
+        drop(spawner);
+        assert_eq!(
+            asked.join().unwrap().0,
+            "RoomSkills { op: Remove { name: \"notes\" } }"
+        );
+        // Refusals carry their reason; an answer out of step is refused.
+        let refused = || Reply::Refused {
+            reason: String::from("the disk isn't open"),
+        };
+        let (spawner, _asked) = answering(refused());
+        assert_eq!(spawner.held(), Err(String::from("the disk isn't open")));
+        let (spawner, _asked) = answering(Reply::Done);
+        assert!(spawner.held().unwrap_err().contains("out of step"));
+        let (spawner, _asked) = answering(Reply::RoomSkills { held: Vec::new() });
+        assert!(
+            spawner
+                .put("notes", "d", &files)
+                .unwrap_err()
+                .contains("out of step")
+        );
+        let (spawner, _asked) = answering(Reply::RoomSkills { held: Vec::new() });
+        assert!(spawner.remove("notes").unwrap_err().contains("out of step"));
+        let (spawner, _asked) = answering(refused());
+        assert_eq!(
+            spawner.remove("notes"),
+            Err(String::from("the disk isn't open"))
+        );
+        let (spawner, _asked) = answering(Reply::Started { pid: 1 });
+        assert!(spawner.held().unwrap_err().contains("out of step"));
+    }
+
+    /// A skill for the Room past its bounds is refused by the spawner, of
+    /// files or bytes; one exactly at them is read whole and handed on;
+    /// frames that don't add up to the sizes said are refused.
+    #[test]
+    fn a_skill_for_the_room_is_held_to_its_bounds_and_its_frames() {
+        use crate::room_session::tests::stand_ins;
+        use hatchling_sys::room_skills::{SKILL_BYTES, SKILL_FILES};
+        let (sessions, started, _ended) = stand_ins();
+        let sessions = Arc::new(sessions);
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        let held = Arc::new((PathBuf::from("/bin/sh"), policy()));
+        let served = {
+            let sessions = Arc::clone(&sessions);
+            std::thread::spawn(move || serve_with(&theirs, &held, None, &sessions))
+        };
+        let spawner = Spawner::over(ours);
+        let ask = |files: Vec<(String, usize)>, frames: Vec<Vec<u8>>| {
+            let stream = spawner.connect().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let op = SkillsRequest::Put {
+                name: String::from("notes"),
+                digest: "a".repeat(64),
+                files,
+            };
+            send(&stream, &Request::RoomSkills { op }).unwrap();
+            for frame in frames {
+                write_frame(&stream, &frame).unwrap();
+            }
+            let reply = receive(&stream).unwrap();
+            if let Reply::Refused { reason } = reply {
+                reason
+            } else {
+                format!("{reply:?}")
+            }
+        };
+        let many = |count: usize| (0..count).map(|n| (format!("f{n}"), 0)).collect::<Vec<_>>();
+        let bound = "a skill holds at most 64 files and 1 MiB in the Room";
+        assert_eq!(
+            ask(vec![(String::from("big"), SKILL_BYTES + 1)], Vec::new()),
+            bound
+        );
+        assert_eq!(ask(many(SKILL_FILES + 1), Vec::new()), bound);
+        assert!(
+            ask(vec![(String::from("a"), 3)], vec![b"abcd".to_vec()]).contains("isn't the 3 bytes")
+        );
+        // Exactly at the bounds: read whole and handed on (no Room disk is
+        // here to take it).
+        let full = vec![b'x'; SKILL_BYTES];
+        let said = ask(
+            vec![(String::from("full"), SKILL_BYTES)],
+            full.chunks(DELIVERY_CHUNK).map(<[u8]>::to_vec).collect(),
+        );
+        assert!(said.contains("no room disk here"), "{said}");
+        assert!(ask(many(SKILL_FILES), Vec::new()).contains("no room disk here"));
+        // A list and a removal reach the disk too.
+        for op in [
+            SkillsRequest::Held,
+            SkillsRequest::Remove {
+                name: String::from("notes"),
+            },
+        ] {
+            let stream = spawner.connect().unwrap();
+            send(&stream, &Request::RoomSkills { op }).unwrap();
+            let said = receive(&stream).unwrap();
+            assert!(
+                matches!(&said, Reply::Refused { reason } if reason.contains("no room disk here")),
+                "{said:?}"
+            );
+        }
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            0,
+            "a skill started a session"
+        );
+        drop(spawner);
+        served.join().unwrap();
+    }
+
+    /// Done or refused, as a result says.
+    #[test]
+    fn a_result_is_answered_done_or_refused() {
+        assert!(matches!(done_or_refused(Ok(())), Reply::Done));
+        assert!(matches!(
+            done_or_refused(Err(String::from("no"))),
+            Reply::Refused { reason } if reason == "no"
+        ));
+    }
+
     /// The spawner writes an approved delivery into the workspace, as a
     /// new file of the owner's; a name that isn't a workspace name, a file
     /// already there, a delivery too large, and no workspace configured

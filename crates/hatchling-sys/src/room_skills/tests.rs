@@ -79,6 +79,54 @@ fn refusal(put: Result<(), PutError>) -> &'static str {
 }
 
 #[test]
+fn the_bounds_are_what_the_docs_say() {
+    assert_eq!((SKILLS, SKILL_FILES, SKILL_BYTES), (64, 64, 1 << 20));
+}
+
+#[test]
+fn a_skill_exactly_at_its_bounds_is_put() {
+    let volume = Volume::new("edges");
+    let full = vec![b'x'; SKILL_BYTES];
+    volume.put("full", DIGEST_A, &[file("big", &full)]).unwrap();
+    assert_eq!(
+        std::fs::metadata(volume.skills().join("full/big"))
+            .unwrap()
+            .len(),
+        1 << 20
+    );
+    let names: Vec<String> = (0..SKILL_FILES).map(|n| format!("f{n}")).collect();
+    let many: Vec<SkillFile<'_>> = names.iter().map(|path| file(path, b"x")).collect();
+    volume.put("many", DIGEST_A, &many).unwrap();
+    assert_eq!(
+        std::fs::read_dir(volume.skills().join("many"))
+            .unwrap()
+            .count(),
+        65
+    );
+    let deep = "a/b/c/d/e/f/g/h";
+    volume.put("deep", DIGEST_A, &[file(deep, b"x")]).unwrap();
+    assert!(
+        volume.remove("deep").unwrap(),
+        "the deepest a skill can be is taken out"
+    );
+}
+
+#[test]
+fn whats_left_deeper_than_a_skill_can_be_is_refused_and_at_the_bound_taken_out() {
+    let volume = Volume::new("depth");
+    volume.held();
+    // `.old-x` itself, then eight directories under it: the deepest a skill is.
+    let at = volume.skills().join(".old-at/1/2/3/4/5/6/7/8");
+    std::fs::create_dir_all(&at).unwrap();
+    volume.held();
+    assert!(!volume.skills().join(".old-at").exists(), "taken out");
+    let past = volume.skills().join(".old-past/1/2/3/4/5/6/7/8/9");
+    std::fs::create_dir_all(&past).unwrap();
+    assert!(held_as(volume.pinned.as_fd(), crate::euid()).is_err());
+    std::fs::remove_dir_all(volume.skills().join(".old-past")).unwrap();
+}
+
+#[test]
 fn names_and_paths_keep_to_their_grammar() {
     for name in ["notes", "write-a-report", "a.b_c-1", &"n".repeat(128)] {
         assert!(is_name(name), "{name}");

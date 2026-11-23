@@ -140,10 +140,7 @@ fn skills_dir(volume: BorrowedFd<'_>, trusted: u32) -> Result<OwnedFd, Error> {
     let skills = open_beneath(volume, "skills", OFlags::RDONLY.union(OFlags::DIRECTORY))
         .map_err(failed("open the room skills directory"))?;
     require_control(skills.as_fd(), trusted, "verify room skills ownership")?;
-    let stat = rustix::fs::fstat(&skills).map_err(failed(OPERATION))?;
-    if stat.st_mode & 0o7777 != MODE {
-        rustix::fs::fchmod(&skills, Mode::from_raw_mode(MODE)).map_err(failed(OPERATION))?;
-    }
+    rustix::fs::fchmod(&skills, Mode::from_raw_mode(MODE)).map_err(failed(OPERATION))?;
     Ok(skills)
 }
 

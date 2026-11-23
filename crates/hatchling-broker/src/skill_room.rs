@@ -177,16 +177,20 @@ pub(crate) fn refresh(
     Ok(done)
 }
 
-/// At a chat run's start: when it has a Room, brings the Room's skills in
-/// line with what the owner enabled. Never stops the run.
-pub(crate) fn before_chat_run() {
-    if !crate::room_ops::offered(true, crate::room_ops::open) {
-        return;
-    }
-    let (Some(spawner), Some(skills)) = (crate::spawner::spawner(), crate::skills::live()) else {
-        return;
+/// At a chat run's start: when it has a Room (`offered`), and there is
+/// a `room` to put skills in and `skills` to put, brings the Room's skills
+/// in line with what the owner enabled. Whether it did. Never stops the
+/// run.
+pub(crate) fn before_chat_run(
+    offered: bool,
+    room: Option<&dyn RoomSkills>,
+    skills: Option<&Skills>,
+) -> bool {
+    let (true, Some(room), Some(skills)) = (offered, room, skills) else {
+        return false;
     };
-    refresh_from(spawner, skills);
+    refresh_from(room, skills);
+    true
 }
 
 /// Brings `room`'s skills in line with what `skills` runs now, and says
