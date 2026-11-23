@@ -144,7 +144,7 @@ class GetTest(unittest.TestCase):
         sudo = self.recorded()
         self.assertRegex(
             sudo,
-            r"sudo sh \S+/installer/scripts/install\.sh --from \S+ "
+            r"sudo sh \S+/installer/scripts/install\.sh --from \S+ --unverified "
             r"--model-endpoint http://localhost:18089/v1 --model stand-in\n",
         )
         self.assertIn("installer there", sudo)
@@ -327,7 +327,7 @@ class GetTest(unittest.TestCase):
         self.assertIn("using a hosted model, from openrouter", done.stdout)
         self.assertIn("sudo hatchling-broker use-local --model qwen3.5:9b", done.stdout)
         sudo = self.recorded()
-        self.assertRegex(sudo, r"(?m)sudo sh \S+/install\.sh --from \S+ --hosted openrouter$")
+        self.assertRegex(sudo, r"(?m)sudo sh \S+/install\.sh --from \S+ --unverified --hosted openrouter$")
         self.assertNotIn("--model", sudo)
         self.log.unlink()
         done = self.run_get("--hosted", "openrouter", "--model", "qwen/qwen3-coder:free")
