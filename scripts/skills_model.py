@@ -68,11 +68,16 @@ def results(messages):
 
 
 def read_text(result):
-    """The text of a skill_read result: the agent gives the model its
-    output as JSON, `{"skill": ..., "text": ...}`, so the read's own text
-    is the `text` field, its quotes unescaped. Anything else, as it came."""
+    """The text of a skill_read result. The agent gives the model each tool
+    output as JSON inside an untrusted-data envelope
+    (`<tool_result tool=".." status="ok">
+{json}
+</tool_result>` and a
+    line after it), so the read's own text is the JSON's `text` field, its
+    quotes unescaped. Anything else, as it came."""
+    start, end = result.find("{"), result.rfind("}")
     try:
-        value = json.loads(result)
+        value = json.loads(result[start:end + 1]) if start != -1 else None
     except ValueError:
         return result
     if isinstance(value, dict) and isinstance(value.get("text"), str):
