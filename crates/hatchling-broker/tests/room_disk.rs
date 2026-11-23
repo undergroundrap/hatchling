@@ -593,6 +593,16 @@ fn the_spawner_prepares_layout_only_on_the_verified_room_disk() -> Result<(), Fa
     Ok(())
 }
 
+/// What is at `path`, not followed through a link; a failure names it.
+fn meta_at(path: &Path) -> Result<std::fs::Metadata, Failed> {
+    std::fs::symlink_metadata(path).map_err(|error| format!("{}: {error}", path.display()).into())
+}
+
+/// What `path` holds; a failure names it.
+fn read_at(path: &Path) -> Result<Vec<u8>, Failed> {
+    std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()).into())
+}
+
 /// The skills the owner enabled (WO-046): a folder of root's on the room
 /// disk, beside the inbox, with a root-owned attachment in the workspace;
 /// a skill put through the spawner whole and read-only, said held, and
@@ -615,7 +625,7 @@ fn the_spawner_puts_the_owners_skills_on_the_room_disk() -> Result<(), Failed> {
     let skills = mount.join("skills");
     let attachment = mount.join("workspace").join("skills");
     for (directory, mode) in [(&skills, 0o755), (&attachment, 0o700)] {
-        let meta = std::fs::symlink_metadata(directory)?;
+        let meta = meta_at(directory)?;
         assert!(meta.is_dir(), "room layout lacks {}", directory.display());
         assert_eq!((meta.uid(), meta.mode() & 0o777), (0, mode));
     }
@@ -627,8 +637,8 @@ fn the_spawner_puts_the_owners_skills_on_the_room_disk() -> Result<(), Failed> {
     ];
     spawner.0.room_skill_put("notes", &digest, &files)?;
     let put = skills.join("notes").join("scripts").join("outline.py");
-    assert_eq!(std::fs::read(&put)?, b"print(1)\n");
-    let meta = std::fs::metadata(&put)?;
+    assert_eq!(read_at(&put)?, b"print(1)\n");
+    let meta = meta_at(&put)?;
     assert_eq!((meta.uid(), meta.mode() & 0o777), (0, 0o444));
     let held = spawner.0.room_skills_held()?;
     assert_eq!(
@@ -649,14 +659,18 @@ fn the_spawner_puts_the_owners_skills_on_the_room_disk() -> Result<(), Failed> {
     // A `skills` the Room made itself: moved aside with what it holds.
     run(RoomDiskOp::Close)?;
     run(RoomDiskOp::Open)?;
+    // Still root's, and kept: nothing was moved aside by opening again.
+    let meta = meta_at(&attachment)?;
+    assert_eq!((meta.uid(), meta.mode() & 0o777), (0, 0o700));
+    assert!(!mount.join("workspace").join("skills.moved-1").exists());
     std::fs::remove_dir(&attachment)?;
     std::fs::create_dir(&attachment)?;
     std::fs::write(attachment.join("mine.txt"), b"the agent's")?;
     std::os::unix::fs::chown(&attachment, Some(1234), Some(1234))?;
     run(RoomDiskOp::Open)?;
     let aside = mount.join("workspace").join("skills.moved-1");
-    assert_eq!(std::fs::read(aside.join("mine.txt"))?, b"the agent's");
-    let meta = std::fs::symlink_metadata(&attachment)?;
+    assert_eq!(read_at(&aside.join("mine.txt"))?, b"the agent's");
+    let meta = meta_at(&attachment)?;
     assert_eq!((meta.uid(), meta.mode() & 0o777), (0, 0o700));
 
     // A skills folder others could write refuses the disk.
