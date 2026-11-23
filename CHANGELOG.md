@@ -6,6 +6,10 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ## [Unreleased]
 
+### Added
+
+- **`hatchling skill`: make a signing key, sign a skill, check one** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). `key new` makes a key in a file only you can read and prints its public half for a trust-roots file; `sign` lists every file in a skill's folder with its hash and signs the manifest you wrote; `check` verifies a skill as Hatchling will load it. Signing happens in your own terminal: the key is read from its file only, never from an argument, and Hatchling's broker never sees it.
+
 ### Changed
 
 - **Skills are format 2, and format 1 is retired** ([WO-046](docs/workorders/workorder-046-signed-playbook-skills.md)). A skill's signed manifest now says when the skill applies, points at its playbook and its program (at least one of the two), and lists every file it holds with its size and SHA-256. A format 1 manifest is refused, with a message to sign it again. No format 1 skill shipped. `hatchling-skill`'s API changes with it, so the workspace is 0.10.0 from here.
