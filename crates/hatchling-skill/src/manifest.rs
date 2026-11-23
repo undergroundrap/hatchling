@@ -185,6 +185,16 @@ impl Manifest {
         }
     }
 
+    /// The skill's digest: the SHA-256 of its signed payload, lowercase
+    /// hex. The payload lists every file's hash, so two skills with the
+    /// same digest are the same bytes. The owner enables a skill by it.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidManifest`] if the payload can't be encoded.
+    pub fn digest(&self) -> Result<String, Error> {
+        Ok(hex(&sha2::Sha256::digest(self.canonical_bytes()?)))
+    }
+
     /// The capabilities the skill's program declares; none without one.
     #[must_use]
     pub fn capabilities(&self) -> &[CapabilityName] {

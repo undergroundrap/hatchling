@@ -58,6 +58,19 @@ fn canonical_bytes_are_pinned() {
 }
 
 #[test]
+fn the_digest_is_the_signed_payloads_hash_and_moves_with_any_file() {
+    let m = sample_manifest();
+    let digest = m.digest().unwrap();
+    assert_eq!(
+        digest,
+        FileEntry::of("x", &m.canonical_bytes().unwrap()).sha256
+    );
+    let mut changed = sample_manifest();
+    *nth(&mut changed, 0) = FileEntry::of("SKILL.md", b"# Other\n");
+    assert_ne!(changed.digest().unwrap(), digest);
+}
+
+#[test]
 fn canonical_bytes_change_with_any_file() {
     let a = sample_manifest().canonical_bytes().unwrap();
     let mut changed = sample_manifest();

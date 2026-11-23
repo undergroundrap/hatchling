@@ -596,7 +596,7 @@ pub(crate) fn fixture_skill_config(root: &Path) -> Result<hatchling_broker::Skil
         "The test fixture skill.",
         "skill",
         &code,
-        vec![capability.clone()],
+        vec![capability],
     );
     let payload = manifest.canonical_bytes().map_err(|e| e.to_string())?;
     let signed = hatchling_skill::SignedManifest {
@@ -617,12 +617,25 @@ pub(crate) fn fixture_skill_config(root: &Path) -> Result<hatchling_broker::Skil
     Ok(hatchling_broker::SkillConfig {
         skills_dir,
         trust_roots_file,
-        grants: std::iter::once((
-            String::from("fixture"),
-            std::iter::once(capability).collect(),
-        ))
-        .collect(),
+        enablements: root.join("skills-enabled"),
     })
+}
+
+/// Enables every skill `skills` found, each at its digest, as the owner
+/// does in the app (WO-046).
+#[allow(
+    dead_code,
+    reason = "shared test helper: used by only some test targets"
+)]
+pub(crate) fn enable_found(skills: &hatchling_broker::Skills) {
+    skills.set_enabled(
+        skills
+            .snapshot()
+            .listing()
+            .iter()
+            .map(|listing| (listing.name.clone(), listing.digest.clone()))
+            .collect(),
+    );
 }
 
 /// The broker executable the tests start spawner helpers with: the
@@ -655,6 +668,7 @@ pub(crate) fn fixture_skills(
     let skills = hatchling_broker::Skills::load(&config)
         .map_err(|e| format!("load: {e}"))?
         .with_runtime(runtime);
+    enable_found(&skills);
     if skills.snapshot().registry().len() != 1 {
         return Err(String::from("the fixture skill did not load"));
     }
@@ -762,23 +776,16 @@ pub(crate) fn artifact_skills(
         .verifying_key()
         .to_bytes();
     write_roots_file(&trust_roots_file, &[verifying])?;
-    let mut grants: std::collections::HashMap<String, std::collections::HashSet<_>> = builders
-        .iter()
-        .map(|(name, _)| ((*name).to_owned(), std::iter::once(build.clone()).collect()))
-        .collect();
-    grants.insert(
-        String::from("fixture"),
-        std::iter::once(transform).collect(),
-    );
     let config = hatchling_broker::SkillConfig {
         skills_dir,
         trust_roots_file,
-        grants,
+        enablements: root.join("skills-enabled"),
     };
     let runtime = hatchling_broker::SkillRuntime::new(spawner()).with_timeout(timeout);
     let skills = hatchling_broker::Skills::load(&config)
         .map_err(|e| format!("load: {e}"))?
         .with_runtime(runtime);
+    enable_found(&skills);
     if skills.snapshot().registry().len() != 4 {
         return Err(String::from("the artifact skills did not all load"));
     }

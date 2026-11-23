@@ -22,7 +22,7 @@
 )]
 mod common;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::os::unix::fs::PermissionsExt as _;
@@ -34,7 +34,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use common::{TestDir, broker_config, guard_cell_available, harness_fixture_binary, test_dir};
 use hatchling_broker::browser_credentials::{SignIn, SignInAnswer, SignInRequest};
-use hatchling_broker::harness::{HARNESS_CAPABILITY, vault_keys_through};
+use hatchling_broker::harness::vault_keys_through;
 use hatchling_broker::held_check::{CheckFor, HeldHit, MAX_CHECK_BYTES, MIN_SCAN_BYTES};
 use hatchling_broker::keeper::Keeper;
 use hatchling_broker::vault_access::{Access, CHECK_ACTION, Caller, Outcome, read_log};
@@ -176,9 +176,8 @@ impl Install {
         config.vault.key_file = hatchling_broker::VaultConfig::default_key_file(&config.vault.root);
         config.artifacts.workspace = Some(dir.join("workspace"));
         config.scheduler.root = dir.join("schedules");
-        let code: HashSet<_> = [HARNESS_CAPABILITY.parse().map_err(|_| "cap")?].into();
-        config.skills.grants = HashMap::from([(String::from("claude-code"), code)]);
         let vars = HashMap::from([
+            ("HATCHLING_HARNESS_GRANTS", String::from("claude-code")),
             (
                 "HATCHLING_HARNESS_CLAUDE_CODE",
                 binary.display().to_string(),

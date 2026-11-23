@@ -112,6 +112,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
                 .with_tls(&tls)
                 .pin_tools()?,
         );
+    // What the owner enabled, from its sealed store: until it's handed
+    // over, every skill found waits (WO-046).
+    crate::skill_enablement::load_enabled(config, &key, &skills);
     // The output gate, when there is an ingress for it to guard:
     // from the operator's environment only, its settings recorded before
     // anything is served.

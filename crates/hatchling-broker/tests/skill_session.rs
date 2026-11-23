@@ -11,7 +11,6 @@
 //! Reads carry a timeout so a broker regression fails the test instead
 //! of hanging the suite.
 
-use std::collections::{HashMap, HashSet};
 use std::io;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -83,17 +82,8 @@ fn write_package(skills_dir: &Path, dir: &str, manifest: &SignedManifest) -> io:
     std::fs::write(package.join("main.py"), b"print('hi')")
 }
 
-/// A skill config for `skills_dir`, granting each skill the listed
-/// capabilities, under the fixed test trust root.
-fn skill_config(skills_dir: &Path, grants: &[(&str, &[&str])]) -> io::Result<SkillConfig> {
-    let mut granted = HashMap::new();
-    for (skill, caps) in grants {
-        let caps = caps
-            .iter()
-            .map(|raw| cap(raw))
-            .collect::<io::Result<HashSet<_>>>()?;
-        granted.insert((*skill).to_owned(), caps);
-    }
+/// A skill config for `skills_dir`, under the fixed test trust root.
+fn skill_config(skills_dir: &Path) -> io::Result<SkillConfig> {
     // The trust-roots file sits in the skills dir; the loader skips
     // anything that is not a directory.
     let trust_roots_file = skills_dir.join("trust-roots");
@@ -114,13 +104,14 @@ fn skill_config(skills_dir: &Path, grants: &[(&str, &[&str])]) -> io::Result<Ski
     Ok(SkillConfig {
         skills_dir: skills_dir.to_path_buf(),
         trust_roots_file,
-        grants: granted,
+        enablements: skills_dir.with_extension("enabled"),
     })
 }
 
-/// Loads `skills` exactly as broker startup does, then runs the real
-/// pipeline on a background thread and returns the handshaken client.
-fn spawn_session(root: &Path, skills: SkillConfig) -> io::Result<UnixStream> {
+/// Loads `skills` exactly as broker startup does, the owner having
+/// enabled those named in `enable` as found, then runs the real pipeline
+/// on a background thread and returns the handshaken client.
+fn spawn_session(root: &Path, skills: SkillConfig, enable: &[&str]) -> io::Result<UnixStream> {
     let vault_root = root.join("vault");
     let config = Config {
         socket: "/tmp/hatchling-test-skill-session-dummy.sock"
@@ -154,6 +145,15 @@ fn spawn_session(root: &Path, skills: SkillConfig) -> io::Result<UnixStream> {
         goals: hatchling_broker::GoalsConfig::disabled(),
     };
     let loaded = Skills::load(&config.skills).map_err(io::Error::other)?;
+    loaded.set_enabled(
+        loaded
+            .snapshot()
+            .listing()
+            .iter()
+            .filter(|listing| enable.contains(&listing.name.as_str()))
+            .map(|listing| (listing.name.clone(), listing.digest.clone()))
+            .collect(),
+    );
     let key = MasterKey::generate().map_err(io::Error::other)?;
     let (client, server) = UnixStream::pair()?;
     client.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -226,11 +226,7 @@ fn denials_are_typed_and_the_session_continues() {
         &signed("echo", &["text.read"]).unwrap(),
     )
     .unwrap();
-    let client = spawn_session(
-        &root,
-        skill_config(&skills_dir, &[("echo", &["text.read", "net.egress"])]).unwrap(),
-    )
-    .unwrap();
+    let client = spawn_session(&root, skill_config(&skills_dir).unwrap(), &["echo"]).unwrap();
 
     for skill in ["nope@1.0.0", "echo", "echo@2.0.0", "echo@", "@1.0.0", ""] {
         assert_eq!(
@@ -239,8 +235,8 @@ fn denials_are_typed_and_the_session_continues() {
             "{skill:?}"
         );
     }
-    // Granted to the skill but not declared in its manifest: the call
-    // is checked against the admitted declarations, not the grants.
+    // Not declared in its manifest: the call is checked against the
+    // admitted declarations, which the owner enabled.
     assert_eq!(
         invoke(&client, "echo@1.0.0", "net.egress").unwrap(),
         SkillResult::CapabilityDenied
@@ -275,11 +271,7 @@ fn a_malformed_capability_on_the_wire_ends_the_session() {
         &signed("echo", &["text.read"]).unwrap(),
     )
     .unwrap();
-    let client = spawn_session(
-        &root,
-        skill_config(&skills_dir, &[("echo", &["text.read"])]).unwrap(),
-    )
-    .unwrap();
+    let client = spawn_session(&root, skill_config(&skills_dir).unwrap(), &["echo"]).unwrap();
     let frame = br#"{"kind":"skill","op":"invoke","skill":"echo@1.0.0","capability":"text read","input":""}"#;
     write_frame(&client, frame).unwrap();
     // No reply: the broker closed the session (EOF), it did not answer.
@@ -307,11 +299,8 @@ fn a_refused_skill_is_unknown_and_the_rest_still_serve() {
     .unwrap();
     let client = spawn_session(
         &root,
-        skill_config(
-            &skills_dir,
-            &[("tampered", &["text.read"]), ("good", &["text.read"])],
-        )
-        .unwrap(),
+        skill_config(&skills_dir).unwrap(),
+        &["tampered", "good"],
     )
     .unwrap();
     assert_eq!(
@@ -325,11 +314,32 @@ fn a_refused_skill_is_unknown_and_the_rest_still_serve() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// A skill found that the owner hasn't enabled names no skill to a
+/// session: it waits for the owner, beside one enabled that serves.
+#[test]
+fn a_skill_the_owner_has_not_enabled_is_unknown() {
+    let root = test_root("not-enabled").unwrap();
+    let skills_dir = root.join("skills");
+    for name in ["on", "off"] {
+        write_package(&skills_dir, name, &signed(name, &["text.read"]).unwrap()).unwrap();
+    }
+    let client = spawn_session(&root, skill_config(&skills_dir).unwrap(), &["on"]).unwrap();
+    assert_eq!(
+        invoke(&client, "off@1.0.0", "text.read").unwrap(),
+        SkillResult::UnknownSkill
+    );
+    assert_eq!(
+        invoke(&client, "on@1.0.0", "text.read").unwrap(),
+        SkillResult::SkillError
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// With skills disabled every skill op names an unknown skill.
 #[test]
 fn with_skills_disabled_every_skill_is_unknown() {
     let root = test_root("disabled").unwrap();
-    let client = spawn_session(&root, SkillConfig::disabled()).unwrap();
+    let client = spawn_session(&root, SkillConfig::disabled(), &[]).unwrap();
     assert_eq!(
         invoke(&client, "echo@1.0.0", "text.read").unwrap(),
         SkillResult::UnknownSkill

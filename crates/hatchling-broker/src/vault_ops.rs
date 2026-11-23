@@ -73,6 +73,7 @@ pub fn sealed_stores(
         (Store::CREDENTIALS, &config.web.credentials),
         (Store::CONVERSATION, &config.scheduler.conversation),
         (Store::LIBRARY, &config.scheduler.library),
+        (Store::SKILLS, &config.skills.enablements),
     ] {
         if !root.as_os_str().is_empty() {
             stores.push((store, root.clone()));
@@ -861,5 +862,15 @@ mod tests {
             .map(|(store, _)| store.label())
             .collect();
         assert_eq!(brokers, ["artifacts", "spaces", "sites", "conversation"]);
+        // The skills the owner enabled are a store, and the broker's (WO-046).
+        config.skills.enablements = PathBuf::from("/srv/skills-enabled");
+        let brokers: Vec<_> = broker_stores(&config, None)
+            .into_iter()
+            .map(|(store, _)| store.label())
+            .collect();
+        assert_eq!(
+            brokers,
+            ["artifacts", "spaces", "sites", "conversation", "skills"]
+        );
     }
 }

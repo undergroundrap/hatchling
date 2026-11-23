@@ -14,7 +14,7 @@
 )]
 mod common;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use common::{TestDir, broker_config, guard_cell_available, harness_fixture_binary, test_dir};
@@ -58,14 +58,6 @@ impl Deployment {
         config.vault.key_file = hatchling_broker::VaultConfig::default_key_file(&config.vault.root);
         config.artifacts.workspace = Some(dir.join("workspace"));
         config.scheduler.root = dir.join("schedules");
-        let code: HashSet<_> = [hatchling_broker::harness::HARNESS_CAPABILITY
-            .parse()
-            .map_err(|_| "cap")?]
-        .into();
-        config.skills.grants = HashMap::from([
-            (String::from("claude-code"), code.clone()),
-            (String::from("codex-cli"), code),
-        ]);
         Ok(Self {
             dir,
             config,
@@ -86,6 +78,10 @@ impl Deployment {
                 format!("project={}", self.dir.join("project").display()),
             ),
             ("HATCHLING_HARNESS_TIMEOUT_SECS", timeout.to_owned()),
+            (
+                "HATCHLING_HARNESS_GRANTS",
+                String::from("claude-code,codex-cli"),
+            ),
         ])
     }
 

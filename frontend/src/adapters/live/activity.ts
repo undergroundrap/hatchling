@@ -375,6 +375,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     manage_suggestions: 'Managed the Ideas page',
     manage_goals: 'Managed your goals',
     manage_memory: 'Managed your memory',
+    manage_skills: 'Managed your skills',
     list_decisions: 'Read the approvals history',
     list_covered: 'Read what your standing grants allowed',
     give_code: 'Gave a one-time code for the browser',

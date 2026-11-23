@@ -21,9 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Duration;
 
-use hatchling_skill::{
-    Admission, CodeHash, MANIFEST_FILE, SkillId, SkillRegistry, verify_admission,
-};
+use hatchling_core::ui::{SkillFile, SkillListing, SkillState};
+use hatchling_skill::{Admission, MANIFEST_FILE, SkillId, SkillRegistry, verify_admission};
 
 use crate::skill_run::{SkillRunError, SkillRuntime, run_skill};
 use crate::trust_roots::{TrustRoots, read_trust_roots_file};
@@ -53,33 +52,108 @@ pub struct Refusal {
     pub reason: String,
 }
 
+/// What the owner enabled (WO-046): each skill's name, and the digest
+/// they enabled. A skill runs only when its digest now is that one.
+pub type Enabled = HashMap<String, String>;
+
+/// A skill that verifies, enabled or not: what the owner is shown.
+pub struct Found {
+    /// The skill's directory name.
+    pub dir_name: String,
+    /// The verified admission (its capabilities those it declares).
+    pub admission: Admission,
+    /// Its digest: what enabling is bound to.
+    pub digest: String,
+    /// Where it stands against what the owner enabled.
+    pub state: SkillState,
+}
+
 /// What [`load_skills`] found.
 pub struct LoadOutcome {
     /// The admitted skills, code hashes pinned.
     pub registry: SkillRegistry,
     /// The admitted skills as loaded.
     pub loaded: Vec<LoadedSkill>,
+    /// Every skill that verifies, enabled or not, in the order met.
+    pub found: Vec<Found>,
     /// Every refusal, in the order met.
     pub refused: Vec<Refusal>,
 }
 
-/// Load all skills from the configured directory into the registry.
+impl LoadOutcome {
+    /// Takes a skill that verifies: found either way, and registered when
+    /// `enabled` holds it at `digest`.
+    fn take(
+        &mut self,
+        dir_name: String,
+        admission: Admission,
+        code: Vec<u8>,
+        digest: String,
+        enabled: &Enabled,
+    ) {
+        let state = match enabled.get(&admission.manifest().name) {
+            Some(on) if *on == digest => SkillState::Enabled,
+            Some(_) => SkillState::Changed,
+            None => SkillState::Waiting,
+        };
+        self.found.push(Found {
+            dir_name: dir_name.clone(),
+            admission: admission.clone(),
+            digest,
+            state,
+        });
+        if state != SkillState::Enabled {
+            tracing::info!(dir = ?dir_name, ?state, "skill found, waiting for the owner");
+            return;
+        }
+        match self.registry.register(admission.clone(), &code) {
+            Ok(id) => {
+                tracing::info!(skill = %id, dir = ?dir_name, "skill admitted and registered");
+                self.loaded.push(LoadedSkill {
+                    dir_name,
+                    admission,
+                    code,
+                });
+            }
+            Err(err) => {
+                let err = Error::SkillLoad {
+                    skill: dir_name.clone(),
+                    reason: format!("registration refused: {err}"),
+                };
+                tracing::error!(dir = ?dir_name, %err, "skill refused");
+                self.refused.push(Refusal {
+                    dir_name,
+                    reason: err.to_string(),
+                });
+            }
+        }
+    }
+}
+
+/// Load all skills from the configured directory; register those the
+/// owner enabled as they are (`enabled`).
 ///
 /// Each subdirectory must contain `manifest.json` (the signed manifest,
 /// strict JSON, format 2) and every file it lists. The manifest is
-/// verified via [`verify_admission`] against the trust root and user
-/// grants; every listed file is read and checked against its signed size
+/// verified via [`verify_admission`] against the trust root, the grant
+/// the capabilities it declares; every listed file is read and checked against its signed size
 /// and SHA-256, and the program's hash pinned at registration.
 ///
 /// Every signature is verified under `roots`, primary first; a skill
-/// admits under whichever root signed it. A skill that fails to load is
+/// admits under whichever root signed it. A skill that verifies is
+/// [`Found`] either way, and runs only when `enabled` holds its name with
+/// its digest now: never enabled it waits, enabled at another digest it
+/// is changed, and both wait for the owner (WO-046). An enabled skill is
+/// granted exactly the capabilities its program declares: the owner saw
+/// those when they enabled it. A skill that fails to load is
 /// logged loudly and refused, not retried. The broker continues with the
 /// remaining skills. A disabled config (no skills dir) loads nothing and
 /// touches no filesystem.
-pub fn load_skills(config: &SkillConfig, roots: &TrustRoots) -> LoadOutcome {
+pub fn load_skills(config: &SkillConfig, roots: &TrustRoots, enabled: &Enabled) -> LoadOutcome {
     let mut outcome = LoadOutcome {
         registry: SkillRegistry::new(),
         loaded: Vec::new(),
+        found: Vec::new(),
         refused: Vec::new(),
     };
     if !config.is_enabled() {
@@ -129,18 +203,9 @@ pub fn load_skills(config: &SkillConfig, roots: &TrustRoots) -> LoadOutcome {
             continue;
         }
         let dir_name = entry.file_name().to_string_lossy().into_owned();
-        match admit(&mut outcome.registry, &path, &dir_name, config, roots) {
-            Ok((id, admission, code)) => {
-                tracing::info!(
-                    skill = %id,
-                    dir = ?dir_name,
-                    "skill admitted and registered"
-                );
-                outcome.loaded.push(LoadedSkill {
-                    dir_name,
-                    admission,
-                    code,
-                });
+        match load_one(&path, &dir_name, roots) {
+            Ok((admission, code, digest)) => {
+                outcome.take(dir_name, admission, code, digest, enabled);
             }
             Err(err) => {
                 tracing::error!(dir = ?dir_name, %err, "skill refused");
@@ -160,24 +225,6 @@ pub fn load_skills(config: &SkillConfig, roots: &TrustRoots) -> LoadOutcome {
     outcome
 }
 
-/// Load, verify, and register one skill directory.
-fn admit(
-    registry: &mut SkillRegistry,
-    dir: &Path,
-    dir_name: &str,
-    config: &SkillConfig,
-    roots: &TrustRoots,
-) -> Result<(SkillId, Admission, Vec<u8>), Error> {
-    let (admission, code) = load_one(dir, dir_name, config, roots)?;
-    let id = registry
-        .register(admission.clone(), &code)
-        .map_err(|err| Error::SkillLoad {
-            skill: dir_name.to_owned(),
-            reason: format!("registration refused: {err}"),
-        })?;
-    Ok((id, admission, code))
-}
-
 /// One immutable snapshot of the admitted skills: what a session checks a
 /// call against and runs it from. A trust-root reload replaces it whole;
 /// it is never edited in place.
@@ -185,12 +232,16 @@ fn admit(
 pub struct SkillSet {
     registry: SkillRegistry,
     packages: HashMap<SkillId, PathBuf>,
+    listing: Vec<SkillListing>,
 }
 
 impl SkillSet {
-    /// Loads every skill under the configured dir against `roots`.
-    fn build(config: &SkillConfig, roots: &TrustRoots) -> Self {
-        let outcome = load_skills(config, roots);
+    /// Loads every skill under the configured dir against `roots`, the
+    /// owner's `enabled` deciding which run.
+    fn build(config: &SkillConfig, roots: &TrustRoots, enabled: &Enabled) -> Self {
+        let outcome = load_skills(config, roots, enabled);
+        let mut listing: Vec<SkillListing> = outcome.found.iter().map(listed).collect();
+        listing.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.version.cmp(&b.version)));
         let packages = outcome
             .loaded
             .iter()
@@ -205,7 +256,15 @@ impl SkillSet {
         Self {
             registry: outcome.registry,
             packages,
+            listing,
         }
+    }
+
+    /// Every skill found that verifies, enabled or not, by name: what the
+    /// owner is shown (WO-046).
+    #[must_use]
+    pub fn listing(&self) -> &[SkillListing] {
+        &self.listing
     }
 
     /// The admitted skills, for call-time checks.
@@ -219,6 +278,34 @@ impl SkillSet {
         let mut ids = self.registry.list();
         ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         ids
+    }
+}
+
+/// A found skill as the owner is shown it.
+fn listed(found: &Found) -> SkillListing {
+    let manifest = found.admission.manifest();
+    SkillListing {
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        description: manifest.description.clone(),
+        signer: found.admission.signer_fingerprint(),
+        digest: found.digest.clone(),
+        capabilities: manifest
+            .capabilities()
+            .iter()
+            .map(|capability| capability.as_str().to_owned())
+            .collect(),
+        instructions: manifest.instructions.clone(),
+        program: manifest.entry_point().map(str::to_owned),
+        files: manifest
+            .files
+            .iter()
+            .map(|entry| SkillFile {
+                path: entry.path.clone(),
+                bytes: entry.bytes,
+            })
+            .collect(),
+        state: found.state,
     }
 }
 
@@ -241,10 +328,6 @@ pub enum Reload {
         added: Vec<SkillId>,
         /// Skills in the old set that the new one lacks.
         dropped: Vec<SkillId>,
-        /// Skills refused because their code no longer matches the hash
-        /// pinned when they were first admitted (also in `dropped` when
-        /// the old set held them).
-        refused_drift: Vec<SkillId>,
     },
 }
 
@@ -256,13 +339,21 @@ enum Seen {
 }
 
 /// Where the trust roots come from, what the watcher last saw there, and
-/// the code hash each skill id was first admitted with. The pins last
-/// until a restart: a reload never re-pins an id.
+/// the last file it applied.
+///
+/// No skill's code is pinned across reloads: the owner enabled a digest,
+/// which fixes every file's bytes, so the same `name@version` with other
+/// code is another digest, listed changed, and never runs (WO-046).
 #[derive(Debug)]
 struct RootsSource {
     config: SkillConfig,
     seen: Mutex<Seen>,
-    pins: Mutex<HashMap<SkillId, CodeHash>>,
+    /// The trust-roots file last applied: a rebuild for the owner uses it,
+    /// whatever the file says now.
+    applied: Mutex<Vec<u8>>,
+    /// Held across each rebuild, so the last one built is the last one
+    /// swapped in: a reload can't put back a skill the owner just disabled.
+    rebuild: Mutex<()>,
 }
 
 /// The broker's skills: owned by the broker, borrowed by every session.
@@ -281,6 +372,7 @@ pub struct Skills {
     runtime: Option<SkillRuntime>,
     source: Option<RootsSource>,
     harnesses: crate::harness::Harnesses,
+    enabled: RwLock<Enabled>,
 }
 
 impl Skills {
@@ -308,20 +400,80 @@ impl Skills {
         let roots = TrustRoots::parse(&bytes).map_err(|reason| {
             invalid(format!("{}: {reason}", config.trust_roots_file.display()))
         })?;
-        let mut set = SkillSet::build(config, &roots);
-        // First sight of every id: this pins them all and refuses none.
-        let mut pins = HashMap::new();
-        refuse_drift(&mut pins, &mut set);
+        // Nothing is enabled until the owner's enablements are handed over
+        // (`set_enabled`, from the sealed store, at the broker's start).
+        let set = SkillSet::build(config, &roots, &Enabled::new());
         Ok(Self {
             current: RwLock::new(Arc::new(set)),
             runtime: None,
             source: Some(RootsSource {
                 config: config.clone(),
-                seen: Mutex::new(Seen::Applied(bytes)),
-                pins: Mutex::new(pins),
+                seen: Mutex::new(Seen::Applied(bytes.clone())),
+                applied: Mutex::new(bytes),
+                rebuild: Mutex::new(()),
             }),
             harnesses: crate::harness::Harnesses::default(),
+            enabled: RwLock::new(Enabled::new()),
         })
+    }
+
+    /// What the owner has enabled, as last handed over.
+    #[must_use]
+    pub fn enabled(&self) -> Enabled {
+        match self.enabled.read() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Hands over what the owner has enabled, and rebuilds the set under
+    /// the trust roots last applied: a skill enabled runs from now, a
+    /// skill disabled stops (WO-046), even while the roots file is bad.
+    /// With skills off, nothing is built.
+    pub fn set_enabled(&self, enabled: Enabled) {
+        self.rebuild(Some(enabled));
+    }
+
+    /// Rebuilds the set from the skills dir as it is now, under what the
+    /// owner enabled: a skill added since is found, one changed since is
+    /// listed changed and stops. The owner's list and enable do this first,
+    /// so they see, and enable, each skill as it is.
+    pub fn refresh(&self) {
+        self.rebuild(None);
+    }
+
+    /// Rebuilds under `enabled`, handed over now, or what was last.
+    fn rebuild(&self, enabled: Option<Enabled>) {
+        let Some(source) = &self.source else {
+            if let Some(enabled) = enabled {
+                *write(&self.enabled) = enabled;
+            }
+            return;
+        };
+        let _one = lock(&source.rebuild);
+        let enabled = enabled.map_or_else(
+            || self.enabled(),
+            |enabled| {
+                write(&self.enabled).clone_from(&enabled);
+                enabled
+            },
+        );
+        let bytes = lock(&source.applied).clone();
+        let new = match TrustRoots::parse(&bytes) {
+            Ok(roots) => SkillSet::build(&source.config, &roots, &enabled),
+            // It parsed when it was applied; should it ever not, nothing
+            // runs rather than what the owner may have just disabled.
+            Err(reason) => {
+                tracing::error!(%reason, "the trust roots applied don't parse: no skill runs");
+                SkillSet::default()
+            }
+        };
+        self.swap(new);
+    }
+
+    /// Puts `new` in place of the current set: one pointer store.
+    fn swap(&self, new: SkillSet) {
+        *write(&self.current) = Arc::new(new);
     }
 
     /// The same skills, run by `runtime`.
@@ -415,6 +567,7 @@ impl Skills {
             Ok((bytes, _)) => Seen::Applied(bytes.clone()),
             Err(reason) => Seen::Failed(reason.clone()),
         };
+        let _one = lock(&source.rebuild);
         if *seen(&source.seen) == observed {
             return Reload::Unchanged;
         }
@@ -431,8 +584,7 @@ impl Skills {
             }
         };
         let old = self.snapshot();
-        let mut new = SkillSet::build(&source.config, &roots);
-        let refused_drift = refuse_drift(&mut lock(&source.pins), &mut new);
+        let new = SkillSet::build(&source.config, &roots, &self.enabled());
         let (old_ids, new_ids) = (old.ids(), new.ids());
         let added: Vec<SkillId> = new_ids
             .iter()
@@ -444,11 +596,8 @@ impl Skills {
             .filter(|id| !new_ids.contains(id))
             .cloned()
             .collect();
-        let replacement = Arc::new(new);
-        match self.current.write() {
-            Ok(mut guard) => *guard = replacement,
-            Err(poisoned) => *poisoned.into_inner() = replacement,
-        }
+        self.swap(new);
+        lock(&source.applied).clone_from(&bytes);
         *seen(&source.seen) = Seen::Applied(bytes);
         for id in &dropped {
             tracing::warn!(skill = %id, "skill dropped at trust-roots reload");
@@ -460,11 +609,7 @@ impl Skills {
             dropped = ?dropped.iter().map(SkillId::as_str).collect::<Vec<_>>(),
             "trust roots reloaded"
         );
-        Reload::Applied {
-            added,
-            dropped,
-            refused_drift,
-        }
+        Reload::Applied { added, dropped }
     }
 
     /// The trust-roots watcher: [`reload`](Self::reload) every `interval`,
@@ -491,41 +636,17 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Pins each id in `new` to its code hash the first time it is seen, and
-/// removes from `new` every id whose code differs from its pin: the same
-/// `name@version` with different bytes is drift, not an update (an update
-/// is a new version, which pins normally). The pin is the first admitted
-/// hash, not whatever the last set held, so a drifted skill cannot come
-/// back a reload later. Refused until a restart; each refusal is logged.
-fn refuse_drift(pins: &mut HashMap<SkillId, CodeHash>, new: &mut SkillSet) -> Vec<SkillId> {
-    let drifted: Vec<SkillId> = new
-        .ids()
-        .into_iter()
-        .filter(|id| {
-            new.registry.get(id).is_some_and(|skill| {
-                *pins.entry(id.clone()).or_insert_with(|| *skill.code_hash()) != *skill.code_hash()
-            })
-        })
-        .collect();
-    for id in &drifted {
-        new.registry.unregister(id);
-        new.packages.remove(id);
-        tracing::error!(
-            skill = %id,
-            "skill code changed under its pinned id: refused until the broker restarts \
-             (ship a new version to update a skill)"
-        );
-    }
-    drifted
+/// A write lock, whatever a panicked holder left, as [`lock`].
+fn write<T>(lock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Load and verify a single skill directory.
 fn load_one(
     dir: &Path,
     dir_name: &str,
-    config: &SkillConfig,
     roots: &TrustRoots,
-) -> Result<(Admission, Vec<u8>), Error> {
+) -> Result<(Admission, Vec<u8>, String), Error> {
     // Refuse symlinked skill directories: a symlink at the root would
     // let the loader read outside the skills dir. And refuse one anyone
     // but root or the broker could write, as the trust-roots file is.
@@ -552,18 +673,12 @@ fn load_one(
         }
     })?;
 
-    // The grants for THIS skill only, keyed by the manifest's name. The
-    // name is read before verification, but `verify_admission` checks
-    // the signature over it, so a forged name cannot pick up another
-    // skill's grants. (Pooling every skill's grants into one set, as an
-    // earlier draft did, admitted a skill with capabilities the user
-    // granted only to a different skill.)
-    let user_grants = config
-        .grants
-        .get(&signed.manifest.name)
-        .cloned()
-        .unwrap_or_default();
-    let admission = admit_under_roots(&signed, roots, &user_grants, dir_name)?;
+    // Verified with the capabilities its program declares as the grant:
+    // the signature covers them, and they are what the owner is shown and
+    // enables (WO-046). Enabling binds to the digest, so a skill that
+    // later declares more is changed and runs no more until re-enabled.
+    let declared = signed.manifest.capabilities().iter().cloned().collect();
+    let admission = admit_under_roots(&signed, roots, &declared, dir_name)?;
 
     // Read every listed file (each a safe relative path, by
     // Manifest::validate during verify_admission), refusing symlinks
@@ -586,7 +701,11 @@ fn load_one(
         }
     }
 
-    Ok((admission, code))
+    let digest = manifest.digest().map_err(|err| Error::SkillLoad {
+        skill: dir_name.to_owned(),
+        reason: err.to_string(),
+    })?;
+    Ok((admission, code, digest))
 }
 
 /// Verifies `signed` under each root in turn, primary first: a skill admits
@@ -719,7 +838,6 @@ fn refuse_symlink(path: &Path, dir_name: &str, what: &str) -> Result<(), Error> 
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::path::PathBuf;
 
     use ed25519_dalek::{Signer, SigningKey};
@@ -779,20 +897,26 @@ mod tests {
         }
     }
 
-    fn config(root: &Path, grants: &[(&str, &[&str])]) -> SkillConfig {
+    fn config(root: &Path) -> SkillConfig {
         SkillConfig {
             skills_dir: root.to_path_buf(),
             trust_roots_file: root.with_extension("roots"),
-            grants: grants
-                .iter()
-                .map(|(skill, caps)| {
-                    (
-                        (*skill).to_owned(),
-                        caps.iter().map(|cap| cap.parse().unwrap()).collect(),
-                    )
-                })
-                .collect::<HashMap<_, _>>(),
+            enablements: root.with_extension("enabled"),
         }
+    }
+
+    /// Every skill found under `roots`, enabled as it is now.
+    fn all_enabled(config: &SkillConfig, roots: &TrustRoots) -> Enabled {
+        load_skills(config, roots, &Enabled::new())
+            .found
+            .into_iter()
+            .map(|found| (found.admission.manifest().name.clone(), found.digest))
+            .collect()
+    }
+
+    /// The loader under `roots`, every skill that verifies enabled.
+    fn load_under(config: &SkillConfig, roots: &TrustRoots) -> LoadOutcome {
+        load_skills(config, roots, &all_enabled(config, roots))
     }
 
     /// A v1 trust-roots file for these keys: primary first.
@@ -815,9 +939,9 @@ mod tests {
         TrustRoots::parse(roots_text(keys).as_bytes()).unwrap()
     }
 
-    /// The loader under the test key alone.
+    /// The loader under the test key alone, every skill enabled.
     fn load(config: &SkillConfig) -> LoadOutcome {
-        load_skills(config, &roots_of(&[public(&SECRET)]))
+        load_under(config, &roots_of(&[public(&SECRET)]))
     }
 
     fn loaded_names(loaded: &[LoadedSkill]) -> Vec<String> {
@@ -850,40 +974,107 @@ mod tests {
         write_skill(&root, "nested", &sign(nested), None);
         std::fs::create_dir_all(root.join("nested").join("sub")).unwrap();
         std::fs::write(root.join("nested").join("sub").join("main.py"), b"inside").unwrap();
-        let LoadOutcome { loaded, .. } = load(&config(
-            &root,
-            &[("linked", &["fs.read"]), ("nested", &["fs.read"])],
-        ));
+        let LoadOutcome { loaded, .. } = load(&config(&root));
         assert_eq!(loaded_names(&loaded), vec![String::from("nested")]);
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]
-    fn grants_are_per_skill_not_pooled() {
-        // `notes` was granted only fs.write, yet declares net.egress too,
-        // which the user granted only to `web`. Pooled grants admitted it.
-        let root = skills_dir("per-skill");
-        write_skill(
-            &root,
-            "notes",
-            &sign(manifest("notes", &["fs.write", "net.egress"])),
-            Some(CODE),
+    fn a_skill_runs_only_enabled_at_its_digest_now() {
+        let root = skills_dir("enabled");
+        for name in ["web", "notes"] {
+            write_skill(
+                &root,
+                name,
+                &sign(manifest(name, &["net.egress"])),
+                Some(CODE),
+            );
+        }
+        let cfg = config(&root);
+        let roots = roots_of(&[public(&SECRET)]);
+        let all = all_enabled(&cfg, &roots);
+        let web = all.get("web").unwrap().clone();
+        let state = |outcome: &LoadOutcome, name: &str| {
+            outcome
+                .found
+                .iter()
+                .find(|found| found.admission.manifest().name == name)
+                .map(|found| found.state)
+        };
+        // Nothing enabled: both found, both waiting, none runs.
+        let outcome = load_skills(&cfg, &roots, &Enabled::new());
+        assert!(outcome.loaded.is_empty() && outcome.registry.is_empty());
+        assert!(outcome.refused.is_empty(), "{:?}", outcome.refused);
+        assert_eq!(state(&outcome, "web"), Some(SkillState::Waiting));
+        assert_eq!(state(&outcome, "notes"), Some(SkillState::Waiting));
+        // One enabled at its digest: that one runs, granted what it declares.
+        let outcome = load_skills(
+            &cfg,
+            &roots,
+            &Enabled::from([(String::from("web"), web.clone())]),
         );
+        assert_eq!(loaded_names(&outcome.loaded), vec![String::from("web")]);
+        assert_eq!(state(&outcome, "web"), Some(SkillState::Enabled));
+        assert_eq!(state(&outcome, "notes"), Some(SkillState::Waiting));
+        let id = SkillId::new("web", "1.0.0");
+        assert!(outcome.registry.get(&id).is_some());
+        // Enabled at another digest: changed, and it doesn't run.
+        let other = Enabled::from([(String::from("web"), "0".repeat(64))]);
+        let outcome = load_skills(&cfg, &roots, &other);
+        assert!(outcome.loaded.is_empty());
+        assert_eq!(state(&outcome, "web"), Some(SkillState::Changed));
+        // The skill re-signed with more: its digest moves, so the owner's
+        // enabling no longer covers it.
         write_skill(
             &root,
             "web",
+            &sign(manifest("web", &["net.egress", "fs.write"])),
+            Some(CODE),
+        );
+        let outcome = load_skills(&cfg, &roots, &Enabled::from([(String::from("web"), web)]));
+        assert!(outcome.loaded.is_empty());
+        assert_eq!(state(&outcome, "web"), Some(SkillState::Changed));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_listing_shows_what_the_owner_is_enabling_sorted_by_name() {
+        let root = skills_dir("listing");
+        let mut playbook = manifest("notes", &[]);
+        playbook.program = None;
+        playbook.instructions = Some(String::from("main.py"));
+        write_skill(&root, "z-notes", &sign(playbook), Some(CODE));
+        write_skill(
+            &root,
+            "a-web",
             &sign(manifest("web", &["net.egress"])),
             Some(CODE),
         );
-        let LoadOutcome {
-            registry, loaded, ..
-        } = load(&config(
-            &root,
-            &[("notes", &["fs.write"]), ("web", &["net.egress"])],
-        ));
-        assert_eq!(loaded_names(&loaded), vec![String::from("web")]);
-        assert_eq!(registry.len(), 1);
+        let cfg = config(&root);
+        let roots = roots_of(&[public(&SECRET)]);
+        let set = SkillSet::build(&cfg, &roots, &Enabled::new());
+        let names: Vec<&str> = set.listing().iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["notes", "web"]);
+        let notes = set.listing().first().unwrap();
+        assert_eq!(notes.instructions.as_deref(), Some("main.py"));
+        assert_eq!(notes.program, None);
+        assert!(notes.capabilities.is_empty());
+        let web = set.listing().get(1).unwrap();
+        assert_eq!(web.version, "1.0.0");
+        assert_eq!(web.description, "A test skill.");
+        assert_eq!(web.program.as_deref(), Some("main.py"));
+        assert_eq!(web.capabilities, vec![String::from("net.egress")]);
+        assert_eq!(
+            web.files,
+            vec![SkillFile {
+                path: String::from("main.py"),
+                bytes: u64::try_from(CODE.len()).unwrap(),
+            }]
+        );
+        assert_eq!(web.signer.len(), 64);
+        assert_eq!(&web.digest, all_enabled(&cfg, &roots).get("web").unwrap());
+        assert_eq!(web.state, SkillState::Waiting);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -898,7 +1089,7 @@ mod tests {
         );
         let LoadOutcome {
             registry, loaded, ..
-        } = load(&config(&root, &[("web", &["net.egress"])]));
+        } = load(&config(&root));
         assert_eq!(loaded.len(), 1);
         let skill = loaded.first().unwrap();
         assert_eq!(skill.dir_name, "web-dir");
@@ -911,11 +1102,6 @@ mod tests {
     #[test]
     fn broken_skills_are_refused_and_the_rest_load() {
         let root = skills_dir("broken");
-        let grants: &[(&str, &[&str])] = &[
-            ("unsigned", &["fs.read"]),
-            ("codeless", &["fs.read"]),
-            ("good", &["fs.read"]),
-        ];
         let mut unsigned = sign(manifest("unsigned", &["fs.read"]));
         unsigned.signature = None;
         write_skill(&root, "a", &unsigned, Some(CODE));
@@ -932,7 +1118,7 @@ mod tests {
         std::fs::write(root.join("README"), b"not a skill").unwrap();
         let LoadOutcome {
             registry, loaded, ..
-        } = load(&config(&root, grants));
+        } = load(&config(&root));
         assert_eq!(loaded_names(&loaded), vec![String::from("good")]);
         assert_eq!(registry.len(), 1);
         let _ = std::fs::remove_dir_all(&root);
@@ -953,13 +1139,6 @@ mod tests {
             None,
         );
         std::fs::create_dir_all(root.join("unreadable").join("main.py")).unwrap();
-        // Over-privileged: declares more than it was granted.
-        write_skill(
-            &root,
-            "greedy",
-            &sign(manifest("greedy", &["fs.read", "net.egress"])),
-            Some(CODE),
-        );
         // A malformed capability name never parses.
         std::fs::create_dir_all(root.join("malformed")).unwrap();
         let malformed =
@@ -973,20 +1152,12 @@ mod tests {
             &sign(manifest("good", &["fs.read"])),
             Some(CODE),
         );
-        let grants: &[(&str, &[&str])] = &[
-            ("tampered", &["fs.read"]),
-            ("unreadable", &["fs.read"]),
-            ("greedy", &["fs.read"]),
-            ("malformed", &["fs.read"]),
-            ("good", &["fs.read"]),
-        ];
-        let outcome = load(&config(&root, grants));
+        let outcome = load(&config(&root));
         assert_eq!(loaded_names(&outcome.loaded), vec![String::from("good")]);
         assert_eq!(outcome.registry.len(), 1);
         let mut refused = outcome.refused;
         refused.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
         let expected = [
-            ("greedy", "beyond user grants: net.egress"),
             ("malformed", "capability name"),
             ("tampered", "signature verification failed"),
             ("unreadable", "cannot read listed file"),
@@ -1007,7 +1178,7 @@ mod tests {
         assert!(outcome.refused.is_empty(), "{:?}", outcome.refused);
         let missing = skills_dir("missing-dir-refusal");
         let _ = std::fs::remove_dir_all(&missing);
-        let outcome = load(&config(&missing, &[]));
+        let outcome = load(&config(&missing));
         assert_eq!(outcome.refused.len(), 1);
         let refusal = outcome.refused.first().unwrap();
         assert_eq!(refusal.dir_name, missing.display().to_string());
@@ -1026,7 +1197,7 @@ mod tests {
             &sign(manifest("web", &["net.egress"])),
             Some(CODE),
         );
-        let cfg = config(&root, &[("web", &["net.egress"])]);
+        let cfg = config(&root);
         std::fs::write(&cfg.trust_roots_file, roots_text(&[public(&SECRET)])).unwrap();
         std::fs::set_permissions(
             &cfg.trust_roots_file,
@@ -1034,7 +1205,21 @@ mod tests {
         )
         .unwrap();
         let skills = Skills::load(&cfg).unwrap();
+        // Found, and waiting: nothing runs until the owner enables it.
+        let waiting = skills.snapshot();
+        assert!(waiting.registry().is_empty());
+        let listed = waiting.listing().first().unwrap();
+        assert_eq!(
+            (listed.name.as_str(), listed.state),
+            ("web", SkillState::Waiting)
+        );
+        assert_eq!(listed.capabilities, vec![String::from("net.egress")]);
+        skills.set_enabled(Enabled::from([(
+            String::from("web"),
+            listed.digest.clone(),
+        )]));
         let set = skills.snapshot();
+        assert_eq!(set.listing().first().unwrap().state, SkillState::Enabled);
         assert_eq!(set.registry().len(), 1);
         assert!(set.registry().get(&SkillId::new("web", "1.0.0")).is_some());
         assert_eq!(
@@ -1042,24 +1227,34 @@ mod tests {
             Some(&root.join("web"))
         );
         assert!(Skills::default().snapshot().registry().is_empty());
+        // Disabled: it stops at once, and is listed waiting again.
+        skills.set_enabled(Enabled::new());
+        let set = skills.snapshot();
+        assert!(set.registry().is_empty());
+        assert_eq!(set.listing().first().unwrap().state, SkillState::Waiting);
+        // A reload under new roots keeps what the owner enabled.
+        let web = || Enabled::from([(String::from("web"), listed.digest.clone())]);
+        skills.set_enabled(web());
+        std::fs::write(
+            &cfg.trust_roots_file,
+            roots_text(&[public(&SECRET), public(&[0x3c; 32])]),
+        )
+        .unwrap();
+        assert!(matches!(skills.reload(), Reload::Applied { .. }));
+        assert_eq!(skills.snapshot().registry().len(), 1);
+        // A bad roots file is kept out, and the owner can still disable.
+        std::fs::write(
+            &cfg.trust_roots_file,
+            b"garbage
+",
+        )
+        .unwrap();
+        assert!(matches!(skills.reload(), Reload::Rejected { .. }));
+        skills.set_enabled(Enabled::new());
+        assert!(skills.snapshot().registry().is_empty());
+        skills.set_enabled(web());
+        assert_eq!(skills.snapshot().registry().len(), 1);
         let _ = std::fs::remove_file(&cfg.trust_roots_file);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn a_skill_without_grants_is_refused() {
-        let root = skills_dir("no-grants");
-        write_skill(
-            &root,
-            "web",
-            &sign(manifest("web", &["net.egress"])),
-            Some(CODE),
-        );
-        let LoadOutcome {
-            registry, loaded, ..
-        } = load(&config(&root, &[]));
-        assert!(loaded.is_empty());
-        assert!(registry.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1076,7 +1271,8 @@ mod tests {
             registry,
             loaded,
             refused,
-        } = load(&config(&root, &[("dup", &["fs.read"])]));
+            ..
+        } = load(&config(&root));
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded.first().unwrap().dir_name, "one");
         assert_eq!(registry.len(), 1);
@@ -1118,12 +1314,7 @@ mod tests {
             }
         }
         std::fs::write(root.join("good").join("unlisted.sh"), b"rm -rf ~").unwrap();
-        let grants: &[(&str, &[&str])] = &[
-            ("good", &["fs.read"]),
-            ("changed", &["fs.read"]),
-            ("missing", &["fs.read"]),
-        ];
-        let mut outcome = load(&config(&root, grants));
+        let mut outcome = load(&config(&root));
         assert_eq!(loaded_names(&outcome.loaded), vec![String::from("good")]);
         outcome.refused.sort_by(|a, b| a.dir_name.cmp(&b.dir_name));
         let reasons: Vec<(&str, &str)> = outcome
@@ -1153,7 +1344,7 @@ mod tests {
         write_skill(&root, "notes", &sign(m), Some(CODE));
         let LoadOutcome {
             loaded, refused, ..
-        } = load(&config(&root, &[]));
+        } = load(&config(&root));
         assert!(refused.is_empty(), "{refused:?}");
         let skill = loaded.first().unwrap();
         assert!(skill.code.is_empty());
@@ -1190,7 +1381,7 @@ mod tests {
                 .unwrap()
                 .try_into()
                 .unwrap();
-        let outcome = load_skills(&config(&root, &[]), &roots_of(&[signer]));
+        let outcome = load_under(&config(&root), &roots_of(&[signer]));
         assert!(outcome.refused.is_empty(), "{:?}", outcome.refused);
         assert_eq!(loaded_names(&outcome.loaded), vec![String::from("notes")]);
         assert_eq!(
@@ -1202,7 +1393,7 @@ mod tests {
                 .signer_fingerprint(),
             public.fingerprint
         );
-        assert!(load(&config(&root, &[])).loaded.is_empty());
+        assert!(load(&config(&root)).loaded.is_empty());
         let _ = std::fs::remove_dir_all(&root);
         let _ = std::fs::remove_dir_all(&keys);
     }
@@ -1216,7 +1407,7 @@ mod tests {
             br#"{"name":"old","version":"1.0.0","capabilities":[],"entry_point":"main.py","signature":"AAAA"}"#,
         )
         .unwrap();
-        let outcome = load(&config(&root, &[]));
+        let outcome = load(&config(&root));
         let reason = &outcome.refused.first().unwrap().reason;
         assert!(
             reason.contains("format v1") && reason.contains("format 2"),
@@ -1248,11 +1439,10 @@ mod tests {
             write_skill(&root, dir, &sign(manifest(dir, &["fs.read"])), Some(CODE));
             mode(&root.join(dir), 0o755);
         }
-        let grants: &[(&str, &[&str])] = &[("open", &["fs.read"]), ("shut", &["fs.read"])];
         // A skill's own directory others can write: that skill alone.
         for writable in [0o775, 0o757] {
             mode(&root.join("open"), writable);
-            let outcome = load(&config(&root, grants));
+            let outcome = load(&config(&root));
             assert_eq!(loaded_names(&outcome.loaded), vec![String::from("shut")]);
             let reason = &outcome.refused.first().unwrap().reason;
             assert!(
@@ -1261,11 +1451,11 @@ mod tests {
             );
         }
         mode(&root.join("open"), 0o755);
-        assert_eq!(load(&config(&root, grants)).loaded.len(), 2);
+        assert_eq!(load(&config(&root)).loaded.len(), 2);
         // The skills dir itself: every skill.
         for writable in [0o775, 0o757] {
             mode(&root, writable);
-            let outcome = load(&config(&root, grants));
+            let outcome = load(&config(&root));
             assert!(outcome.loaded.is_empty());
             let reason = &outcome.refused.first().unwrap().reason;
             assert!(reason.contains("skills dir refused"), "{reason}");
@@ -1280,7 +1470,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&missing);
         let LoadOutcome {
             registry, loaded, ..
-        } = load(&config(&missing, &[("web", &["net.egress"])]));
+        } = load(&config(&missing));
         assert!(loaded.is_empty() && registry.is_empty());
 
         let root = skills_dir("no-roots");
@@ -1290,7 +1480,7 @@ mod tests {
             &sign(manifest("web", &["net.egress"])),
             Some(CODE),
         );
-        let outcome = load_skills(&config(&root, &[("web", &["net.egress"])]), &roots_of(&[]));
+        let outcome = load_under(&config(&root), &roots_of(&[]));
         assert!(outcome.loaded.is_empty() && outcome.registry.is_empty());
         let reason = &outcome.refused.first().unwrap().reason;
         assert!(reason.contains("no trust roots are configured"), "{reason}");
@@ -1308,28 +1498,21 @@ mod tests {
             &sign(manifest("web", &["net.egress"])),
             Some(CODE),
         );
-        let cfg = config(&root, &[("web", &["net.egress"])]);
+        let cfg = config(&root);
         let other = public(&[0x3c; 32]);
         for roots in [
             roots_of(&[public(&SECRET)]),
             roots_of(&[other, public(&SECRET)]),
         ] {
             assert_eq!(
-                loaded_names(&load_skills(&cfg, &roots).loaded),
+                loaded_names(&load_under(&cfg, &roots).loaded),
                 vec![String::from("web")]
             );
         }
-        let outcome = load_skills(&cfg, &roots_of(&[other]));
+        let outcome = load_under(&cfg, &roots_of(&[other]));
         assert!(outcome.loaded.is_empty());
         let reason = &outcome.refused.first().unwrap().reason;
         assert!(reason.contains("under every trust root"), "{reason}");
-        // A refusal that is not a signature failure is final: an
-        // over-privileged manifest is refused even though the primary
-        // root would verify it.
-        let greedy = config(&root, &[("web", &[])]);
-        let outcome = load_skills(&greedy, &roots_of(&[public(&SECRET), other]));
-        let reason = &outcome.refused.first().unwrap().reason;
-        assert!(reason.contains("beyond user grants"), "{reason}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1373,7 +1556,7 @@ mod tests {
 
         let LoadOutcome {
             registry, loaded, ..
-        } = load(&config(&root, &[("link-skill", &["fs.read"])]));
+        } = load(&config(&root));
         assert!(loaded.is_empty(), "symlinked skills must be refused");
         assert!(registry.is_empty());
         let _ = std::fs::remove_dir_all(&root);

@@ -4,13 +4,11 @@
 //! may assume validity without re-checking. Untrusted input (environment
 //! variables) becomes validated types here, at the edge, exactly once.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use hatchling_core::{
-    CapabilityName, LogLevel, PeerUid, ScheduleGrant, SecretName, SocketPath, VaultAction,
-};
+use hatchling_core::{LogLevel, PeerUid, ScheduleGrant, SecretName, SocketPath, VaultAction};
 
 use crate::Error;
 use crate::cell::CellIds;
@@ -851,21 +849,21 @@ pub struct SkillConfig {
     /// must verify under (see [`crate::trust_roots`]). Read at startup
     /// and re-read on change, so roots rotate without a restart.
     pub trust_roots_file: PathBuf,
-    /// Explicit capability grants per skill. Maps skill name to allowed
-    /// capabilities, each validated at startup: a malformed grant stops
-    /// the broker rather than loading as a grant that matches nothing.
-    pub grants: HashMap<String, HashSet<CapabilityName>>,
+    /// Absolute directory of the owner's skill enablements, a sealed
+    /// store (WO-046): which skills the owner enabled, each bound to the
+    /// digest they saw. A skill runs only while enabled there.
+    pub enablements: PathBuf,
 }
 
 impl SkillConfig {
-    /// No skills: no skills dir, no trust root, no grants. The broker
-    /// loads nothing and every skill op names an unknown skill.
+    /// No skills: no skills dir, no trust root, no enablements. The
+    /// broker loads nothing and every skill op names an unknown skill.
     #[must_use]
     pub fn disabled() -> Self {
         Self {
             skills_dir: PathBuf::new(),
             trust_roots_file: PathBuf::new(),
-            grants: HashMap::new(),
+            enablements: PathBuf::new(),
         }
     }
 
@@ -987,10 +985,11 @@ impl Config {
                 ),
             });
         }
+        refuse_retired_grants(get(env::HATCHLING_SKILL_GRANTS.name))?;
         let skills = parse_skills(
             get(env::HATCHLING_SKILLS_DIR.name),
             get(env::HATCHLING_SKILL_TRUST_ROOTS.name),
-            get(env::HATCHLING_SKILL_GRANTS.name),
+            get(env::HATCHLING_SKILL_ENABLEMENTS_DIR.name),
         )?;
         // The stores: memory, goals, schedules, artifacts, and
         // spaces ; each a root directory (empty means off).
@@ -1689,18 +1688,40 @@ fn parse_channel_accounts(
     Ok(accounts)
 }
 
+/// Grants by setting are retired: the owner enables each skill (WO-046),
+/// and a harness has a grant of its own. The old setting is refused by
+/// name rather than ignored, saying what to do instead.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfig`] when `raw` is set to anything.
+fn refuse_retired_grants(raw: Option<String>) -> Result<(), Error> {
+    if raw.is_some_and(|raw| !raw.trim().is_empty()) {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_SKILL_GRANTS",
+            reason: String::from(
+                "retired: enable each skill in the app, Settings > Skills, and grant \
+                 a harness with HATCHLING_HARNESS_GRANTS=<name>; unset this",
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Parses skill configuration from environment.
 ///
 /// `HATCHLING_SKILLS_DIR`: directory containing skill manifests.
 /// `HATCHLING_SKILL_TRUST_ROOTS`: absolute path of the trust-roots file.
-/// `HATCHLING_SKILL_GRANTS`: `skill:capability` entries, comma-separated.
+/// `HATCHLING_SKILL_ENABLEMENTS_DIR`: absolute directory of the owner's
+/// enablements, a sealed store, neither inside the skills dir nor holding
+/// it.
 ///
 /// Empty skills dir means no skills. If a dir is set, the trust-roots
-/// file path is required.
+/// file and the enablements' directory are required.
 fn parse_skills(
     dir_raw: Option<String>,
     trust_raw: Option<String>,
-    grants_raw: Option<String>,
+    enablements_raw: Option<String>,
 ) -> Result<SkillConfig, Error> {
     let Some(dir) = dir_raw else {
         return Ok(SkillConfig::disabled());
@@ -1732,55 +1753,34 @@ fn parse_skills(
             ),
         });
     }
-    let grants = parse_skill_grants(grants_raw)?;
+    let enablements = PathBuf::from(
+        enablements_raw
+            .filter(|raw| !raw.trim().is_empty())
+            .ok_or(Error::MissingConfig("HATCHLING_SKILL_ENABLEMENTS_DIR"))?
+            .trim(),
+    );
+    let invalid = |reason: String| Error::InvalidConfig {
+        key: "HATCHLING_SKILL_ENABLEMENTS_DIR",
+        reason,
+    };
+    if !enablements.is_absolute() {
+        return Err(invalid(format!(
+            "must be an absolute path: {}",
+            enablements.display()
+        )));
+    }
+    if overlaps(&enablements, &skills_dir) {
+        return Err(invalid(format!(
+            "{} overlaps the skills dir {}: a skill's files could reach it",
+            enablements.display(),
+            skills_dir.display()
+        )));
+    }
     Ok(SkillConfig {
         skills_dir,
         trust_roots_file,
-        grants,
+        enablements,
     })
-}
-
-/// Parses skill grants: `skill:capability` entries, comma-separated.
-///
-/// Every capability parses as a [`CapabilityName`] here, once, at
-/// startup: an empty, overlong, or out-of-alphabet name stops the broker
-/// with the offending entry named. A typo'd grant must never load as a
-/// grant that silently matches nothing.
-fn parse_skill_grants(
-    raw: Option<String>,
-) -> Result<HashMap<String, HashSet<CapabilityName>>, Error> {
-    let mut grants: HashMap<String, HashSet<CapabilityName>> = HashMap::new();
-    let Some(raw) = raw else {
-        return Ok(grants);
-    };
-    if raw.trim().is_empty() {
-        return Ok(grants);
-    }
-    for entry in raw.split(',') {
-        let trimmed = entry.trim();
-        let invalid = |reason: String| Error::InvalidConfig {
-            key: "HATCHLING_SKILL_GRANTS",
-            reason,
-        };
-        let Some((skill, cap)) = trimmed.split_once(':') else {
-            return Err(invalid(format!(
-                "expected skill:capability, got {trimmed:?}"
-            )));
-        };
-        let skill = skill.trim();
-        if skill.is_empty() {
-            return Err(invalid(format!("empty skill name in {trimmed:?}")));
-        }
-        let capability = cap
-            .trim()
-            .parse::<CapabilityName>()
-            .map_err(|err| invalid(format!("{trimmed:?}: {err}")))?;
-        grants
-            .entry(skill.to_owned())
-            .or_default()
-            .insert(capability);
-    }
-    Ok(grants)
 }
 
 /// Parses the grant list: `action:name` entries separated by commas.
@@ -2542,6 +2542,20 @@ mod tests {
     }
 
     #[test]
+    fn the_broker_refuses_the_retired_skill_grants_by_name() {
+        let mut vars = valid_vars();
+        assert!(Config::parse(lookup(&vars)).is_ok());
+        vars.insert("HATCHLING_SKILL_GRANTS", "notes:fs.read");
+        assert!(matches!(
+            Config::parse(lookup(&vars)),
+            Err(Error::InvalidConfig {
+                key: "HATCHLING_SKILL_GRANTS",
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn the_artifact_store_workspace_and_policy_parse() {
         let mut vars = valid_vars();
         vars.insert("HATCHLING_ARTIFACT_DIR", "/srv/hatchling/artifacts");
@@ -3025,6 +3039,10 @@ mod tests {
         vars.remove("HATCHLING_SKILL_TRUST_ROOT");
         vars.insert("HATCHLING_SKILLS_DIR", "/srv/skills");
         vars.insert("HATCHLING_SKILL_TRUST_ROOTS", "/etc/hatchling/trust-roots");
+        vars.insert(
+            "HATCHLING_SKILL_ENABLEMENTS_DIR",
+            "/var/lib/hatchling/skills-enabled",
+        );
         let config = Config::parse(lookup(&vars)).unwrap();
         assert_eq!(
             config.skills.trust_roots_file,
@@ -4292,66 +4310,13 @@ mod tests {
 
 #[cfg(test)]
 mod skill_config_tests {
-    use std::collections::HashSet;
+    use std::path::PathBuf;
 
-    use hatchling_core::CapabilityName;
-
-    use super::{SkillConfig, parse_skill_grants, parse_skills};
+    use super::{SkillConfig, parse_skills, refuse_retired_grants};
     use crate::Error;
 
     const ROOTS: &str = "/etc/hatchling/trust-roots";
-
-    fn cap(raw: &str) -> CapabilityName {
-        raw.parse().unwrap()
-    }
-
-    #[test]
-    fn skill_grants_parse_as_typed_per_skill_sets() {
-        let grants = parse_skill_grants(Some(String::from(
-            " web:net.egress , web:fs.read,notes:fs.write ",
-        )))
-        .unwrap();
-        assert_eq!(grants.len(), 2);
-        assert_eq!(
-            grants.get("web"),
-            Some(&HashSet::from([cap("net.egress"), cap("fs.read")]))
-        );
-        assert_eq!(grants.get("notes"), Some(&HashSet::from([cap("fs.write")])));
-        assert!(parse_skill_grants(None).unwrap().is_empty());
-        assert!(
-            parse_skill_grants(Some(String::from("  ")))
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn malformed_skill_grants_stop_startup() {
-        // Empty, out-of-alphabet, and overlong capability names, an
-        // empty skill name, a missing separator, an empty entry: each is
-        // refused by name, never loaded as a grant that matches nothing.
-        let long = format!("web:{}", "a".repeat(129));
-        for raw in [
-            "web:",
-            "web:net egress",
-            "web:fs/read",
-            long.as_str(),
-            ":fs.read",
-            "web",
-            "web:fs.read,,notes:fs.write",
-        ] {
-            assert!(
-                matches!(
-                    parse_skill_grants(Some(raw.to_owned())),
-                    Err(Error::InvalidConfig {
-                        key: "HATCHLING_SKILL_GRANTS",
-                        ..
-                    })
-                ),
-                "{raw:?} must be refused"
-            );
-        }
-    }
+    const ENABLED: &str = "/var/lib/hatchling/skills-enabled";
 
     #[test]
     fn skills_are_enabled_only_by_a_configured_dir() {
@@ -4365,14 +4330,31 @@ mod skill_config_tests {
         let config = parse_skills(
             Some(String::from("/srv/skills")),
             Some(String::from(ROOTS)),
-            Some(String::from("web:net.egress")),
+            Some(String::from(ENABLED)),
         )
         .unwrap();
         assert!(config.is_enabled());
-        assert_eq!(
-            config.grants.get("web"),
-            Some(&HashSet::from([cap("net.egress")]))
-        );
+        assert_eq!(config.skills_dir, PathBuf::from("/srv/skills"));
+        assert_eq!(config.trust_roots_file, PathBuf::from(ROOTS));
+        assert_eq!(config.enablements, PathBuf::from(ENABLED));
+    }
+
+    #[test]
+    fn the_retired_grants_setting_is_refused_saying_what_to_do() {
+        for unset in [None, Some(String::new()), Some(String::from("  "))] {
+            assert!(refuse_retired_grants(unset).is_ok());
+        }
+        for set in ["notes:fs.read", "claude-code:code"] {
+            let refused = refuse_retired_grants(Some(String::from(set))).unwrap_err();
+            let Error::InvalidConfig { key, reason } = refused else {
+                unreachable!("{refused:?}")
+            };
+            assert_eq!(key, "HATCHLING_SKILL_GRANTS");
+            assert!(
+                reason.contains("Settings > Skills") && reason.contains("HATCHLING_HARNESS_GRANTS"),
+                "{reason}"
+            );
+        }
     }
 
     #[test]
@@ -4381,34 +4363,30 @@ mod skill_config_tests {
             parse_skills(
                 Some(String::from("relative/skills")),
                 Some(String::from(ROOTS)),
-                None
+                Some(String::from(ENABLED))
             ),
             Err(Error::InvalidConfig {
                 key: "HATCHLING_SKILLS_DIR",
                 ..
             })
         ));
-        let config = parse_skills(
-            Some(String::from("/srv/skills")),
-            Some(String::from(ROOTS)),
-            None,
-        )
-        .unwrap();
-        assert_eq!(config.skills_dir, std::path::PathBuf::from("/srv/skills"));
-        assert_eq!(config.trust_roots_file, std::path::PathBuf::from(ROOTS));
     }
 
     #[test]
     fn the_trust_roots_file_is_required_and_absolute() {
         assert!(matches!(
-            parse_skills(Some(String::from("/srv/skills")), None, None),
+            parse_skills(
+                Some(String::from("/srv/skills")),
+                None,
+                Some(String::from(ENABLED))
+            ),
             Err(Error::MissingConfig("HATCHLING_SKILL_TRUST_ROOTS"))
         ));
         assert!(matches!(
             parse_skills(
                 Some(String::from("/srv/skills")),
                 Some(String::from("relative/roots")),
-                None
+                Some(String::from(ENABLED))
             ),
             Err(Error::InvalidConfig {
                 key: "HATCHLING_SKILL_TRUST_ROOTS",
@@ -4419,10 +4397,57 @@ mod skill_config_tests {
         let config = parse_skills(
             Some(String::from("/srv/skills")),
             Some(format!(" {ROOTS} ")),
-            None,
+            Some(String::from(ENABLED)),
         )
         .unwrap();
-        assert_eq!(config.trust_roots_file, std::path::PathBuf::from(ROOTS));
+        assert_eq!(config.trust_roots_file, PathBuf::from(ROOTS));
+    }
+
+    #[test]
+    fn the_enablements_dir_is_required_absolute_and_apart_from_the_skills() {
+        for missing in [None, Some(String::new()), Some(String::from("  "))] {
+            assert!(
+                matches!(
+                    parse_skills(
+                        Some(String::from("/srv/skills")),
+                        Some(String::from(ROOTS)),
+                        missing.clone()
+                    ),
+                    Err(Error::MissingConfig("HATCHLING_SKILL_ENABLEMENTS_DIR"))
+                ),
+                "{missing:?}"
+            );
+        }
+        // Relative, inside the skills dir, or holding it: refused.
+        for bad in [
+            "relative/enabled",
+            "/srv/skills/enabled",
+            "/srv/skills",
+            "/srv",
+        ] {
+            assert!(
+                matches!(
+                    parse_skills(
+                        Some(String::from("/srv/skills")),
+                        Some(String::from(ROOTS)),
+                        Some(String::from(bad))
+                    ),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_SKILL_ENABLEMENTS_DIR",
+                        ..
+                    })
+                ),
+                "{bad}"
+            );
+        }
+        // A sibling is fine, trimmed.
+        let config = parse_skills(
+            Some(String::from("/srv/skills")),
+            Some(String::from(ROOTS)),
+            Some(String::from(" /srv/skills-enabled ")),
+        )
+        .unwrap();
+        assert_eq!(config.enablements, PathBuf::from("/srv/skills-enabled"));
     }
 }
 
