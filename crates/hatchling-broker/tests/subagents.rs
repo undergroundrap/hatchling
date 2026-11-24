@@ -127,6 +127,7 @@ fn env(config: &Config, timeout: Duration) -> RunEnv {
         agent_bin: run_fixture_binary().unwrap(),
         run_root: config.scheduler.run_root(),
         timeout,
+        chat_timeout: timeout,
     }
 }
 
@@ -821,6 +822,7 @@ fn agent_parent(
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,
+        run_deadline: None,
         vault_fd: None,
     };
     let cell = hatchling_agent::Cell::new(agent)

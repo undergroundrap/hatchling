@@ -20,10 +20,11 @@ pub const DEFAULT_MAX_STEPS: u32 = 10;
 
 /// The steps a chat has when `HATCHLING_MODEL_MAX_STEPS` doesn't say.
 ///
-/// Room for a task of a few files, run and checked, with a small
-/// model's slips, for a run whose person is there. The broker's
-/// wall-clock limit bounds the run however many it has.
-pub const CHAT_MAX_STEPS: u32 = 25;
+/// A backstop against a loop, not a budget (WO-051): a chat run, whose
+/// person is there and can stop it, is bounded by its clock, its window
+/// and its tokens. Each step meets the same guards at the two hundredth
+/// as at the first.
+pub const CHAT_MAX_STEPS: u32 = 200;
 
 /// The steps a run has when the setting doesn't say.
 const fn default_steps(run_chat: bool) -> u32 {
@@ -103,6 +104,9 @@ pub struct Config {
     /// the run offers its model only those of them. `None`, when the
     /// broker doesn't say, offers every one.
     pub run_tools: Option<std::collections::BTreeSet<hatchling_core::run_tools::ToolGroup>>,
+    /// When the broker ends the run, in Unix seconds
+    /// (`HATCHLING_RUN_DEADLINE`, WO-051): the run answers before it.
+    pub run_deadline: Option<i64>,
 }
 
 impl Config {
@@ -190,6 +194,14 @@ impl Config {
             parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat)?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
+        let run_deadline = get(env::HATCHLING_RUN_DEADLINE.name)
+            .map(|raw| {
+                raw.parse::<i64>().map_err(|_| Error::InvalidConfig {
+                    key: "HATCHLING_RUN_DEADLINE",
+                    reason: String::from("expected Unix seconds, base 10"),
+                })
+            })
+            .transpose()?;
         let run_tools = get(env::HATCHLING_RUN_TOOLS.name)
             .map(|raw| {
                 hatchling_core::run_tools::parse(&raw).map_err(|reason| Error::InvalidConfig {
@@ -215,6 +227,7 @@ impl Config {
             run_earlier,
             run_builders,
             run_tools,
+            run_deadline,
         })
     }
 }
@@ -788,12 +801,12 @@ mod tests {
         vars.insert("HATCHLING_RUN_CHAT", "0");
         assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 10);
         vars.insert("HATCHLING_RUN_CHAT", "1");
-        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 25);
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 200);
         vars.insert("HATCHLING_MODEL_MAX_STEPS", "7");
         assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 7);
         vars.insert("HATCHLING_RUN_CHAT", "0");
         assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 7);
-        assert_eq!((DEFAULT_MAX_STEPS, CHAT_MAX_STEPS), (10, 25));
+        assert_eq!((DEFAULT_MAX_STEPS, CHAT_MAX_STEPS), (10, 200));
     }
 
     #[test]

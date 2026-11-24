@@ -207,6 +207,7 @@ fn ready_cell_with_reasoning(
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,
+        run_deadline: None,
         vault_fd: None,
     };
     Cell::new(config)
@@ -450,8 +451,9 @@ fn the_binary_says_by_its_status_whether_its_steps_ran_out_as_it_answered() {
 }
 
 /// The agent's binary, run to its end against the local server at
-/// `port`, in a window of 32768 tokens: its status, answer and errors.
-fn run_binary(name: &str, port: u16) -> (Option<i32>, String, String) {
+/// `port`, in a window of 32768 tokens, with `extra` in its environment:
+/// its status, answer and errors.
+fn run_binary(name: &str, port: u16, extra: &[(&str, String)]) -> (Option<i32>, String, String) {
     let broker = local_broker(name, port);
     let uid = rustix::process::getuid().as_raw().to_string();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_hatchling-agent"))
@@ -466,6 +468,7 @@ fn run_binary(name: &str, port: u16) -> (Option<i32>, String, String) {
         )
         .env("HATCHLING_MODEL_NAME", "local-model")
         .env("HATCHLING_MODEL_CONTEXT_WINDOW", "32768")
+        .envs(extra.iter().map(|(name, value)| (*name, value.as_str())))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -511,7 +514,7 @@ fn a_run_whose_context_fills_answers_or_sends_nothing() {
         counted(28_650),
         text_reply("I ran out of room here"),
     ]);
-    let (status, answer, errors) = run_binary("local-room-answer", server.port);
+    let (status, answer, errors) = run_binary("local-room-answer", server.port, &[]);
     let room = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM);
     assert_eq!(
         (status, answer.as_str()),
@@ -531,13 +534,45 @@ fn a_run_whose_context_fills_answers_or_sends_nothing() {
         counted(30_000),
         text_reply("never asked"),
     ]);
-    let (status, _, errors) = run_binary("local-room-none", server.port);
+    let (status, _, errors) = run_binary("local-room-none", server.port, &[]);
     let out_of_room = i32::from(RunFailure::OutOfRoom.code());
     assert_eq!(status, Some(out_of_room), "{errors}");
     assert_eq!(
         server.seen.lock().unwrap().len(),
         2,
         "the probe and the first request; nothing after"
+    );
+}
+
+/// A run told its deadline is near answers on its first turn, with no
+/// tools offered, and says so by its status (WO-051).
+#[test]
+fn a_run_near_its_deadline_answers_with_no_tools() {
+    let server = LocalServer::start(vec![probe_reply(), text_reply("time is nearly up")]);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let soon = (now + 30).to_string();
+    let (status, answer, errors) = run_binary(
+        "local-deadline",
+        server.port,
+        &[("HATCHLING_RUN_DEADLINE", soon)],
+    );
+    let time = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TIME);
+    assert_eq!(
+        (status, answer.as_str()),
+        (Some(time), "time is nearly up"),
+        "{errors}"
+    );
+    let seen = server.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "the probe and the one answer");
+    let last = seen.last().unwrap();
+    assert!(
+        last.body
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+        "the answer was asked for with no tools"
     );
 }
 

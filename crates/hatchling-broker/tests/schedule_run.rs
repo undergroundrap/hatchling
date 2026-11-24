@@ -113,6 +113,7 @@ fn env(config: &Config, timeout: Duration) -> RunEnv {
         agent_bin: run_fixture_binary().unwrap(),
         run_root: config.scheduler.run_root(),
         timeout,
+        chat_timeout: timeout,
     }
 }
 

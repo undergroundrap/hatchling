@@ -106,11 +106,13 @@ fn run_lifecycle() -> Result<(), Error> {
 /// The status a run that answered exits with: its own when its steps or
 /// its room ran out as it answered, so the broker knows its answer may
 /// leave work undone.
-const fn answered(out_of_steps: bool, out_of_room: bool) -> u8 {
+const fn answered(out_of_steps: bool, out_of_room: bool, out_of_time: bool) -> u8 {
     if out_of_steps {
         hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS
     } else if out_of_room {
         hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM
+    } else if out_of_time {
+        hatchling_core::run_failure::ANSWERED_OUT_OF_TIME
     } else {
         0
     }
@@ -131,7 +133,7 @@ fn run_task(task_args: &[String]) -> Result<u8, Error> {
     let run = run_command(task_args)?;
     let mut stdout = std::io::stdout().lock();
     let _ = writeln!(stdout, "{}", run.answer);
-    Ok(answered(run.out_of_steps, run.out_of_room))
+    Ok(answered(run.out_of_steps, run.out_of_room, run.out_of_time))
 }
 
 #[cfg(test)]
@@ -201,19 +203,23 @@ mod tests {
 
     #[test]
     fn a_run_that_answered_as_its_steps_ran_out_has_a_status_of_its_own() {
-        assert_eq!(answered(false, false), 0);
+        assert_eq!(answered(false, false, false), 0);
         assert_eq!(
-            answered(true, false),
+            answered(true, false, false),
             hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS
         );
         assert_eq!(
-            answered(false, true),
+            answered(false, true, false),
             hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM
         );
         assert_eq!(
-            answered(true, true),
+            answered(true, true, false),
             hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS,
             "steps first: the run's last step was its last"
+        );
+        assert_eq!(
+            answered(false, false, true),
+            hatchling_core::run_failure::ANSWERED_OUT_OF_TIME
         );
     }
 

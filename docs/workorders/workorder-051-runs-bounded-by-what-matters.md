@@ -87,6 +87,7 @@ See [TEMPLATE.md](TEMPLATE.md#gates). Slice 4 changes the UI protocol: `protocol
 ## Evidence
 
 - Slice 2, the context guard: [context-guard.md](../evidence/context-guard.md).
+- Slice 3a, the clock by kind and the deadline: [run-clock.md](../evidence/run-clock.md).
 
 The acceptance criteria are ticked at close, against these and the later slices'.
 

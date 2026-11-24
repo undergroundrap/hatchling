@@ -449,6 +449,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             depth: 0,
             event: None,
             max_steps: Some(budget),
+            deadline: None,
             subagent: true,
             chat: false,
             history: Vec::new(),
@@ -1017,6 +1018,7 @@ mod tests {
             agent_bin: base.join("no-such-agent"),
             run_root: base.join("runs"),
             timeout: Duration::from_secs(5),
+            chat_timeout: Duration::from_secs(5),
         };
         std::thread::scope(|scope| {
             let mut subagents =
@@ -1043,6 +1045,7 @@ mod tests {
             agent_bin: base.join("no-such-agent"),
             run_root: base.join("runs"),
             timeout: Duration::from_secs(5),
+            chat_timeout: Duration::from_secs(5),
         };
         let other_key = MasterKey::generate().unwrap();
         std::thread::scope(|scope| {

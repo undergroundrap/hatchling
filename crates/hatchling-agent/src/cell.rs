@@ -288,6 +288,21 @@ impl Cell<PeerAuthorized> {
     }
 }
 
+/// What the model is told when its time is nearly up (WO-051), where it is
+/// offered no tools: to say where it got to.
+pub(crate) const OUT_OF_TIME: &str = "Your time is nearly up: Hatchling ends this run in a moment, so you have no tool calls left in this reply; don't call a tool. Tell the person plainly that you ran out of time before you finished, what you did, what you found, and what is left to do. They can ask you to go on.";
+
+/// How long before its deadline a run answers: a turn that would start
+/// inside it is the run's last (WO-051).
+pub(crate) const WRAP_UP: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// When a run told its deadline (Unix seconds) starts its last turn:
+/// [`WRAP_UP`] before it, from now, and now if that's already past.
+pub(crate) fn wrap_up_at(deadline: i64, now: i64) -> std::time::Instant {
+    let left = u64::try_from(deadline.saturating_sub(now)).unwrap_or(0);
+    std::time::Instant::now() + std::time::Duration::from_secs(left).saturating_sub(WRAP_UP)
+}
+
 /// What the model is told when its next request wouldn't fit its window
 /// (WO-051), where it is offered no tools: to say where it got to.
 pub(crate) const OUT_OF_ROOM: &str = "Your context is full: the next step wouldn't fit the model's window, so you have no tool calls left in this reply; don't call a tool. Tell the person plainly that you ran out of room before you finished, what you did, what you found, and what is left to do. They can ask you to go on, or start a new conversation for the rest.";
@@ -610,6 +625,18 @@ impl Cell<Ready> {
             Some(window) => asking.with_window(window),
             None => asking,
         };
+        // A run told its deadline answers before it (WO-051); the
+        // broker's clock still ends it there.
+        let asking = match self.config().run_deadline {
+            Some(deadline) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |since| since.as_secs());
+                let now = i64::try_from(now).unwrap_or(i64::MAX);
+                asking.with_deadline(wrap_up_at(deadline, now), String::from(OUT_OF_TIME))
+            }
+            None => asking,
+        };
         let result = asking
             .with_budget(budget)
             .with_ledger(ledger)
@@ -716,6 +743,7 @@ mod tests {
             run_earlier: Vec::new(),
             run_builders: std::collections::BTreeMap::new(),
             run_tools: None,
+            run_deadline: None,
             vault_fd: None,
         }
     }
@@ -1192,5 +1220,24 @@ mod tests {
             assert_eq!(expected, PeerUid::from_kernel(real_uid.wrapping_add(1)));
             assert_eq!(actual, PeerUid::from_kernel(real_uid));
         }
+    }
+
+    /// A run starts its last turn 90 seconds before its deadline, at once
+    /// when that's already past (WO-051).
+    #[test]
+    fn a_run_wraps_up_90_seconds_before_its_deadline() {
+        let start = std::time::Instant::now();
+        let at = wrap_up_at(1_000 + 100, 1_000);
+        let ahead = at.saturating_duration_since(start);
+        assert!(
+            (std::time::Duration::from_secs(9)..=std::time::Duration::from_secs(11))
+                .contains(&ahead),
+            "{ahead:?}"
+        );
+        for left in [90, 30, 0, -50] {
+            let at = wrap_up_at(1_000 + left, 1_000);
+            assert!(at <= std::time::Instant::now(), "{left}");
+        }
+        assert_eq!(WRAP_UP, std::time::Duration::from_secs(90));
     }
 }

@@ -239,6 +239,7 @@ impl Install {
             agent_bin: run_fixture_binary()?,
             run_root: config.scheduler.run_root(),
             timeout,
+            chat_timeout: timeout,
         };
         Ok((config, runs))
     }
@@ -1081,6 +1082,7 @@ fn a_chat_run_that_sends_a_key_is_stopped_and_the_owner_told_once() -> Result<()
         agent_bin: run_fixture_binary()?,
         run_root: config.scheduler.run_root(),
         timeout: Duration::from_secs(120),
+        chat_timeout: Duration::from_secs(120),
     };
     let (hub, shown) = owners_chat();
     let delivery = HubDelivery::new(Some(&hub));
@@ -1476,6 +1478,7 @@ fn a_hit_kills_the_brokers_long_lived_cell_and_its_vault_channel() -> Result<(),
         depth: 0,
         event: None,
         max_steps: None,
+        deadline: None,
         subagent: false,
         chat: false,
         history: Vec::new(),

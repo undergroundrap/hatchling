@@ -237,6 +237,11 @@ pub fn watch_broker(pid: Option<std::ffi::OsString>) -> Result<hatchling_sys::Pa
 /// a hung run's socket well inside an hourly cadence.
 pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
+/// Wall-clock bound on one chat run, spawn included: thirty minutes
+/// (WO-051). Its owner is there, and can stop it; a run with nobody there
+/// keeps [`DEFAULT_RUN_TIMEOUT`].
+pub const CHAT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
 /// Most output a run may produce, in bytes.
 pub const MAX_RUN_OUTPUT_BYTES: usize = 16 * 1024;
 
@@ -259,8 +264,11 @@ pub struct RunEnv {
     pub agent_bin: PathBuf,
     /// The directory run directories are made in.
     pub run_root: PathBuf,
-    /// The wall-clock bound on each run.
+    /// The wall-clock bound on each run with nobody there.
     pub timeout: Duration,
+    /// The wall-clock bound on each chat run, whose owner is there
+    /// (WO-051).
+    pub chat_timeout: Duration,
 }
 
 impl RunEnv {
@@ -278,8 +286,33 @@ impl RunEnv {
             agent_bin: config.scheduler.agent_bin.clone()?,
             run_root: config.scheduler.run_root(),
             timeout: DEFAULT_RUN_TIMEOUT,
+            chat_timeout: CHAT_RUN_TIMEOUT,
         })
     }
+}
+
+/// `run` with its deadline, and its clock: a chat's, whose owner is there,
+/// or a run's with nobody there (WO-051). The deadline is told to its
+/// agent so it answers first; the clock is what ends it.
+fn clocked(env: &RunEnv, run: ScheduledRun) -> (ScheduledRun, Duration) {
+    let timeout = if run.chat {
+        env.chat_timeout
+    } else {
+        env.timeout
+    };
+    let run = ScheduledRun {
+        deadline: Some(deadline_after(timeout)),
+        ..run
+    };
+    (run, timeout)
+}
+
+/// `timeout` from now, in Unix seconds: a run's deadline.
+fn deadline_after(timeout: Duration) -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    i64::try_from(now.saturating_add(timeout.as_secs())).unwrap_or(i64::MAX)
 }
 
 /// The configuration a run's session is served under: `config` with
@@ -543,6 +576,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             .parse()
             .map_err(|err| cleanup(format!("run cell id: {err}")))?;
         let socket = self.config.socket.clone();
+        let (run, timeout) = clocked(&self.env, run);
         let mut cell = CellConfig::for_run(
             &self.env.agent_bin,
             &token,
@@ -602,7 +636,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             child,
             cgroup,
             started,
-            timeout: self.env.timeout,
+            timeout,
             output,
             errors: Some(errors),
             session: Some(session),
@@ -876,6 +910,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         depth: request.depth,
         event: request.event.clone(),
         max_steps: None,
+        deadline: None,
         subagent: false,
         chat: request.chat,
         history: request.history.clone(),
@@ -1912,6 +1947,7 @@ mod tests {
             depth: 0,
             event: None,
             max_steps: None,
+            deadline: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -1925,6 +1961,7 @@ mod tests {
                 agent_bin: PathBuf::from("/bin/true"),
                 run_root: dir.clone(),
                 timeout: Duration::from_secs(5),
+                chat_timeout: Duration::from_secs(5),
             };
             let launcher = CellLauncher::new(scope, &config, &key, env.clone());
             let error = launcher
@@ -2012,6 +2049,7 @@ mod tests {
         use hatchling_scheduler::Ending;
         let spent = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS);
         let full = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM);
+        let late = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TIME);
         for (code, told, ending) in [
             (0, Ok(String::from("this far")), None),
             (
@@ -2025,9 +2063,14 @@ mod tests {
                 Some(Ending::Exited(full)),
             ),
             (
-                full + 1,
-                Err(format!("the run exited {}: why", full + 1)),
-                Some(Ending::Exited(full + 1)),
+                late,
+                Ok(String::from("this far")),
+                Some(Ending::Exited(late)),
+            ),
+            (
+                late + 1,
+                Err(format!("the run exited {}: why", late + 1)),
+                Some(Ending::Exited(late + 1)),
             ),
         ] {
             let dir = helper_dir(&format!("spent-{code}"));
@@ -2316,6 +2359,7 @@ mod tests {
             depth: 0,
             event: None,
             max_steps: None,
+            deadline: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2350,6 +2394,7 @@ mod tests {
             depth: 0,
             event: None,
             max_steps: None,
+            deadline: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2668,5 +2713,48 @@ mod tests {
         forget_spec(&dir);
         assert!(!Path::new(&path).exists(), "a forgotten spec stayed");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A chat run gets the chat's clock and a run with nobody there its
+    /// own, each told to its agent as a deadline that far from now; the
+    /// shipped clocks are thirty minutes and ten (WO-051).
+    #[test]
+    fn a_run_is_clocked_by_its_kind_and_told_its_deadline() {
+        assert_eq!(CHAT_RUN_TIMEOUT, Duration::from_secs(30 * 60));
+        assert_eq!(DEFAULT_RUN_TIMEOUT, Duration::from_secs(10 * 60));
+        let env = RunEnv {
+            spawner: PathBuf::from("/bin/sh"),
+            agent_bin: PathBuf::from("/bin/true"),
+            run_root: PathBuf::from("/tmp"),
+            timeout: Duration::from_secs(600),
+            chat_timeout: Duration::from_secs(1800),
+        };
+        let config = crate::api_auth::tests::owner_config(None);
+        let now = || {
+            i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            )
+            .unwrap()
+        };
+        for (chat, clock) in [(true, 1800), (false, 600)] {
+            let asked = RunRequest {
+                chat,
+                ..request(Vec::new())
+            };
+            let before = now();
+            let (run, timeout) = clocked(&env, scheduled_run(&config, &asked));
+            let after = now();
+            assert_eq!(timeout, Duration::from_secs(clock), "{chat}");
+            let deadline = run.deadline.unwrap();
+            assert!(
+                (before + i64::try_from(clock).unwrap()..=after + i64::try_from(clock).unwrap())
+                    .contains(&deadline),
+                "{chat}: {deadline}"
+            );
+        }
+        assert_eq!(deadline_after(Duration::MAX), i64::MAX);
     }
 }

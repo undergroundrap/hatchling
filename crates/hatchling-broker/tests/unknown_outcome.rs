@@ -154,6 +154,7 @@ fn killed(config: &Config) {
         agent_bin: run_fixture_binary().unwrap(),
         run_root: config.scheduler.run_root(),
         timeout: Duration::from_secs(600),
+        chat_timeout: Duration::from_secs(600),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, config, &key, env);

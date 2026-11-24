@@ -49,6 +49,11 @@ pub enum Error {
     #[error("the run's context is full: no request fits the model's window")]
     OutOfRoom,
 
+    /// The run's time is up, and its last turn, with no tools, wasn't an
+    /// answer (WO-051).
+    #[error("the run's time is up, and its last turn wasn't an answer")]
+    OutOfTime,
+
     /// The model answered, but with nothing: no text and no tool call,
     /// every time it was asked. The server is there; the model's reply
     /// isn't an answer.

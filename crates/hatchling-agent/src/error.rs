@@ -553,6 +553,11 @@ pub enum Error {
     /// for ran.
     #[error("agent loop failed: {0}")]
     ToolsMisused(String),
+
+    /// The run's time was nearly up, and its last turn, with no tools,
+    /// wasn't an answer (WO-051).
+    #[error("agent loop failed: {0}")]
+    OutOfTime(String),
 }
 
 impl Error {
@@ -575,6 +580,8 @@ impl Error {
             Some(RunFailure::ToolsMisused)
         } else if let Self::LoopBudgetExhausted { .. } = self {
             Some(RunFailure::OutOfSteps)
+        } else if let Self::OutOfTime(_) = self {
+            Some(RunFailure::OutOfTime)
         } else {
             None
         }
@@ -656,6 +663,7 @@ mod tests {
                 Error::LoopBudgetExhausted { steps: 3 },
                 Some(RunFailure::OutOfSteps),
             ),
+            (Error::OutOfTime(String::new()), Some(RunFailure::OutOfTime)),
             (Error::LoopFailed(String::new()), None),
             (Error::Usage(String::new()), None),
             (Error::VaultFailed, None),

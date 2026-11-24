@@ -70,6 +70,10 @@ pub struct LoopResult {
     /// with no tools ([`Loop::with_room`]). Such an answer may leave work
     /// undone.
     pub out_of_room: bool,
+    /// Whether the run's time was nearly up as it answered, so it was told
+    /// to answer with no tools ([`Loop::with_deadline`]). Such an answer
+    /// may leave work undone.
+    pub out_of_time: bool,
 }
 
 impl LoopResult {
@@ -81,8 +85,18 @@ impl LoopResult {
             steps,
             out_of_steps,
             out_of_room: false,
+            out_of_time: false,
         }
     }
+}
+
+/// The limit a run's last turn was made at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Limit {
+    /// Its next request wouldn't have fit the model's window.
+    Room,
+    /// Its time was nearly up.
+    Time,
 }
 
 /// `text`'s first `cap` bytes, ending on a character, and a line saying
@@ -116,6 +130,7 @@ pub struct Loop<'t, 'r, 'm> {
     last_step: Option<String>,
     room: Option<String>,
     output_cap: Option<usize>,
+    deadline: Option<(std::time::Instant, String)>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -131,6 +146,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("last_step", &self.last_step.is_some())
             .field("room", &self.room.is_some())
             .field("output_cap", &self.output_cap)
+            .field("deadline", &self.deadline.as_ref().map(|(at, _)| at))
             .finish()
     }
 }
@@ -157,6 +173,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             last_step: None,
             room: None,
             output_cap: None,
+            deadline: None,
         }
     }
 
@@ -191,6 +208,18 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         self
     }
 
+    /// Answer by `at` (WO-051): a turn that would start at or after it is
+    /// the run's last, told `note` and offered no tools, and its answer is
+    /// marked [`LoopResult::out_of_time`]. A last turn that isn't an
+    /// answer ends the run [`Error::OutOfTime`]. The run's own clock, kept
+    /// by whoever started it, still ends it at its deadline; this is the
+    /// run's chance to say where it got to first.
+    #[must_use]
+    pub fn with_deadline(mut self, at: std::time::Instant, note: String) -> Self {
+        self.deadline = Some((at, note));
+        self
+    }
+
     /// Cut each tool's output to a quarter of a `window` of tokens before
     /// it joins the history, saying so (WO-051): one tool's output can't
     /// fill the window by itself.
@@ -221,14 +250,42 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         }
     }
 
-    /// The run's last turn for room: told `note`, offered no tools, and
-    /// sent only if it fits.
-    fn out_of_room(
+    /// The limit the run is at before its next turn, if one: its time
+    /// ([`with_deadline`](Self::with_deadline)), then its room
+    /// ([`with_room`](Self::with_room)); and what it's told at it.
+    fn limit_reached(
+        &self,
+        model: &dyn Model,
+        history: &[Message],
+        tools: &[crate::tool::ToolDescription],
+    ) -> Option<(&str, Limit)> {
+        if let Some((_, note)) = self
+            .deadline
+            .as_ref()
+            .filter(|(at, _)| std::time::Instant::now() >= *at)
+        {
+            return Some((note, Limit::Time));
+        }
+        self.room
+            .as_deref()
+            .filter(|_| !model.fits(history, tools))
+            .map(|note| (note, Limit::Room))
+    }
+
+    /// The run's last turn at a limit, room or time: told `note`, offered
+    /// no tools, and sent only if it fits. Its answer is the run's, marked
+    /// for the limit; anything else ends the run at it.
+    fn wrap_up(
         model: &dyn Model,
         mut history: Vec<Message>,
         note: &str,
         steps: u32,
+        limit: Limit,
     ) -> Result<LoopResult, Error> {
+        let ended = match limit {
+            Limit::Room => Error::OutOfRoom,
+            Limit::Time => Error::OutOfTime,
+        };
         history.push(Message::Note(note.to_owned()));
         if !model.fits(&history, &[]) {
             return Err(Error::OutOfRoom);
@@ -241,13 +298,14 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                     history,
                     steps,
                     out_of_steps: false,
-                    out_of_room: true,
+                    out_of_room: limit == Limit::Room,
+                    out_of_time: limit == Limit::Time,
                 })
             }
-            Ok(ModelAction::ToolCalls(_)) => Err(Error::OutOfRoom),
+            Ok(ModelAction::ToolCalls(_)) => Err(ended),
             Err(error) => {
-                tracing::warn!("the run's last turn for room failed: {error}");
-                Err(Error::OutOfRoom)
+                tracing::warn!("the run's last turn at its limit failed: {error}");
+                Err(ended)
             }
         }
     }
@@ -470,12 +528,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                 history.extend(more().into_iter().map(Message::User));
             }
             let last = step > 0 && ledger.remaining() == 0;
-            if let Some(note) = self
-                .room
-                .as_ref()
-                .filter(|_| !model.fits(&history, &tool_descriptions))
-            {
-                return Self::out_of_room(model, history, note, step + 1);
+            if let Some((note, limit)) = self.limit_reached(model, &history, &tool_descriptions) {
+                return Self::wrap_up(model, history, note, step + 1, limit);
             }
             let action = self.turn(model, &mut history, &tool_descriptions, last);
             step += 1;
@@ -1911,5 +1965,61 @@ mod tests {
         // "é" is two bytes: a cap inside one ends before it.
         assert!(cut("aé", 2).starts_with("a\n"));
         assert!(cut("ab", 9).starts_with("ab\n"));
+    }
+
+    const TIME: &str = "your time is nearly up";
+
+    /// A run whose time is nearly up is told so, offered no tools, and its
+    /// answer is the run's, out of time; a run with time left goes on.
+    #[test]
+    fn a_run_out_of_time_answers_with_no_tools() {
+        let (registry, runs) = counting();
+        let past = std::time::Instant::now();
+        let model = Watched::doing(vec![Ok(says("time's up, this far"))]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_deadline(past, String::from(TIME))
+            .with_room(String::from(ROOM))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(
+            (result.answer.as_str(), result.steps),
+            ("time's up, this far", 1)
+        );
+        assert!(result.out_of_time && !result.out_of_room && !result.out_of_steps);
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(model.offered(), [0]);
+        assert_eq!(model.told(), [Some(String::from(TIME))]);
+        // With an hour left, nothing is cut short.
+        let later = std::time::Instant::now() + std::time::Duration::from_secs(3600);
+        let model = Watched::doing(vec![Ok(counts()), Ok(says("done"))]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_deadline(later, String::from(TIME))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(result.answer, "done");
+        assert!(!result.out_of_time);
+        assert_eq!(model.offered(), [1, 1]);
+    }
+
+    /// A last turn for time that calls a tool or fails ends the run out of
+    /// time; one with no room even then ends it out of room, unsent.
+    #[test]
+    fn a_last_turn_for_time_that_isnt_an_answer_ends_out_of_time() {
+        let (registry, runs) = counting();
+        let past = std::time::Instant::now();
+        for last in [Ok(counts()), Err(Error::ModelFailed(String::from("down")))] {
+            let model = Watched::doing(vec![last]);
+            let ended = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .with_deadline(past, String::from(TIME))
+                .run(&model, String::from("go"));
+            assert!(matches!(ended, Err(Error::OutOfTime)), "{ended:?}");
+        }
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let model = cramped(vec![Ok(says("never"))], false);
+        let ended = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_deadline(past, String::from(TIME))
+            .run(&model, String::from("go"));
+        assert!(matches!(ended, Err(Error::OutOfRoom)), "{ended:?}");
+        assert!(model.watched.offered().is_empty(), "nothing sent");
     }
 }

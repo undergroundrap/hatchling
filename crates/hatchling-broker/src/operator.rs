@@ -690,6 +690,7 @@ mod tests {
             depth: 0,
             event: None,
             max_steps: None,
+            deadline: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -766,6 +767,7 @@ mod tests {
                     agent_bin: std::path::PathBuf::from("/bin/true"),
                     run_root: root.clone(),
                     timeout: Duration::from_secs(5),
+                    chat_timeout: Duration::from_secs(5),
                 },
             );
             // Alive while the operator asks.

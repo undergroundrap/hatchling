@@ -194,6 +194,7 @@ impl Cell<Ready> {
             hatchling_loop::Error::ModelCutOff(_) | hatchling_loop::Error::OutOfRoom => {
                 Error::ModelCutOff(error.to_string())
             }
+            hatchling_loop::Error::OutOfTime => Error::OutOfTime(error.to_string()),
             hatchling_loop::Error::ModelSilent(_) => Error::ModelSilent(error.to_string()),
             hatchling_loop::Error::ModelThoughtOnly(_) => {
                 Error::ModelThoughtOnly(error.to_string())
@@ -310,6 +311,9 @@ pub struct RunAnswer {
     /// Whether the run's context filled as it answered
     /// ([`hatchling_loop::LoopResult::out_of_room`]).
     pub out_of_room: bool,
+    /// Whether the run's time was nearly up as it answered
+    /// ([`hatchling_loop::LoopResult::out_of_time`]).
+    pub out_of_time: bool,
 }
 
 impl From<LoopResult> for RunAnswer {
@@ -318,6 +322,7 @@ impl From<LoopResult> for RunAnswer {
             answer: result.answer,
             out_of_steps: result.out_of_steps,
             out_of_room: result.out_of_room,
+            out_of_time: result.out_of_time,
         }
     }
 }
@@ -390,6 +395,7 @@ pub fn run_command(task_args: &[String]) -> Result<RunAnswer, Error> {
             answer,
             out_of_steps: false,
             out_of_room: false,
+            out_of_time: false,
         });
     }
     Ok(outcome?.into())
@@ -475,6 +481,7 @@ mod tests {
             run_earlier: Vec::new(),
             run_builders: std::collections::BTreeMap::new(),
             run_tools: None,
+            run_deadline: None,
             vault_fd: None,
         };
         assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);
@@ -571,6 +578,7 @@ mod tests {
             steps: 2,
             out_of_steps: false,
             out_of_room: false,
+            out_of_time: false,
         }))
         .unwrap();
         let done_wire = r#"{"status":"done","verdict":"ok","answer":"a","steps":2}"#;
@@ -588,13 +596,19 @@ mod tests {
     /// A run's answer keeps what the loop said of its steps and its room.
     #[test]
     fn a_runs_answer_says_whether_its_steps_or_room_ran_out() {
-        for (out_of_steps, out_of_room) in [(true, false), (false, true), (false, false)] {
+        for (out_of_steps, out_of_room, out_of_time) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (false, false, false),
+        ] {
             let answer = RunAnswer::from(LoopResult {
                 answer: String::from("this far"),
                 history: Vec::new(),
                 steps: 3,
                 out_of_steps,
                 out_of_room,
+                out_of_time,
             });
             assert_eq!(
                 answer,
@@ -602,6 +616,7 @@ mod tests {
                     answer: String::from("this far"),
                     out_of_steps,
                     out_of_room,
+                    out_of_time,
                 }
             );
         }

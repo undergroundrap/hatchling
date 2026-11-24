@@ -587,6 +587,11 @@ pub struct ScheduledRun {
     /// loop bound, set by the broker.
     #[serde(default)]
     pub max_steps: Option<u32>,
+    /// When the broker ends the run, in Unix seconds: its agent answers
+    /// before it (WO-051). Set as the run is launched; the broker's own
+    /// clock is what ends it.
+    #[serde(default)]
+    pub deadline: Option<i64>,
     /// Whether the run is a subagent: its agent then reports how
     /// it ended in a typed envelope.
     #[serde(default)]
@@ -632,6 +637,9 @@ impl ScheduledRun {
         }
         if let Some(steps) = self.max_steps {
             env.push(("HATCHLING_MODEL_MAX_STEPS", steps.to_string()));
+        }
+        if let Some(deadline) = self.deadline {
+            env.push(("HATCHLING_RUN_DEADLINE", deadline.to_string()));
         }
         if self.subagent {
             env.push(("HATCHLING_RUN_SUBAGENT", String::from("1")));
@@ -2633,6 +2641,7 @@ mod run_cell_tests {
                 channel: String::from("local"),
             }),
             max_steps: None,
+            deadline: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2779,6 +2788,7 @@ mod run_cell_tests {
             depth: 0,
             event: None,
             max_steps: Some(4),
+            deadline: None,
             subagent: true,
             ..run()
         };
@@ -3002,6 +3012,22 @@ mod run_cell_tests {
                 String::from("disabled")
             )]
         );
+    }
+    /// A run's deadline reaches its agent's environment, and a run with
+    /// none sets nothing (WO-051).
+    #[test]
+    fn a_runs_deadline_is_in_its_agents_environment() {
+        let run = |deadline| ScheduledRun { deadline, ..run() };
+        let named = |env: &[(&str, String)]| {
+            env.iter()
+                .find(|(name, _)| *name == "HATCHLING_RUN_DEADLINE")
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(
+            named(&run(Some(1_800_000_000)).env()),
+            Some(String::from("1800000000"))
+        );
+        assert_eq!(named(&run(None).env()), None);
     }
 }
 
