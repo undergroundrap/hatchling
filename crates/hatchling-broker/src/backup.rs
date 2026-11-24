@@ -156,8 +156,8 @@ fn places(config: &Config) -> Result<Vec<Place>, Error> {
 
 /// The places of the sealed `stores` and the broker's other `state`.
 ///
-/// A store inside a state directory, as memory's is in its root
-/// (WO-047), is that directory's: listed on its own as well, a
+/// A store inside a state directory, as memory's and goals' are in their
+/// roots (WO-047), is that directory's: listed on its own as well, a
 /// restore would put it back and then clear it with the directory. Each
 /// place's name is its own, or the backup isn't made: a restore puts
 /// what's under a name in one place only.
@@ -1305,31 +1305,109 @@ mod tests {
             & 0o777
     }
 
-    /// Memory's sealed store, inside its root, is carried by its root: a
-    /// backup holds it once, and a restore brings it back where it was
-    /// (WO-047).
+    /// Memory's and goals' sealed stores, and the conversation's: as a
+    /// broker configured with all three keeps them.
+    fn sealed_places(scratch: &Scratch) -> Vec<Place> {
+        let stores = vec![
+            (
+                hatchling_vault::Store::CONVERSATION,
+                scratch.0.join("conversation"),
+            ),
+            (
+                hatchling_vault::Store::MEMORY,
+                scratch.0.join("memory/sealed"),
+            ),
+            (
+                hatchling_vault::Store::GOALS,
+                scratch.0.join("goals/sealed"),
+            ),
+            (hatchling_vault::Store::SPACES, scratch.0.join("spaces")),
+        ];
+        let state = vec![scratch.0.join("memory"), scratch.0.join("goals")];
+        assemble(stores, state).unwrap()
+    }
+
+    /// Memory's and goals' sealed stores, inside their roots, are carried
+    /// by their roots: a backup holds them once, and a restore brings them
+    /// back where they were (WO-047).
     #[test]
     fn a_store_inside_a_state_directory_comes_back_with_it() {
         let scratch = Scratch::new("store-inside");
         scratch.write("memory/sealed/hitem", b"sealed item");
         scratch.write("memory/sessions/s1", b"context");
+        scratch.write("goals/sealed/hgoal", b"sealed goal");
         scratch.write("spaces/hteam", b"sealed space");
-        let stores = vec![
-            (
-                hatchling_vault::Store::MEMORY,
-                scratch.0.join("memory/sealed"),
-            ),
-            (hatchling_vault::Store::SPACES, scratch.0.join("spaces")),
-        ];
-        let state = vec![scratch.0.join("memory")];
-        let places = assemble(stores, state).unwrap();
+        let places = sealed_places(&scratch);
         let names: Vec<&str> = places.iter().map(|place| place.name.as_str()).collect();
-        assert_eq!(names, ["spaces", "memory"]);
+        assert_eq!(names, ["conversation", "spaces", "memory", "goals"]);
         back_and_forth(&scratch, &places);
         assert_eq!(scratch.read("memory/sealed/hitem").unwrap(), b"sealed item");
         assert_eq!(scratch.read("memory/sessions/s1").unwrap(), b"context");
+        assert_eq!(scratch.read("goals/sealed/hgoal").unwrap(), b"sealed goal");
         assert_eq!(scratch.read("spaces/hteam").unwrap(), b"sealed space");
         assert!(scratch.read("memory/sealed/sealed/hitem").is_none());
+    }
+
+    /// `reset conversation` keeps memory and goals, sealed stores and all;
+    /// `reset agent` clears them (WO-047).
+    #[test]
+    fn memory_and_goals_go_with_the_agent_and_stay_with_the_conversation() {
+        let scratch = Scratch::new("reset-sealed");
+        scratch.write("conversation/hchat", b"hello");
+        scratch.write("memory/sealed/hitem", b"sealed item");
+        scratch.write("goals/sealed/hgoal", b"sealed goal");
+        let places = sealed_places(&scratch);
+        clear_level(&places, Level::Conversation, &[hatchling_sys::euid()]).unwrap();
+        assert_eq!(scratch.read("conversation/hchat"), None);
+        assert_eq!(scratch.read("memory/sealed/hitem").unwrap(), b"sealed item");
+        assert_eq!(scratch.read("goals/sealed/hgoal").unwrap(), b"sealed goal");
+        clear_level(&places, Level::Agent, &[hatchling_sys::euid()]).unwrap();
+        assert_eq!(scratch.read("memory/sealed/hitem"), None);
+        assert_eq!(scratch.read("goals/sealed/hgoal"), None);
+    }
+
+    /// A 0.9.0 backup holds memory and goals as plaintext, under the names
+    /// of their roots: restored, it's in the roots, and the broker's next
+    /// start moves it into the sealed stores (WO-047).
+    #[test]
+    fn a_backup_from_before_the_seal_restores_and_is_sealed_at_the_start() {
+        use std::str::FromStr as _;
+
+        let scratch = Scratch::new("restore-0-9");
+        let me = hatchling_memory::MemoryPrincipal {
+            peer_uid: 4242,
+            session_id: hatchling_memory::SessionId::from_str("session-1").unwrap(),
+        };
+        hatchling_memory::MemoryStore::open(&scratch.0.join("memory"))
+            .unwrap()
+            .write(
+                &me,
+                &hatchling_memory::MemoryScope::User,
+                &"m-1".parse().unwrap(),
+                "a lapis-blue kayak",
+                &[],
+                hatchling_memory::RetentionPolicy::Keep,
+                5,
+            )
+            .unwrap();
+        let goals = hatchling_goals::GoalsStore::open(&scratch.0.join("goals")).unwrap();
+        goals
+            .create_goal(&me, "paddle the lapis-blue kayak", "", 5)
+            .unwrap();
+        goals
+            .append_tracking(&me, &"user".parse().unwrap(), "paddled 5 km", 6)
+            .unwrap();
+        // The backup 0.9.0 made: its roots, plaintext, by their names.
+        let places = sealed_places(&scratch);
+        back_and_forth(&scratch, &places);
+        assert!(scratch.0.join("memory/user/4242").is_dir());
+        assert!(scratch.0.join("goals/tracking/4242").is_dir());
+        let key = MasterKey::generate().unwrap();
+        let memory = crate::memory_sealed::migrate(&scratch.0.join("memory"), &key).unwrap();
+        let moved = crate::goals_sealed::migrate(&scratch.0.join("goals"), &key).unwrap();
+        assert_eq!((memory.moved, moved.goals, moved.entries), (1, 1, 1));
+        assert!(!scratch.0.join("memory/user").exists());
+        assert!(!scratch.0.join("goals/tracking").exists());
     }
 
     /// Two places under one name are refused: a restore would put what's
