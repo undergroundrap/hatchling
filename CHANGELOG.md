@@ -22,6 +22,16 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **The agent is told its cell's rules** ([#650](https://github.com/undergroundrap/hatchling/issues/650)). Its prompt said only that it runs in a secured cell and should say so when a tool is missing. Now every run that's offered tools is also told:
+  - its workspace is its own and nothing outside it is;
+  - a credential is used only through the tool that holds it;
+  - the network is what it was granted;
+  - nothing is left behind to run later;
+  - when a task needs what it doesn't have, it stops and says what's missing rather than looking for another way;
+  - what it finds it shouldn't reach, it doesn't use, and says so.
+
+  The cell and the broker still enforce all of this. Telling the model as well makes it far less likely to try: in Anthropic's [Siren evaluation](https://safeguards.anthropic.com/2026/siren/), a description like this cut attempts to leave a weak sandbox by 68 to 96 percent.
+
 - **A run keeps within its model's context window** ([WO-051](docs/workorders/workorder-051-runs-bounded-by-what-matters.md)). Nothing watched the window during a run: past it, a local model's server silently dropped the start of the prompt, the agent's rules with it, and a hosted call failed the run. Now each request is measured before it's sent, from what the model's server counted for the last one, and an eighth of the window is kept for the answer. A run whose next request wouldn't fit answers with no tools, saying where it got to and that it ran out of room, and the answer can be kept for later; one with no room for even that sends nothing more. A tool's output longer than a quarter of the window is cut, saying so. Nothing in a conversation is summarized or dropped.
 
 - **What the agent remembers is sealed where it's kept** ([WO-047](docs/workorders/workorder-047-memory-and-goals-sealed.md)). Each memory item, with its tags, and the lists of which items are kept for whom are now encrypted in `HATCHLING_MEMORY_DIR/sealed`, under a key of memory's own that the keeper hands the broker with the others, so a copy of the disk, or of a backup of it, reads none of the words. Memory kept by 0.9 and before is moved in when the broker starts: each item is sealed before its plain file is removed, so a move cut short loses nothing and the next start finishes it. A file there that isn't an item is left where it is, and logged.
