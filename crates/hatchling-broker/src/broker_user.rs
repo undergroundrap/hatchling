@@ -64,9 +64,11 @@ pub fn broker_dirs(config: &Config, redaction: Option<&RedactionConfig>) -> Vec<
 /// directories.
 ///
 /// They are [`broker_dirs`], the output gate's when there is an ingress
-/// for it to guard, handed to that user first, with the rest of its
-/// state ([`state_dirs`], [`state_files`]). Not run as root, it changes
-/// nothing.
+/// for it to guard, handed to that user with the rest of its state
+/// ([`state_dirs`], [`state_files`]). That state goes first: a store may
+/// sit inside it, as memory's sealed store sits in memory's root, which
+/// the broker's user must be able to search before the store is handed
+/// over. Not run as root, it changes nothing.
 ///
 /// # Errors
 ///
@@ -82,8 +84,35 @@ pub fn act_for_broker(config: &Config) -> Result<(), Error> {
         .as_ref()
         .map(|_| RedactionConfig::from_env(config))
         .transpose()?;
-    act_for_broker_in(&broker_dirs(config, redaction.as_ref()), uid, gid)?;
-    hand_state(config, uid, gid)
+    act_for_broker_as(config, redaction.as_ref(), uid, gid)
+}
+
+/// [`act_for_broker`] for `uid` and `gid`.
+///
+/// # Errors
+///
+/// As [`act_for_broker`].
+fn act_for_broker_as(
+    config: &Config,
+    redaction: Option<&RedactionConfig>,
+    uid: u32,
+    gid: u32,
+) -> Result<(), Error> {
+    let dirs = broker_dirs(config, redaction);
+    hand_all(config, &dirs, uid, gid)?;
+    act_for_broker_in(&dirs, uid, gid)
+}
+
+/// Hands the broker's state, then its stores `dirs`, to `uid` and `gid`:
+/// a store may sit inside that state ([`act_for_broker`]).
+///
+/// # Errors
+///
+/// [`Error::BrokerUser`] for one that can't be handed over.
+fn hand_all(config: &Config, dirs: &[PathBuf], uid: u32, gid: u32) -> Result<(), Error> {
+    hand_state(config, uid, gid)?;
+    crate::keeper::hand_to(BROKER_USER, dirs, uid, gid)
+        .map_err(|reason| Error::BrokerUser { reason })
 }
 
 /// The broker's state that isn't a sealed store, and is a directory.
@@ -283,6 +312,39 @@ mod tests {
                 assert_eq!(meta(&base.join(handed)).uid(), 4343, "{handed}");
             }
         }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Run as root, memory's sealed store, inside memory's root, is
+    /// handed over with it: the root first, so the broker's user can
+    /// reach the store (WO-047). Not as root, nothing can act.
+    #[test]
+    fn a_store_inside_the_brokers_state_is_handed_over_after_it() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let base =
+            std::env::temp_dir().join(format!("hatchling-broker-inner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir(&base).unwrap();
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o711)).unwrap();
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.memory.root = base.join("memory");
+        config.goals.root = PathBuf::new();
+        let sealed = crate::memory_sealed::sealed_root(&config.memory.root);
+        assert!(broker_dirs(&config, None).contains(&sealed));
+        if hatchling_sys::euid() != 0 {
+            assert!(act_for_broker_as(&config, None, 4343, 4343).is_err());
+            std::fs::remove_dir_all(&base).unwrap();
+            return;
+        }
+        // Handed over, not acted for: a process acts for a user once, and
+        // another test does.
+        // Memory's root as an install makes it: root's alone.
+        std::fs::create_dir(&config.memory.root).unwrap();
+        std::fs::set_permissions(&config.memory.root, std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        hand_all(&config, &broker_dirs(&config, None), 4343, 4343).unwrap();
+        let uid = |path: &Path| std::fs::symlink_metadata(path).unwrap().uid();
+        assert_eq!((uid(&config.memory.root), uid(&sealed)), (4343, 4343));
         std::fs::remove_dir_all(&base).unwrap();
     }
 
