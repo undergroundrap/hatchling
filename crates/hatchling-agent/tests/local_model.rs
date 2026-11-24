@@ -554,8 +554,11 @@ fn a_run_near_its_deadline_answers_with_no_tools() {
         .unwrap()
         .as_secs();
     let soon = (now + 30).to_string();
-    let (status, answer, errors) =
-        run_binary("local-deadline", server.port, &[("HATCHLING_RUN_DEADLINE", soon)]);
+    let (status, answer, errors) = run_binary(
+        "local-deadline",
+        server.port,
+        &[("HATCHLING_RUN_DEADLINE", soon)],
+    );
     let time = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TIME);
     assert_eq!(
         (status, answer.as_str()),
@@ -566,7 +569,9 @@ fn a_run_near_its_deadline_answers_with_no_tools() {
     assert_eq!(seen.len(), 2, "the probe and the one answer");
     let last = seen.last().unwrap();
     assert!(
-        last.body.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+        last.body
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
         "the answer was asked for with no tools"
     );
 }

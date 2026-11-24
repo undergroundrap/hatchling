@@ -300,8 +300,7 @@ pub(crate) const WRAP_UP: std::time::Duration = std::time::Duration::from_secs(9
 /// [`WRAP_UP`] before it, from now, and now if that's already past.
 pub(crate) fn wrap_up_at(deadline: i64, now: i64) -> std::time::Instant {
     let left = u64::try_from(deadline.saturating_sub(now)).unwrap_or(0);
-    std::time::Instant::now()
-        + std::time::Duration::from_secs(left).saturating_sub(WRAP_UP)
+    std::time::Instant::now() + std::time::Duration::from_secs(left).saturating_sub(WRAP_UP)
 }
 
 /// What the model is told when its next request wouldn't fit its window
@@ -1231,7 +1230,8 @@ mod tests {
         let at = wrap_up_at(1_000 + 100, 1_000);
         let ahead = at.saturating_duration_since(start);
         assert!(
-            (std::time::Duration::from_secs(9)..=std::time::Duration::from_secs(11)).contains(&ahead),
+            (std::time::Duration::from_secs(9)..=std::time::Duration::from_secs(11))
+                .contains(&ahead),
             "{ahead:?}"
         );
         for left in [90, 30, 0, -50] {

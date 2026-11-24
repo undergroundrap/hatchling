@@ -3023,7 +3023,10 @@ mod run_cell_tests {
                 .find(|(name, _)| *name == "HATCHLING_RUN_DEADLINE")
                 .map(|(_, value)| value.clone())
         };
-        assert_eq!(named(&run(Some(1_800_000_000)).env()), Some(String::from("1800000000")));
+        assert_eq!(
+            named(&run(Some(1_800_000_000)).env()),
+            Some(String::from("1800000000"))
+        );
         assert_eq!(named(&run(None).env()), None);
     }
 }
@@ -3216,5 +3219,4 @@ mod harness_cell_tests {
         cell.refuse_vault_in_view(&vault("/run/hatchling-vault", "/run/hatchling-key/key"))
             .unwrap();
     }
-
 }

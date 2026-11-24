@@ -663,10 +663,7 @@ mod tests {
                 Error::LoopBudgetExhausted { steps: 3 },
                 Some(RunFailure::OutOfSteps),
             ),
-            (
-                Error::OutOfTime(String::new()),
-                Some(RunFailure::OutOfTime),
-            ),
+            (Error::OutOfTime(String::new()), Some(RunFailure::OutOfTime)),
             (Error::LoopFailed(String::new()), None),
             (Error::Usage(String::new()), None),
             (Error::VaultFailed, None),

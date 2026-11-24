@@ -22,6 +22,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **A chat run is bounded by its time, not 25 turns** ([WO-051](docs/workorders/workorder-051-runs-bounded-by-what-matters.md)). A chat run stopped at 25 model turns whatever it was doing, so a small model writing files one call at a time ran out with room to finish. Now a chat run has 30 minutes, where every run had 10, and up to 200 turns only as a backstop against a loop. Runs with nobody there (schedules, hooks, children) keep 10 turns and 10 minutes. The agent is told when its time ends: inside the last 90 seconds it answers with no tools, saying where it got to, and the answer can be kept for later. The broker still ends the run at its time, as before.
+
 - **The agent is told its cell's rules** ([#650](https://github.com/undergroundrap/hatchling/issues/650)). Its prompt said only that it runs in a secured cell and should say so when a tool is missing. Now every run that's offered tools is also told:
   - its workspace is its own and nothing outside it is;
   - a credential is used only through the tool that holds it;

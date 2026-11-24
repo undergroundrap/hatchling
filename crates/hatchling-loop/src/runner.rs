@@ -1970,7 +1970,10 @@ mod tests {
             .with_room(String::from(ROOM))
             .run(&model, String::from("go"))
             .unwrap();
-        assert_eq!((result.answer.as_str(), result.steps), ("time's up, this far", 1));
+        assert_eq!(
+            (result.answer.as_str(), result.steps),
+            ("time's up, this far", 1)
+        );
         assert!(result.out_of_time && !result.out_of_room && !result.out_of_steps);
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(model.offered(), [0]);
