@@ -547,3 +547,31 @@ fn what_cant_be_sealed_keeps_its_file() {
     assert!(migrate(&root, &key).is_err());
     assert_eq!(std::fs::read(&log).unwrap(), bytes, "the log kept, whole");
 }
+
+#[test]
+fn a_memory_query_reads_no_goals_and_the_others_read_them() {
+    let (_scratch, _key, root) = sealed("source-for");
+    let store = open_published(&root).unwrap();
+    let me = principal(7);
+    let goal = store.create_goal(&me, "run a 5k", "", 1).unwrap();
+    store
+        .append_tracking(&me, &label("user"), "ran 3k", 2)
+        .unwrap();
+    let memory = FeedQuery::Memory {
+        tag: "feed".parse().unwrap(),
+        after: None,
+    };
+    let none = source_for(&root, &memory).unwrap();
+    assert_eq!(none.goal(7, &goal.id).unwrap(), None);
+    assert!(none.goal_ids(7).unwrap().is_empty());
+    assert!(none.tracking(7).unwrap().is_empty());
+    let tracking = FeedQuery::Tracking {
+        range: TimeRange::ALL,
+        source: None,
+        after_seq: None,
+    };
+    let held = source_for(&root, &tracking).unwrap();
+    assert_eq!(held.goal_ids(7).unwrap(), std::slice::from_ref(&goal.id));
+    assert!(held.goal(7, &goal.id).unwrap().is_some());
+    assert_eq!(held.tracking(7).unwrap().len(), 1);
+}

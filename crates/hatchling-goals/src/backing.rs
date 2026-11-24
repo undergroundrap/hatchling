@@ -292,3 +292,86 @@ impl GoalsBacking for Files {
         file.sync_all().map_err(|source| Error::Io { source })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    use super::*;
+
+    /// A `0700` root of a test's.
+    fn test_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "hatchling-goals-backing-test-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        made(&root);
+        root
+    }
+
+    fn made(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// User `uid`'s directory under `kind`, as the store makes it.
+    fn user_dir(root: &Path, kind: &str, uid: u32) -> PathBuf {
+        let dir = root.join(kind).join(uid.to_string());
+        made(&root.join(kind));
+        made(&dir);
+        dir
+    }
+
+    #[test]
+    fn the_users_are_each_uid_with_goals_or_tracking_once_in_order() {
+        let root = test_root("users");
+        let files = Files::of_this_user(&root);
+        assert!(files.users().unwrap().is_empty(), "neither directory there");
+        for (kind, uid) in [
+            (GOALS_DIR, 9),
+            (GOALS_DIR, 3),
+            (TRACKING_DIR, 3),
+            (TRACKING_DIR, 5),
+        ] {
+            user_dir(&root, kind, uid);
+        }
+        made(&root.join(GOALS_DIR).join("not-a-uid"));
+        assert_eq!(files.users().unwrap(), [3, 5, 9]);
+        // A directory that can't be listed is said, never taken for empty.
+        std::fs::remove_dir_all(root.join(TRACKING_DIR)).unwrap();
+        std::fs::write(root.join(TRACKING_DIR), b"not a directory").unwrap();
+        assert!(matches!(files.users(), Err(Error::Io { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn removing_what_isnt_there_is_fine_and_a_failure_is_said() {
+        let root = test_root("remove");
+        let files = Files::of_this_user(&root);
+        let id: GoalId = "g-a".parse().unwrap();
+        // Nothing there, not even the directories.
+        files.remove_goal(7, &id).unwrap();
+        files.remove_tracking(7).unwrap();
+        // The directories there, the files not.
+        let goals = user_dir(&root, GOALS_DIR, 7);
+        let tracking = user_dir(&root, TRACKING_DIR, 7);
+        files.remove_goal(7, &id).unwrap();
+        files.remove_tracking(7).unwrap();
+        // The files there: removed.
+        files.put_goal(7, &id, b"{}").unwrap();
+        files
+            .append_tracking(7, &mut |_| Ok(b"{}".to_vec()))
+            .unwrap();
+        files.remove_goal(7, &id).unwrap();
+        files.remove_tracking(7).unwrap();
+        assert!(!read::goal_path(&goals, &id).exists());
+        assert!(!tracking.join(TRACKING_LOG).exists());
+        // A file that can't be removed is said.
+        std::fs::create_dir(read::goal_path(&goals, &id)).unwrap();
+        std::fs::create_dir(tracking.join(TRACKING_LOG)).unwrap();
+        assert!(matches!(files.remove_goal(7, &id), Err(Error::Io { .. })));
+        assert!(matches!(files.remove_tracking(7), Err(Error::Io { .. })));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
