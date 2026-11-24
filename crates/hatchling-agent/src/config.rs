@@ -847,4 +847,32 @@ mod tests {
             );
         }
     }
+
+    /// A run's deadline and its token budget are read as the broker sets
+    /// them, and refused when they aren't numbers (WO-051).
+    #[test]
+    fn a_runs_deadline_and_budget_are_read_or_refused() {
+        let mut vars = valid_vars();
+        let parsed = Config::parse(lookup(&vars)).unwrap();
+        assert_eq!((parsed.run_deadline, parsed.run_token_budget), (None, None));
+        vars.insert("HATCHLING_RUN_DEADLINE", "1800000000");
+        vars.insert("HATCHLING_RUN_TOKEN_BUDGET", "200000");
+        let parsed = Config::parse(lookup(&vars)).unwrap();
+        assert_eq!(
+            (parsed.run_deadline, parsed.run_token_budget),
+            (Some(1_800_000_000), Some(200_000))
+        );
+        for (key, bad) in [
+            ("HATCHLING_RUN_DEADLINE", "soon"),
+            ("HATCHLING_RUN_TOKEN_BUDGET", "-1"),
+            ("HATCHLING_RUN_TOKEN_BUDGET", "lots"),
+        ] {
+            let mut vars = valid_vars();
+            vars.insert(key, bad);
+            assert!(
+                matches!(Config::parse(lookup(&vars)), Err(Error::InvalidConfig { key: named, .. }) if named == key),
+                "{key}={bad}"
+            );
+        }
+    }
 }

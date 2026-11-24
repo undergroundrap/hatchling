@@ -2055,4 +2055,89 @@ mod tests {
         assert!(matches!(ended, Err(Error::OutOfRoom)), "{ended:?}");
         assert!(model.watched.offered().is_empty(), "nothing sent");
     }
+
+    /// A watched model whose budget covers a request of up to `until`
+    /// messages, whatever it's offered.
+    struct Budgeted {
+        watched: Watched,
+        until: usize,
+    }
+
+    impl Model for Budgeted {
+        fn affords(&self, messages: &[Message], _tools: &[crate::tool::ToolDescription]) -> bool {
+            messages.len() <= self.until
+        }
+
+        fn next_action(
+            &self,
+            messages: &[Message],
+            tools: &[crate::tool::ToolDescription],
+        ) -> Result<ModelAction, Error> {
+            self.watched.next_action(messages, tools)
+        }
+    }
+
+    const TOKENS: &str = "your token budget is nearly spent";
+
+    /// A run whose next call would cross its budget is told so, offered no
+    /// tools, and its answer is the run's, out of tokens. That last turn
+    /// isn't held to the budget: it may cross it.
+    #[test]
+    fn a_run_out_of_tokens_answers_with_no_tools() {
+        let (registry, runs) = counting();
+        let model = Budgeted {
+            watched: Watched::doing(vec![Ok(counts()), Ok(counts()), Ok(says("this far"))]),
+            until: 3,
+        };
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(String::from(TOKENS))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("this far", 3));
+        assert!(result.out_of_tokens && !result.out_of_time && !result.out_of_room);
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(model.watched.offered(), [1, 1, 0]);
+        assert_eq!(
+            model.watched.told(),
+            [None, None, Some(String::from(TOKENS))]
+        );
+        // Without a budget set, the model isn't asked.
+        let model = Budgeted {
+            watched: Watched::doing(vec![Ok(counts()), Ok(counts()), Ok(says("done"))]),
+            until: 0,
+        };
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert!(!result.out_of_tokens);
+        assert_eq!(model.watched.offered(), [1, 1, 1]);
+    }
+
+    /// A last turn for tokens that isn't an answer ends the run out of
+    /// tokens; time, when it's up too, comes first.
+    #[test]
+    fn a_last_turn_for_tokens_that_isnt_an_answer_ends_out_of_tokens() {
+        let (registry, _) = counting();
+        for last in [Ok(counts()), Err(Error::ModelFailed(String::from("down")))] {
+            let model = Budgeted {
+                watched: Watched::doing(vec![last]),
+                until: 0,
+            };
+            let ended = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .with_budget(String::from(TOKENS))
+                .run(&model, String::from("go"));
+            assert!(matches!(ended, Err(Error::OutOfTokens)), "{ended:?}");
+        }
+        let model = Budgeted {
+            watched: Watched::doing(vec![Ok(says("time first"))]),
+            until: 0,
+        };
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_deadline(std::time::Instant::now(), String::from(TIME))
+            .with_budget(String::from(TOKENS))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert!(result.out_of_time && !result.out_of_tokens);
+        assert_eq!(model.watched.told(), [Some(String::from(TIME))]);
+    }
 }

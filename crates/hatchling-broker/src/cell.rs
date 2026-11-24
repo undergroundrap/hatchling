@@ -3038,6 +3038,20 @@ mod run_cell_tests {
             Some(String::from("1800000000"))
         );
         assert_eq!(named(&run(None).env()), None);
+        let budget = |token_budget| ScheduledRun {
+            token_budget,
+            ..run(None)
+        };
+        let told = |env: &[(&str, String)]| {
+            env.iter()
+                .find(|(name, _)| *name == "HATCHLING_RUN_TOKEN_BUDGET")
+                .map(|(_, value)| value.clone())
+        };
+        assert_eq!(
+            told(&budget(Some(200_000)).env()),
+            Some(String::from("200000"))
+        );
+        assert_eq!(told(&budget(None).env()), None);
     }
 }
 

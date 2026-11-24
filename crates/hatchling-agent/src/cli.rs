@@ -220,10 +220,22 @@ mod tests {
             out_of_tokens,
         };
         assert_eq!(answered(&ran(false, false, false, false)), 0);
-        assert_eq!(answered(&ran(true, false, false, false)), ANSWERED_OUT_OF_STEPS);
-        assert_eq!(answered(&ran(false, true, false, false)), ANSWERED_OUT_OF_ROOM);
-        assert_eq!(answered(&ran(false, false, true, false)), ANSWERED_OUT_OF_TIME);
-        assert_eq!(answered(&ran(false, false, false, true)), ANSWERED_OUT_OF_TOKENS);
+        assert_eq!(
+            answered(&ran(true, false, false, false)),
+            ANSWERED_OUT_OF_STEPS
+        );
+        assert_eq!(
+            answered(&ran(false, true, false, false)),
+            ANSWERED_OUT_OF_ROOM
+        );
+        assert_eq!(
+            answered(&ran(false, false, true, false)),
+            ANSWERED_OUT_OF_TIME
+        );
+        assert_eq!(
+            answered(&ran(false, false, false, true)),
+            ANSWERED_OUT_OF_TOKENS
+        );
         assert_eq!(
             answered(&ran(true, true, true, true)),
             ANSWERED_OUT_OF_STEPS,

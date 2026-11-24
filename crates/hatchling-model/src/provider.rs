@@ -2024,4 +2024,39 @@ mod tests {
             "redacted, it's small"
         );
     }
+
+    /// A run's budget is the input tokens its server reports, summed over
+    /// its calls: a request affords it when what's spent and the request
+    /// itself fit within it (WO-051).
+    #[test]
+    fn a_request_affords_the_budget_by_what_was_spent() {
+        let counted = |tokens: u64| {
+            format!(
+                r#"{{"choices": [{{"message": {{"role": "assistant", "content": "a"}}}}], "usage": {{"prompt_tokens": {tokens}}}}}"#
+            )
+        };
+        // Without a budget, every request affords it.
+        let provider = windowed(65_536, Canned::ok(&counted(900)));
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(provider.affords(&asking(100), &no_tools()));
+        // 900 spent and a request of 900 more: 1800.
+        let budgeted =
+            |budget| windowed(65_536, Canned::ok(&counted(900))).with_token_budget(budget);
+        let provider = budgeted(1800);
+        assert!(
+            provider.affords(&asking(100), &no_tools()),
+            "nothing spent yet"
+        );
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(provider.affords(&asking(100), &no_tools()), "1800 of 1800");
+        let provider = budgeted(1799);
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(!provider.affords(&asking(100), &no_tools()), "1800 of 1799");
+        // Each call's count is added.
+        let provider = budgeted(10_000);
+        for _ in 0..3 {
+            provider.next_action(&asking(100), &no_tools()).unwrap();
+        }
+        assert_eq!(*provider.spent(), 2700);
+    }
 }

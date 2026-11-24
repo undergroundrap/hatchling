@@ -179,7 +179,11 @@ mod tests {
         assert_eq!(ANSWERED_OUT_OF_ROOM, 81);
         assert_eq!(ANSWERED_OUT_OF_TIME, 82);
         assert_eq!(ANSWERED_OUT_OF_TOKENS, 83);
-        for at_a_limit in [ANSWERED_OUT_OF_ROOM, ANSWERED_OUT_OF_TIME, ANSWERED_OUT_OF_TOKENS] {
+        for at_a_limit in [
+            ANSWERED_OUT_OF_ROOM,
+            ANSWERED_OUT_OF_TIME,
+            ANSWERED_OUT_OF_TOKENS,
+        ] {
             assert_eq!(RunFailure::from_code(at_a_limit.into()), None);
             assert!(!answered_out_of_steps(at_a_limit.into()));
         }

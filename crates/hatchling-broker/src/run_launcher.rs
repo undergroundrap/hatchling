@@ -2772,6 +2772,7 @@ mod tests {
             let (run, timeout) = clocked(&env, scheduled_run(&config, &asked));
             let after = now();
             assert_eq!(timeout, Duration::from_secs(clock), "{chat}");
+            assert_eq!(run.token_budget, Some(run_tokens(chat)), "{chat}");
             let deadline = run.deadline.unwrap();
             assert!(
                 (before + i64::try_from(clock).unwrap()..=after + i64::try_from(clock).unwrap())
@@ -2780,5 +2781,35 @@ mod tests {
             );
         }
         assert_eq!(deadline_after(Duration::MAX), i64::MAX);
+    }
+
+    /// A chat run's budget is two million input tokens and a run's with
+    /// nobody there two hundred thousand, and a run's session is held to
+    /// its kind's (WO-051).
+    #[test]
+    fn a_runs_session_is_held_to_its_kinds_token_budget() {
+        assert_eq!((CHAT_RUN_TOKENS, RUN_TOKENS), (2_000_000, 200_000));
+        assert_eq!(
+            (run_tokens(true), run_tokens(false)),
+            (CHAT_RUN_TOKENS, RUN_TOKENS)
+        );
+        let config = crate::api_auth::tests::owner_config(None);
+        assert_eq!(
+            config.scheduler.run_tokens, None,
+            "the broker's own session has none"
+        );
+        let socket: SocketPath = "/tmp/hatchling-budget.sock".parse().unwrap();
+        for chat in [true, false] {
+            let asked = RunRequest {
+                chat,
+                ..request(Vec::new())
+            };
+            let scoped = scoped_config(&config, &asked, "run-1", socket.clone());
+            assert_eq!(
+                scoped.scheduler.run_tokens,
+                Some(run_tokens(chat)),
+                "{chat}"
+            );
+        }
     }
 }

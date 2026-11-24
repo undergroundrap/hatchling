@@ -577,6 +577,46 @@ fn a_run_near_its_deadline_answers_with_no_tools() {
     );
 }
 
+/// A run whose next call would cross its token budget answers with no
+/// tools, and says so by its status (WO-051). The server counts the first
+/// request as 900 tokens: with a budget of 1500, the next request, as large
+/// again, would cross it.
+#[test]
+fn a_run_at_its_token_budget_answers_with_no_tools() {
+    let mut first: Value = serde_json::from_str(&tool_call_reply(
+        "egress_request",
+        &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+    ))
+    .unwrap();
+    if let Some(fields) = first.as_object_mut() {
+        fields.insert(String::from("usage"), json!({"prompt_tokens": 900}));
+    }
+    let server = LocalServer::start(vec![
+        probe_reply(),
+        first.to_string(),
+        text_reply("the budget is nearly spent"),
+    ]);
+    let (status, answer, errors) = run_binary(
+        "local-budget",
+        server.port,
+        &[("HATCHLING_RUN_TOKEN_BUDGET", String::from("1500"))],
+    );
+    let tokens = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TOKENS);
+    assert_eq!(
+        (status, answer.as_str()),
+        (Some(tokens), "the budget is nearly spent"),
+        "{errors}"
+    );
+    let seen = server.seen.lock().unwrap().clone();
+    let last = seen.last().unwrap();
+    assert!(
+        last.body
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+        "the answer was asked for with no tools"
+    );
+}
+
 #[test]
 fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
     // Asked as often as a stray reply is, it answers in text every time.
