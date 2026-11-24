@@ -25,7 +25,10 @@ An install comes with three playbooks, signed by Hatchling's maintainer:
 
 **Each one is off until you enable it.** In the app, **Settings › Skills**
 shows each skill: what it's for, who signed it, its digest and every file
-it holds. Read the playbook, then enable it. A skill changed since you
+it holds. Read the playbook, then enable it. From a terminal, as yourself
+(not `sudo`), `hatchling-broker skills list`, `skills enable <name>` (it
+shows the skill and asks you to type yes) and `skills disable <name>` do
+the same. A skill changed since you
 enabled it, by an update or anything else, stops and waits for you again.
 
 They're installed in `/usr/local/share/hatchling/skills`, and the
