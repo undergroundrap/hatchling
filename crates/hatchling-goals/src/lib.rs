@@ -30,6 +30,7 @@
 //! [`FeedReader`] has no write method, and the read path it uses
 //! validates directories without creating or repairing them.
 
+pub mod backing;
 pub mod error;
 pub mod feed;
 pub mod name;
@@ -37,6 +38,7 @@ pub mod read;
 pub mod record;
 pub mod store;
 
+pub use backing::{Files, GoalsBacking, GoalsSource};
 pub use error::Error;
 pub use feed::{
     FeedBody, FeedItem, FeedPage, FeedQuery, FeedReader, Origin, PAGE_BUDGET_BYTES, Provenance,

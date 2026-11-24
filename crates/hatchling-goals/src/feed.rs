@@ -19,16 +19,15 @@
 //!
 //! [`GoalsStore`]: crate::GoalsStore
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use hatchling_memory::{
-    MemoryId, MemoryItem, MemoryPrincipal, MemoryScope, MemoryStore, Tag, owner_dir,
-};
+use hatchling_memory::{MemoryId, MemoryItem, MemoryPrincipal, MemoryScope, MemoryStore, Tag};
 use serde::{Deserialize, Serialize};
 
 use crate::Error;
+use crate::backing::{Files, GoalsSource};
 use crate::name::{GoalId, SourceLabel};
-use crate::read::{self, GOALS_DIR, TRACKING_DIR, TRACKING_LOG};
+use crate::read;
 use crate::record::{Goal, GoalOrigin, TimeRange, TrackingEntry};
 
 /// The shared page budget and page type: the feed pages through the
@@ -294,8 +293,7 @@ pub enum FeedQuery {
 /// memory store it recalls from.
 #[derive(Debug)]
 pub struct FeedReader {
-    root: PathBuf,
-    owner: u32,
+    source: Box<dyn GoalsSource>,
     memory: Option<MemoryStore>,
 }
 
@@ -311,13 +309,16 @@ impl FeedReader {
         Self::open_as(goals_root, rustix::process::getuid().as_raw(), memory)
     }
 
+    /// A reader over the goals `source` holds and, optionally, a memory
+    /// store for memory queries. A source reads, and nothing more.
+    #[must_use]
+    pub fn with_source(source: Box<dyn GoalsSource>, memory: Option<MemoryStore>) -> Self {
+        Self { source, memory }
+    }
+
     /// Split out so tests exercise the ownership check hermetically.
     fn open_as(goals_root: &Path, owner: u32, memory: Option<MemoryStore>) -> Self {
-        Self {
-            root: goals_root.to_path_buf(),
-            owner,
-            memory,
-        }
+        Self::with_source(Box::new(Files::new(goals_root, owner)), memory)
     }
 
     /// Runs one query for the principal, returning every matching item
@@ -337,41 +338,27 @@ impl FeedReader {
         query: &FeedQuery,
         now_secs: u64,
     ) -> Result<Vec<FeedItem>, Error> {
-        let uid = principal.peer_uid.to_string();
+        let uid = principal.peer_uid;
         match query {
             FeedQuery::Goals {
                 status,
                 updated_since_secs,
                 after,
-            } => {
-                let Some(dir) =
-                    owner_dir::existing_chain(&self.root, &[GOALS_DIR, &uid], self.owner)?
-                else {
-                    return Ok(Vec::new());
-                };
-                Ok(read::read_goals(&dir)?
-                    .into_iter()
-                    .filter(|goal| status.admits(goal))
-                    .filter(|goal| {
-                        updated_since_secs.is_none_or(|since| goal.updated_at_secs >= since)
-                    })
-                    .filter(|goal| after.as_ref().is_none_or(|after| goal.id > *after))
-                    .map(|goal| FeedItem {
-                        body: FeedBody::Goal(goal),
-                    })
-                    .collect())
-            }
+            } => Ok(read::goals(self.source.as_ref(), uid)?
+                .into_iter()
+                .filter(|goal| status.admits(goal))
+                .filter(|goal| updated_since_secs.is_none_or(|since| goal.updated_at_secs >= since))
+                .filter(|goal| after.as_ref().is_none_or(|after| goal.id > *after))
+                .map(|goal| FeedItem {
+                    body: FeedBody::Goal(goal),
+                })
+                .collect()),
             FeedQuery::Tracking {
                 range,
                 source,
                 after_seq,
             } => {
-                let Some(dir) =
-                    owner_dir::existing_chain(&self.root, &[TRACKING_DIR, &uid], self.owner)?
-                else {
-                    return Ok(Vec::new());
-                };
-                let entries = read::scan_tracking(&dir.join(TRACKING_LOG), |entry| {
+                let entries = read::tracking(self.source.as_ref(), uid, |entry| {
                     range.contains(entry.at_secs)
                         && source.as_ref().is_none_or(|source| entry.source == *source)
                         && after_seq.is_none_or(|after| entry.seq > after)
@@ -430,11 +417,13 @@ pub fn page(items: &[FeedItem], budget_bytes: usize) -> Result<FeedPage, Error> 
 mod tests {
     use std::collections::BTreeMap;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::path::PathBuf;
     use std::str::FromStr as _;
 
     use hatchling_memory::{RetentionPolicy, SessionId};
 
     use super::*;
+    use crate::read::GOALS_DIR;
     use crate::record::{
         GoalOutcome, GoalStatus, MAX_DETAIL_BYTES, MAX_TITLE_BYTES, MAX_TRACKING_TEXT_BYTES,
     };
@@ -1028,7 +1017,7 @@ mod tests {
     #[test]
     fn the_feed_reader_exposes_no_write_surface() {
         // Negative acceptance, structural half: the reader's public
-        // surface is exactly `open` and `query`, and neither the feed
+        // surface is exactly `open`, `with_source` and `query`, and neither the feed
         // module nor the read path it shares contains a mutating call.
         // Adding one breaks this test and forces a WO-level decision.
         const MUTATING: &[&str] = &[
@@ -1066,7 +1055,7 @@ mod tests {
             .filter_map(|line| line.trim().strip_prefix("pub fn "))
             .filter_map(|rest| rest.split('(').next())
             .collect();
-        assert_eq!(public, vec!["open", "query"]);
+        assert_eq!(public, vec!["open", "with_source", "query"]);
 
         for (name, source) in [("feed.rs", feed), ("read.rs", read)] {
             for call in MUTATING {
