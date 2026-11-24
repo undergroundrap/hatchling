@@ -519,7 +519,9 @@ fn a_run_whose_context_fills_answers_or_sends_nothing() {
     let seen = server.seen.lock().unwrap().clone();
     let last = seen.last().unwrap();
     assert!(
-        last.body.get("tools").is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+        last.body
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
         "the last request offered no tools"
     );
     let server = LocalServer::start(vec![
