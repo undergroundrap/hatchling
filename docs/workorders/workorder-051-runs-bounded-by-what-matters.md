@@ -86,7 +86,9 @@ See [TEMPLATE.md](TEMPLATE.md#gates). Slice 4 changes the UI protocol: `protocol
 
 ## Evidence
 
-Filled in at close.
+- Slice 2, the context guard: [context-guard.md](../evidence/context-guard.md).
+
+The acceptance criteria are ticked at close, against these and the later slices'.
 
 ## Notes
 
