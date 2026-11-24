@@ -1370,13 +1370,13 @@ mod tests {
         let mut unbounded = Trail::new(None, "session-3", "run-3");
         unbounded.model_call(Some(u64::MAX), None);
         assert_eq!(unbounded.over_budget(), None, "no budget, no refusal");
-        let refused = trail.summary().map(|summary| match summary {
-            SubagentEvent::RunSummary {
-                model_calls_refused,
-                ..
-            } => model_calls_refused,
-            _ => unreachable!("a run's summary"),
-        });
-        assert_eq!(refused, Some(2), "each refusal noted");
+        let Some(SubagentEvent::RunSummary {
+            model_calls_refused,
+            ..
+        }) = trail.summary()
+        else {
+            unreachable!("a run's summary");
+        };
+        assert_eq!(model_calls_refused, 2, "each refusal noted");
     }
 }

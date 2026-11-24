@@ -198,22 +198,16 @@ impl Config {
             parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat)?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
-        let run_deadline = get(env::HATCHLING_RUN_DEADLINE.name)
-            .map(|raw| {
-                raw.parse::<i64>().map_err(|_| Error::InvalidConfig {
-                    key: "HATCHLING_RUN_DEADLINE",
-                    reason: String::from("expected Unix seconds, base 10"),
-                })
-            })
-            .transpose()?;
-        let run_token_budget = get(env::HATCHLING_RUN_TOKEN_BUDGET.name)
-            .map(|raw| {
-                raw.parse::<u64>().map_err(|_| Error::InvalidConfig {
-                    key: "HATCHLING_RUN_TOKEN_BUDGET",
-                    reason: String::from("expected a base-10 count of input tokens"),
-                })
-            })
-            .transpose()?;
+        let run_deadline = number(
+            get(env::HATCHLING_RUN_DEADLINE.name),
+            "HATCHLING_RUN_DEADLINE",
+            "expected Unix seconds, base 10",
+        )?;
+        let run_token_budget = number(
+            get(env::HATCHLING_RUN_TOKEN_BUDGET.name),
+            "HATCHLING_RUN_TOKEN_BUDGET",
+            "expected a base-10 count of input tokens",
+        )?;
         let run_tools = get(env::HATCHLING_RUN_TOOLS.name)
             .map(|raw| {
                 hatchling_core::run_tools::parse(&raw).map_err(|reason| Error::InvalidConfig {
@@ -243,6 +237,23 @@ impl Config {
             run_token_budget,
         })
     }
+}
+
+/// A setting `key` that is a number when set: `None` unset, and refused,
+/// saying `reason`, when it isn't one.
+fn number<T: std::str::FromStr>(
+    value: Option<String>,
+    key: &'static str,
+    reason: &str,
+) -> Result<Option<T>, Error> {
+    value
+        .map(|raw| {
+            raw.parse::<T>().map_err(|_| Error::InvalidConfig {
+                key,
+                reason: reason.to_owned(),
+            })
+        })
+        .transpose()
 }
 
 /// `HATCHLING_RUN_HISTORY`: a chat turn's conversation so far, which only

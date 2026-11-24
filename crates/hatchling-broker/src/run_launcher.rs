@@ -363,8 +363,6 @@ pub fn scoped_config(
     // A chat has its person there to decide on a site (WO-028); a
     // scheduled run asks, and goes on without the page.
     run.web.attended = request.chat;
-    // Its model calls sum to no more than its kind's budget (WO-051).
-    run.scheduler.run_tokens = Some(run_tokens(request.chat));
     // The owner's signed-in profiles, and the sign-ins filled into them,
     // are used only where the owner is there to see it: their agent's own
     // session and a chat (WO-030). A scheduled run, a hook's and a
@@ -440,16 +438,7 @@ pub fn scoped_config(
     run.channel_ingress = None;
     run.skills = SkillConfig::disabled();
     run.artifacts = run_artifacts(config, request);
-    // A space task's run may use its own space and no other; any other
-    // run has no spaces at all.
-    run.spaces = request
-        .space
-        .as_ref()
-        .map_or_else(SpaceConfig::disabled, |space| SpaceConfig {
-            root: config.spaces.root.clone(),
-            bound: Some(space.clone()),
-            device_socket: None,
-        });
+    run.spaces = run_spaces(config, request);
     let model = crate::model_choice::server(&config.scheduler);
     run.scheduler = SchedulerConfig {
         // The model the run calls, named so its trail can ask the
@@ -468,9 +457,24 @@ pub fn scoped_config(
         // A run's model calls are the owner's usage too.
         usage: config.scheduler.usage.clone(),
         library: run_library(config, request),
+        // Its model calls sum to no more than its kind's budget (WO-051).
+        run_tokens: Some(run_tokens(request.chat)),
         ..SchedulerConfig::disabled()
     };
     run
+}
+
+/// The spaces a run of `request` may use: a space task's run its own space
+/// and no other, and any other run none at all.
+fn run_spaces(config: &Config, request: &RunRequest) -> SpaceConfig {
+    request
+        .space
+        .as_ref()
+        .map_or_else(SpaceConfig::disabled, |space| SpaceConfig {
+            root: config.spaces.root.clone(),
+            bound: Some(space.clone()),
+            device_socket: None,
+        })
 }
 
 /// Launches scheduled runs as cells (see the module docs).
