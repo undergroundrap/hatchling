@@ -217,6 +217,14 @@ pub enum Error {
         source: hatchling_memory::Error,
     },
 
+    /// The goals store failed at the broker's start: its plaintext
+    /// couldn't be moved into its sealed store (WO-047).
+    #[error("goals store failed: {source}")]
+    Goals {
+        /// The underlying goals failure.
+        source: hatchling_goals::Error,
+    },
+
     /// The egress proxy failed: the allowlist was invalid, or a granted
     /// op hit a proxy failure. The op's reply is the opaque
     /// `EgressError` or `Denied`; the session itself survives proxy

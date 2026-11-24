@@ -140,6 +140,29 @@ impl Files {
         Ok(users)
     }
 
+    /// The name of each of user `uid`'s goal files, without its suffix:
+    /// `None` for one that isn't valid UTF-8. A name needn't be a goal
+    /// id; [`GoalsSource::goal_ids`] refuses one that isn't, and a
+    /// migration leaves it where it is.
+    ///
+    /// # Errors
+    ///
+    /// When the directory isn't the owner's `0700` one, or can't be read.
+    pub fn goal_names(&self, uid: u32) -> Result<Vec<Option<String>>, Error> {
+        let Some(dir) = self.existing(GOALS_DIR, uid)? else {
+            return Ok(Vec::new());
+        };
+        Ok(owner_dir::record_files(&dir, GOAL_SUFFIX)?
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_suffix(GOAL_SUFFIX))
+                    .map(str::to_owned)
+            })
+            .collect())
+    }
+
     /// Removes user `uid`'s goal `id`, if it's there.
     ///
     /// # Errors
@@ -207,16 +230,11 @@ impl GoalsSource for Files {
     }
 
     fn goal_ids(&self, uid: u32) -> Result<Vec<GoalId>, Error> {
-        let Some(dir) = self.existing(GOALS_DIR, uid)? else {
-            return Ok(Vec::new());
-        };
-        owner_dir::record_files(&dir, GOAL_SUFFIX)?
+        self.goal_names(uid)?
             .iter()
-            .map(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .and_then(|name| name.strip_suffix(GOAL_SUFFIX))
-                    .and_then(|stem| stem.parse::<GoalId>().ok())
+            .map(|name| {
+                name.as_deref()
+                    .and_then(|stem| stem.parse().ok())
                     .ok_or(Error::Corrupt)
             })
             .collect()

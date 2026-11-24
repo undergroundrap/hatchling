@@ -53,7 +53,6 @@ use hatchling_core::{
     InspectionVerdict, LogLevel, PROTOCOL_VERSION, PeerUid, SessionRequest, SessionResponse,
     VaultAction,
 };
-use hatchling_goals::GoalsStore;
 use hatchling_memory::{MemoryPrincipal, MemoryScope, RetentionPolicy, SessionId};
 use hatchling_vault::{MasterKey, SealedVault, Secret};
 
@@ -2318,13 +2317,13 @@ fn an_idea_captured_from_the_feed_keeps_its_items_whole_trust_chain() {
         }],
     };
     let me = principal();
-    let goals = GoalsStore::open(&goals_root).unwrap();
+    // Kept sealed, as the broker keeps them, under this process's keys.
+    hatchling_broker::held_keys::publish(Box::new(MasterKey::generate().unwrap()));
+    let goals = hatchling_broker::goals_sealed::open_published(&goals_root).unwrap();
     let entry = goals
         .append_tracking(&me, &"whatsapp".parse().unwrap(), "buy the paper", 1)
         .unwrap();
     let goal = goals.create_goal(&me, "Run 5k", "", 1).unwrap();
-    // Kept sealed, as the broker keeps it, under this process's keys.
-    hatchling_broker::memory_sealed::publish(Box::new(MasterKey::generate().unwrap()));
     hatchling_broker::memory_sealed::open_published(&memory_root)
         .unwrap()
         .write(
