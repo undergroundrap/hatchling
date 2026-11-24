@@ -88,10 +88,10 @@ impl LoopResult {
 /// `text`'s first `cap` bytes, ending on a character, and a line saying
 /// it was cut and from how much.
 fn cut(text: &str, cap: usize) -> String {
-    let mut end = cap.min(text.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = (0..=cap.min(text.len()))
+        .rev()
+        .find(|end| text.is_char_boundary(*end))
+        .unwrap_or_default();
     format!(
         "{}\n[Cut here by Hatchling: this output was {} bytes, more than a quarter of the model's context window. The first {end} are above.]",
         text.get(..end).unwrap_or_default(),
@@ -1772,6 +1772,21 @@ mod tests {
         }
     }
 
+    /// A model that doesn't know its window says every request fits: a
+    /// loop asked to keep within it runs as it would.
+    #[test]
+    fn a_model_with_no_window_fits_every_request() {
+        let (registry, _) = counting();
+        let model = Watched::doing(vec![Ok(counts()), Ok(says("done"))]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_room(String::from(ROOM))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(result.answer, "done");
+        assert!(!result.out_of_room);
+        assert_eq!(model.offered(), [1, 1]);
+    }
+
     /// A loop not asked to keep within the window doesn't ask.
     #[test]
     fn without_room_set_the_window_isnt_asked() {
@@ -1880,6 +1895,11 @@ mod tests {
             unreachable!("an Err");
         };
         assert_eq!(reason.len(), "spill: ".len() + 100, "short, kept whole");
+        // A failure of the cap's length exactly is kept whole.
+        let ToolOutput::Err(reason) = spilled("y", 6144 - "spill: ".len(), true) else {
+            unreachable!("an Err");
+        };
+        assert_eq!(reason.len(), 6144, "at the cap, kept whole");
     }
 
     #[test]

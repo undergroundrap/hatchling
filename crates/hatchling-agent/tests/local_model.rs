@@ -501,7 +501,9 @@ fn a_run_whose_context_fills_answers_or_sends_nothing() {
             &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
         ))
         .unwrap();
-        reply["usage"] = json!({"prompt_tokens": tokens});
+        if let Some(fields) = reply.as_object_mut() {
+            fields.insert(String::from("usage"), json!({"prompt_tokens": tokens}));
+        }
         reply.to_string()
     };
     let server = LocalServer::start(vec![
@@ -530,7 +532,7 @@ fn a_run_whose_context_fills_answers_or_sends_nothing() {
         text_reply("never asked"),
     ]);
     let (status, _, errors) = run_binary("local-room-none", server.port);
-    let out_of_room = i32::from(hatchling_core::run_failure::RunFailure::OutOfRoom.code());
+    let out_of_room = i32::from(RunFailure::OutOfRoom.code());
     assert_eq!(status, Some(out_of_room), "{errors}");
     assert_eq!(
         server.seen.lock().unwrap().len(),

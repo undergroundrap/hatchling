@@ -93,9 +93,8 @@ pub const MIN_CONTEXT_WINDOW: u32 = 8192;
 /// The room a request leaves in a `window` of tokens for the model's
 /// answer: an eighth of it, and at least 1,024 tokens (WO-051).
 #[must_use]
-pub const fn room_kept(window: u32) -> u32 {
-    let eighth = window / 8;
-    if eighth > 1024 { eighth } else { 1024 }
+pub fn room_kept(window: u32) -> u32 {
+    (window / 8).max(1024)
 }
 
 /// What the model's server said the last request it answered came to:
