@@ -113,7 +113,8 @@ What Hatchling really does on a fresh install, one row at a time.
 | Hiding what a page read is an exact match | Open: a value a page changes first isn't caught, up to 3 characters of one a clip cut through can show, and what you type under Take control isn't hidden |
 | The Keep sign-in form took a password in the web app | Fixed in 0.8.0: the form is gone, and sign-ins are added at the terminal |
 | Signing in by Take control sends what you type through the app as keystrokes | Open, for the keeper's own window |
-| Memory, goals, feed posts, decisions, ideas, run specs, harness temp files, and the usage and activity logs aren't sealed at rest | Open. Continuity doesn't ship onto these |
+| Memory and goals weren't sealed at rest | Fixed in 0.10.0: memory items, goals and tracking are sealed where they live, and 0.9's are moved in at the broker's start (WO-047) |
+| Memory's session records and context log, feed posts, decisions, ideas, run specs, harness temp files, and the usage and activity logs aren't sealed at rest | Open. Continuity doesn't ship onto these |
 | A default install's vault opens from a key file on the same disk | Open, for the front-door release |
 | A disk can keep what was on it: old sealed files and older copies of a key file aren't erased, and memory in use can reach swap | Open. Protecting a vault overwrites the old key file, and that's as far as it goes |
 | Authenticator codes don't protect a stolen disk, and there's no passphrase option | Open, for the front-door release |

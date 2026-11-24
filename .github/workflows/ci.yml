@@ -642,11 +642,18 @@ jobs:
           (cd "$RUNNER_TEMP/previous" && sudo scripts/install.sh --from "$RUNNER_TEMP/release" --model-endpoint http://localhost:18089/v1 --model stand-in) > "$RUNNER_TEMP/install-previous.log"
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           SEED_GRANTS=egress:localhost:18089,channel-send:local python3 scripts/upgrade_state.py seed /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
+          # What 0.9.0 kept in the clear: a goal, a remembered item and a
+          # tracking log (WO-047).
+          python3 scripts/sealed_drill.py seed-api /var/lib/hatchling/api.sock "$RUNNER_TEMP/drill.json"
+          sudo python3 scripts/sealed_drill.py seed-files /var/lib/hatchling
 
       - name: Upgrade to this commit, and check nothing was lost
         run: |
           sudo scripts/install.sh --from "$RUNNER_TEMP/files" --model-endpoint http://localhost:18089/v1 --model stand-in > "$RUNNER_TEMP/install-upgrade.log"
           python3 scripts/upgrade_state.py verify /var/lib/hatchling/api.sock "$RUNNER_TEMP/state.json"
+          # Kept, and sealed: listed as before, and no word of it on the disk.
+          python3 scripts/sealed_drill.py verify-api /var/lib/hatchling/api.sock "$RUNNER_TEMP/drill.json"
+          sudo python3 scripts/sealed_drill.py verify-files /var/lib/hatchling
           timeout 180 python3 docs/examples/first-run.py /var/lib/hatchling/api.sock
           sudo hatchling-broker doctor
           # The app's host moved from the owner's user service to a system

@@ -43,10 +43,11 @@
 //! [`context_log`] is the append-only audit trail. The agent cannot
 //! rewrite it: the only mutating operation is append.
 //!
-//! Storage backend: flat JSON files under a `0700` root, atomic
-//! temp-write + rename, `0600` item files — the vault's file discipline,
-//! applied to memory items. Encryption at rest (sealed envelopes, the
-//! pattern) is a named follow-up, not v0.1 scope.
+//! Storage: the store reaches its items through a [`Backing`]. [`Files`]
+//! keeps them as flat JSON files under a `0700` root, atomic temp-write
+//! and rename, `0600` item files: the layout before WO-047, kept for
+//! migration and tests. The broker keeps them sealed (WO-047). The
+//! session records and the context log stay files.
 
 pub mod backing;
 pub mod compaction;

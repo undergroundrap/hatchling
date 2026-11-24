@@ -118,7 +118,6 @@ Hatchling protects you from its own agent, which runs in a sandbox with no way t
 It's honest to say what's left:
 
 - **Without a security key, a stolen disk opens.** A default install keeps the vault's key in a file beside it, so it can restart by itself. **Protect your vault** is what changes that.
-- **Memory and goals aren't sealed yet.** They're private to Hatchling on your PC, but they're plain files inside the distro's disk. That's being fixed.
 - **Malware already running as you can reach Hatchling while it's unlocked.** On Windows, any program you run can use `wsl -u root` with no password. No local password manager can protect you from that either.
 
 ## Why they're separate
