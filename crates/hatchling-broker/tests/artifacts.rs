@@ -54,7 +54,7 @@ use hatchling_core::{
     VaultAction,
 };
 use hatchling_goals::GoalsStore;
-use hatchling_memory::{MemoryPrincipal, MemoryScope, MemoryStore, RetentionPolicy, SessionId};
+use hatchling_memory::{MemoryPrincipal, MemoryScope, RetentionPolicy, SessionId};
 use hatchling_vault::{MasterKey, SealedVault, Secret};
 
 /// The vault secret a lying builder embeds.
@@ -2323,7 +2323,9 @@ fn an_idea_captured_from_the_feed_keeps_its_items_whole_trust_chain() {
         .append_tracking(&me, &"whatsapp".parse().unwrap(), "buy the paper", 1)
         .unwrap();
     let goal = goals.create_goal(&me, "Run 5k", "", 1).unwrap();
-    MemoryStore::open(&memory_root)
+    // Kept sealed, as the broker keeps it, under this process's keys.
+    hatchling_broker::memory_sealed::publish(Box::new(MasterKey::generate().unwrap()));
+    hatchling_broker::memory_sealed::open_published(&memory_root)
         .unwrap()
         .write(
             &me,

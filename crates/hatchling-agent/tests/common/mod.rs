@@ -351,6 +351,14 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
         let Ok(key) = hatchling_vault::MasterKey::generate() else {
             return;
         };
+        // Memory is sealed under this process's keys, which fixture
+        // brokers share: a master key, which opens memory at any root.
+        // The first published stays. (`serve`'s own start, which hands
+        // on the keeper's keys, is tested in the broker's
+        // `tests/memory_start.rs`.)
+        if let Ok(shared) = hatchling_vault::MasterKey::generate() {
+            hatchling_broker::memory_sealed::publish(Box::new(shared));
+        }
         let _ = hatchling_broker::serve_connection(
             &server,
             &config,
@@ -401,6 +409,14 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
         let Ok(key) = hatchling_vault::MasterKey::generate() else {
             return;
         };
+        // Memory is sealed under this process's keys, which fixture
+        // brokers share: a master key, which opens memory at any root.
+        // The first published stays. (`serve`'s own start, which hands
+        // on the keeper's keys, is tested in the broker's
+        // `tests/memory_start.rs`.)
+        if let Ok(shared) = hatchling_vault::MasterKey::generate() {
+            hatchling_broker::memory_sealed::publish(Box::new(shared));
+        }
         let _ = hatchling_broker::serve_connection(
             &server,
             &config,

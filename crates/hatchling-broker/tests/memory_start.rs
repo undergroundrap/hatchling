@@ -88,6 +88,7 @@ fn a_start_seals_the_memory_kept_before_and_hands_its_keys_on() {
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
     let mut config = config(&base);
     let root = config.memory.root.clone();
     let me = MemoryPrincipal {

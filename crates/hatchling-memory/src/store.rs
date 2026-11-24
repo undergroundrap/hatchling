@@ -425,7 +425,7 @@ mod tests {
         let store = MemoryStore::open(&root).unwrap();
         std::fs::write(root.join("user"), b"not a directory").unwrap();
         assert!(matches!(store.purge_expired(0), Err(Error::Io { .. })));
-        assert!(crate::Files::of_this_user(&root).spaces().is_err());
+        assert!(Files::of_this_user(&root).spaces().is_err());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -860,6 +860,24 @@ mod tests {
                 1_000,
             )
             .unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// One item's words moved under another's name read as corrupt, not
+    /// as the item asked for.
+    #[test]
+    fn an_item_under_another_items_name_is_corrupt() {
+        let root = test_root("renamed");
+        let store = MemoryStore::open(&root).unwrap();
+        let me = principal(1000, "s1");
+        write(&store, &me, &MemoryScope::User, "other", "x", 1_000);
+        let dir = store.scope_dir(&me, &MemoryScope::User).unwrap();
+        std::fs::copy(dir.join("other.json"), dir.join("victim.json")).unwrap();
+        let victim = MemoryId::from_str("victim").unwrap();
+        assert!(matches!(
+            store.recall(&me, &MemoryScope::User, &victim, 1_000),
+            Err(Error::Corrupt)
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 
