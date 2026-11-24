@@ -84,10 +84,25 @@ impl RunFailure {
 /// agent's word, like every status here.
 pub const ANSWERED_OUT_OF_STEPS: u8 = 80;
 
+/// The status an agent exits with when it answered as its context filled.
+///
+/// Its next request wouldn't have fit the model's window, so it was told
+/// to answer with no tools (WO-051). As with [`ANSWERED_OUT_OF_STEPS`],
+/// the answer is the run's, and no failure.
+pub const ANSWERED_OUT_OF_ROOM: u8 = 81;
+
 /// Whether an agent's exit status says it answered as its steps ran out.
 #[must_use]
 pub fn answered_out_of_steps(code: i32) -> bool {
     code == i32::from(ANSWERED_OUT_OF_STEPS)
+}
+
+/// Whether an agent's exit status says it answered as one of its limits
+/// came, its steps ([`ANSWERED_OUT_OF_STEPS`]) or its room
+/// ([`ANSWERED_OUT_OF_ROOM`]): its answer may leave work undone.
+#[must_use]
+pub fn answered_at_a_limit(code: i32) -> bool {
+    answered_out_of_steps(code) || code == i32::from(ANSWERED_OUT_OF_ROOM)
 }
 
 #[cfg(test)]
@@ -120,6 +135,23 @@ mod tests {
         }
         for failure in RunFailure::ALL {
             assert!(!answered_out_of_steps(failure.code().into()), "{failure:?}");
+        }
+    }
+
+    /// Answering as the room ran out has a status of its own too, and
+    /// both are answers at a limit; nothing else is.
+    #[test]
+    fn answering_at_a_limit_is_either_status_and_nothing_else() {
+        assert_eq!(ANSWERED_OUT_OF_ROOM, 81);
+        assert_eq!(RunFailure::from_code(ANSWERED_OUT_OF_ROOM.into()), None);
+        assert!(answered_at_a_limit(ANSWERED_OUT_OF_STEPS.into()));
+        assert!(answered_at_a_limit(ANSWERED_OUT_OF_ROOM.into()));
+        assert!(!answered_out_of_steps(ANSWERED_OUT_OF_ROOM.into()));
+        for other in [-1, 0, 1, 64, 79, 82, 255] {
+            assert!(!answered_at_a_limit(other), "{other}");
+        }
+        for failure in RunFailure::ALL {
+            assert!(!answered_at_a_limit(failure.code().into()), "{failure:?}");
         }
     }
 }

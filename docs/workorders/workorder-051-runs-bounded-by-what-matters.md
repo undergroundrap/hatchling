@@ -1,6 +1,6 @@
 # WO-051: A chat run bounded by time, tokens and context, with Stop
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-loop` (the budget, the last step), `crates/hatchling-agent` (its bounds, the context guard), `crates/hatchling-model` (usage as reported), `crates/hatchling-broker` (run limits by kind, a run's token budget, Stop), `crates/hatchling-core` (the Stop action), `frontend/` (the Stop button), `docs/`
 **Issue:** [#647](https://github.com/undergroundrap/hatchling/issues/647), for [#533](https://github.com/undergroundrap/hatchling/issues/533)
 **Trust boundary:** yes
@@ -86,7 +86,9 @@ See [TEMPLATE.md](TEMPLATE.md#gates). Slice 4 changes the UI protocol: `protocol
 
 ## Evidence
 
-Filled in at close.
+- Slice 2, the context guard: [context-guard.md](../evidence/context-guard.md).
+
+The acceptance criteria are ticked at close, against these and the later slices'.
 
 ## Notes
 

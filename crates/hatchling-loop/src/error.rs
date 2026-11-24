@@ -43,6 +43,12 @@ pub enum Error {
     #[error("model failed: {0}")]
     ModelCutOff(String),
 
+    /// The run's context is full: not even its last request, with no
+    /// tools, fits the model's window with room for an answer, so
+    /// nothing was sent (WO-051).
+    #[error("the run's context is full: no request fits the model's window")]
+    OutOfRoom,
+
     /// The model answered, but with nothing: no text and no tool call,
     /// every time it was asked. The server is there; the model's reply
     /// isn't an answer.

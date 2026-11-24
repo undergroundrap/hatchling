@@ -288,6 +288,10 @@ impl Cell<PeerAuthorized> {
     }
 }
 
+/// What the model is told when its next request wouldn't fit its window
+/// (WO-051), where it is offered no tools: to say where it got to.
+pub(crate) const OUT_OF_ROOM: &str = "Your context is full: the next step wouldn't fit the model's window, so you have no tool calls left in this reply; don't call a tool. Tell the person plainly that you ran out of room before you finished, what you did, what you found, and what is left to do. They can ask you to go on, or start a new conversation for the rest.";
+
 /// What the model is told on a run's last step, where it is offered no
 /// tools: to say where it got to, so a run out of steps leaves the person
 /// with what was done and what wasn't.
@@ -600,10 +604,17 @@ impl Cell<Ready> {
         } else {
             asking
         };
+        // A declared window cuts each tool's output to a quarter of it
+        // (WO-051); the model itself keeps each request within it.
+        let asking = match self.config().model_context_window {
+            Some(window) => asking.with_window(window),
+            None => asking,
+        };
         let result = asking
             .with_budget(budget)
             .with_ledger(ledger)
             .with_last_step(String::from(LAST_STEP))
+            .with_room(String::from(OUT_OF_ROOM))
             .with_unfinished(Box::new(|| running.unfinished()))
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(
                 self.connection(),

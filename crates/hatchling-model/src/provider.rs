@@ -16,10 +16,13 @@
 //! endpoint differs only in where the broker sends the bytes.
 
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use hatchling_core::ModelReasoning;
 use hatchling_loop::tool::{ToolCall, ToolDescription};
-use hatchling_loop::{Error as LoopError, Message, Model, ModelAction, ToolResultView};
+use hatchling_loop::{
+    BYTES_PER_TOKEN, Error as LoopError, Message, Model, ModelAction, ToolResultView,
+};
 use hatchling_prompt::probe::{PROBE_INSTRUCTION, PROBE_TOOL, PROBE_TOOL_DESCRIPTION};
 use serde_json::{Value, json};
 
@@ -86,6 +89,31 @@ const fn server_failed(status: u16) -> bool {
 /// need at least this much. A model declared smaller is refused at
 /// construction rather than truncating its way through a task.
 pub const MIN_CONTEXT_WINDOW: u32 = 8192;
+
+/// The room a request leaves in a `window` of tokens for the model's
+/// answer: an eighth of it, and at least 1,024 tokens (WO-051).
+#[must_use]
+pub fn room_kept(window: u32) -> u32 {
+    (window / 8).max(1024)
+}
+
+/// What the model's server said the last request it answered came to:
+/// its prompt in tokens, as the server counted them, and in bytes as
+/// sent.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    prompt_tokens: u64,
+    bytes: u64,
+}
+
+/// The prompt tokens a reply reports, when it reports any.
+fn prompt_tokens(reply: &[u8]) -> Option<u64> {
+    serde_json::from_slice::<Value>(reply)
+        .ok()?
+        .get("usage")?
+        .get("prompt_tokens")?
+        .as_u64()
+}
 
 /// Refuses a declared context window below [`MIN_CONTEXT_WINDOW`]; an
 /// undeclared one passes. The one check, wherever a window is read.
@@ -155,6 +183,10 @@ pub struct ChatCompletionsProvider<T: Transport> {
     /// ([`AS_SET`], [`TURNED_OFF`], [`LEFT_ON`]).
     fallback: AtomicU8,
     transport: T,
+    /// The model's context window, when it was declared.
+    window: Option<u32>,
+    /// What its server reported of the last request it answered.
+    seen: Mutex<Option<Seen>>,
 }
 
 impl<T: Transport> ChatCompletionsProvider<T> {
@@ -181,6 +213,27 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             reasoning: ModelReasoning::ProviderDefault,
             fallback: AtomicU8::new(AS_SET),
             transport,
+            window: config.context_window,
+            seen: Mutex::new(None),
+        })
+    }
+
+    /// What the server reported of the last request it answered, held
+    /// even if a holder panicked: it's a count, never half-written.
+    fn seen(&self) -> MutexGuard<'_, Option<Seen>> {
+        self.seen.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A request of `bytes`, in tokens: what the server counted for the
+    /// last one, and a token for each [`BYTES_PER_TOKEN`] bytes added
+    /// since; or, before the server has said, a token for each
+    /// [`BYTES_PER_TOKEN`] bytes of the whole.
+    fn tokens_in(&self, bytes: usize) -> u64 {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        let per = BYTES_PER_TOKEN;
+        (*self.seen()).map_or(bytes / per, |seen| {
+            seen.prompt_tokens
+                .saturating_add(bytes.saturating_sub(seen.bytes) / per)
         })
     }
 
@@ -335,7 +388,8 @@ impl<T: Transport> ChatCompletionsProvider<T> {
     }
 
     /// Sends `body` to the endpoint and returns the raw reply.
-    fn post(&self, body: &Value) -> Result<Vec<u8>, Error> {
+    /// `body` as it goes to the server.
+    fn wire(&self, body: &Value) -> Result<Vec<u8>, Error> {
         let mut body = body.clone();
         if self.thinking_is_off() {
             let fields = body.as_object_mut().ok_or_else(|| Error::BadResponse {
@@ -343,9 +397,24 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             })?;
             fields.insert(String::from("reasoning"), thinking_off());
         }
-        let body_bytes = serde_json::to_vec(&body).map_err(|error| Error::BadResponse {
+        serde_json::to_vec(&body).map_err(|error| Error::BadResponse {
             reason: format!("failed to serialize request: {error}"),
-        })?;
+        })
+    }
+
+    fn post(&self, body: &Value) -> Result<Vec<u8>, Error> {
+        let body_bytes = self.wire(body)?;
+        let reply = self.send(&body_bytes)?;
+        if let Some(prompt_tokens) = prompt_tokens(&reply) {
+            *self.seen() = Some(Seen {
+                prompt_tokens,
+                bytes: u64::try_from(body_bytes.len()).unwrap_or(u64::MAX),
+            });
+        }
+        Ok(reply)
+    }
+
+    fn send(&self, body_bytes: &[u8]) -> Result<Vec<u8>, Error> {
         let mut headers: Vec<(&str, &str)> = vec![("content-type", "application/json")];
         if let Some(auth) = &self.auth_header {
             headers.push(("authorization", auth.as_str()));
@@ -355,7 +424,7 @@ impl<T: Transport> ChatCompletionsProvider<T> {
                 self.endpoint.destination(),
                 &self.endpoint.chat_completions_path(),
                 &headers,
-                &body_bytes,
+                body_bytes,
             )
             .map_err(Error::Transport)
     }
@@ -552,6 +621,26 @@ fn tool_call_id(turn: usize, index: usize) -> String {
 }
 
 impl<T: Transport> Model for ChatCompletionsProvider<T> {
+    /// Whether the request fits the declared window with
+    /// [`room_kept`] left for the answer, measured as it would be sent,
+    /// redacted. Without a declared window, or a request this can't
+    /// build, it fits: `next_action` then does what it would.
+    fn fits(&self, messages: &[Message], tools: &[ToolDescription]) -> bool {
+        let Some(window) = self.window else {
+            return true;
+        };
+        let Ok(mut body) = self.request_body(messages, tools) else {
+            return true;
+        };
+        self.redactor.redact_value(&mut body);
+        let Ok(wire) = self.wire(&body) else {
+            return true;
+        };
+        self.tokens_in(wire.len())
+            .saturating_add(u64::from(room_kept(window)))
+            <= u64::from(window)
+    }
+
     fn next_action(
         &self,
         messages: &[Message],
@@ -1782,5 +1871,115 @@ mod tests {
             Err(Error::Transport(_))
         ));
         assert_eq!(gone.sent(), 1);
+    }
+
+    /// A provider of `window` tokens over `transport`.
+    fn windowed(window: u32, transport: Canned) -> ChatCompletionsProvider<Canned> {
+        ChatCompletionsProvider::new(
+            ProviderConfig {
+                endpoint: String::from("https://models.example.com/v1"),
+                model: String::from("test-model"),
+                bearer: None,
+                context_window: Some(window),
+            },
+            transport,
+        )
+        .unwrap()
+    }
+
+    /// A request whose user message is `bytes` long.
+    fn asking(bytes: usize) -> Vec<Message> {
+        vec![
+            Message::System(String::from("s")),
+            Message::User("x".repeat(bytes)),
+        ]
+    }
+
+    #[test]
+    fn the_room_kept_is_an_eighth_of_the_window_and_at_least_1024() {
+        assert_eq!(room_kept(8192), 1024);
+        assert_eq!(room_kept(65_536), 8192);
+        assert_eq!(room_kept(8200), 1025);
+        assert_eq!(room_kept(4096), 1024);
+    }
+
+    #[test]
+    fn a_reply_says_its_prompt_tokens_when_it_has_them() {
+        assert_eq!(
+            prompt_tokens(br#"{"usage": {"prompt_tokens": 512, "completion_tokens": 9}}"#),
+            Some(512)
+        );
+        for silent in [&br#"{"choices": []}"#[..], br#"{"usage": {}}"#, b"not json"] {
+            assert_eq!(prompt_tokens(silent), None);
+        }
+    }
+
+    /// Without a declared window a request always fits: there's nothing
+    /// to measure it against.
+    #[test]
+    fn without_a_window_every_request_fits() {
+        let provider = provider(Canned::ok(&text_reply("a")));
+        assert!(provider.fits(&asking(1_000_000), &no_tools()));
+    }
+
+    /// Before the server has said, a request is measured at a token for
+    /// every three bytes of it as sent, and fits with room kept for the
+    /// answer or not at all.
+    #[test]
+    fn a_request_fits_by_its_bytes_until_the_server_counts() {
+        let provider = windowed(8192, Canned::ok(&text_reply("a")));
+        // 8192 tokens, 1024 kept: up to 7168 tokens, about 21,500 bytes.
+        assert!(provider.fits(&asking(20_000), &no_tools()));
+        assert!(!provider.fits(&asking(22_000), &no_tools()));
+        let wire = |bytes: usize| {
+            let body = provider.request_body(&asking(bytes), &no_tools()).unwrap();
+            provider.wire(&body).unwrap().len()
+        };
+        // The bound itself: the largest request that fits, and one byte
+        // past it.
+        let fits = (19_000..23_000)
+            .rev()
+            .find(|bytes| provider.fits(&asking(*bytes), &no_tools()))
+            .unwrap();
+        assert!(wire(fits) / 3 + 1024 <= 8192, "{fits}");
+        assert!(wire(fits + 3) / 3 + 1024 > 8192, "{fits}");
+    }
+
+    /// Once the server has counted a request, the next is measured from
+    /// its count, and the bytes added since.
+    #[test]
+    fn a_request_fits_by_what_the_server_counted_last() {
+        let counted = |tokens: u64| {
+            format!(
+                r#"{{"choices": [{{"message": {{"role": "assistant", "content": "a"}}}}], "usage": {{"prompt_tokens": {tokens}}}}}"#
+            )
+        };
+        // The server counts this small request as 7000 tokens: it's
+        // measured as 7000 now, not by its bytes, and fits under 7168.
+        let provider = windowed(8192, Canned::ok(&counted(7000)));
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(provider.fits(&asking(100), &no_tools()));
+        // 300 bytes more is 100 tokens more: 7100, still in.
+        assert!(provider.fits(&asking(400), &no_tools()));
+        // 600 bytes more is 200 more: 7200, out.
+        assert!(!provider.fits(&asking(700), &no_tools()));
+        // Counted at 7200, the same small request doesn't fit.
+        let provider = windowed(8192, Canned::ok(&counted(7200)));
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(!provider.fits(&asking(100), &no_tools()));
+    }
+
+    /// A request is measured redacted, as it would be sent.
+    #[test]
+    fn a_request_is_measured_as_it_would_be_sent() {
+        let secret = "s".repeat(30_000);
+        let redactor = Redactor::default();
+        redactor.register(&secret);
+        let provider = windowed(8192, Canned::ok(&text_reply("a"))).with_redactor(redactor);
+        let messages = vec![Message::System(String::from("s")), Message::User(secret)];
+        assert!(
+            provider.fits(&messages, &no_tools()),
+            "redacted, it's small"
+        );
     }
 }

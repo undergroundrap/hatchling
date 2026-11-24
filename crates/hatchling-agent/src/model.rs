@@ -191,7 +191,9 @@ impl Cell<Ready> {
                 Error::LoopBudgetExhausted { steps }
             }
             hatchling_loop::Error::ModelFailed(_) => Error::ModelFailed(error.to_string()),
-            hatchling_loop::Error::ModelCutOff(_) => Error::ModelCutOff(error.to_string()),
+            hatchling_loop::Error::ModelCutOff(_) | hatchling_loop::Error::OutOfRoom => {
+                Error::ModelCutOff(error.to_string())
+            }
             hatchling_loop::Error::ModelSilent(_) => Error::ModelSilent(error.to_string()),
             hatchling_loop::Error::ModelThoughtOnly(_) => {
                 Error::ModelThoughtOnly(error.to_string())
@@ -305,6 +307,9 @@ pub struct RunAnswer {
     /// ([`hatchling_loop::LoopResult::out_of_steps`]). Never so for a
     /// subagent: its parent reads its status as done or failed.
     pub out_of_steps: bool,
+    /// Whether the run's context filled as it answered
+    /// ([`hatchling_loop::LoopResult::out_of_room`]).
+    pub out_of_room: bool,
 }
 
 impl From<LoopResult> for RunAnswer {
@@ -312,6 +317,7 @@ impl From<LoopResult> for RunAnswer {
         Self {
             answer: result.answer,
             out_of_steps: result.out_of_steps,
+            out_of_room: result.out_of_room,
         }
     }
 }
@@ -383,6 +389,7 @@ pub fn run_command(task_args: &[String]) -> Result<RunAnswer, Error> {
         return subagent_report(outcome).map(|answer| RunAnswer {
             answer,
             out_of_steps: false,
+            out_of_room: false,
         });
     }
     Ok(outcome?.into())
@@ -563,6 +570,7 @@ mod tests {
             history: Vec::new(),
             steps: 2,
             out_of_steps: false,
+            out_of_room: false,
         }))
         .unwrap();
         let done_wire = r#"{"status":"done","verdict":"ok","answer":"a","steps":2}"#;
@@ -577,21 +585,23 @@ mod tests {
         );
     }
 
-    /// A run's answer keeps what the loop said of its steps.
+    /// A run's answer keeps what the loop said of its steps and its room.
     #[test]
-    fn a_runs_answer_says_whether_its_steps_ran_out() {
-        for out_of_steps in [true, false] {
+    fn a_runs_answer_says_whether_its_steps_or_room_ran_out() {
+        for (out_of_steps, out_of_room) in [(true, false), (false, true), (false, false)] {
             let answer = RunAnswer::from(LoopResult {
                 answer: String::from("this far"),
                 history: Vec::new(),
                 steps: 3,
                 out_of_steps,
+                out_of_room,
             });
             assert_eq!(
                 answer,
                 RunAnswer {
                     answer: String::from("this far"),
                     out_of_steps,
+                    out_of_room,
                 }
             );
         }

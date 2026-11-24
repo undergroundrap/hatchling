@@ -449,6 +449,98 @@ fn the_binary_says_by_its_status_whether_its_steps_ran_out_as_it_answered() {
     assert_eq!((status, answer.as_str()), (Some(0), "all done"), "{errors}");
 }
 
+/// The agent's binary, run to its end against the local server at
+/// `port`, in a window of 32768 tokens: its status, answer and errors.
+fn run_binary(name: &str, port: u16) -> (Option<i32>, String, String) {
+    let broker = local_broker(name, port);
+    let uid = rustix::process::getuid().as_raw().to_string();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_hatchling-agent"))
+        .args(["run", "count to two"])
+        .env("HATCHLING_CELL_ID", "cell-local")
+        .env("HATCHLING_BROKER_SOCKET", &broker.socket_path)
+        .env("HATCHLING_BROKER_UID", &uid)
+        .env("HATCHLING_LOG_LEVEL", "error")
+        .env(
+            "HATCHLING_MODEL_ENDPOINT",
+            format!("http://localhost:{port}/v1"),
+        )
+        .env("HATCHLING_MODEL_NAME", "local-model")
+        .env("HATCHLING_MODEL_CONTEXT_WINDOW", "32768")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // A run that hangs is a failure, not a slow test.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// A run whose context fills answers with no tools, and says so by its
+/// status; one with no room for even that sends nothing more, and its
+/// status says it ran out of room (WO-051). The server counts the first
+/// request as large: in a window of 32768, with 4096 kept for the
+/// answer, the next request fits without tools and not with them, or
+/// not at all.
+#[test]
+fn a_run_whose_context_fills_answers_or_sends_nothing() {
+    let counted = |tokens: u64| {
+        let mut reply: Value = serde_json::from_str(&tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ))
+        .unwrap();
+        if let Some(fields) = reply.as_object_mut() {
+            fields.insert(String::from("usage"), json!({"prompt_tokens": tokens}));
+        }
+        reply.to_string()
+    };
+    let server = LocalServer::start(vec![
+        probe_reply(),
+        counted(28_650),
+        text_reply("I ran out of room here"),
+    ]);
+    let (status, answer, errors) = run_binary("local-room-answer", server.port);
+    let room = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM);
+    assert_eq!(
+        (status, answer.as_str()),
+        (Some(room), "I ran out of room here"),
+        "{errors}"
+    );
+    let seen = server.seen.lock().unwrap().clone();
+    let last = seen.last().unwrap();
+    assert!(
+        last.body
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+        "the last request offered no tools"
+    );
+    let server = LocalServer::start(vec![
+        probe_reply(),
+        counted(30_000),
+        text_reply("never asked"),
+    ]);
+    let (status, _, errors) = run_binary("local-room-none", server.port);
+    let out_of_room = i32::from(RunFailure::OutOfRoom.code());
+    assert_eq!(status, Some(out_of_room), "{errors}");
+    assert_eq!(
+        server.seen.lock().unwrap().len(),
+        2,
+        "the probe and the first request; nothing after"
+    );
+}
+
 #[test]
 fn a_model_that_does_not_call_tools_is_refused_before_the_task() {
     // Asked as often as a stray reply is, it answers in text every time.

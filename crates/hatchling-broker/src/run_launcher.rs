@@ -640,7 +640,7 @@ impl Run for CellRun<'_> {
             // An answer all the same: the agent says its steps ran out
             // as it gave it, and whoever asked can be told so.
             RunEnd::Exited { code, output, .. }
-                if hatchling_core::run_failure::answered_out_of_steps(code) =>
+                if hatchling_core::run_failure::answered_at_a_limit(code) =>
             {
                 self.ending = Some(hatchling_scheduler::Ending::Exited(code));
                 captured(output)
@@ -2003,13 +2003,15 @@ mod tests {
         assert!(!dir.exists(), "the run directory goes with the run");
     }
 
-    /// An agent that answered as its steps ran out exits with a status
-    /// of its own: what it wrote is the run's answer all the same, and
-    /// the run says how it ended. Any other status but 0 is a failure.
+    /// An agent that answered as its steps or its room ran out exits with
+    /// a status of its own: what it wrote is the run's answer all the
+    /// same, and the run says how it ended. Any other status but 0 is a
+    /// failure.
     #[test]
     fn a_run_that_answered_as_its_steps_ran_out_is_an_answer_that_says_so() {
         use hatchling_scheduler::Ending;
         let spent = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS);
+        let full = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM);
         for (code, told, ending) in [
             (0, Ok(String::from("this far")), None),
             (
@@ -2018,9 +2020,14 @@ mod tests {
                 Some(Ending::Exited(spent)),
             ),
             (
-                spent + 1,
-                Err(format!("the run exited {}: why", spent + 1)),
-                Some(Ending::Exited(spent + 1)),
+                full,
+                Ok(String::from("this far")),
+                Some(Ending::Exited(full)),
+            ),
+            (
+                full + 1,
+                Err(format!("the run exited {}: why", full + 1)),
+                Some(Ending::Exited(full + 1)),
             ),
         ] {
             let dir = helper_dir(&format!("spent-{code}"));
