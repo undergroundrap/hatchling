@@ -149,8 +149,8 @@ fn goals_and_tracking_read_and_write_as_before_and_no_word_is_on_the_disk() {
     assert_eq!(
         titles,
         [
-            (format!("{WORDS} edited"), true),
-            (String::from("learn chess"), false)
+            (String::from("learn chess"), false),
+            (format!("{WORDS} edited"), true)
         ]
     );
     assert_eq!(
@@ -260,11 +260,13 @@ fn a_log_missing_a_segment_or_sealed_under_another_key_is_refused() {
             .unwrap();
     }
     let goal = store.create_goal(&me, "run a 5k", "", 1).unwrap();
-    // Opened with another key, nothing reads.
+    // Another key opens nothing: the store's own key, kept wrapped in
+    // it, doesn't unwrap under it.
     let other = MasterKey::generate().unwrap();
-    let stranger = SealedGoals::new(&root, &other).unwrap();
-    assert!(GoalsSource::tracking(&stranger, 7).is_err());
-    assert!(GoalsSource::goal(&stranger, 7, &goal.id).is_err());
+    assert!(matches!(
+        SealedGoals::new(&root, &other),
+        Err(hatchling_vault::Error::StoreKeyRefused { store: "goals" })
+    ));
     // A goal under another goal's key doesn't open as it.
     let backing = SealedGoals {
         per_segment: 3,
@@ -383,8 +385,8 @@ fn plaintext_goals_and_tracking_move_into_the_sealed_store_whole() {
     assert_eq!(
         titles,
         [
-            (format!("{WORDS} goal"), true),
-            (String::from("learn chess"), false)
+            (String::from("learn chess"), false),
+            (format!("{WORDS} goal"), true)
         ]
     );
     assert_eq!(tracked(&reader, 4242).len(), 3);
@@ -496,4 +498,52 @@ fn a_log_whose_sealed_copy_differs_is_left_where_it_is() {
         backing.import_locked(4242, &[]),
         Err(Failure::Corrupt)
     ));
+}
+
+#[test]
+fn a_store_never_written_to_reads_as_empty_and_isnt_made_by_reading() {
+    let (_scratch, key, root) = sealed("unmade");
+    // The goals root, as the store makes it; its sealed store not yet.
+    drop(open(&root, &key).unwrap());
+    let backing = SealedGoals::new(&root, &key).unwrap();
+    let id: GoalId = "g-a".parse().unwrap();
+    assert_eq!(GoalsSource::goal(&backing, 7, &id).unwrap(), None);
+    assert!(GoalsSource::goal_ids(&backing, 7).unwrap().is_empty());
+    assert!(GoalsSource::tracking(&backing, 7).unwrap().is_empty());
+    assert!(!sealed_root(&root).exists(), "reading made nothing");
+    // A store that's there, holding nothing for this user, reads empty.
+    backing.put_goal(8, &id, b"{}").unwrap();
+    assert!(sealed_root(&root).exists());
+    assert!(GoalsSource::goal_ids(&backing, 7).unwrap().is_empty());
+    assert!(GoalsSource::tracking(&backing, 7).unwrap().is_empty());
+}
+
+#[test]
+fn what_cant_be_sealed_keeps_its_file() {
+    // A goal too large for the sealed store: its file is all there is.
+    let (_scratch, key, root) = sealed("migrate-keep-goal");
+    let ids = plaintext(&root);
+    let path = root
+        .join("goals")
+        .join("4242")
+        .join(format!("{}.json", ids.first().unwrap()));
+    let mut goal: hatchling_goals::Goal =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    goal.detail = "x".repeat(sealed_blobs::MAX_CHUNKS * hatchling_vault::MAX_SECRET_BYTES);
+    let bytes = serde_json::to_vec(&goal).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(migrate(&root, &key).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the goal kept, whole");
+    // A log too large for its first segment: the log is all there is.
+    let (_scratch, key, root) = sealed("migrate-keep-log");
+    plaintext(&root);
+    let log = root.join("tracking").join("4242").join("log.ndjson");
+    let text = "y".repeat(sealed_blobs::MAX_CHUNKS * hatchling_vault::MAX_SECRET_BYTES);
+    let mut bytes = std::fs::read(&log).unwrap();
+    bytes
+        .extend(format!(r#"{{"seq":3,"at_secs":9,"source":"user","text":"{text}"}}"#).into_bytes());
+    bytes.push(b'\n');
+    std::fs::write(&log, &bytes).unwrap();
+    assert!(migrate(&root, &key).is_err());
+    assert_eq!(std::fs::read(&log).unwrap(), bytes, "the log kept, whole");
 }

@@ -246,15 +246,30 @@ impl SealedGoals {
     }
 }
 
+impl SealedGoals {
+    /// Whether the sealed store is yet to be made: one never written to
+    /// reads as empty, and reading it never makes it.
+    fn unmade(&self) -> bool {
+        std::fs::symlink_metadata(&self.root)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    }
+}
+
 impl GoalsSource for SealedGoals {
     fn goal(&self, uid: u32, id: &GoalId) -> Result<Option<Vec<u8>>, hatchling_goals::Error> {
         let _held = lock();
+        if self.unmade() {
+            return Ok(None);
+        }
         let vault = self.vault().map_err(told)?;
         sealed_blobs::read(&vault, &goal_key(uid, id)).map_err(told)
     }
 
     fn goal_ids(&self, uid: u32) -> Result<Vec<GoalId>, hatchling_goals::Error> {
         let _held = lock();
+        if self.unmade() {
+            return Ok(Vec::new());
+        }
         let vault = self.vault().map_err(told)?;
         Self::ids_locked(&vault, uid)
             .map_err(told)?
@@ -265,6 +280,9 @@ impl GoalsSource for SealedGoals {
 
     fn tracking(&self, uid: u32) -> Result<Vec<Vec<u8>>, hatchling_goals::Error> {
         let _held = lock();
+        if self.unmade() {
+            return Ok(Vec::new());
+        }
         self.tracking_locked(uid).map_err(told)
     }
 }
