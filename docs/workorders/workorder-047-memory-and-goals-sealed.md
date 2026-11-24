@@ -41,7 +41,11 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+- Slice 1, the handoff's capacity (#638): [#639](https://github.com/undergroundrap/hatchling/pull/639), whose description holds its gate.
+- Slice 2, memory sealed: [memory-sealed.md](../evidence/memory-sealed.md).
+- Slice 3, goals and tracking sealed: [goals-sealed.md](../evidence/goals-sealed.md).
+
+The acceptance criteria are ticked at close, against these and slice 4's.
 
 ## Notes
 
