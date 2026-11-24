@@ -147,17 +147,33 @@ pub struct Place {
 /// Every place `config` keeps state.
 fn places(config: &Config) -> Result<Vec<Place>, Error> {
     let redaction = crate::vault_ops::redaction_config(config)?;
-    let mut found: Vec<Place> = crate::sealed_stores(config, redaction.as_ref())
+    let state = crate::broker_user::state_dirs(config)
         .into_iter()
+        .chain(crate::broker_user::state_files(config))
+        .collect();
+    assemble(crate::sealed_stores(config, redaction.as_ref()), state)
+}
+
+/// The places of the sealed `stores` and the broker's other `state`.
+///
+/// A store inside a state directory, as memory's is in its root
+/// (WO-047), is that directory's: listed on its own as well, a
+/// restore would put it back and then clear it with the directory. Each
+/// place's name is its own, or the backup isn't made: a restore puts
+/// what's under a name in one place only.
+fn assemble(
+    stores: Vec<(hatchling_vault::Store, PathBuf)>,
+    state: Vec<PathBuf>,
+) -> Result<Vec<Place>, Error> {
+    let mut found: Vec<Place> = stores
+        .into_iter()
+        .filter(|(_, path)| !state.iter().any(|dir| path.starts_with(dir)))
         .map(|(store, path)| Place {
             name: store.label().to_owned(),
             part: part_of(store.label()),
             path,
         })
         .collect();
-    let state = crate::broker_user::state_dirs(config)
-        .into_iter()
-        .chain(crate::broker_user::state_files(config));
     for path in state {
         let name = path.file_name().map_or_else(
             || path.display().to_string(),
@@ -167,6 +183,18 @@ fn places(config: &Config) -> Result<Vec<Place>, Error> {
             name,
             path,
             part: Part::Mind,
+        });
+    }
+    let mut names = std::collections::BTreeSet::new();
+    if let Some(twice) = found
+        .iter()
+        .find(|place| !names.insert(place.name.as_str()))
+    {
+        return Err(Error::Usage {
+            reason: format!(
+                "two places hold Hatchling's {}: nothing was changed",
+                twice.name
+            ),
         });
     }
     Ok(found)
@@ -1275,6 +1303,43 @@ mod tests {
             .permissions()
             .mode()
             & 0o777
+    }
+
+    /// Memory's sealed store, inside its root, is carried by its root: a
+    /// backup holds it once, and a restore brings it back where it was
+    /// (WO-047).
+    #[test]
+    fn a_store_inside_a_state_directory_comes_back_with_it() {
+        let scratch = Scratch::new("store-inside");
+        scratch.write("memory/sealed/hitem", b"sealed item");
+        scratch.write("memory/sessions/s1", b"context");
+        scratch.write("spaces/hteam", b"sealed space");
+        let stores = vec![
+            (
+                hatchling_vault::Store::MEMORY,
+                scratch.0.join("memory/sealed"),
+            ),
+            (hatchling_vault::Store::SPACES, scratch.0.join("spaces")),
+        ];
+        let state = vec![scratch.0.join("memory")];
+        let places = assemble(stores, state).unwrap();
+        let names: Vec<&str> = places.iter().map(|place| place.name.as_str()).collect();
+        assert_eq!(names, ["spaces", "memory"]);
+        back_and_forth(&scratch, &places);
+        assert_eq!(scratch.read("memory/sealed/hitem").unwrap(), b"sealed item");
+        assert_eq!(scratch.read("memory/sessions/s1").unwrap(), b"context");
+        assert_eq!(scratch.read("spaces/hteam").unwrap(), b"sealed space");
+        assert!(scratch.read("memory/sealed/sealed/hitem").is_none());
+    }
+
+    /// Two places under one name are refused: a restore would put what's
+    /// under it in one of them only.
+    #[test]
+    fn two_places_with_one_name_are_refused() {
+        let scratch = Scratch::new("one-name");
+        let stores = vec![(hatchling_vault::Store::MEMORY, scratch.0.join("elsewhere"))];
+        let refused = assemble(stores, vec![scratch.0.join("memory")]).unwrap_err();
+        assert!(refused.to_string().contains("memory"), "{refused}");
     }
 
     /// Takes a backup of `places`, clears them, and brings it back.
