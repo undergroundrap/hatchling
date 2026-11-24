@@ -4537,6 +4537,56 @@ pub(crate) mod tests {
         })
     }
 
+    /// Memory's and goals' sealed stores, in their roots, follow a rekey
+    /// as every store does: open under the new key, and not the old
+    /// (WO-047).
+    #[test]
+    fn memory_and_goals_follow_a_rekey() {
+        let (scratch, vault, config) = adopted("rekey-memory-goals");
+        let old = unlock(&vault, &config).unwrap();
+        let mut stores = two_stores(&scratch, &vault, &old);
+        for (store, root) in [
+            (Store::MEMORY, scratch.0.join("memory").join("sealed")),
+            (Store::GOALS, scratch.0.join("goals").join("sealed")),
+        ] {
+            std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+            SealedVault::open_in(&root, &old, store)
+                .unwrap()
+                .store(
+                    &"token".parse().unwrap(),
+                    &Secret::new(b"kept".to_vec()).unwrap(),
+                )
+                .unwrap();
+            stores.push((store, root));
+        }
+        let (reports, _) = rekey(
+            &vault,
+            &config,
+            &stores,
+            &mut |_| Ok(Zeroizing::default()),
+            &mut NoKeys,
+        )
+        .unwrap();
+        assert_eq!(
+            reports
+                .iter()
+                .map(|(store, report)| (*store, report.rekeyed))
+                .collect::<Vec<_>>(),
+            [("secrets", 1), ("spaces", 1), ("memory", 1), ("goals", 1)]
+        );
+        let new = unlock(&vault, &config).unwrap();
+        assert!(opens_all(&stores, &new));
+        for (store, root) in stores.iter().skip(2) {
+            assert!(
+                SealedVault::open_in(root, &old, *store)
+                    .and_then(|vault| vault.fetch(&"token".parse().unwrap()))
+                    .is_err(),
+                "{}",
+                store.label()
+            );
+        }
+    }
+
     #[test]
     fn rekey_vault_rotates_inside_the_keyring_and_every_store_follows() {
         let (scratch, vault, config) = adopted("rekey-in-keyring");
