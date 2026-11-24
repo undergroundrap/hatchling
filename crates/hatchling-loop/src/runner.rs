@@ -61,23 +61,12 @@ pub struct LoopResult {
     pub history: Vec<Message>,
     /// How many model turns ran.
     pub steps: u32,
-    /// Whether the run's steps ran out as it answered: the answer was
-    /// given on its last step, told it was the last, or was one held
-    /// back until none were left. Such an answer may leave work undone.
-    pub out_of_steps: bool,
-    /// Whether the run's context filled as it answered: its next request
-    /// wouldn't have fit the model's window, so it was told to answer
-    /// with no tools ([`Loop::with_room`]). Such an answer may leave work
-    /// undone.
-    pub out_of_room: bool,
-    /// Whether the run's time was nearly up as it answered, so it was told
-    /// to answer with no tools ([`Loop::with_deadline`]). Such an answer
-    /// may leave work undone.
-    pub out_of_time: bool,
-    /// Whether the run's token budget was nearly spent as it answered, so
-    /// it was told to answer with no tools ([`Loop::with_token_budget`]). Such an
-    /// answer may leave work undone.
-    pub out_of_tokens: bool,
+    /// The limit the run's answer was given at, if one: its steps ran out
+    /// as it answered (the answer was given on its last step, told it was
+    /// the last, or was one held back until none were left), or its room,
+    /// time or tokens did ([`Loop::with_room`], [`Loop::with_deadline`],
+    /// [`Loop::with_token_budget`]). Such an answer may leave work undone.
+    pub limit: Option<Limit>,
 }
 
 impl LoopResult {
@@ -87,17 +76,20 @@ impl LoopResult {
             answer,
             history,
             steps,
-            out_of_steps,
-            out_of_room: false,
-            out_of_time: false,
-            out_of_tokens: false,
+            limit: if out_of_steps {
+                Some(Limit::Steps)
+            } else {
+                None
+            },
         }
     }
 }
 
-/// The limit a run's last turn was made at.
+/// A limit a run's answer was given at (WO-051).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Limit {
+pub enum Limit {
+    /// Its steps ran out.
+    Steps,
     /// Its next request wouldn't have fit the model's window.
     Room,
     /// Its time was nearly up.
@@ -208,7 +200,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     /// turn the model is asked whether the request fits
     /// ([`Model::fits`]). When it doesn't, `note` is put to the model as
     /// a [`Message::Note`] and it's offered no tools: it says where it got
-    /// to, and the run's answer is marked [`LoopResult::out_of_room`]. If
+    /// to, and the run's answer is marked at [`Limit::Room`]. If
     /// even that request doesn't fit, nothing is sent, and the run ends
     /// [`Error::OutOfRoom`]. Nothing in the history is dropped or
     /// summarized.
@@ -220,7 +212,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
 
     /// Answer by `at` (WO-051): a turn that would start at or after it is
     /// the run's last, told `note` and offered no tools, and its answer is
-    /// marked [`LoopResult::out_of_time`]. A last turn that isn't an
+    /// marked at [`Limit::Time`]. A last turn that isn't an
     /// answer ends the run [`Error::OutOfTime`]. The run's own clock, kept
     /// by whoever started it, still ends it at its deadline; this is the
     /// run's chance to say where it got to first.
@@ -234,7 +226,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     /// model is asked whether the request keeps within it
     /// ([`Model::affords`]). When it doesn't, `note` is put to the model
     /// and it's offered no tools: its answer is the run's, marked
-    /// [`LoopResult::out_of_tokens`]. That last turn may cross the budget,
+    /// at [`Limit::Tokens`]. That last turn may cross the budget,
     /// as the call that crosses an owner's limit finishes; whoever holds
     /// the budget refuses the next.
     #[must_use]
@@ -317,6 +309,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             Limit::Room => Error::OutOfRoom,
             Limit::Time => Error::OutOfTime,
             Limit::Tokens => Error::OutOfTokens,
+            Limit::Steps => Error::BudgetExhausted { steps },
         };
         history.push(Message::Note(note.to_owned()));
         if !model.fits(&history, &[]) {
@@ -329,10 +322,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                     answer,
                     history,
                     steps,
-                    out_of_steps: false,
-                    out_of_room: limit == Limit::Room,
-                    out_of_time: limit == Limit::Time,
-                    out_of_tokens: limit == Limit::Tokens,
+                    limit: Some(limit),
                 })
             }
             Ok(ModelAction::ToolCalls(_)) => Err(ended),
@@ -1602,7 +1592,7 @@ mod tests {
             };
             asking
                 .run(&model, String::from("go"))
-                .map(|result| result.out_of_steps)
+                .map(|result| result.limit == Some(Limit::Steps))
                 .ok()
         };
         assert_eq!(
@@ -1634,7 +1624,7 @@ mod tests {
                 .with_budget(LoopBudget { max_steps: steps })
                 .with_unfinished(left_for(left, &asked))
                 .run(&model, String::from("go"))
-                .map(|result| result.out_of_steps)
+                .map(|result| result.limit == Some(Limit::Steps))
                 .ok()
         };
         let text = |words: &str| ModelAction::Text(String::from(words));
@@ -1820,7 +1810,7 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!((result.answer.as_str(), result.steps), ("this far", 3));
-        assert!(result.out_of_room && !result.out_of_steps);
+        assert_eq!(result.limit, Some(Limit::Room));
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(model.watched.offered(), [1, 1, 0]);
         assert_eq!(model.watched.told(), [None, None, Some(String::from(ROOM))]);
@@ -1870,7 +1860,7 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!(result.answer, "done");
-        assert!(!result.out_of_room);
+        assert_ne!(result.limit, Some(Limit::Room));
         assert_eq!(model.offered(), [1, 1]);
     }
 
@@ -1883,7 +1873,7 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!(result.answer, "done");
-        assert!(!result.out_of_room);
+        assert_ne!(result.limit, Some(Limit::Room));
         assert_eq!(model.watched.offered(), [1, 1, 1]);
     }
 
@@ -2018,7 +2008,11 @@ mod tests {
             (result.answer.as_str(), result.steps),
             ("time's up, this far", 1)
         );
-        assert!(result.out_of_time && !result.out_of_room && !result.out_of_steps);
+        assert!(
+            result.limit == Some(Limit::Time)
+                && result.limit != Some(Limit::Room)
+                && result.limit != Some(Limit::Steps)
+        );
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(model.offered(), [0]);
         assert_eq!(model.told(), [Some(String::from(TIME))]);
@@ -2030,7 +2024,7 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!(result.answer, "done");
-        assert!(!result.out_of_time);
+        assert_ne!(result.limit, Some(Limit::Time));
         assert_eq!(model.offered(), [1, 1]);
     }
 
@@ -2094,7 +2088,11 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!((result.answer.as_str(), result.steps), ("this far", 3));
-        assert!(result.out_of_tokens && !result.out_of_time && !result.out_of_room);
+        assert!(
+            result.limit == Some(Limit::Tokens)
+                && result.limit != Some(Limit::Time)
+                && result.limit != Some(Limit::Room)
+        );
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(model.watched.offered(), [1, 1, 0]);
         assert_eq!(
@@ -2109,7 +2107,7 @@ mod tests {
         let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
             .run(&model, String::from("go"))
             .unwrap();
-        assert!(!result.out_of_tokens);
+        assert_ne!(result.limit, Some(Limit::Tokens));
         assert_eq!(model.watched.offered(), [1, 1, 1]);
     }
 
@@ -2137,7 +2135,7 @@ mod tests {
             .with_token_budget(String::from(TOKENS))
             .run(&model, String::from("go"))
             .unwrap();
-        assert!(result.out_of_time && !result.out_of_tokens);
+        assert_eq!(result.limit, Some(Limit::Time));
         assert_eq!(model.watched.told(), [Some(String::from(TIME))]);
     }
 }

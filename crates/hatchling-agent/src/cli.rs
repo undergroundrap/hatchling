@@ -110,16 +110,12 @@ const fn answered(run: &crate::model::RunAnswer) -> u8 {
     use hatchling_core::run_failure::{
         ANSWERED_OUT_OF_ROOM, ANSWERED_OUT_OF_STEPS, ANSWERED_OUT_OF_TIME, ANSWERED_OUT_OF_TOKENS,
     };
-    if run.out_of_steps {
-        ANSWERED_OUT_OF_STEPS
-    } else if run.out_of_room {
-        ANSWERED_OUT_OF_ROOM
-    } else if run.out_of_time {
-        ANSWERED_OUT_OF_TIME
-    } else if run.out_of_tokens {
-        ANSWERED_OUT_OF_TOKENS
-    } else {
-        0
+    match run.limit {
+        Some(hatchling_loop::Limit::Steps) => ANSWERED_OUT_OF_STEPS,
+        Some(hatchling_loop::Limit::Room) => ANSWERED_OUT_OF_ROOM,
+        Some(hatchling_loop::Limit::Time) => ANSWERED_OUT_OF_TIME,
+        Some(hatchling_loop::Limit::Tokens) => ANSWERED_OUT_OF_TOKENS,
+        None => 0,
     }
 }
 
@@ -212,35 +208,16 @@ mod tests {
             ANSWERED_OUT_OF_ROOM, ANSWERED_OUT_OF_STEPS, ANSWERED_OUT_OF_TIME,
             ANSWERED_OUT_OF_TOKENS,
         };
-        let ran = |out_of_steps, out_of_room, out_of_time, out_of_tokens| crate::model::RunAnswer {
+        use hatchling_loop::Limit;
+        let ran = |limit| crate::model::RunAnswer {
             answer: String::new(),
-            out_of_steps,
-            out_of_room,
-            out_of_time,
-            out_of_tokens,
+            limit,
         };
-        assert_eq!(answered(&ran(false, false, false, false)), 0);
-        assert_eq!(
-            answered(&ran(true, false, false, false)),
-            ANSWERED_OUT_OF_STEPS
-        );
-        assert_eq!(
-            answered(&ran(false, true, false, false)),
-            ANSWERED_OUT_OF_ROOM
-        );
-        assert_eq!(
-            answered(&ran(false, false, true, false)),
-            ANSWERED_OUT_OF_TIME
-        );
-        assert_eq!(
-            answered(&ran(false, false, false, true)),
-            ANSWERED_OUT_OF_TOKENS
-        );
-        assert_eq!(
-            answered(&ran(true, true, true, true)),
-            ANSWERED_OUT_OF_STEPS,
-            "steps first: the run's last step was its last"
-        );
+        assert_eq!(answered(&ran(None)), 0);
+        assert_eq!(answered(&ran(Some(Limit::Steps))), ANSWERED_OUT_OF_STEPS);
+        assert_eq!(answered(&ran(Some(Limit::Room))), ANSWERED_OUT_OF_ROOM);
+        assert_eq!(answered(&ran(Some(Limit::Time))), ANSWERED_OUT_OF_TIME);
+        assert_eq!(answered(&ran(Some(Limit::Tokens))), ANSWERED_OUT_OF_TOKENS);
     }
 
     #[test]
