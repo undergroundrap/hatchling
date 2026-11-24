@@ -646,7 +646,7 @@ impl Cell<Ready> {
             .with_ledger(ledger)
             .with_last_step(String::from(LAST_STEP))
             .with_room(String::from(OUT_OF_ROOM))
-            .with_budget(String::from(OUT_OF_TOKENS))
+            .with_token_budget(String::from(OUT_OF_TOKENS))
             .with_unfinished(Box::new(|| running.unfinished()))
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(
                 self.connection(),

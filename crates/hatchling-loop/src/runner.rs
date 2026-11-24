@@ -75,7 +75,7 @@ pub struct LoopResult {
     /// may leave work undone.
     pub out_of_time: bool,
     /// Whether the run's token budget was nearly spent as it answered, so
-    /// it was told to answer with no tools ([`Loop::with_budget`]). Such an
+    /// it was told to answer with no tools ([`Loop::with_token_budget`]). Such an
     /// answer may leave work undone.
     pub out_of_tokens: bool,
 }
@@ -138,7 +138,7 @@ pub struct Loop<'t, 'r, 'm> {
     room: Option<String>,
     output_cap: Option<usize>,
     deadline: Option<(std::time::Instant, String)>,
-    budget: Option<String>,
+    token_budget: Option<String>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -155,7 +155,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("room", &self.room.is_some())
             .field("output_cap", &self.output_cap)
             .field("deadline", &self.deadline.as_ref().map(|(at, _)| at))
-            .field("budget", &self.budget.is_some())
+            .field("token_budget", &self.token_budget.is_some())
             .finish()
     }
 }
@@ -183,7 +183,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             room: None,
             output_cap: None,
             deadline: None,
-            budget: None,
+            token_budget: None,
         }
     }
 
@@ -238,8 +238,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     /// as the call that crosses an owner's limit finishes; whoever holds
     /// the budget refuses the next.
     #[must_use]
-    pub fn with_budget(mut self, note: String) -> Self {
-        self.budget = Some(note);
+    pub fn with_token_budget(mut self, note: String) -> Self {
+        self.token_budget = Some(note);
         self
     }
 
@@ -275,7 +275,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
 
     /// The limit the run is at before its next turn, if one: its time
     /// ([`with_deadline`](Self::with_deadline)), its tokens
-    /// ([`with_budget`](Self::with_budget)), then its room
+    /// ([`with_token_budget`](Self::with_token_budget)), then its room
     /// ([`with_room`](Self::with_room)); and what it's told at it.
     fn limit_reached(
         &self,
@@ -291,7 +291,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             return Some((note, Limit::Time));
         }
         if let Some(note) = self
-            .budget
+            .token_budget
             .as_deref()
             .filter(|_| !model.affords(history, tools))
         {
@@ -2090,7 +2090,7 @@ mod tests {
             until: 3,
         };
         let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
-            .with_budget(String::from(TOKENS))
+            .with_token_budget(String::from(TOKENS))
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!((result.answer.as_str(), result.steps), ("this far", 3));
@@ -2124,7 +2124,7 @@ mod tests {
                 until: 0,
             };
             let ended = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
-                .with_budget(String::from(TOKENS))
+                .with_token_budget(String::from(TOKENS))
                 .run(&model, String::from("go"));
             assert!(matches!(ended, Err(Error::OutOfTokens)), "{ended:?}");
         }
@@ -2134,7 +2134,7 @@ mod tests {
         };
         let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
             .with_deadline(std::time::Instant::now(), String::from(TIME))
-            .with_budget(String::from(TOKENS))
+            .with_token_budget(String::from(TOKENS))
             .run(&model, String::from("go"))
             .unwrap();
         assert!(result.out_of_time && !result.out_of_tokens);
