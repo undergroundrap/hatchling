@@ -29,6 +29,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A broker with every store configured starts** ([#638](https://github.com/undergroundrap/hatchling/issues/638)). The keeper hands the broker its stores' keys in one handoff, which carried at most eight; since the skills' enablements made nine, an install configuring all of them (the web's stores, artifacts, spaces and redactions with the rest) refused to start, "too many stores". A handoff now carries up to fifteen, the most one message between the two can hold.
+
 - **Settings › Skills shows your skills when they arrive** ([#625](https://github.com/undergroundrap/hatchling/issues/625)). Opened right after the app loaded, before it had the list, it said there were no skills, and kept saying it until you went to another section and back. It now shows them as soon as the app has them, and any change while it's open.
 
 - **A skill's signature covers every byte it holds** ([#613](https://github.com/undergroundrap/hatchling/issues/613)). A format 1 signature covered the manifest and not the program it named, which was bound only by a hash taken the first time the broker saw it, until a restart, and nothing checked who could write the skills directory. Now every listed file is checked against its signed hash on every load, a file the manifest doesn't list is never read, and the skills directory and each skill's own directory must be root's or the broker's and writable by no one else.
