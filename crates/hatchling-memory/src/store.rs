@@ -1,4 +1,6 @@
-//! The broker-side memory store: one JSON file per item under a `0700` root.
+//! The broker-side memory store: each item kept by a [`Backing`], one JSON
+//! file per item under a `0700` root ([`Files`]) or the broker's sealed
+//! store (WO-047).
 //!
 //! Layout, bound to the broker-asserted [`MemoryPrincipal`]:
 //!
@@ -28,6 +30,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::backing::{Backing, Files, Space};
 use crate::item::{
     MAX_CONTENT_BYTES, MAX_ENCODED_ITEM_BYTES, MemoryId, MemoryItem, MemoryPrincipal, MemoryScope,
     Tag, reply_encoded_len,
@@ -47,25 +50,25 @@ fn past_its_ttl(item: &MemoryItem, now_secs: u64) -> bool {
     }
 }
 
-/// Item file suffix. Only files with this suffix are read; everything
-/// else in the tree is ignored by scans.
-const ITEM_SUFFIX: &str = ".json";
-
 /// The broker-owned memory store.
 ///
 /// `MemoryStore` is `Sync`: the broker shares one across its
-/// per-connection threads. Every method takes `&self`; the filesystem
+/// per-connection threads. Every method takes `&self`; the backing
 /// serializes.
 #[derive(Debug)]
 pub struct MemoryStore {
-    /// The validated `0700` root.
+    /// The validated `0700` root: the broker's own records beside the
+    /// items (`sessions/`, `context/`) live under it.
     root: PathBuf,
     /// The uid the root (and its subdirectories) must be owned by.
     owner: u32,
+    /// Where the items are kept.
+    backing: Box<dyn Backing>,
 }
 
 impl MemoryStore {
-    /// Opens (creating if absent) the store rooted at `root`.
+    /// Opens (creating if absent) the store rooted at `root`, its items
+    /// kept as files under it ([`Files`]).
     ///
     /// The root must be a directory with mode `0700` owned by the
     /// current uid — created that way if absent, verified if present.
@@ -78,6 +81,23 @@ impl MemoryStore {
         Self::open_as(root, rustix::process::getuid().as_raw())
     }
 
+    /// Opens the store rooted at `root`, its items kept by `backing`: the
+    /// broker's sealed store (WO-047). The root is validated as
+    /// [`open`](Self::open) validates it, for the records beside the items.
+    ///
+    /// # Errors
+    ///
+    /// As [`open`](Self::open).
+    pub fn with_backing(root: &Path, backing: Box<dyn Backing>) -> Result<Self, Error> {
+        let owner = rustix::process::getuid().as_raw();
+        owner_dir::ensure_owner_only_dir(root, owner)?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            owner,
+            backing,
+        })
+    }
+
     /// Opens the store, requiring the root to be owned by `owner`.
     /// Split out so tests exercise the ownership check hermetically.
     fn open_as(root: &Path, owner: u32) -> Result<Self, Error> {
@@ -86,6 +106,7 @@ impl MemoryStore {
         Ok(Self {
             root: root.to_path_buf(),
             owner,
+            backing: Box::new(Files::new(root, owner)),
         })
     }
 
@@ -113,7 +134,7 @@ impl MemoryStore {
     /// Atomic raw write of `bytes` to `path`. Used for session
     /// records; memory items go through [`write`](Self::write).
     pub(crate) fn write_raw(dir: &Path, path: &Path, bytes: &[u8]) -> Result<(), Error> {
-        Self::write_atomic(dir, path, bytes)
+        owner_dir::write_atomic(dir, path, bytes)
     }
 
     /// Raw read of one record file. `Ok(None)` when absent.
@@ -121,7 +142,7 @@ impl MemoryStore {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        let Some(bytes) = Self::read_bytes(path)? else {
+        let Some(bytes) = owner_dir::read_bytes(path)? else {
             return Ok(None);
         };
         serde_json::from_slice(&bytes)
@@ -129,29 +150,14 @@ impl MemoryStore {
             .map_err(|_| Error::Corrupt)
     }
 
-    /// The scope directory for `principal` + `scope`, creating it
-    /// (and parents) as `0700` when absent.
+    /// The space for `principal` + `scope`.
     ///
     /// The binding is the authority: `User` → the peer uid,
     /// `Project(name)` → `(peer uid, name)`, `Session` → the
     /// broker-minted session id. The agent's scope request only
     /// selects which binding applies.
-    ///
-    /// Every level is created and validated individually: a real
-    /// directory (never a symlink), mode `0700`, owned by the broker
-    /// uid. The walk deliberately avoids `create_dir_all`: that would
-    /// follow a planted symlink and a chmod sweep would then chmod
-    /// *through* it. Each component is `symlink_metadata`-checked
-    /// before anything beneath it is touched, so a symlink anywhere
-    /// in the chain fails closed instead of redirecting the store.
-    /// The walk itself is [`owner_dir::ensure_chain`], shared with the
-    /// stores that live beside this one.
-    fn scope_dir(
-        &self,
-        principal: &MemoryPrincipal,
-        scope: &MemoryScope,
-    ) -> Result<PathBuf, Error> {
-        let segments: Vec<String> = match scope {
+    fn space(principal: &MemoryPrincipal, scope: &MemoryScope) -> Space {
+        Space::new(match scope {
             MemoryScope::User => vec![String::from("user"), principal.peer_uid.to_string()],
             MemoryScope::Project(name) => vec![
                 String::from("project"),
@@ -162,15 +168,39 @@ impl MemoryStore {
                 String::from("session"),
                 String::from(principal.session_id.as_str()),
             ],
-        };
-        let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
+        })
+    }
+
+    /// The directory a scope's items are files in, under [`Files`]: for
+    /// the tests that look at the files themselves.
+    #[cfg(test)]
+    fn scope_dir(
+        &self,
+        principal: &MemoryPrincipal,
+        scope: &MemoryScope,
+    ) -> Result<PathBuf, Error> {
+        let space = Self::space(principal, scope);
+        let segments: Vec<&str> = space.segments().iter().map(String::as_str).collect();
         owner_dir::ensure_chain(&self.root, &segments, self.owner)
     }
 
-    /// The item file for one id. The id's alphabet has no separator,
-    /// so joining is safe by construction.
-    fn item_path(scope_dir: &Path, id: &MemoryId) -> PathBuf {
-        scope_dir.join(format!("{}{ITEM_SUFFIX}", id.as_str()))
+    /// The file of `id` in `dir`, under [`Files`].
+    #[cfg(test)]
+    fn item_path(dir: &Path, id: &MemoryId) -> PathBuf {
+        dir.join(format!("{}.json", id.as_str()))
+    }
+
+    /// The item kept for `id` in `space`, parsed; `None` when there's
+    /// none. An item that isn't the one asked for is corrupt.
+    fn read_item(&self, space: &Space, id: &MemoryId) -> Result<Option<MemoryItem>, Error> {
+        let Some(bytes) = self.backing.get(space, id)? else {
+            return Ok(None);
+        };
+        let item: MemoryItem = serde_json::from_slice(&bytes).map_err(|_| Error::Corrupt)?;
+        if item.id != *id {
+            return Err(Error::Corrupt);
+        }
+        Ok(Some(item))
     }
 
     /// Writes a memory item, broker-stamping the timestamps.
@@ -209,11 +239,11 @@ impl MemoryStore {
                 max: MAX_CONTENT_BYTES,
             });
         }
-        let dir = self.scope_dir(principal, scope)?;
-        let path = Self::item_path(&dir, id);
+        let space = Self::space(principal, scope);
         // Preserve the original creation time across overwrites: TTL
         // is measured from creation, not from the last edit.
-        let created_at_secs = Self::read_item(&path)
+        let created_at_secs = self
+            .read_item(&space, id)
             .ok()
             .flatten()
             .filter(|existing| !is_expired(existing, now_secs))
@@ -237,7 +267,7 @@ impl MemoryStore {
                 max: MAX_ENCODED_ITEM_BYTES,
             });
         }
-        Self::write_atomic(&dir, &path, &bytes)?;
+        self.backing.put(&space, id, &bytes)?;
         tracing::info!(memory_id = %id, "stored memory item");
         Ok(item)
     }
@@ -251,7 +281,7 @@ impl MemoryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Corrupt`] for an unreadable item file, or
+    /// Returns [`Error::Corrupt`] for an unreadable item, or
     /// [`Error::Io`].
     pub fn recall(
         &self,
@@ -260,9 +290,8 @@ impl MemoryStore {
         id: &MemoryId,
         now_secs: u64,
     ) -> Result<Option<MemoryItem>, Error> {
-        let dir = self.scope_dir(principal, scope)?;
-        let path = Self::item_path(&dir, id);
-        let Some(item) = Self::read_item(&path)? else {
+        let space = Self::space(principal, scope);
+        let Some(item) = self.read_item(&space, id)? else {
             return Ok(None);
         };
         if is_expired(&item, now_secs) {
@@ -271,7 +300,7 @@ impl MemoryStore {
             // have taken it first, and a failure here just means the
             // next recall (or purge) filters it again.
             if past_its_ttl(&item, now_secs) {
-                let _ = std::fs::remove_file(&path);
+                let _ = self.backing.remove(&space, id);
             }
             tracing::debug!(memory_id = %id, "expired memory item purged on recall");
             return Ok(None);
@@ -289,7 +318,7 @@ impl MemoryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Corrupt`] for an unreadable item file, or
+    /// Returns [`Error::Corrupt`] for an unreadable item, or
     /// [`Error::Io`].
     pub fn recall_by_tag(
         &self,
@@ -298,15 +327,15 @@ impl MemoryStore {
         tag: &Tag,
         now_secs: u64,
     ) -> Result<Vec<MemoryItem>, Error> {
-        let dir = self.scope_dir(principal, scope)?;
+        let space = Self::space(principal, scope);
         let mut items = Vec::new();
-        for path in Self::item_files(&dir)? {
-            let Some(item) = Self::read_item(&path)? else {
+        for id in self.backing.ids(&space)? {
+            let Some(item) = self.read_item(&space, &id)? else {
                 continue;
             };
             if is_expired(&item, now_secs) {
                 if past_its_ttl(&item, now_secs) {
-                    let _ = std::fs::remove_file(&path);
+                    let _ = self.backing.remove(&space, &id);
                 }
                 continue;
             }
@@ -323,67 +352,44 @@ impl MemoryStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] on filesystem failure.
+    /// Returns [`Error::Io`] on failure.
     pub fn remove(
         &self,
         principal: &MemoryPrincipal,
         scope: &MemoryScope,
         id: &MemoryId,
     ) -> Result<bool, Error> {
-        let dir = self.scope_dir(principal, scope)?;
-        let path = Self::item_path(&dir, id);
-        match std::fs::remove_file(&path) {
-            Ok(()) => {
-                tracing::info!(memory_id = %id, "removed memory item");
-                Ok(true)
-            }
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(source) => Err(Error::Io { source }),
+        let removed = self.backing.remove(&Self::space(principal, scope), id)?;
+        if removed {
+            tracing::info!(memory_id = %id, "removed memory item");
         }
+        Ok(removed)
     }
 
     /// Removes every expired item in the store, returning the count.
     ///
     /// Broker-side maintenance, like the vault's one-shot
-    /// migrate/rekey: it walks the tree, but it is never exposed as
-    /// an agent-reachable op. Files that cannot be parsed are left
-    /// alone (an operator inspects those); only provably-expired
-    /// items are removed.
+    /// migrate/rekey: it walks every space, but it is never exposed as
+    /// an agent-reachable op. Items that cannot be read are left alone
+    /// (an operator inspects those); only provably-expired items are
+    /// removed.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] on filesystem failure.
+    /// Returns [`Error::Io`] on failure.
     pub fn purge_expired(&self, now_secs: u64) -> Result<usize, Error> {
         let mut purged = 0;
-        // Fixed-depth walk: <root>/{user,project,session}/.../*.json.
-        // Only directories are descended; only `*.json` files are
-        // considered. Anything else is left untouched.
-        let mut dirs = vec![self.root.clone()];
-        while let Some(dir) = dirs.pop() {
-            let entries = std::fs::read_dir(&dir).map_err(|source| Error::Io { source })?;
-            for entry in entries {
-                let entry = entry.map_err(|source| Error::Io { source })?;
-                let path = entry.path();
-                let file_type = entry.file_type().map_err(|source| Error::Io { source })?;
-                if file_type.is_dir() {
-                    dirs.push(path);
-                } else if file_type.is_file()
-                    && path
-                        .file_name()
-                        .is_some_and(|n| n.to_string_lossy().ends_with(ITEM_SUFFIX))
-                {
-                    match Self::read_item(&path) {
-                        Ok(Some(item)) if is_expired(&item, now_secs) => {
-                            if past_its_ttl(&item, now_secs) {
-                                std::fs::remove_file(&path)
-                                    .map_err(|source| Error::Io { source })?;
-                                purged += 1;
-                            }
+        for space in self.backing.spaces()? {
+            for id in self.backing.ids(&space)? {
+                match self.read_item(&space, &id) {
+                    Ok(Some(item)) if is_expired(&item, now_secs) => {
+                        if past_its_ttl(&item, now_secs) && self.backing.remove(&space, &id)? {
+                            purged += 1;
                         }
-                        // Live items stay; unparseable files are an
-                        // operator's problem, not the purger's.
-                        Ok(_) | Err(_) => {}
                     }
+                    // Live items stay; unreadable ones are an operator's
+                    // problem, not the purger's.
+                    Ok(_) | Err(_) => {}
                 }
             }
         }
@@ -391,28 +397,6 @@ impl MemoryStore {
             tracing::info!(purged, "purged expired memory items");
         }
         Ok(purged)
-    }
-
-    /// Reads and parses one item file. `Ok(None)` when absent.
-    fn read_item(path: &Path) -> Result<Option<MemoryItem>, Error> {
-        Self::read_raw(path)
-    }
-
-    /// Raw bytes of one record file. `Ok(None)` when absent.
-    fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>, Error> {
-        owner_dir::read_bytes(path)
-    }
-
-    /// The `*.json` files directly under `dir`, for scoped scans.
-    fn item_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
-        owner_dir::record_files(dir, ITEM_SUFFIX)
-    }
-
-    /// Atomic write: temp file (`0600`, unique name), fsync, rename,
-    /// directory fsync. A crash leaves an orphaned temp file at worst
-    /// — never a torn item.
-    fn write_atomic(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(), Error> {
-        owner_dir::write_atomic(dir, target, bytes)
     }
 }
 
