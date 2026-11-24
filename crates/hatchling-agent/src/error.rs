@@ -542,7 +542,9 @@ pub enum Error {
     ModelFailed(String),
 
     /// The model's reply was cut off at its limit, mid-run: its context
-    /// window is too small for the task, or its thinking filled it.
+    /// window is too small for the task, or its thinking filled it. Or no
+    /// request of the run's would fit the window, so none was sent
+    /// (WO-051).
     #[error("agent loop failed: {0}")]
     ModelCutOff(String),
 

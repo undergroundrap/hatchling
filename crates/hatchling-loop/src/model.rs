@@ -9,6 +9,11 @@ use serde_json::Value;
 use crate::Error;
 use crate::tool::{ToolCall, ToolDescription, ToolOutput};
 
+/// Bytes counted as one token where a model's own count isn't known:
+/// fewer than English prose takes, so a request is measured large, and
+/// a run stops for room early rather than late (WO-051).
+pub const BYTES_PER_TOKEN: u64 = 3;
+
 /// One turn of the conversation history the loop accumulates.
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -63,6 +68,13 @@ pub enum ModelAction {
 /// interface and whatever provider API they wrap; the loop never
 /// sees provider details.
 pub trait Model: Send + Sync {
+    /// Whether a request of `messages`, offered `tools`, fits the model's
+    /// context window with room left for its answer (WO-051). A model
+    /// that doesn't know its window says it fits.
+    fn fits(&self, _messages: &[Message], _tools: &[ToolDescription]) -> bool {
+        true
+    }
+
     /// Produce the next action given the history and the tools the
     /// host makes available.
     ///

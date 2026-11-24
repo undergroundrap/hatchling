@@ -65,6 +65,11 @@ pub struct LoopResult {
     /// given on its last step, told it was the last, or was one held
     /// back until none were left. Such an answer may leave work undone.
     pub out_of_steps: bool,
+    /// Whether the run's context filled as it answered: its next request
+    /// wouldn't have fit the model's window, so it was told to answer
+    /// with no tools ([`Loop::with_room`]). Such an answer may leave work
+    /// undone.
+    pub out_of_room: bool,
 }
 
 impl LoopResult {
@@ -75,8 +80,23 @@ impl LoopResult {
             history,
             steps,
             out_of_steps,
+            out_of_room: false,
         }
     }
+}
+
+/// `text`'s first `cap` bytes, ending on a character, and a line saying
+/// it was cut and from how much.
+fn cut(text: &str, cap: usize) -> String {
+    let mut end = cap.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n[Cut here by Hatchling: this output was {} bytes, more than a quarter of the model's context window. The first {end} are above.]",
+        text.get(..end).unwrap_or_default(),
+        text.len()
+    )
 }
 
 /// Drives the tool-calling loop.
@@ -94,6 +114,8 @@ pub struct Loop<'t, 'r, 'm> {
     unfinished: Option<Unfinished<'m>>,
     more: Option<More<'m>>,
     last_step: Option<String>,
+    room: Option<String>,
+    output_cap: Option<usize>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -107,6 +129,8 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("unfinished", &self.unfinished.is_some())
             .field("more", &self.more.is_some())
             .field("last_step", &self.last_step.is_some())
+            .field("room", &self.room.is_some())
+            .field("output_cap", &self.output_cap)
             .finish()
     }
 }
@@ -131,6 +155,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             unfinished: None,
             more: None,
             last_step: None,
+            room: None,
+            output_cap: None,
         }
     }
 
@@ -149,6 +175,81 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     pub fn with_last_step(mut self, note: String) -> Self {
         self.last_step = Some(note);
         self
+    }
+
+    /// Keep each request within the model's window (WO-051). Before every
+    /// turn the model is asked whether the request fits
+    /// ([`Model::fits`]). When it doesn't, `note` is put to the model as
+    /// a [`Message::Note`] and it's offered no tools: it says where it got
+    /// to, and the run's answer is marked [`LoopResult::out_of_room`]. If
+    /// even that request doesn't fit, nothing is sent, and the run ends
+    /// [`Error::OutOfRoom`]. Nothing in the history is dropped or
+    /// summarized.
+    #[must_use]
+    pub fn with_room(mut self, note: String) -> Self {
+        self.room = Some(note);
+        self
+    }
+
+    /// Cut each tool's output to a quarter of a `window` of tokens before
+    /// it joins the history, saying so (WO-051): one tool's output can't
+    /// fill the window by itself.
+    #[must_use]
+    pub fn with_window(mut self, window: u32) -> Self {
+        let bytes = u64::from(window / 4).saturating_mul(crate::model::BYTES_PER_TOKEN);
+        self.output_cap = Some(usize::try_from(bytes).unwrap_or(usize::MAX));
+        self
+    }
+
+    /// `output`, cut to the window's quarter when it's longer
+    /// ([`with_window`](Self::with_window)).
+    fn fit(&self, output: ToolOutput) -> ToolOutput {
+        let Some(cap) = self.output_cap else {
+            return output;
+        };
+        match output {
+            ToolOutput::Ok(value) => {
+                let text = value.to_string();
+                if text.len() <= cap {
+                    ToolOutput::Ok(value)
+                } else {
+                    ToolOutput::Ok(serde_json::Value::String(cut(&text, cap)))
+                }
+            }
+            ToolOutput::Err(reason) if reason.len() > cap => ToolOutput::Err(cut(&reason, cap)),
+            ToolOutput::Err(reason) => ToolOutput::Err(reason),
+        }
+    }
+
+    /// The run's last turn for room: told `note`, offered no tools, and
+    /// sent only if it fits.
+    fn out_of_room(
+        model: &dyn Model,
+        mut history: Vec<Message>,
+        note: &str,
+        steps: u32,
+    ) -> Result<LoopResult, Error> {
+        history.push(Message::Note(note.to_owned()));
+        if !model.fits(&history, &[]) {
+            return Err(Error::OutOfRoom);
+        }
+        match model.next_action(&history, &[]) {
+            Ok(ModelAction::Text(answer)) => {
+                history.push(Message::Assistant(answer.clone()));
+                Ok(LoopResult {
+                    answer,
+                    history,
+                    steps,
+                    out_of_steps: false,
+                    out_of_room: true,
+                })
+            }
+            Ok(ModelAction::ToolCalls(_)) => Err(Error::OutOfRoom),
+            Err(error) => {
+                tracing::warn!("the run's last turn for room failed: {error}");
+                Err(Error::OutOfRoom)
+            }
+        }
     }
 
     /// Ask `more` before each of the model's turns: what the person has
@@ -369,6 +470,13 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                 history.extend(more().into_iter().map(Message::User));
             }
             let last = step > 0 && ledger.remaining() == 0;
+            if let Some(note) = self
+                .room
+                .as_ref()
+                .filter(|_| !model.fits(&history, &tool_descriptions))
+            {
+                return Self::out_of_room(model, history, note, step + 1);
+            }
             let action = self.turn(model, &mut history, &tool_descriptions, last);
             step += 1;
             let Some(action) = action? else { break };
@@ -431,7 +539,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                             }
                             Err(e) => return Err(e),
                         };
-                        results.push(output);
+                        results.push(self.fit(output));
                     }
                     history.push(Message::ToolUse { calls, results });
                 }
@@ -1571,5 +1679,217 @@ mod tests {
             Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_more(Box::new(Vec::new))
         );
         assert!(with.contains("more: true"), "{with}");
+    }
+
+    /// A watched model whose window holds a request of up to `until`
+    /// messages offered tools, and, offered none, holds one or not
+    /// (`bare`).
+    struct Cramped {
+        watched: Watched,
+        until: usize,
+        bare: bool,
+    }
+
+    impl Model for Cramped {
+        fn fits(&self, messages: &[Message], tools: &[crate::tool::ToolDescription]) -> bool {
+            if tools.is_empty() {
+                self.bare
+            } else {
+                messages.len() <= self.until
+            }
+        }
+
+        fn next_action(
+            &self,
+            messages: &[Message],
+            tools: &[crate::tool::ToolDescription],
+        ) -> Result<ModelAction, Error> {
+            self.watched.next_action(messages, tools)
+        }
+    }
+
+    const ROOM: &str = "your context is full";
+
+    /// Two tool turns fill a window that holds three messages offered
+    /// tools: the system prompt, the request and one tool use.
+    fn cramped(script: Vec<Result<ModelAction, Error>>, bare: bool) -> Cramped {
+        Cramped {
+            watched: Watched::doing(script),
+            until: 3,
+            bare,
+        }
+    }
+
+    /// A run whose next request won't fit is told its context is full,
+    /// offered no tools, and its answer is the run's, out of room.
+    #[test]
+    fn a_full_context_ends_the_run_with_an_answer_and_no_tools() {
+        let (registry, runs) = counting();
+        let model = cramped(vec![Ok(counts()), Ok(counts()), Ok(says("this far"))], true);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_budget(LoopBudget { max_steps: 10 })
+            .with_last_step(String::from(LAST))
+            .with_room(String::from(ROOM))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("this far", 3));
+        assert!(result.out_of_room && !result.out_of_steps);
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(model.watched.offered(), [1, 1, 0]);
+        assert_eq!(model.watched.told(), [None, None, Some(String::from(ROOM))]);
+        let tail: Vec<_> = result.history.iter().rev().take(2).collect();
+        assert!(
+            matches!(tail.as_slice(), [Message::Assistant(answer), Message::Note(note)] if answer == "this far" && note == ROOM),
+            "{tail:?}"
+        );
+    }
+
+    /// When even the last request, with no tools, won't fit, nothing is
+    /// sent: the run ends out of room.
+    #[test]
+    fn a_request_that_wont_fit_at_all_is_never_sent() {
+        let (registry, _) = counting();
+        let model = cramped(vec![Ok(counts()), Ok(counts()), Ok(says("never"))], false);
+        let ended = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_room(String::from(ROOM))
+            .run(&model, String::from("go"));
+        assert!(matches!(ended, Err(Error::OutOfRoom)), "{ended:?}");
+        assert_eq!(model.watched.offered(), [1, 1], "the third was never sent");
+    }
+
+    /// A last turn for room that calls a tool all the same, or fails,
+    /// ends the run out of room, and runs nothing.
+    #[test]
+    fn a_last_turn_for_room_that_isnt_an_answer_ends_out_of_room() {
+        for last in [Ok(counts()), Err(Error::ModelFailed(String::from("down")))] {
+            let (registry, runs) = counting();
+            let model = cramped(vec![Ok(counts()), Ok(counts()), last], true);
+            let ended = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .with_room(String::from(ROOM))
+                .run(&model, String::from("go"));
+            assert!(matches!(ended, Err(Error::OutOfRoom)), "{ended:?}");
+            assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        }
+    }
+
+    /// A loop not asked to keep within the window doesn't ask.
+    #[test]
+    fn without_room_set_the_window_isnt_asked() {
+        let (registry, _) = counting();
+        let model = cramped(vec![Ok(counts()), Ok(counts()), Ok(says("done"))], false);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(result.answer, "done");
+        assert!(!result.out_of_room);
+        assert_eq!(model.watched.offered(), [1, 1, 1]);
+    }
+
+    /// A tool whose output is `bytes` of `piece` repeated, or, when
+    /// `fails`, whose failure says it.
+    struct Spilling {
+        piece: &'static str,
+        times: usize,
+        fails: bool,
+    }
+
+    impl crate::tool::Tool for Spilling {
+        fn name(&self) -> &'static str {
+            "spill"
+        }
+
+        fn description(&self) -> &'static str {
+            "says a lot"
+        }
+
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+
+        fn execute(&self, _arguments: serde_json::Value) -> Result<ToolOutput, Error> {
+            let text = self.piece.repeat(self.times);
+            if self.fails {
+                return Err(Error::ToolFailed {
+                    tool: String::from("spill"),
+                    reason: text,
+                });
+            }
+            Ok(ToolOutput::Ok(serde_json::Value::String(text)))
+        }
+    }
+
+    /// What one spilling call left in the history, run with a window of
+    /// 8192 tokens: a cap of 2048 tokens, 6144 bytes.
+    fn spilled(piece: &'static str, times: usize, fails: bool) -> ToolOutput {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(Spilling {
+            piece,
+            times,
+            fails,
+        }));
+        let spill = ModelAction::ToolCalls(vec![crate::tool::ToolCall {
+            name: String::from("spill"),
+            arguments: serde_json::json!({}),
+        }]);
+        let model = Watched::doing(vec![Ok(spill), Ok(says("done"))]);
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_window(8192)
+            .run(&model, String::from("go"))
+            .unwrap();
+        result
+            .history
+            .iter()
+            .find_map(|message| {
+                if let Message::ToolUse { results, .. } = message {
+                    results.first().cloned()
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    }
+
+    /// A tool's output longer than a quarter of the window is cut to it,
+    /// ending on a character, and says so; one no longer is as it was.
+    #[test]
+    fn a_tools_output_is_cut_to_a_quarter_of_the_window() {
+        // As JSON a string has its two quotes: 6142 bytes of it is 6144.
+        let ToolOutput::Ok(serde_json::Value::String(whole)) = spilled("x", 6142, false) else {
+            unreachable!("an Ok string");
+        };
+        assert_eq!(whole.len(), 6142, "at the cap, kept whole");
+        let ToolOutput::Ok(serde_json::Value::String(cut)) = spilled("x", 6143, false) else {
+            unreachable!("an Ok string");
+        };
+        assert!(cut.contains("[Cut here by Hatchling"), "{cut}");
+        assert!(cut.contains("6145 bytes"), "{cut}");
+        assert!(cut.starts_with("\"xxx"));
+        assert!(cut.len() < 6144 + 200);
+        // A character isn't split.
+        let ToolOutput::Ok(serde_json::Value::String(cut)) = spilled("é", 4000, false) else {
+            unreachable!("an Ok string");
+        };
+        assert!(cut.contains("[Cut here by Hatchling"), "{cut}");
+        // A failure that long is cut too.
+        let ToolOutput::Err(reason) = spilled("y", 7000, true) else {
+            unreachable!("an Err");
+        };
+        assert!(reason.starts_with("spill: yyy"), "{reason}");
+        assert!(reason.contains("[Cut here by Hatchling"));
+        let ToolOutput::Err(reason) = spilled("y", 100, true) else {
+            unreachable!("an Err");
+        };
+        assert_eq!(reason.len(), "spill: ".len() + 100, "short, kept whole");
+    }
+
+    #[test]
+    fn a_cut_ends_on_a_character_and_says_from_how_much() {
+        assert_eq!(
+            cut("abcdef", 3),
+            "abc\n[Cut here by Hatchling: this output was 6 bytes, more than a quarter of the model's context window. The first 3 are above.]"
+        );
+        // "é" is two bytes: a cap inside one ends before it.
+        assert!(cut("aé", 2).starts_with("a\n"));
+        assert!(cut("ab", 9).starts_with("ab\n"));
     }
 }

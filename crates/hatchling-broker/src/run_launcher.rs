@@ -640,7 +640,7 @@ impl Run for CellRun<'_> {
             // An answer all the same: the agent says its steps ran out
             // as it gave it, and whoever asked can be told so.
             RunEnd::Exited { code, output, .. }
-                if hatchling_core::run_failure::answered_out_of_steps(code) =>
+                if hatchling_core::run_failure::answered_at_a_limit(code) =>
             {
                 self.ending = Some(hatchling_scheduler::Ending::Exited(code));
                 captured(output)

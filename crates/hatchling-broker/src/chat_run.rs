@@ -673,14 +673,14 @@ impl Notes for LocalHub {
     }
 }
 
-/// Whether a run that answered had steps to spare, by how it ended: it
-/// had, unless its agent says by its status that they ran out as it
-/// answered. The status is the agent's own word.
+/// Whether a run that answered had steps and room to spare, by how it
+/// ended: it had, unless its agent says by its status that one ran out
+/// as it answered (WO-051). The status is the agent's own word.
 fn had_steps_to_spare(ending: Option<hatchling_scheduler::Ending>) -> bool {
     !matches!(
         ending,
         Some(hatchling_scheduler::Ending::Exited(code))
-            if hatchling_core::run_failure::answered_out_of_steps(code)
+            if hatchling_core::run_failure::answered_at_a_limit(code)
     )
 }
 
