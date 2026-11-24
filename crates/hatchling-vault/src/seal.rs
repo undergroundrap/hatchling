@@ -282,6 +282,17 @@ pub trait OpensStores: Send + Sync + std::fmt::Debug {
     /// [`Error::StoreNotHeld`] when this store at this root wasn't one of
     /// them.
     fn key_for(&self, vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error>;
+
+    /// The key of `store` at `root` alone, as keys of its own: for what
+    /// keeps one store open longer than the keys it was given are
+    /// borrowed for (WO-047).
+    ///
+    /// # Errors
+    ///
+    /// For the master key, as [`StoreKeys::unwrap`]. For handed keys,
+    /// [`Error::StoreNotHeld`] when this store at this root wasn't one of
+    /// them.
+    fn keys_of(&self, store: Store, root: &Path) -> Result<StoreKeys, Error>;
 }
 
 /// A store's key as an opened store holds it: unwrapped for that store
@@ -306,6 +317,10 @@ impl OpenedKey<'_> {
 impl OpensStores for MasterKey {
     fn key_for(&self, vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error> {
         store_key(vault, root, self, store).map(|key| OpenedKey(Opened::Unwrapped(key)))
+    }
+
+    fn keys_of(&self, store: Store, root: &Path) -> Result<StoreKeys, Error> {
+        StoreKeys::unwrap(self, &[(store, root)])
     }
 }
 
@@ -421,6 +436,24 @@ impl OpensStores for StoreKeys {
             keep_pending(vault, root, store, pending)?;
         }
         Ok(OpenedKey(Opened::Held(&held.key)))
+    }
+
+    fn keys_of(&self, store: Store, root: &Path) -> Result<StoreKeys, Error> {
+        let held = self
+            .held
+            .iter()
+            .find(|held| held.store == store && held.root == root)
+            .ok_or_else(|| Error::StoreNotHeld {
+                store: store.label(),
+            })?;
+        Ok(Self {
+            held: vec![Held {
+                store,
+                root: held.root.clone(),
+                key: StoreKey(held.key.0),
+                pending: held.pending.clone(),
+            }],
+        })
     }
 }
 
