@@ -212,5 +212,142 @@ pub fn open(
     hatchling_memory::MemoryStore::with_backing(root, Box::new(backing))
 }
 
+/// The keys the memory store is opened with, for as long as the broker
+/// serves ([`publish`]).
+static KEYS: std::sync::OnceLock<Box<dyn OpensStores>> = std::sync::OnceLock::new();
+
+/// Makes `keys` what the memory store is opened with, for as long as the
+/// broker serves: the keys the keeper handed it. The first published
+/// stays: a broker publishes once.
+pub fn publish(keys: Box<dyn OpensStores>) {
+    let _ = KEYS.set(keys);
+}
+
+/// The published keys. A test's process publishes a master key of its own
+/// the first time one is asked for; any other process that hasn't
+/// published has none, and opens no memory.
+fn published() -> Option<&'static dyn OpensStores> {
+    #[cfg(test)]
+    {
+        let keys = KEYS.get_or_init(|| {
+            Box::new(
+                hatchling_vault::MasterKey::generate()
+                    .unwrap_or_else(|_| unreachable!("the test's key")),
+            )
+        });
+        return Some(keys.as_ref());
+    }
+    #[cfg(not(test))]
+    KEYS.get().map(AsRef::as_ref)
+}
+
+/// The memory store at the memory root `root`, its items sealed under the
+/// published keys.
+///
+/// # Errors
+///
+/// When no keys were published, or as [`open`].
+pub fn open_published(
+    root: &Path,
+) -> Result<hatchling_memory::MemoryStore, hatchling_memory::Error> {
+    let keys = published().ok_or_else(|| hatchling_memory::Error::Io {
+        source: std::io::Error::other("the memory store's keys weren't handed to this process"),
+    })?;
+    open(root, keys)
+}
+
+/// At the broker's start (WO-047): when memory is kept, its plaintext
+/// items moved into the sealed store ([`migrate`]), then the store's key
+/// published for every memory read ([`publish`]).
+///
+/// # Errors
+///
+/// When the keeper didn't hand over the memory store's key, or the
+/// migration fails: the broker then doesn't serve, and nothing is lost.
+pub fn start(config: &crate::Config, keys: &dyn OpensStores) -> Result<(), crate::Error> {
+    if config.memory.root.as_os_str().is_empty() {
+        return Ok(());
+    }
+    let held = keys
+        .keys_of(Store::MEMORY, &sealed_root(&config.memory.root))
+        .map_err(|source| crate::Error::Vault { source })?;
+    migrate(&config.memory.root, &held).map_err(|source| crate::Error::Memory { source })?;
+    publish(Box::new(held));
+    Ok(())
+}
+
+/// What a migration did: items moved into the sealed store, and plaintext
+/// files left where they were because they weren't an item.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Migrated {
+    /// Items sealed, their plaintext removed.
+    pub moved: usize,
+    /// Files that weren't an item, left alone and logged.
+    pub left: usize,
+}
+
+/// Moves the memory root `root`'s plaintext items (0.9 and before) into its
+/// sealed store, under `keys` (WO-047).
+///
+/// Each item is read from its file, checked to be the item its name says,
+/// written sealed, and only then its file removed: a migration cut short
+/// at any point loses nothing, and run again finishes it. A file that
+/// isn't an item is left where it is, and logged. Empty directories are
+/// removed after.
+///
+/// # Errors
+///
+/// When the sealed store can't be opened or written, or a plaintext file
+/// can't be read or removed; nothing is then lost.
+pub fn migrate(root: &Path, keys: &dyn OpensStores) -> Result<Migrated, hatchling_memory::Error> {
+    let files = hatchling_memory::Files::new(root, rustix::process::getuid().as_raw());
+    let sealed = SealedMemory::new(root, keys).map_err(|error| hatchling_memory::Error::Io {
+        source: std::io::Error::other(error.to_string()),
+    })?;
+    let mut done = Migrated::default();
+    for space in files.spaces()? {
+        for id in files.ids(&space)? {
+            let Some(bytes) = files.get(&space, &id)? else {
+                continue;
+            };
+            let is_item = serde_json::from_slice::<hatchling_memory::MemoryItem>(&bytes)
+                .is_ok_and(|item| item.id == id);
+            if !is_item {
+                tracing::error!(memory_id = %id, "a memory file isn't the item it's named for: left as it is");
+                done.left += 1;
+                continue;
+            }
+            sealed.put(&space, &id, &bytes)?;
+            files.remove(&space, &id)?;
+            done.moved += 1;
+        }
+    }
+    for top in ["user", "project", "session"] {
+        remove_empty(&root.join(top));
+    }
+    if done.moved > 0 || done.left > 0 {
+        tracing::info!(
+            moved = done.moved,
+            left = done.left,
+            "memory moved into its sealed store"
+        );
+    }
+    Ok(done)
+}
+
+/// Removes `dir` and the directories under it that hold nothing,
+/// best-effort: one left is harmless.
+fn remove_empty(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            remove_empty(&entry.path());
+        }
+    }
+    let _ = std::fs::remove_dir(dir);
+}
+
 #[cfg(test)]
 mod tests;

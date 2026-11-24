@@ -1,6 +1,6 @@
 //! Broker-side memory operations: the session handler for [`MemoryOp`].
 //!
-//! The broker owns the [`MemoryStore`]; the agent never touches memory
+//! The broker owns the [`MemoryStore`](hatchling_memory::MemoryStore); the agent never touches memory
 //! files. Every op is authorized against the configured grants before
 //! the store is opened, and the scope is bound through the
 //! [`MemoryPrincipal`] derived from kernel peer credentials — the
@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hatchling_core::{MemoryOp, MemoryResult};
 use hatchling_memory::{
-    ContextEntry, ContextLog, MemoryId, MemoryItem, MemoryPrincipal, MemoryScope, MemoryStore,
+    ContextEntry, ContextLog, MemoryId, MemoryItem, MemoryPrincipal, MemoryScope,
     PAGE_BUDGET_BYTES, Page, ProjectName, RetentionPolicy, SessionId, Tag, page,
 };
 
@@ -47,7 +47,8 @@ pub fn handle_memory_op(
     let scope = bind_scope(scope_str, principal).map_err(|reason| Error::SessionProtocol {
         reason: format!("invalid memory scope: {reason}"),
     })?;
-    let store = MemoryStore::open(&config.root).map_err(|source| Error::Memory { source })?;
+    let store = crate::memory_sealed::open_published(&config.root)
+        .map_err(|source| Error::Memory { source })?;
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

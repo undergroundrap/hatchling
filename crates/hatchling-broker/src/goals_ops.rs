@@ -26,7 +26,7 @@ use hatchling_goals::{
     FeedItem, FeedQuery, FeedReader, GoalChange, GoalEdit, GoalId, GoalOutcome, GoalsStore,
     PAGE_BUDGET_BYTES, SourceLabel, StatusFilter, TimeRange, page,
 };
-use hatchling_memory::{MemoryId, MemoryPrincipal, MemoryStore, Tag};
+use hatchling_memory::{MemoryId, MemoryPrincipal, Tag};
 
 use crate::Error;
 use crate::config::{GoalsAction, GoalsConfig, MemoryAction, MemoryConfig};
@@ -165,7 +165,7 @@ pub fn handle_query_op(
         }
     };
     let memory_store = if matches!(query, FeedQuery::Memory { .. }) {
-        match MemoryStore::open(&memory.root) {
+        match crate::memory_sealed::open_published(&memory.root) {
             Ok(store) => Some(store),
             Err(source) => {
                 tracing::error!(%source, "memory store open failed for a query");
@@ -214,7 +214,7 @@ pub(crate) fn read_feed(
     query: &FeedQuery,
 ) -> Option<Vec<FeedItem>> {
     let memory_store = if matches!(query, FeedQuery::Memory { .. }) {
-        match MemoryStore::open(&memory.root) {
+        match crate::memory_sealed::open_published(&memory.root) {
             Ok(store) => Some(store),
             Err(source) => {
                 tracing::error!(%source, "memory store open failed for a feed read");
@@ -654,7 +654,7 @@ mod tests {
         let goals_root = test_root("memory-goals");
         let memory_root = test_root("memory-store");
         let p = principal(7);
-        MemoryStore::open(&memory_root)
+        crate::memory_sealed::open_published(&memory_root)
             .unwrap()
             .write(
                 &p,
@@ -1021,8 +1021,8 @@ mod frame_bound_tests {
 
     use hatchling_core::{MAX_FRAME_BYTES, QueryOp, QueryResult, SessionResponse};
     use hatchling_memory::{
-        MAX_ENCODED_ITEM_BYTES, MemoryPrincipal, MemoryScope, MemoryStore, RetentionPolicy,
-        SessionId, reply_encoded_len,
+        MAX_ENCODED_ITEM_BYTES, MemoryPrincipal, MemoryScope, RetentionPolicy, SessionId,
+        reply_encoded_len,
     };
 
     use super::handle_query_op;
@@ -1042,7 +1042,7 @@ mod frame_bound_tests {
             peer_uid: 7,
             session_id: SessionId::from_str("sess-w47").unwrap(),
         };
-        let store = MemoryStore::open(&memory_root).unwrap();
+        let store = crate::memory_sealed::open_published(&memory_root).unwrap();
         let write = |content: &str| {
             store.write(
                 &p,

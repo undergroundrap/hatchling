@@ -316,3 +316,114 @@ fn the_store_holds_its_spaces_and_their_ids() {
         "written twice, listed once"
     );
 }
+
+/// Items as 0.9 kept them: plaintext files under the memory root.
+fn plaintext(root: &Path, me: &MemoryPrincipal) {
+    let files = hatchling_memory::MemoryStore::open(root).unwrap();
+    let project = MemoryScope::Project(ProjectName::from_str("notes").unwrap());
+    for (n, scope) in [MemoryScope::User, project, MemoryScope::Session]
+        .iter()
+        .enumerate()
+    {
+        files
+            .write(
+                me,
+                scope,
+                &id("a"),
+                &format!("{WORDS} {n}"),
+                &[tag("recall")],
+                RetentionPolicy::Keep,
+                5,
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_plaintext_store_moves_into_the_sealed_one_whole_and_leaves_no_word_behind() {
+    let (_scratch, key, root) = sealed("migrate");
+    let me = principal();
+    plaintext(&root, &me);
+    assert!(
+        every_file(&root)
+            .iter()
+            .any(|(_, bytes)| holds(bytes, b"quince")),
+        "the 0.9 store"
+    );
+    assert_eq!(
+        migrate(&root, &key).unwrap(),
+        Migrated { moved: 3, left: 0 }
+    );
+    let store = open(&root, &key).unwrap();
+    let project = MemoryScope::Project(ProjectName::from_str("notes").unwrap());
+    for (n, scope) in [MemoryScope::User, project, MemoryScope::Session]
+        .iter()
+        .enumerate()
+    {
+        let item = store.recall(&me, scope, &id("a"), 6).unwrap().unwrap();
+        assert_eq!(item.content, format!("{WORDS} {n}"));
+        assert_eq!(item.created_at_secs, 5, "kept as it was");
+    }
+    for (path, bytes) in every_file(&root) {
+        assert!(
+            !holds(&bytes, b"quince"),
+            "{} holds the words",
+            path.display()
+        );
+    }
+    for top in ["user", "project", "session"] {
+        assert!(!root.join(top).exists(), "{top} left behind");
+    }
+    // Run again: nothing to move, nothing lost.
+    assert_eq!(migrate(&root, &key).unwrap(), Migrated::default());
+    assert!(
+        store
+            .recall(&me, &MemoryScope::User, &id("a"), 6)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn a_migration_cut_short_finishes_when_run_again_and_doubles_nothing() {
+    let (_scratch, key, root) = sealed("migrate-cut");
+    let me = principal();
+    plaintext(&root, &me);
+    // Cut short after one item was sealed, before its file was removed.
+    let files = hatchling_memory::Files::new(&root, rustix::process::getuid().as_raw());
+    let space = Space::new(vec![String::from("user"), String::from("4242")]);
+    let bytes = files.get(&space, &id("a")).unwrap().unwrap();
+    SealedMemory::new(&root, &key)
+        .unwrap()
+        .put(&space, &id("a"), &bytes)
+        .unwrap();
+    assert_eq!(
+        migrate(&root, &key).unwrap(),
+        Migrated { moved: 3, left: 0 }
+    );
+    let backing = SealedMemory::new(&root, &key).unwrap();
+    assert_eq!(
+        backing.ids(&space).unwrap(),
+        vec![id("a")],
+        "once, not twice"
+    );
+    assert_eq!(backing.spaces().unwrap().len(), 3);
+}
+
+#[test]
+fn a_file_that_isnt_the_item_its_named_for_is_left_where_it_is() {
+    let (_scratch, key, root) = sealed("migrate-odd");
+    let me = principal();
+    plaintext(&root, &me);
+    // An item file whose words name another id, and one that isn't JSON.
+    let user = root.join("user").join("4242");
+    let other = std::fs::read(user.join("a.json")).unwrap();
+    std::fs::write(user.join("b.json"), &other).unwrap();
+    std::fs::write(user.join("c.json"), b"not an item").unwrap();
+    assert_eq!(
+        migrate(&root, &key).unwrap(),
+        Migrated { moved: 3, left: 2 }
+    );
+    assert!(user.join("b.json").exists() && user.join("c.json").exists());
+    assert!(!user.join("a.json").exists(), "the real one moved");
+}

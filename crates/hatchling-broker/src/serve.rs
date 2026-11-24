@@ -117,6 +117,9 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // What the owner enabled, from its sealed store: until it's handed
     // over, every skill found waits (WO-046).
     crate::skill_enablement::load_enabled(config, &key, skills);
+    // Memory, sealed where it lives (WO-047): an install's plaintext items
+    // moved in first, then the key every memory read opens it with.
+    crate::memory_sealed::start(config, &key)?;
     // The output gate, when there is an ingress for it to guard:
     // from the operator's environment only, its settings recorded before
     // anything is served.

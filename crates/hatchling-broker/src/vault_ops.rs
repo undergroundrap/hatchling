@@ -53,9 +53,10 @@ pub fn validate_sealed_vault(vault_config: &VaultConfig, key: &MasterKey) -> Res
 /// Every sealed store the broker keeps, as configured: its label and root.
 ///
 /// The secrets always; the schedules when scheduling is on; the
-/// artifacts, the spaces, the web's stores, the conversation and the
-/// Library when each is on (a store that is off has no root); the raw text of redaction
-/// records when there is an output gate (`redaction`).
+/// artifacts, the spaces, the web's stores, the conversation, the
+/// Library, the skills' enablements and memory when each is on (a store
+/// that is off has no root); the raw text of redaction records when there
+/// is an output gate (`redaction`).
 #[must_use]
 pub fn sealed_stores(
     config: &Config,
@@ -78,6 +79,13 @@ pub fn sealed_stores(
         if !root.as_os_str().is_empty() {
             stores.push((store, root.clone()));
         }
+    }
+    // Memory, in the sealed directory of its root (WO-047).
+    if !config.memory.root.as_os_str().is_empty() {
+        stores.push((
+            Store::MEMORY,
+            crate::memory_sealed::sealed_root(&config.memory.root),
+        ));
     }
     if let Some(redaction) = redaction {
         stores.push((
@@ -370,6 +378,7 @@ mod tests {
         config.scheduler.conversation = root.join("conversation");
         config.scheduler.library = root.join("library");
         config.skills.enablements = root.join("skills-enabled");
+        config.memory.root = root.join("memory");
         let redaction = RedactionConfig {
             enabled: true,
             dir: root.join("redactions"),
@@ -381,9 +390,10 @@ mod tests {
         let labels: Vec<&str> = stores.iter().map(|(store, _)| store.label()).collect();
         assert!(labels.contains(&"library"), "{labels:?}");
         assert!(labels.contains(&"skills"), "{labels:?}");
+        assert!(labels.contains(&"memory"), "{labels:?}");
         assert_eq!(
             stores.len(),
-            9,
+            10,
             "every store the broker can have: {labels:?}"
         );
         assert!(
