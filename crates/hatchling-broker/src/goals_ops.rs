@@ -175,7 +175,14 @@ pub fn handle_query_op(
     } else {
         None
     };
-    let reader = FeedReader::open(&goals.root, memory_store);
+    let source = match crate::goals_sealed::source_for(&goals.root, &query) {
+        Ok(source) => source,
+        Err(source) => {
+            tracing::error!(%source, "goals store open failed for a query");
+            return Ok(QueryResult::QueryError);
+        }
+    };
+    let reader = FeedReader::with_source(source, memory_store);
     let result = reader
         .query(principal, &query, now_secs())
         .and_then(|items| page(&items, PAGE_BUDGET_BYTES));
@@ -224,7 +231,10 @@ pub(crate) fn read_feed(
     } else {
         None
     };
-    FeedReader::open(&goals.root, memory_store)
+    let source = crate::goals_sealed::source_for(&goals.root, query)
+        .map_err(|source| tracing::error!(%source, "goals store open failed for a feed read"))
+        .ok()?;
+    FeedReader::with_source(source, memory_store)
         .query(principal, query, now_secs())
         .map_err(|source| tracing::error!(%source, "feed read failed"))
         .ok()
@@ -247,7 +257,7 @@ fn with_store(
     config: &GoalsConfig,
     op: impl FnOnce(&GoalsStore) -> Result<GoalsResult, hatchling_goals::Error>,
 ) -> GoalsResult {
-    match GoalsStore::open(&config.root) {
+    match crate::goals_sealed::open_published(&config.root) {
         Ok(store) => op(&store).unwrap_or_else(|error| failure_reply(&error)),
         Err(error) => failure_reply(&error),
     }

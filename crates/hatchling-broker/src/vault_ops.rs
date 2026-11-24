@@ -54,7 +54,7 @@ pub fn validate_sealed_vault(vault_config: &VaultConfig, key: &MasterKey) -> Res
 ///
 /// The secrets always; the schedules when scheduling is on; the
 /// artifacts, the spaces, the web's stores, the conversation, the
-/// Library, the skills' enablements and memory when each is on (a store
+/// Library, the skills' enablements, memory and goals when each is on (a store
 /// that is off has no root); the raw text of redaction records when there
 /// is an output gate (`redaction`).
 #[must_use]
@@ -80,13 +80,8 @@ pub fn sealed_stores(
             stores.push((store, root.clone()));
         }
     }
-    // Memory, in the sealed directory of its root (WO-047).
-    if !config.memory.root.as_os_str().is_empty() {
-        stores.push((
-            Store::MEMORY,
-            crate::memory_sealed::sealed_root(&config.memory.root),
-        ));
-    }
+    // Memory and goals, each in the sealed directory of its root (WO-047).
+    stores.extend(crate::held_keys::stores(config));
     if let Some(redaction) = redaction {
         stores.push((
             Store::REDACTIONS,
@@ -379,6 +374,7 @@ mod tests {
         config.scheduler.library = root.join("library");
         config.skills.enablements = root.join("skills-enabled");
         config.memory.root = root.join("memory");
+        config.goals.root = root.join("goals");
         let redaction = RedactionConfig {
             enabled: true,
             dir: root.join("redactions"),
@@ -391,9 +387,10 @@ mod tests {
         assert!(labels.contains(&"library"), "{labels:?}");
         assert!(labels.contains(&"skills"), "{labels:?}");
         assert!(labels.contains(&"memory"), "{labels:?}");
+        assert!(labels.contains(&"goals"), "{labels:?}");
         assert_eq!(
             stores.len(),
-            10,
+            11,
             "every store the broker can have: {labels:?}"
         );
         assert!(

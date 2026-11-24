@@ -547,7 +547,7 @@ mod tests {
     }
 
     /// Every store there is, for the tests that go through them all.
-    const ALL_STORES: [Store; 12] = [
+    const ALL_STORES: [Store; 13] = [
         Store::SECRETS,
         Store::SCHEDULES,
         Store::ARTIFACTS,
@@ -560,6 +560,7 @@ mod tests {
         Store::LIBRARY,
         Store::SKILLS,
         Store::MEMORY,
+        Store::GOALS,
     ];
 
     /// A handoff names each store by its label, which names that store
@@ -571,6 +572,7 @@ mod tests {
         }
         assert_eq!(Store::SKILLS.label(), "skills");
         assert_eq!(Store::MEMORY.label(), "memory");
+        assert_eq!(Store::GOALS.label(), "goals");
         assert_eq!(Store::CONVERSATION.label(), "conversation");
         assert_eq!(Store::LIBRARY.label(), "library");
     }

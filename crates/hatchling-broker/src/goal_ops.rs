@@ -10,8 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use hatchling_core::ui::{GoalOp, GoalResult, GoalState, GoalView};
 use hatchling_goals::{
-    FeedBody, FeedQuery, Goal, GoalChange, GoalEdit, GoalId, GoalOutcome, GoalStatus, GoalsStore,
-    StatusFilter,
+    FeedBody, FeedQuery, Goal, GoalChange, GoalEdit, GoalId, GoalOutcome, GoalStatus, StatusFilter,
 };
 use hatchling_memory::{MemoryPrincipal, SessionId};
 
@@ -31,7 +30,7 @@ pub fn handle_goal_op(config: &Config, op: &GoalOp) -> GoalResult {
         peer_uid: config.agent_uid.as_u32(),
         session_id,
     };
-    let store = || GoalsStore::open(&config.goals.root);
+    let store = || crate::goals_sealed::open_published(&config.goals.root);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());

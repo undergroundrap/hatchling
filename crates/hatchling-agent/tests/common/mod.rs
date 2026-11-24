@@ -357,7 +357,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
         // on the keeper's keys, is tested in the broker's
         // `tests/memory_start.rs`.)
         if let Ok(shared) = hatchling_vault::MasterKey::generate() {
-            hatchling_broker::memory_sealed::publish(Box::new(shared));
+            hatchling_broker::held_keys::publish(Box::new(shared));
         }
         let _ = hatchling_broker::serve_connection(
             &server,
@@ -415,7 +415,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
         // on the keeper's keys, is tested in the broker's
         // `tests/memory_start.rs`.)
         if let Ok(shared) = hatchling_vault::MasterKey::generate() {
-            hatchling_broker::memory_sealed::publish(Box::new(shared));
+            hatchling_broker::held_keys::publish(Box::new(shared));
         }
         let _ = hatchling_broker::serve_connection(
             &server,

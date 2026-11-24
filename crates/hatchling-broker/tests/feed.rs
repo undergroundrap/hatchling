@@ -23,7 +23,6 @@ use hatchling_core::{
     FeedSpec, LogLevel, PeerUid, ScheduleGrant, ScheduleOp, ScheduleRefusal, ScheduleResult,
     ScheduleSpec,
 };
-use hatchling_goals::GoalsStore;
 use hatchling_memory::{MemoryPrincipal, MemoryScope, RetentionPolicy, SessionId};
 use hatchling_scheduler::{Dispatcher, Launcher, Run, RunRequest, Store, Timestamp};
 use hatchling_vault::MasterKey;
@@ -185,19 +184,19 @@ fn snapshot(dir: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 }
 
 /// Seeds the stores: a goal, two tracking entries, and a tagged note,
-/// kept sealed as the broker keeps it. The memory store's keys are this
+/// kept sealed as the broker keeps them. The stores' keys are this
 /// process's, as a serving broker's are: the first published stays.
 fn seed(config: &Config, at: u64) -> (String, u64) {
     let me = MemoryPrincipal {
         peer_uid: real_uid(),
         session_id: SessionId::generate().unwrap(),
     };
-    let goals = GoalsStore::open(&config.goals.root).unwrap();
+    hatchling_broker::held_keys::publish(Box::new(MasterKey::generate().unwrap()));
+    let goals = hatchling_broker::goals_sealed::open_published(&config.goals.root).unwrap();
     let goal = goals.create_goal(&me, "Run 5k", "", at).unwrap();
     let entry = goals
         .append_tracking(&me, &"whatsapp".parse().unwrap(), "you should sell now", at)
         .unwrap();
-    hatchling_broker::memory_sealed::publish(Box::new(MasterKey::generate().unwrap()));
     hatchling_broker::memory_sealed::open_published(&config.memory.root)
         .unwrap()
         .write(

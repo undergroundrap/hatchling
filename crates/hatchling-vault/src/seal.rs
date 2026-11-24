@@ -128,6 +128,8 @@ impl Store {
     pub const SKILLS: Self = Self("skills");
     /// What the owner approved the agent to remember about them (WO-047).
     pub const MEMORY: Self = Self("memory");
+    /// The owner's goals and what they tracked (WO-047).
+    pub const GOALS: Self = Self("goals");
 
     /// The store's label.
     #[must_use]
@@ -151,6 +153,7 @@ impl Store {
             Self::LIBRARY,
             Self::SKILLS,
             Self::MEMORY,
+            Self::GOALS,
         ]
         .into_iter()
         .find(|store| store.0 == label)
@@ -283,16 +286,16 @@ pub trait OpensStores: Send + Sync + std::fmt::Debug {
     /// them.
     fn key_for(&self, vault: &Vault, root: &Path, store: Store) -> Result<OpenedKey<'_>, Error>;
 
-    /// The key of `store` at `root` alone, as keys of its own: for what
-    /// keeps one store open longer than the keys it was given are
-    /// borrowed for (WO-047).
+    /// The keys of `stores`, each at its root, and no others, as keys of
+    /// their own: for what keeps those stores open longer than the keys
+    /// it was given are borrowed for (WO-047).
     ///
     /// # Errors
     ///
     /// For the master key, as [`StoreKeys::unwrap`]. For handed keys,
-    /// [`Error::StoreNotHeld`] when this store at this root wasn't one of
-    /// them.
-    fn keys_of(&self, store: Store, root: &Path) -> Result<StoreKeys, Error>;
+    /// [`Error::StoreNotHeld`] for the first store, at its root, that
+    /// wasn't one of them.
+    fn keys_of(&self, stores: &[(Store, &Path)]) -> Result<StoreKeys, Error>;
 }
 
 /// A store's key as an opened store holds it: unwrapped for that store
@@ -319,8 +322,8 @@ impl OpensStores for MasterKey {
         store_key(vault, root, self, store).map(|key| OpenedKey(Opened::Unwrapped(key)))
     }
 
-    fn keys_of(&self, store: Store, root: &Path) -> Result<StoreKeys, Error> {
-        StoreKeys::unwrap(self, &[(store, root)])
+    fn keys_of(&self, stores: &[(Store, &Path)]) -> Result<StoreKeys, Error> {
+        StoreKeys::unwrap(self, stores)
     }
 }
 
@@ -438,22 +441,25 @@ impl OpensStores for StoreKeys {
         Ok(OpenedKey(Opened::Held(&held.key)))
     }
 
-    fn keys_of(&self, store: Store, root: &Path) -> Result<StoreKeys, Error> {
-        let held = self
-            .held
+    fn keys_of(&self, stores: &[(Store, &Path)]) -> Result<StoreKeys, Error> {
+        let held = stores
             .iter()
-            .find(|held| held.store == store && held.root == root)
-            .ok_or_else(|| Error::StoreNotHeld {
-                store: store.label(),
-            })?;
-        Ok(Self {
-            held: vec![Held {
-                store,
-                root: held.root.clone(),
-                key: StoreKey(held.key.0),
-                pending: held.pending.clone(),
-            }],
-        })
+            .map(|&(store, root)| {
+                self.held
+                    .iter()
+                    .find(|held| held.store == store && held.root == root)
+                    .map(|held| Held {
+                        store,
+                        root: held.root.clone(),
+                        key: StoreKey(held.key.0),
+                        pending: held.pending.clone(),
+                    })
+                    .ok_or_else(|| Error::StoreNotHeld {
+                        store: store.label(),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { held })
     }
 }
 
@@ -3266,6 +3272,56 @@ mod tests {
         ));
     }
 
+    /// Handed keys hand on the stores they hold, each at its root, as
+    /// keys of their own (WO-047), and no other: one they don't hold
+    /// refuses the lot.
+    #[test]
+    fn handed_keys_hand_on_only_the_stores_they_hold() {
+        let master = test_key();
+        let spaces = test_dir("handon-spaces");
+        let schedules = test_dir("handon-schedules");
+        let elsewhere = test_dir("handon-elsewhere");
+        SealedVault::open_in(&spaces, &master, Store::SPACES)
+            .unwrap()
+            .store(&secret_name("a"), &secret(b"alpha"))
+            .unwrap();
+        let keys = StoreKeys::unwrap(
+            &master,
+            &[(Store::SPACES, &spaces), (Store::SCHEDULES, &schedules)],
+        )
+        .unwrap();
+        for (store, root) in [
+            (Store::SPACES, &*elsewhere),
+            (Store::SCHEDULES, &*spaces),
+            (Store::SECRETS, &*schedules),
+        ] {
+            assert!(matches!(
+                keys.keys_of(&[(store, root)]),
+                Err(Error::StoreNotHeld { .. })
+            ));
+            // One not held refuses them all.
+            assert!(matches!(
+                keys.keys_of(&[(Store::SPACES, &*spaces), (store, root)]),
+                Err(Error::StoreNotHeld { .. })
+            ));
+        }
+        let one = keys.keys_of(&[(Store::SPACES, &*spaces)]).unwrap();
+        assert_eq!(format!("{one:?}"), r#"["spaces"]"#);
+        let both = keys
+            .keys_of(&[(Store::SCHEDULES, &*schedules), (Store::SPACES, &*spaces)])
+            .unwrap();
+        assert_eq!(format!("{both:?}"), r#"["schedules", "spaces"]"#);
+        assert!(keys.keys_of(&[]).unwrap().stores().next().is_none());
+        assert_eq!(
+            SealedVault::open_in(&spaces, &one, Store::SPACES)
+                .unwrap()
+                .key
+                .key()
+                .0,
+            kept_key(&spaces, &master, Store::SPACES).0
+        );
+    }
+
     /// Handed keys open their stores, each at its root, as the master key
     /// would, and refuse every other store; they never print.
     #[test]
@@ -3330,27 +3386,6 @@ mod tests {
             SealedVault::open(&spaces, &keys),
             Err(Error::StoreNotHeld { store: "secrets" })
         ));
-        // `keys_of` hands on one store it holds, at its root, and no other.
-        for (store, root) in [
-            (Store::SPACES, &*elsewhere),
-            (Store::SCHEDULES, &*spaces),
-            (Store::SECRETS, &*schedules),
-        ] {
-            assert!(matches!(
-                keys.keys_of(store, root),
-                Err(Error::StoreNotHeld { .. })
-            ));
-        }
-        let one = keys.keys_of(Store::SPACES, &spaces).unwrap();
-        assert_eq!(format!("{one:?}"), r#"["spaces"]"#);
-        assert_eq!(
-            SealedVault::open_in(&spaces, &one, Store::SPACES)
-                .unwrap()
-                .key
-                .key()
-                .0,
-            kept_key(&spaces, &master, Store::SPACES).0
-        );
         // Another master key unwraps nothing.
         assert!(matches!(
             StoreKeys::unwrap(&test_key(), &[(Store::SPACES, &spaces)]),

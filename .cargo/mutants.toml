@@ -127,6 +127,13 @@ exclude_re = [
     # either way, and no test can observe the log. Same class as
     # `purge_expired`'s above.
     'memory_sealed\.rs:\d+:\d+: replace (\|\| with &&|> with (==|<|>=)) in migrate$',
+    # `goals_sealed::migrate`: `if done != Migrated::default()`, the same
+    # log-only condition.
+    'goals_sealed\.rs:\d+:\d+: replace != with == in migrate$',
+    # `goals_sealed::NoGoals`: `goal_ids` and `tracking` return
+    # `Ok(Vec::new())`, and the `Ok(vec![])` mutant is that same value
+    # written another way. Its other mutants are killed.
+    'goals_sealed\.rs:\d+:\d+: replace <impl GoalsSource for NoGoals>::(goal_ids|tracking) -> .+ with Ok\(vec!\[\]\)$',
     'session\.rs:\d+:\d+: replace > with (<|==|>=) in SessionStore<.s>::reconcile_stale',
     'session\.rs:\d+:\d+: replace \+= with (\*=|-=) in SessionStore<.s>::reconcile$',
     # `ensure_chain` (moved verbatim from `MemoryStore::scope_dir` by

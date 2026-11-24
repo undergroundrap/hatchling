@@ -54,7 +54,7 @@ impl SealedMemory {
     /// When `keys` doesn't hold the memory store at that root.
     pub fn new(root: &Path, keys: &dyn OpensStores) -> Result<Self, hatchling_vault::Error> {
         let root = sealed_root(root);
-        let keys = keys.keys_of(Store::MEMORY, &root)?;
+        let keys = keys.keys_of(&[(Store::MEMORY, &root)])?;
         Ok(Self { root, keys })
     }
 
@@ -212,41 +212,6 @@ pub fn open(
     hatchling_memory::MemoryStore::with_backing(root, Box::new(backing))
 }
 
-/// The keys the memory store is opened with, for as long as the broker
-/// serves ([`publish`]).
-static KEYS: std::sync::OnceLock<Box<dyn OpensStores>> = std::sync::OnceLock::new();
-
-/// Makes `keys` what the memory store is opened with, for as long as the
-/// broker serves: the keys the keeper handed it. The first published
-/// stays: a broker publishes once.
-pub fn publish(keys: Box<dyn OpensStores>) {
-    let _ = KEYS.set(keys);
-}
-
-/// The published keys. A process that hasn't published has none, and
-/// opens no memory.
-#[cfg(not(test))]
-fn published() -> Option<&'static dyn OpensStores> {
-    KEYS.get().map(AsRef::as_ref)
-}
-
-/// The published keys. A test's process publishes a master key of its own
-/// the first time one is asked for.
-#[cfg(test)]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the build's signature, where there can be none"
-)]
-fn published() -> Option<&'static dyn OpensStores> {
-    let keys = KEYS.get_or_init(|| {
-        Box::new(
-            hatchling_vault::MasterKey::generate()
-                .unwrap_or_else(|_| unreachable!("the test's key")),
-        )
-    });
-    Some(keys.as_ref())
-}
-
 /// The memory store at the memory root `root`, its items sealed under the
 /// published keys.
 ///
@@ -256,30 +221,10 @@ fn published() -> Option<&'static dyn OpensStores> {
 pub fn open_published(
     root: &Path,
 ) -> Result<hatchling_memory::MemoryStore, hatchling_memory::Error> {
-    let keys = published().ok_or_else(|| hatchling_memory::Error::Io {
+    let keys = crate::held_keys::published().ok_or_else(|| hatchling_memory::Error::Io {
         source: std::io::Error::other("the memory store's keys weren't handed to this process"),
     })?;
     open(root, keys)
-}
-
-/// At the broker's start (WO-047): when memory is kept, its plaintext
-/// items moved into the sealed store ([`migrate`]), then the store's key
-/// published for every memory read ([`publish`]).
-///
-/// # Errors
-///
-/// When the keeper didn't hand over the memory store's key, or the
-/// migration fails: the broker then doesn't serve, and nothing is lost.
-pub fn start(config: &crate::Config, keys: &dyn OpensStores) -> Result<(), crate::Error> {
-    if config.memory.root.as_os_str().is_empty() {
-        return Ok(());
-    }
-    let held = keys
-        .keys_of(Store::MEMORY, &sealed_root(&config.memory.root))
-        .map_err(|source| crate::Error::Vault { source })?;
-    migrate(&config.memory.root, &held).map_err(|source| crate::Error::Memory { source })?;
-    publish(Box::new(held));
-    Ok(())
 }
 
 /// What a migration did: items moved into the sealed store, and plaintext
@@ -343,7 +288,7 @@ pub fn migrate(root: &Path, keys: &dyn OpensStores) -> Result<Migrated, hatchlin
 
 /// Removes `dir` and the directories under it that hold nothing,
 /// best-effort: one left is harmless.
-fn remove_empty(dir: &Path) {
+pub(crate) fn remove_empty(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };

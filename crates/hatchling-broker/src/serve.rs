@@ -191,11 +191,11 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     if crate::broker_user::drop_to_broker()? {
         let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
     }
-    // Memory, sealed where it lives (WO-047): an install's plaintext items
-    // moved in first, then the key every memory read opens it with. As
-    // the broker's own user, whose memory is: the plaintext's
+    // Memory and goals, sealed where they live (WO-047): an install's
+    // plaintext moved in first, then the keys every read opens them
+    // with. As the broker's own user, whose they are: the plaintext's
     // directories are that user's, and root needn't touch them.
-    crate::memory_sealed::start(config, &key)?;
+    crate::held_keys::start(config, &key)?;
     // Then it holds itself to what it keeps and reads, root's broker or
     // not (WO-017, slice 4): nothing else of its user's, nothing to run.
     // Still on one thread: the confinement holds the thread that asks

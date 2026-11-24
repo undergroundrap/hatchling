@@ -1643,7 +1643,7 @@ pub(crate) mod tests {
     fn the_id_a_run_is_shown_is_the_id_a_goal_is_found_by() {
         use std::str::FromStr as _;
 
-        use hatchling_goals::{GoalOutcome, GoalsStore};
+        use hatchling_goals::GoalOutcome;
         use hatchling_memory::SessionId;
         let dir = scratch("store-shown");
         let principal = MemoryPrincipal {
@@ -1653,7 +1653,7 @@ pub(crate) mod tests {
         let mut chat = config(&dir, Some("local"));
         chat.goals.root = dir.join("goals");
         chat.goals.grants = vec![GoalsAction::QueryGoals];
-        let store = GoalsStore::open(&chat.goals.root).unwrap();
+        let store = crate::goals_sealed::open_published(&chat.goals.root).unwrap();
         let open = store
             .create_goal(&principal, "Run 5k by June", "", 10)
             .unwrap();
@@ -1953,7 +1953,7 @@ pub(crate) mod tests {
     fn a_goal_is_found_in_the_owners_store_by_a_run_that_may_read_it() {
         use std::str::FromStr as _;
 
-        use hatchling_goals::{GoalOutcome, GoalsStore};
+        use hatchling_goals::GoalOutcome;
         use hatchling_memory::SessionId;
         let dir = scratch("store");
         let principal = MemoryPrincipal {
@@ -1968,7 +1968,7 @@ pub(crate) mod tests {
             chat
         };
         let chat = goals_at("goals", vec![GoalsAction::QueryGoals]);
-        let store = GoalsStore::open(&chat.goals.root).unwrap();
+        let store = crate::goals_sealed::open_published(&chat.goals.root).unwrap();
         let open = store
             .create_goal(&principal, "Run 5k by June", "", 10)
             .unwrap();
@@ -2361,7 +2361,7 @@ pub(crate) mod tests {
     fn the_owners_open_goals_are_read_from_their_store() {
         use std::str::FromStr as _;
 
-        use hatchling_goals::{GoalOutcome, GoalsStore};
+        use hatchling_goals::GoalOutcome;
         use hatchling_memory::SessionId;
         let dir = scratch("open-goals");
         let mut chat = config(&dir, Some("local"));
@@ -2371,7 +2371,7 @@ pub(crate) mod tests {
             peer_uid: chat.agent_uid.as_u32(),
             session_id: SessionId::from_str("sess-ideas").unwrap(),
         };
-        let store = GoalsStore::open(&chat.goals.root).unwrap();
+        let store = crate::goals_sealed::open_published(&chat.goals.root).unwrap();
         let kept_open = store
             .create_goal(&principal, "Run 5k by June", "", 10)
             .unwrap();

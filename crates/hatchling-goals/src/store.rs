@@ -10,15 +10,19 @@
 //! auto-close, and no delete (a closed goal is kept, and can no longer
 //! be edited). Tracking is append-only: there is no edit or delete,
 //! and a correction is a new entry.
+//!
+//! The store decides everything about a record; its backing
+//! ([`GoalsBacking`]) keeps the bytes: [`Files`] as before WO-047, or
+//! the broker's sealed store.
 
-use std::io::{Read as _, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use hatchling_memory::{MemoryPrincipal, owner_dir};
 
 use crate::Error;
+use crate::backing::{Files, GoalsBacking};
 use crate::name::{GoalId, SourceLabel};
-use crate::read::{self, GOALS_DIR, TRACKING_DIR, TRACKING_LOG};
+use crate::read;
 use crate::record::{
     self, Goal, GoalOrigin, GoalOutcome, GoalStatus, MAX_GOALS_PER_USER, MAX_TRACKING_ENTRIES,
     TrackingEntry,
@@ -63,22 +67,21 @@ pub enum GoalChange {
 
 /// The broker-owned goals and tracking store.
 ///
-/// `GoalsStore` is `Sync`: every method takes `&self` and the
-/// filesystem serializes. Tracking appends additionally hold an
-/// exclusive `flock` on the user's log, so concurrent sessions of one
-/// user never assign the same sequence number.
+/// `GoalsStore` is `Sync`: every method takes `&self`, and the backing
+/// serializes. Tracking appends hold the log's lock from counting to
+/// keeping, so concurrent sessions of one user never share a sequence
+/// number.
 #[derive(Debug)]
 pub struct GoalsStore {
-    /// The validated `0700` root.
-    root: PathBuf,
-    /// The uid the root and everything beneath it must be owned by.
-    owner: u32,
     /// The per-user bounds.
     limits: Limits,
+    /// Where the records are kept.
+    backing: Box<dyn GoalsBacking>,
 }
 
 impl GoalsStore {
-    /// Opens (creating if absent) the store rooted at `root`.
+    /// Opens (creating if absent) the store rooted at `root`, its
+    /// records as files ([`Files`]).
     ///
     /// The root must be a directory with mode `0700` owned by the
     /// current uid — created that way if absent, verified if present.
@@ -91,31 +94,34 @@ impl GoalsStore {
         Self::open_as(root, rustix::process::getuid().as_raw(), Limits::SHIPPED)
     }
 
+    /// The store rooted at `root`, its records kept by `backing`. The
+    /// root is checked as [`GoalsStore::open`] checks it.
+    ///
+    /// # Errors
+    ///
+    /// As [`GoalsStore::open`].
+    pub fn with_backing(root: &Path, backing: Box<dyn GoalsBacking>) -> Result<Self, Error> {
+        owner_dir::ensure_owner_only_dir(root, rustix::process::getuid().as_raw())?;
+        Ok(Self {
+            limits: Limits::SHIPPED,
+            backing,
+        })
+    }
+
     /// Opens the store, requiring the root to be owned by `owner`.
     /// Split out so tests exercise the ownership check and the limits
     /// hermetically.
     fn open_as(root: &Path, owner: u32, limits: Limits) -> Result<Self, Error> {
         owner_dir::ensure_owner_only_dir(root, owner)?;
         Ok(Self {
-            root: root.to_path_buf(),
-            owner,
             limits,
+            backing: Box::new(Files::new(root, owner)),
         })
     }
 
-    /// The principal's directory under `kind`, created `0700` when
-    /// absent. The binding is the peer uid from kernel credentials.
-    fn user_dir(&self, kind: &str, principal: &MemoryPrincipal) -> Result<PathBuf, Error> {
-        let uid = principal.peer_uid.to_string();
-        Ok(owner_dir::ensure_chain(
-            &self.root,
-            &[kind, &uid],
-            self.owner,
-        )?)
-    }
-
     /// Records a new open goal for the principal, broker-stamped, with
-    /// a store-minted id.
+    /// a store-minted id. The binding is the peer uid from kernel
+    /// credentials.
     ///
     /// # Errors
     ///
@@ -132,8 +138,7 @@ impl GoalsStore {
     ) -> Result<Goal, Error> {
         record::check_title(title)?;
         record::check_detail(detail)?;
-        let dir = self.user_dir(GOALS_DIR, principal)?;
-        if read::goal_count(&dir)? >= self.limits.goals {
+        if self.backing.goal_ids(principal.peer_uid)?.len() >= self.limits.goals {
             return Err(Error::GoalLimit {
                 max: self.limits.goals,
             });
@@ -147,7 +152,7 @@ impl GoalsStore {
             created_at_secs: now_secs,
             updated_at_secs: now_secs,
         };
-        Self::store_goal(&dir, &goal)?;
+        self.store_goal(principal, &goal)?;
         tracing::info!(goal_id = %goal.id, "created goal");
         Ok(goal)
     }
@@ -176,8 +181,7 @@ impl GoalsStore {
         if let Some(detail) = edit.detail {
             record::check_detail(detail)?;
         }
-        let dir = self.user_dir(GOALS_DIR, principal)?;
-        let Some(mut goal) = read::read_goal(&read::goal_path(&dir, id), id)? else {
+        let Some(mut goal) = read::goal(self.backing.as_ref(), principal.peer_uid, id)? else {
             return Ok(GoalChange::NotFound);
         };
         if !goal.is_open() {
@@ -190,7 +194,7 @@ impl GoalsStore {
             detail.clone_into(&mut goal.detail);
         }
         goal.updated_at_secs = now_secs;
-        Self::store_goal(&dir, &goal)?;
+        self.store_goal(principal, &goal)?;
         tracing::info!(goal_id = %id, "updated goal");
         Ok(GoalChange::Changed(goal))
     }
@@ -210,8 +214,7 @@ impl GoalsStore {
         outcome: GoalOutcome,
         now_secs: u64,
     ) -> Result<GoalChange, Error> {
-        let dir = self.user_dir(GOALS_DIR, principal)?;
-        let Some(mut goal) = read::read_goal(&read::goal_path(&dir, id), id)? else {
+        let Some(mut goal) = read::goal(self.backing.as_ref(), principal.peer_uid, id)? else {
             return Ok(GoalChange::NotFound);
         };
         if !goal.is_open() {
@@ -222,7 +225,7 @@ impl GoalsStore {
             closed_at_secs: now_secs,
         };
         goal.updated_at_secs = now_secs;
-        Self::store_goal(&dir, &goal)?;
+        self.store_goal(principal, &goal)?;
         tracing::info!(goal_id = %id, "closed goal");
         Ok(GoalChange::Changed(goal))
     }
@@ -230,10 +233,9 @@ impl GoalsStore {
     /// Appends one entry to the principal's tracking log, returning it
     /// with its broker-assigned sequence number and timestamp.
     ///
-    /// The append holds an exclusive `flock` on the log from counting
-    /// to fsync, so two sessions of one user never share a sequence
-    /// number. The whole line goes out in one write on an `O_APPEND`
-    /// descriptor: nothing already in the log can be altered.
+    /// The backing holds the log's lock from counting to keeping, so two
+    /// sessions of one user never share a sequence number, and nothing
+    /// already in the log can be altered.
     ///
     /// # Errors
     ///
@@ -247,86 +249,46 @@ impl GoalsStore {
         text: &str,
         now_secs: u64,
     ) -> Result<TrackingEntry, Error> {
-        use std::os::unix::fs::OpenOptionsExt as _;
-
         record::check_tracking_text(text)?;
-        let dir = self.user_dir(TRACKING_DIR, principal)?;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
-            .mode(owner_dir::FILE_MODE)
-            .open(dir.join(TRACKING_LOG))
-            .map_err(|source| Error::Io { source })?;
-        // Released when `file` drops, on every return path.
-        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).map_err(|errno| {
-            Error::Io {
-                source: std::io::Error::from(errno),
-            }
-        })?;
-        let seq = Self::count_lines(&file)?;
-        if seq >= self.limits.tracking_entries {
-            return Err(Error::TrackingFull {
-                max: self.limits.tracking_entries,
-            });
-        }
-        let entry = TrackingEntry {
-            seq,
-            at_secs: now_secs,
-            source: source.clone(),
-            text: text.to_owned(),
-        };
-        let mut line = serde_json::to_vec(&entry).map_err(|_| Error::Corrupt)?;
-        line.push(b'\n');
-        (&file)
-            .write_all(&line)
-            .map_err(|source| Error::Io { source })?;
-        file.sync_all().map_err(|source| Error::Io { source })?;
-        tracing::info!(seq, source = %source, "appended tracking entry");
+        let max = self.limits.tracking_entries;
+        let mut made = None;
+        self.backing
+            .append_tracking(principal.peer_uid, &mut |seq| {
+                if seq >= max {
+                    return Err(Error::TrackingFull { max });
+                }
+                let entry = TrackingEntry {
+                    seq,
+                    at_secs: now_secs,
+                    source: source.clone(),
+                    text: text.to_owned(),
+                };
+                let line = serde_json::to_vec(&entry).map_err(|_| Error::Corrupt)?;
+                made = Some(entry);
+                Ok(line)
+            })?;
+        let entry = made.ok_or(Error::Corrupt)?;
+        tracing::info!(seq = entry.seq, source = %source, "appended tracking entry");
         Ok(entry)
     }
 
-    /// Counts the entries in a log: every entry ends in exactly one
-    /// newline, and the text of an entry is JSON-escaped, so newlines
-    /// in the file are entry boundaries.
-    fn count_lines(file: &std::fs::File) -> Result<u64, Error> {
-        let mut reader: &std::fs::File = file;
-        let mut count: u64 = 0;
-        let mut buf = [0u8; 8192];
-        loop {
-            let read = reader
-                .read(&mut buf)
-                .map_err(|source| Error::Io { source })?;
-            let Some(chunk) = buf.get(..read) else {
-                return Err(Error::Corrupt);
-            };
-            if chunk.is_empty() {
-                return Ok(count);
-            }
-            for byte in chunk {
-                if *byte == b'\n' {
-                    count = count.saturating_add(1);
-                }
-            }
-        }
-    }
-
-    /// Writes one goal file atomically (`0600`, temp + fsync + rename).
-    fn store_goal(dir: &Path, goal: &Goal) -> Result<(), Error> {
+    /// Keeps one goal of the principal's, whole or not at all.
+    fn store_goal(&self, principal: &MemoryPrincipal, goal: &Goal) -> Result<(), Error> {
         let bytes = serde_json::to_vec(goal).map_err(|_| Error::Corrupt)?;
-        owner_dir::write_atomic(dir, &read::goal_path(dir, &goal.id), &bytes)?;
-        Ok(())
+        self.backing.put_goal(principal.peer_uid, &goal.id, &bytes)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+    use std::path::PathBuf;
     use std::str::FromStr as _;
 
     use hatchling_memory::SessionId;
 
     use super::*;
+    use crate::read::{GOALS_DIR, TRACKING_DIR, TRACKING_LOG};
 
     fn test_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -353,19 +315,11 @@ mod tests {
     }
 
     fn goals_of(store: &GoalsStore, uid: u32) -> Vec<Goal> {
-        read::read_goals(&store.root.join(GOALS_DIR).join(uid.to_string())).unwrap()
+        read::goals(store.backing.as_ref(), uid).unwrap()
     }
 
     fn log_of(store: &GoalsStore, uid: u32) -> Vec<TrackingEntry> {
-        read::scan_tracking(
-            &store
-                .root
-                .join(TRACKING_DIR)
-                .join(uid.to_string())
-                .join(TRACKING_LOG),
-            |_| true,
-        )
-        .unwrap()
+        read::tracking(store.backing.as_ref(), uid, |_| true).unwrap()
     }
 
     fn label(raw: &str) -> SourceLabel {
@@ -716,10 +670,10 @@ mod tests {
         }
         std::fs::write(&path, &bytes).unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        assert_eq!(GoalsStore::count_lines(&file).unwrap(), 200);
+        assert_eq!(Files::count_lines(&file).unwrap(), 200);
         std::fs::write(&path, b"").unwrap();
         let file = std::fs::File::open(&path).unwrap();
-        assert_eq!(GoalsStore::count_lines(&file).unwrap(), 0);
+        assert_eq!(Files::count_lines(&file).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&root);
     }
 
