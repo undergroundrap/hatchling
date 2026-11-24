@@ -31,6 +31,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A site you grant again keeps its grant** ([#641](https://github.com/undergroundrap/hatchling/issues/641)). A site granted until a time has a timer that revokes it when that time comes. Granted again just as it came, the old timer could still revoke the new grant and close its connections, because it checked and revoked in two steps. It now does both at once, so an end the site is no longer held to revokes nothing.
+
 - **A broker with every store configured starts** ([#638](https://github.com/undergroundrap/hatchling/issues/638)). The keeper hands the broker its stores' keys in one handoff, which carried at most eight; since the skills' enablements made nine, an install configuring all of them (the web's stores, artifacts, spaces and redactions with the rest) refused to start, "too many stores". A handoff now carries up to fifteen, the most one message between the two can hold.
 
 - **Settings › Skills shows your skills when they arrive** ([#625](https://github.com/undergroundrap/hatchling/issues/625)). Opened right after the app loaded, before it had the list, it said there were no skills, and kept saying it until you went to another section and back. It now shows them as soon as the app has them, and any change while it's open.
