@@ -355,8 +355,8 @@ mod tests {
     use super::*;
 
     /// Every store the broker can have fits one handoff from the keeper:
-    /// with each one configured, the Library among them, there are as many
-    /// as a handoff carries, and no more.
+    /// with each one configured, the Library and the skills' enablements
+    /// among them, there are no more than a handoff carries (#638).
     #[test]
     fn the_brokers_stores_fit_one_handoff() {
         let mut config = crate::api_auth::tests::owner_config(None);
@@ -369,6 +369,7 @@ mod tests {
         config.web.credentials = root.join("credentials");
         config.scheduler.conversation = root.join("conversation");
         config.scheduler.library = root.join("library");
+        config.skills.enablements = root.join("skills-enabled");
         let redaction = RedactionConfig {
             enabled: true,
             dir: root.join("redactions"),
@@ -379,11 +380,26 @@ mod tests {
         let stores = broker_stores(&config, Some(&redaction));
         let labels: Vec<&str> = stores.iter().map(|(store, _)| store.label()).collect();
         assert!(labels.contains(&"library"), "{labels:?}");
+        assert!(labels.contains(&"skills"), "{labels:?}");
         assert_eq!(
             stores.len(),
-            hatchling_vault::handoff::MAX_HANDED,
+            9,
+            "every store the broker can have: {labels:?}"
+        );
+        assert!(
+            stores.len() <= hatchling_vault::handoff::MAX_HANDED,
             "{labels:?}"
         );
+        // And handed over: the keeper's handoff writes and reads them all.
+        let master = MasterKey::generate().unwrap();
+        let asked: Vec<(Store, &Path)> = stores
+            .iter()
+            .map(|(store, root)| (*store, root.as_path()))
+            .collect();
+        let keys = StoreKeys::unwrap(&master, &asked).unwrap();
+        let bytes = keys.to_bytes().unwrap();
+        let handed = StoreKeys::from_bytes(&bytes).unwrap();
+        assert_eq!(handed.stores().count(), stores.len());
     }
 
     #[test]

@@ -36,9 +36,13 @@ const MAGIC: &[u8; 4] = b"HKH1";
 const ASK_MAGIC: &[u8; 4] = b"HKA1";
 /// The answer's magic: each store's key as it keeps it, wrapped.
 const KEPT_MAGIC: &[u8; 4] = b"HKK1";
-/// The most stores one handoff carries: enough for every store, and few
-/// enough that the longest handoff fits one protocol frame.
-pub const MAX_HANDED: usize = 8;
+/// The most stores one handoff carries.
+///
+/// Enough for every store the broker can have, and few enough that the
+/// longest handoff fits one protocol frame. At its longest a store takes 4,220 bytes (its label, a root of
+/// [`MAX_ROOT_BYTES`], its key and a wrapped key still to be kept), so 15
+/// take 63,305 with the magic and count, under 64 KiB; a 16th wouldn't fit.
+pub const MAX_HANDED: usize = 15;
 /// The longest root a handoff carries, in bytes.
 pub const MAX_ROOT_BYTES: usize = 4096;
 /// What a store takes in a handoff past its label, root and wrapped key:
@@ -507,6 +511,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The longest handoff the bound allows, every store at its longest
+    /// label, root and pending key, fits one protocol frame; one store more
+    /// at its longest wouldn't, so the bound is as high as it can go.
+    #[test]
+    fn the_longest_handoff_fits_one_frame_and_one_more_store_wouldnt() {
+        let longest = ALL_STORES
+            .iter()
+            .copied()
+            .max_by_key(|store| store.label().len())
+            .unwrap();
+        let held = |count: usize| StoreKeys {
+            held: (0..count)
+                .map(|_| Held {
+                    store: longest,
+                    root: PathBuf::from(format!("/{}", "r".repeat(MAX_ROOT_BYTES - 1))),
+                    key: StoreKey([7; 32]),
+                    pending: Some(vec![9; WRAPPED_STORE_KEY_LEN]),
+                })
+                .collect(),
+        };
+        let bytes = held(MAX_HANDED).to_bytes().unwrap();
+        let frame = hatchling_core::framing::MAX_FRAME_BYTES;
+        assert!(bytes.len() <= frame, "{} > {frame}", bytes.len());
+        assert_eq!(
+            StoreKeys::from_bytes(&bytes).unwrap().held.len(),
+            MAX_HANDED
+        );
+        let per_store = (bytes.len() - MAGIC.len() - 1) / MAX_HANDED;
+        assert!(
+            bytes.len() + per_store > frame,
+            "a {}th store would fit: raise MAX_HANDED",
+            MAX_HANDED + 1
+        );
+    }
+
+    /// Every store there is, for the tests that go through them all.
+    const ALL_STORES: [Store; 11] = [
+        Store::SECRETS,
+        Store::SCHEDULES,
+        Store::ARTIFACTS,
+        Store::SPACES,
+        Store::REDACTIONS,
+        Store::SITES,
+        Store::PROFILES,
+        Store::CREDENTIALS,
+        Store::CONVERSATION,
+        Store::LIBRARY,
+        Store::SKILLS,
+    ];
+
     /// A handoff names each store by its label, which names that store
     /// back.
     #[test]
@@ -620,8 +674,12 @@ mod tests {
         refused(read_kept(&longer), "bytes after the last store");
         refused(read_ask(&answer), "not a store-key asking");
         refused(read_kept(&ask), "not the keys a store keeps");
-        refused(read_ask(&changed(&ask, 4, 9)), "too many stores");
-        refused(read_kept(&changed(&answer, 4, 9)), "too many stores");
+        let one_too_many = u8::try_from(MAX_HANDED + 1).unwrap();
+        refused(read_ask(&changed(&ask, 4, one_too_many)), "too many stores");
+        refused(
+            read_kept(&changed(&answer, 4, one_too_many)),
+            "too many stores",
+        );
         refused(read_ask(&changed(&ask, 6, b'X')), "an unknown store");
         refused(
             read_kept(&changed(&answer, 5, 2)),
@@ -649,7 +707,7 @@ mod tests {
     /// label's length and label, then its root's length and root.
     #[test]
     fn counts_and_stores_are_written_as_read() {
-        assert_eq!(count_of(MAX_HANDED).unwrap(), 8);
+        assert_eq!(count_of(MAX_HANDED).unwrap(), 15);
         assert_eq!(count_of(0).unwrap(), 0);
         assert!(count_of(MAX_HANDED + 1).is_err());
         let mut bytes = Vec::new();
