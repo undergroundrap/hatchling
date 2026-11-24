@@ -261,12 +261,15 @@ impl Sites {
     }
 
     /// `destination`'s `end` came: if it's still the end it's held to, it's
-    /// revoked.
+    /// revoked. Checked and revoked under one hold of the lock, so a grant
+    /// that replaced the end is never revoked by it (#641).
     fn ended(&self, destination: &str, end: End) {
-        let current = self.held().ends.get(destination) == Some(&end);
-        if current {
-            let closed = self.revoke(destination);
+        let held = self.held();
+        if held.ends.get(destination) == Some(&end) {
+            let closed = Self::revoke_held(held, destination);
             tracing::debug!(%destination, closed, "a site's grant ended");
+        } else {
+            drop(held);
         }
     }
 
@@ -292,7 +295,11 @@ impl Sites {
     /// ways: how many it closed.
     #[must_use]
     pub fn revoke(&self, destination: &str) -> usize {
-        let mut held = self.held();
+        Self::revoke_held(self.held(), destination)
+    }
+
+    /// [`Sites::revoke`], under the hold `held` already has.
+    fn revoke_held(mut held: MutexGuard<'_, Held>, destination: &str) -> usize {
         held.granted.remove(destination);
         held.ends.remove(destination);
         let (closing, kept): (Vec<Open>, Vec<Open>) = std::mem::take(&mut held.open)
@@ -1262,6 +1269,41 @@ mod tests {
     /// Past its end a site isn't admitted, even before its timer comes; one
     /// granted again without an end has none; the same end read again is
     /// kept, and only a much earlier one replaces it.
+    /// An end that's no longer the site's revokes nothing, however late
+    /// its timer comes; one that still is revokes it, and closes its
+    /// tunnels (#641).
+    #[test]
+    fn only_the_end_a_site_is_held_to_revokes_it() {
+        let sites = Sites::default();
+        let (client, _browser) = pair();
+        let (site, _far) = pair();
+        let old = End {
+            monotonic: Instant::now() + Duration::from_secs(3_600),
+            wall: i64::MAX,
+        };
+        sites.grant_until("site.test:443", old);
+        sites.grant("site.test:443");
+        sites.ended("site.test:443", old);
+        assert!(sites.admit("site.test:443"), "granted again, kept");
+        let new = End {
+            monotonic: Instant::now() + Duration::from_secs(7_200),
+            wall: i64::MAX,
+        };
+        sites.grant_until("site.test:443", new);
+        let tunnel = sites.opened("site.test:443", &client, &site);
+        assert!(tunnel.is_some());
+        sites.ended("site.test:443", old);
+        assert!(sites.admit("site.test:443"), "an end it isn't held to");
+        sites.ended("site.test:443", new);
+        assert!(!sites.admit("site.test:443"), "the end it's held to");
+        assert_eq!(
+            sites.revoke("site.test:443"),
+            0,
+            "its tunnel already closed"
+        );
+        drop(tunnel);
+    }
+
     #[test]
     fn a_sites_end_is_kept_until_it_is_granted_again() {
         assert!(
