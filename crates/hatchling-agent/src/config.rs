@@ -801,7 +801,7 @@ mod tests {
         vars.insert("HATCHLING_RUN_CHAT", "0");
         assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 10);
         vars.insert("HATCHLING_RUN_CHAT", "1");
-        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 25);
+        assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 200);
         vars.insert("HATCHLING_MODEL_MAX_STEPS", "7");
         assert_eq!(Config::parse(lookup(&vars)).unwrap().model_max_steps, 7);
         vars.insert("HATCHLING_RUN_CHAT", "0");

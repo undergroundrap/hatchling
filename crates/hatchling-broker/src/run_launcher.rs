@@ -2049,6 +2049,7 @@ mod tests {
         use hatchling_scheduler::Ending;
         let spent = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS);
         let full = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM);
+        let late = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TIME);
         for (code, told, ending) in [
             (0, Ok(String::from("this far")), None),
             (
@@ -2062,9 +2063,14 @@ mod tests {
                 Some(Ending::Exited(full)),
             ),
             (
-                full + 1,
-                Err(format!("the run exited {}: why", full + 1)),
-                Some(Ending::Exited(full + 1)),
+                late,
+                Ok(String::from("this far")),
+                Some(Ending::Exited(late)),
+            ),
+            (
+                late + 1,
+                Err(format!("the run exited {}: why", late + 1)),
+                Some(Ending::Exited(late + 1)),
             ),
         ] {
             let dir = helper_dir(&format!("spent-{code}"));
