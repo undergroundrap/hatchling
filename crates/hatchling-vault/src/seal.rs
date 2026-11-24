@@ -126,6 +126,8 @@ impl Store {
     pub const LIBRARY: Self = Self("library");
     /// The skills the owner enabled, each bound to its digest (WO-046).
     pub const SKILLS: Self = Self("skills");
+    /// What the owner approved the agent to remember about them (WO-047).
+    pub const MEMORY: Self = Self("memory");
 
     /// The store's label.
     #[must_use]
@@ -148,6 +150,7 @@ impl Store {
             Self::CONVERSATION,
             Self::LIBRARY,
             Self::SKILLS,
+            Self::MEMORY,
         ]
         .into_iter()
         .find(|store| store.0 == label)
