@@ -547,7 +547,7 @@ mod tests {
     }
 
     /// Every store there is, for the tests that go through them all.
-    const ALL_STORES: [Store; 11] = [
+    const ALL_STORES: [Store; 12] = [
         Store::SECRETS,
         Store::SCHEDULES,
         Store::ARTIFACTS,
@@ -559,28 +559,18 @@ mod tests {
         Store::CONVERSATION,
         Store::LIBRARY,
         Store::SKILLS,
+        Store::MEMORY,
     ];
 
     /// A handoff names each store by its label, which names that store
     /// back.
     #[test]
     fn every_store_is_named_by_its_label() {
-        for store in [
-            Store::SECRETS,
-            Store::SCHEDULES,
-            Store::ARTIFACTS,
-            Store::SPACES,
-            Store::REDACTIONS,
-            Store::SITES,
-            Store::PROFILES,
-            Store::CREDENTIALS,
-            Store::CONVERSATION,
-            Store::LIBRARY,
-            Store::SKILLS,
-        ] {
+        for store in ALL_STORES {
             assert_eq!(Store::from_label(store.label()), Some(store));
         }
         assert_eq!(Store::SKILLS.label(), "skills");
+        assert_eq!(Store::MEMORY.label(), "memory");
         assert_eq!(Store::CONVERSATION.label(), "conversation");
         assert_eq!(Store::LIBRARY.label(), "library");
     }

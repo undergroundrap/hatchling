@@ -48,6 +48,7 @@
 //! applied to memory items. Encryption at rest (sealed envelopes, the
 //! pattern) is a named follow-up, not v0.1 scope.
 
+pub mod backing;
 pub mod compaction;
 pub mod context_log;
 pub mod error;
@@ -58,6 +59,7 @@ pub mod prompt;
 pub mod session;
 pub mod store;
 
+pub use backing::{Backing, Files, Space};
 pub use compaction::{CompactionSummary, compact};
 pub use context_log::{ContextEntry, ContextKind, ContextLog, MAX_CONTEXT_PAYLOAD_BYTES};
 pub use error::Error;

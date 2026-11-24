@@ -2044,8 +2044,10 @@ pub(crate) fn key_text(secret: &hatchling_vault::Secret) -> Option<Zeroizing<Str
 
 /// Each place on this install an agent or a skill can get bytes written,
 /// and what to call it: the workspace, every store, and the broker's state.
-/// Memory, goals and what the workspace is given are there in the clear, and
-/// a sealed store's root is still no place for a project. The output gate's
+/// Goals, memory's own records and what the workspace is given are there in
+/// the clear, and a sealed store's root is still no place for a project. A
+/// store inside the broker's state (memory's, in its directory, WO-047) is
+/// that state's, and named for it. The output gate's
 /// directory isn't here: it's given tags and sealed texts, none of it an
 /// agent's words in the clear.
 fn written_places(config: &Config) -> Vec<(String, PathBuf)> {
@@ -2054,12 +2056,17 @@ fn written_places(config: &Config) -> Vec<(String, PathBuf)> {
         .workspace
         .iter()
         .map(|path| (String::from("the artifact workspace"), path.clone()));
-    let stores = crate::sealed_stores(config, None)
-        .into_iter()
-        .map(|(store, path)| (format!("the {} store", store.label()), path));
-    let state = crate::broker_user::state_dirs(config)
+    let state: Vec<PathBuf> = crate::broker_user::state_dirs(config)
         .into_iter()
         .chain(crate::broker_user::state_files(config))
+        .collect();
+    let stores = crate::sealed_stores(config, None)
+        .into_iter()
+        .filter(|(_, path)| !state.iter().any(|dir| path.starts_with(dir)))
+        .map(|(store, path)| (format!("the {} store", store.label()), path))
+        .collect::<Vec<_>>();
+    let state = state
+        .into_iter()
         .map(|path| (String::from("Hatchling's own state"), path));
     workspace.chain(stores).chain(state).collect()
 }

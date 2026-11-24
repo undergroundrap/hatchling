@@ -93,7 +93,7 @@ pub fn keep(config: &Config, content: &str, now: i64) -> Result<(), hatchling_me
         .map_err(|source| hatchling_memory::Error::Io { source })?;
     let id: MemoryId = id.parse()?;
     let tags = [RECALL_TAG.parse::<Tag>()?, APPROVED_TAG.parse::<Tag>()?];
-    MemoryStore::open(&config.memory.root)?.write(
+    crate::memory_sealed::open_published(&config.memory.root)?.write(
         &principal,
         &MemoryScope::User,
         &id,
@@ -146,7 +146,10 @@ fn open(config: &Config) -> Result<(MemoryPrincipal, MemoryStore), hatchling_mem
         peer_uid: config.agent_uid.as_u32(),
         session_id: SessionId::generate()?,
     };
-    Ok((principal, MemoryStore::open(&config.memory.root)?))
+    Ok((
+        principal,
+        crate::memory_sealed::open_published(&config.memory.root)?,
+    ))
 }
 
 /// Every item a run recalls, from the user and project scopes, the newest
@@ -220,7 +223,7 @@ mod tests {
             peer_uid: config.agent_uid.as_u32(),
             session_id: SessionId::generate().unwrap(),
         };
-        let store = MemoryStore::open(&config.memory.root).unwrap();
+        let store = crate::memory_sealed::open_published(&config.memory.root).unwrap();
         store
             .recall_by_tag(
                 &principal,
