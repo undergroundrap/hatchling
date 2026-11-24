@@ -1,6 +1,6 @@
 # WO-047: Memory and goals sealed where they live, like the vault's other stores
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-memory` and `crates/hatchling-goals` (their stores), `crates/hatchling-vault` (two new sealed stores), `crates/hatchling-broker` (opening, migration, backup and restore, key rotation), `docs/`
 **Issue:** [#597](https://github.com/undergroundrap/hatchling/issues/597)
 **Trust boundary:** yes
