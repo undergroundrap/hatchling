@@ -300,7 +300,7 @@ pub struct Migrated {
 /// When the sealed store can't be opened or written, or a plaintext file
 /// can't be read or removed; nothing is then lost.
 pub fn migrate(root: &Path, keys: &dyn OpensStores) -> Result<Migrated, hatchling_memory::Error> {
-    let files = hatchling_memory::Files::new(root, rustix::process::getuid().as_raw());
+    let files = hatchling_memory::Files::of_this_user(root);
     let sealed = SealedMemory::new(root, keys).map_err(|error| hatchling_memory::Error::Io {
         source: std::io::Error::other(error.to_string()),
     })?;

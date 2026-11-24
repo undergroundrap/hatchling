@@ -3330,6 +3330,27 @@ mod tests {
             SealedVault::open(&spaces, &keys),
             Err(Error::StoreNotHeld { store: "secrets" })
         ));
+        // `keys_of` hands on one store it holds, at its root, and no other.
+        for (store, root) in [
+            (Store::SPACES, &*elsewhere),
+            (Store::SCHEDULES, &*spaces),
+            (Store::SECRETS, &*schedules),
+        ] {
+            assert!(matches!(
+                keys.keys_of(store, root),
+                Err(Error::StoreNotHeld { .. })
+            ));
+        }
+        let one = keys.keys_of(Store::SPACES, &spaces).unwrap();
+        assert_eq!(format!("{one:?}"), r#"["spaces"]"#);
+        assert_eq!(
+            SealedVault::open_in(&spaces, &one, Store::SPACES)
+                .unwrap()
+                .key
+                .key()
+                .0,
+            kept_key(&spaces, &master, Store::SPACES).0
+        );
         // Another master key unwraps nothing.
         assert!(matches!(
             StoreKeys::unwrap(&test_key(), &[(Store::SPACES, &spaces)]),

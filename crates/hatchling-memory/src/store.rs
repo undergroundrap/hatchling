@@ -417,6 +417,18 @@ mod tests {
         root
     }
 
+    /// A scope directory that can't be read fails a purge: it is never
+    /// taken for one holding nothing.
+    #[test]
+    fn an_unreadable_scope_directory_is_an_error_not_empty() {
+        let root = test_root("unreadable-scope");
+        let store = MemoryStore::open(&root).unwrap();
+        std::fs::write(root.join("user"), b"not a directory").unwrap();
+        assert!(matches!(store.purge_expired(0), Err(Error::Io { .. })));
+        assert!(crate::Files::of_this_user(&root).spaces().is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     fn principal(uid: u32, session: &str) -> MemoryPrincipal {
         MemoryPrincipal {
             peer_uid: uid,

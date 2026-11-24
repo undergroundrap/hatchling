@@ -390,7 +390,7 @@ fn a_migration_cut_short_finishes_when_run_again_and_doubles_nothing() {
     let me = principal();
     plaintext(&root, &me);
     // Cut short after one item was sealed, before its file was removed.
-    let files = hatchling_memory::Files::new(&root, rustix::process::getuid().as_raw());
+    let files = hatchling_memory::Files::of_this_user(&root);
     let space = Space::new(vec![String::from("user"), String::from("4242")]);
     let bytes = files.get(&space, &id("a")).unwrap().unwrap();
     SealedMemory::new(&root, &key)
@@ -426,4 +426,20 @@ fn a_file_that_isnt_the_item_its_named_for_is_left_where_it_is() {
     );
     assert!(user.join("b.json").exists() && user.join("c.json").exists());
     assert!(!user.join("a.json").exists(), "the real one moved");
+}
+
+#[test]
+fn an_item_that_cant_be_sealed_keeps_its_file() {
+    let (_scratch, key, root) = sealed("migrate-keep");
+    let me = principal();
+    plaintext(&root, &me);
+    // An item too large for the sealed store: its file is all there is.
+    let path = root.join("user").join("4242").join("a.json");
+    let mut item: hatchling_memory::MemoryItem =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    item.content = "x".repeat(sealed_blobs::MAX_CHUNKS * hatchling_vault::MAX_SECRET_BYTES);
+    let bytes = serde_json::to_vec(&item).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    assert!(migrate(&root, &key).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file kept, whole");
 }

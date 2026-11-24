@@ -16,8 +16,9 @@ use std::path::{Path, PathBuf};
 use crate::item::MemoryId;
 use crate::{Error, owner_dir};
 
-/// A scope's place: the segments its binding resolves to, such as
-/// `["user", "1000"]`, `["project", "1000", "notes"]` or
+/// A scope's place: the segments its binding resolves to.
+///
+/// Such as `["user", "1000"]`, `["project", "1000", "notes"]` or
 /// `["session", "<id>"]`. Built by the store alone, from the
 /// broker-asserted principal.
 #[derive(
@@ -82,10 +83,11 @@ pub trait Backing: Send + Sync + std::fmt::Debug {
 /// An item's file suffix. Only files with it are items.
 const ITEM_SUFFIX: &str = ".json";
 
-/// Items as files: `<root>/<segments...>/<id>.json`, each directory `0700`
-/// and owned by `owner`, each file written whole (temp, fsync, rename,
-/// directory fsync). The store's layout before WO-047, and what a
-/// migration reads.
+/// Items as files: `<root>/<segments...>/<id>.json`.
+///
+/// Each directory is `0700` and owned by `owner`, each file written whole
+/// (temp, fsync, rename, directory fsync). The store's layout before
+/// WO-047, and what a migration reads.
 #[derive(Debug)]
 pub struct Files {
     root: PathBuf,
@@ -100,6 +102,12 @@ impl Files {
             root: root.to_path_buf(),
             owner,
         }
+    }
+
+    /// Files under `root`, owned by this process's user.
+    #[must_use]
+    pub fn of_this_user(root: &Path) -> Self {
+        Self::new(root, rustix::process::getuid().as_raw())
     }
 
     /// The directory of `space`, made `0700` level by level, never through
