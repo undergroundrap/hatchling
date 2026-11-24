@@ -250,6 +250,28 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         }
     }
 
+    /// The limit the run is at before its next turn, if one: its time
+    /// ([`with_deadline`](Self::with_deadline)), then its room
+    /// ([`with_room`](Self::with_room)); and what it's told at it.
+    fn limit_reached(
+        &self,
+        model: &dyn Model,
+        history: &[Message],
+        tools: &[crate::tool::ToolDescription],
+    ) -> Option<(&str, Limit)> {
+        if let Some((_, note)) = self
+            .deadline
+            .as_ref()
+            .filter(|(at, _)| std::time::Instant::now() >= *at)
+        {
+            return Some((note, Limit::Time));
+        }
+        self.room
+            .as_deref()
+            .filter(|_| !model.fits(history, tools))
+            .map(|note| (note, Limit::Room))
+    }
+
     /// The run's last turn at a limit, room or time: told `note`, offered
     /// no tools, and sent only if it fits. Its answer is the run's, marked
     /// for the limit; anything else ends the run at it.
@@ -506,19 +528,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                 history.extend(more().into_iter().map(Message::User));
             }
             let last = step > 0 && ledger.remaining() == 0;
-            if let Some((_, note)) = self
-                .deadline
-                .as_ref()
-                .filter(|(at, _)| std::time::Instant::now() >= *at)
-            {
-                return Self::wrap_up(model, history, note, step + 1, Limit::Time);
-            }
-            if let Some(note) = self
-                .room
-                .as_ref()
-                .filter(|_| !model.fits(&history, &tool_descriptions))
-            {
-                return Self::wrap_up(model, history, note, step + 1, Limit::Room);
+            if let Some((note, limit)) = self.limit_reached(model, &history, &tool_descriptions) {
+                return Self::wrap_up(model, history, note, step + 1, limit);
             }
             let action = self.turn(model, &mut history, &tool_descriptions, last);
             step += 1;

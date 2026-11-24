@@ -112,9 +112,10 @@ pub fn answered_out_of_steps(code: i32) -> bool {
 }
 
 /// Whether an agent's exit status says it answered as one of its limits
-/// came, its steps ([`ANSWERED_OUT_OF_STEPS`]), its room
-/// ([`ANSWERED_OUT_OF_ROOM`]) or its time ([`ANSWERED_OUT_OF_TIME`]): its
-/// answer may leave work undone.
+/// came, so its answer may leave work undone.
+///
+/// The limit is its steps ([`ANSWERED_OUT_OF_STEPS`]), its room
+/// ([`ANSWERED_OUT_OF_ROOM`]) or its time ([`ANSWERED_OUT_OF_TIME`]).
 #[must_use]
 pub fn answered_at_a_limit(code: i32) -> bool {
     answered_out_of_steps(code)

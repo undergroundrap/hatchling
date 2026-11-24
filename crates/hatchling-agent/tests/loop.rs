@@ -52,6 +52,7 @@ fn ready_cell_offering(
         run_earlier: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
         run_tools,
+        run_deadline: None,
         vault_fd: None,
     };
     Cell::new(config)
