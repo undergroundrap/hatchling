@@ -173,6 +173,8 @@ pub fn child_config(
         subagent_depth: parent.scheduler.subagent_depth.saturating_add(1),
         // A child's model calls are the owner's usage too.
         usage: parent.scheduler.usage.clone(),
+        // A child is a run with nobody there (WO-051).
+        run_tokens: Some(crate::run_launcher::RUN_TOKENS),
         ..SchedulerConfig::disabled()
     };
     child
@@ -450,6 +452,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             event: None,
             max_steps: Some(budget),
             deadline: None,
+            token_budget: None,
             subagent: true,
             chat: false,
             history: Vec::new(),

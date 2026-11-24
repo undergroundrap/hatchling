@@ -118,6 +118,9 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
             Some(RunFailure::OutOfSteps) => String::from(
                 "The agent used all its steps before it finished, and didn't say where it got to. Ask it to go on, or for something smaller.",
             ),
+            Some(RunFailure::OutOfTokens) => String::from(
+                "The agent used its token budget for one run before it finished, and didn't say where it got to. Ask it to go on, or for something smaller.",
+            ),
             Some(RunFailure::OutOfTime) => String::from(
                 "The agent's time ran out before it finished, and it didn't say where it got to. Ask it to go on, or for something smaller.",
             ),

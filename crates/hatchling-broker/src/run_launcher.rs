@@ -242,6 +242,22 @@ pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// keeps [`DEFAULT_RUN_TIMEOUT`].
 pub const CHAT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// A chat run's token budget: the input tokens its model calls may sum to
+/// (WO-051). About $6 at a frontier model's list price, and room for 200
+/// turns at a 10,000-token prompt.
+pub const CHAT_RUN_TOKENS: u64 = 2_000_000;
+
+/// The token budget of a run with nobody there: a schedule's, a hook's, a
+/// follow-up's or a child's (WO-051).
+pub const RUN_TOKENS: u64 = 200_000;
+
+/// The token budget of a run of this kind: a chat's, or one with nobody
+/// there.
+#[must_use]
+pub const fn run_tokens(chat: bool) -> u64 {
+    if chat { CHAT_RUN_TOKENS } else { RUN_TOKENS }
+}
+
 /// Most output a run may produce, in bytes.
 pub const MAX_RUN_OUTPUT_BYTES: usize = 16 * 1024;
 
@@ -291,9 +307,10 @@ impl RunEnv {
     }
 }
 
-/// `run` with its deadline, and its clock: a chat's, whose owner is there,
-/// or a run's with nobody there (WO-051). The deadline is told to its
-/// agent so it answers first; the clock is what ends it.
+/// `run` with its deadline and its token budget, and its clock: a chat's,
+/// whose owner is there, or a run's with nobody there (WO-051). Both are
+/// told to its agent so it answers first; the clock, and the budget its
+/// session holds it to, are what end it.
 fn clocked(env: &RunEnv, run: ScheduledRun) -> (ScheduledRun, Duration) {
     let timeout = if run.chat {
         env.chat_timeout
@@ -302,6 +319,7 @@ fn clocked(env: &RunEnv, run: ScheduledRun) -> (ScheduledRun, Duration) {
     };
     let run = ScheduledRun {
         deadline: Some(deadline_after(timeout)),
+        token_budget: Some(run_tokens(run.chat)),
         ..run
     };
     (run, timeout)
@@ -345,6 +363,8 @@ pub fn scoped_config(
     // A chat has its person there to decide on a site (WO-028); a
     // scheduled run asks, and goes on without the page.
     run.web.attended = request.chat;
+    // Its model calls sum to no more than its kind's budget (WO-051).
+    run.scheduler.run_tokens = Some(run_tokens(request.chat));
     // The owner's signed-in profiles, and the sign-ins filled into them,
     // are used only where the owner is there to see it: their agent's own
     // session and a chat (WO-030). A scheduled run, a hook's and a
@@ -911,6 +931,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         event: request.event.clone(),
         max_steps: None,
         deadline: None,
+        token_budget: None,
         subagent: false,
         chat: request.chat,
         history: request.history.clone(),
@@ -1948,6 +1969,7 @@ mod tests {
             event: None,
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2360,6 +2382,7 @@ mod tests {
             event: None,
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2395,6 +2418,7 @@ mod tests {
             event: None,
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),

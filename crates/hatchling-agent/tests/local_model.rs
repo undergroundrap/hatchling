@@ -208,6 +208,7 @@ fn ready_cell_with_reasoning(
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,
         run_deadline: None,
+        run_token_budget: None,
         vault_fd: None,
     };
     Cell::new(config)

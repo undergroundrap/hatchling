@@ -162,6 +162,10 @@ impl Cell<Ready> {
             })?
             .with_reasoning(self.config().model_reasoning)
             .with_redactor(redactor);
+        let provider = match self.config().run_token_budget {
+            Some(budget) => provider.with_token_budget(budget),
+            None => provider,
+        };
         provider
             .verify_capabilities()
             .map_err(|error| match error {
@@ -195,6 +199,7 @@ impl Cell<Ready> {
                 Error::ModelCutOff(error.to_string())
             }
             hatchling_loop::Error::OutOfTime => Error::OutOfTime(error.to_string()),
+            hatchling_loop::Error::OutOfTokens => Error::OutOfTokens(error.to_string()),
             hatchling_loop::Error::ModelSilent(_) => Error::ModelSilent(error.to_string()),
             hatchling_loop::Error::ModelThoughtOnly(_) => {
                 Error::ModelThoughtOnly(error.to_string())
@@ -314,6 +319,9 @@ pub struct RunAnswer {
     /// Whether the run's time was nearly up as it answered
     /// ([`hatchling_loop::LoopResult::out_of_time`]).
     pub out_of_time: bool,
+    /// Whether the run's token budget was nearly spent as it answered
+    /// ([`hatchling_loop::LoopResult::out_of_tokens`]).
+    pub out_of_tokens: bool,
 }
 
 impl From<LoopResult> for RunAnswer {
@@ -323,6 +331,7 @@ impl From<LoopResult> for RunAnswer {
             out_of_steps: result.out_of_steps,
             out_of_room: result.out_of_room,
             out_of_time: result.out_of_time,
+            out_of_tokens: result.out_of_tokens,
         }
     }
 }
@@ -396,6 +405,7 @@ pub fn run_command(task_args: &[String]) -> Result<RunAnswer, Error> {
             out_of_steps: false,
             out_of_room: false,
             out_of_time: false,
+            out_of_tokens: false,
         });
     }
     Ok(outcome?.into())
@@ -482,6 +492,7 @@ mod tests {
             run_builders: std::collections::BTreeMap::new(),
             run_tools: None,
             run_deadline: None,
+            run_token_budget: None,
             vault_fd: None,
         };
         assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);
@@ -579,6 +590,7 @@ mod tests {
             out_of_steps: false,
             out_of_room: false,
             out_of_time: false,
+            out_of_tokens: false,
         }))
         .unwrap();
         let done_wire = r#"{"status":"done","verdict":"ok","answer":"a","steps":2}"#;
@@ -596,11 +608,12 @@ mod tests {
     /// A run's answer keeps what the loop said of its steps and its room.
     #[test]
     fn a_runs_answer_says_whether_its_steps_or_room_ran_out() {
-        for (out_of_steps, out_of_room, out_of_time) in [
-            (true, false, false),
-            (false, true, false),
-            (false, false, true),
-            (false, false, false),
+        for (out_of_steps, out_of_room, out_of_time, out_of_tokens) in [
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+            (false, false, false, false),
         ] {
             let answer = RunAnswer::from(LoopResult {
                 answer: String::from("this far"),
@@ -609,6 +622,7 @@ mod tests {
                 out_of_steps,
                 out_of_room,
                 out_of_time,
+                out_of_tokens,
             });
             assert_eq!(
                 answer,
@@ -617,6 +631,7 @@ mod tests {
                     out_of_steps,
                     out_of_room,
                     out_of_time,
+                    out_of_tokens,
                 }
             );
         }

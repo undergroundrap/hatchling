@@ -984,6 +984,7 @@ fn serve_session(
     .of_chat(config.web.attended && config.scheduler.followup.is_some())
     .counting_in(&config.scheduler.usage)
     .with_window(config.scheduler.model_context_window)
+    .with_budget(config.scheduler.run_tokens)
     .asking(
         config.scheduler.model_endpoint.as_deref(),
         config.scheduler.model_name.as_deref(),
@@ -1531,6 +1532,18 @@ pub(crate) fn handle_egress_op(
                     spent = reached.spent,
                     limit = reached.limit,
                     "model call refused: the owner's usage limit is reached"
+                );
+                crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::OverLimit);
+                return Ok(EgressResult::Denied);
+            }
+            if let Some(budget) = crate::usage::is_model_call(method, path)
+                .then(|| trail.over_budget())
+                .flatten()
+            {
+                tracing::warn!(
+                    cell_id = %cell_id,
+                    budget,
+                    "model call refused: the run's token budget is spent"
                 );
                 crate::machine::decided(cell_id.as_str(), destination, EgressVerdict::OverLimit);
                 return Ok(EgressResult::Denied);

@@ -187,6 +187,12 @@ pub struct ChatCompletionsProvider<T: Transport> {
     window: Option<u32>,
     /// What its server reported of the last request it answered.
     seen: Mutex<Option<Seen>>,
+    /// The run's token budget, in input tokens summed over its calls,
+    /// when it has one (WO-051).
+    budget: Option<u64>,
+    /// The input tokens its server reported, summed over every request it
+    /// answered.
+    spent: Mutex<u64>,
 }
 
 impl<T: Transport> ChatCompletionsProvider<T> {
@@ -215,7 +221,22 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             transport,
             window: config.context_window,
             seen: Mutex::new(None),
+            budget: None,
+            spent: Mutex::new(0),
         })
+    }
+
+    /// Keeps requests within `budget` input tokens, summed over the run's
+    /// calls as its server reports them (WO-051).
+    #[must_use]
+    pub const fn with_token_budget(mut self, budget: u64) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// The input tokens its server has reported, summed.
+    fn spent(&self) -> MutexGuard<'_, u64> {
+        self.spent.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What the server reported of the last request it answered, held
@@ -406,6 +427,9 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         let body_bytes = self.wire(body)?;
         let reply = self.send(&body_bytes)?;
         if let Some(prompt_tokens) = prompt_tokens(&reply) {
+            let mut spent = self.spent();
+            *spent = spent.saturating_add(prompt_tokens);
+            drop(spent);
             *self.seen() = Some(Seen {
                 prompt_tokens,
                 bytes: u64::try_from(body_bytes.len()).unwrap_or(u64::MAX),
@@ -639,6 +663,24 @@ impl<T: Transport> Model for ChatCompletionsProvider<T> {
         self.tokens_in(wire.len())
             .saturating_add(u64::from(room_kept(window)))
             <= u64::from(window)
+    }
+
+    /// Whether the request, measured as [`fits`](Self::fits) measures
+    /// it, keeps what's spent within the budget. Without a budget, or a
+    /// request this can't build, it does.
+    fn affords(&self, messages: &[Message], tools: &[ToolDescription]) -> bool {
+        let Some(budget) = self.budget else {
+            return true;
+        };
+        let Ok(mut body) = self.request_body(messages, tools) else {
+            return true;
+        };
+        self.redactor.redact_value(&mut body);
+        let Ok(wire) = self.wire(&body) else {
+            return true;
+        };
+        let spent = *self.spent();
+        spent.saturating_add(self.tokens_in(wire.len())) <= budget
     }
 
     fn next_action(

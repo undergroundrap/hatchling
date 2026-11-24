@@ -592,6 +592,11 @@ pub struct ScheduledRun {
     /// clock is what ends it.
     #[serde(default)]
     pub deadline: Option<i64>,
+    /// The run's token budget, in input tokens summed over its model calls
+    /// (WO-051): its agent answers before its next call would cross it. The
+    /// broker's session holds the run to it.
+    #[serde(default)]
+    pub token_budget: Option<u64>,
     /// Whether the run is a subagent: its agent then reports how
     /// it ended in a typed envelope.
     #[serde(default)]
@@ -640,6 +645,9 @@ impl ScheduledRun {
         }
         if let Some(deadline) = self.deadline {
             env.push(("HATCHLING_RUN_DEADLINE", deadline.to_string()));
+        }
+        if let Some(budget) = self.token_budget {
+            env.push(("HATCHLING_RUN_TOKEN_BUDGET", budget.to_string()));
         }
         if self.subagent {
             env.push(("HATCHLING_RUN_SUBAGENT", String::from("1")));
@@ -2642,6 +2650,7 @@ mod run_cell_tests {
             }),
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2789,6 +2798,7 @@ mod run_cell_tests {
             event: None,
             max_steps: Some(4),
             deadline: None,
+            token_budget: None,
             subagent: true,
             ..run()
         };

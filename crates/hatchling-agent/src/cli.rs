@@ -106,13 +106,18 @@ fn run_lifecycle() -> Result<(), Error> {
 /// The status a run that answered exits with: its own when its steps or
 /// its room ran out as it answered, so the broker knows its answer may
 /// leave work undone.
-const fn answered(out_of_steps: bool, out_of_room: bool, out_of_time: bool) -> u8 {
-    if out_of_steps {
-        hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS
-    } else if out_of_room {
-        hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM
-    } else if out_of_time {
-        hatchling_core::run_failure::ANSWERED_OUT_OF_TIME
+const fn answered(run: &crate::model::RunAnswer) -> u8 {
+    use hatchling_core::run_failure::{
+        ANSWERED_OUT_OF_ROOM, ANSWERED_OUT_OF_STEPS, ANSWERED_OUT_OF_TIME, ANSWERED_OUT_OF_TOKENS,
+    };
+    if run.out_of_steps {
+        ANSWERED_OUT_OF_STEPS
+    } else if run.out_of_room {
+        ANSWERED_OUT_OF_ROOM
+    } else if run.out_of_time {
+        ANSWERED_OUT_OF_TIME
+    } else if run.out_of_tokens {
+        ANSWERED_OUT_OF_TOKENS
     } else {
         0
     }
@@ -133,7 +138,7 @@ fn run_task(task_args: &[String]) -> Result<u8, Error> {
     let run = run_command(task_args)?;
     let mut stdout = std::io::stdout().lock();
     let _ = writeln!(stdout, "{}", run.answer);
-    Ok(answered(run.out_of_steps, run.out_of_room, run.out_of_time))
+    Ok(answered(&run))
 }
 
 #[cfg(test)]
@@ -203,23 +208,26 @@ mod tests {
 
     #[test]
     fn a_run_that_answered_as_its_steps_ran_out_has_a_status_of_its_own() {
-        assert_eq!(answered(false, false, false), 0);
+        use hatchling_core::run_failure::{
+            ANSWERED_OUT_OF_ROOM, ANSWERED_OUT_OF_STEPS, ANSWERED_OUT_OF_TIME,
+            ANSWERED_OUT_OF_TOKENS,
+        };
+        let ran = |out_of_steps, out_of_room, out_of_time, out_of_tokens| crate::model::RunAnswer {
+            answer: String::new(),
+            out_of_steps,
+            out_of_room,
+            out_of_time,
+            out_of_tokens,
+        };
+        assert_eq!(answered(&ran(false, false, false, false)), 0);
+        assert_eq!(answered(&ran(true, false, false, false)), ANSWERED_OUT_OF_STEPS);
+        assert_eq!(answered(&ran(false, true, false, false)), ANSWERED_OUT_OF_ROOM);
+        assert_eq!(answered(&ran(false, false, true, false)), ANSWERED_OUT_OF_TIME);
+        assert_eq!(answered(&ran(false, false, false, true)), ANSWERED_OUT_OF_TOKENS);
         assert_eq!(
-            answered(true, false, false),
-            hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS
-        );
-        assert_eq!(
-            answered(false, true, false),
-            hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM
-        );
-        assert_eq!(
-            answered(true, true, false),
-            hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS,
+            answered(&ran(true, true, true, true)),
+            ANSWERED_OUT_OF_STEPS,
             "steps first: the run's last step was its last"
-        );
-        assert_eq!(
-            answered(false, false, true),
-            hatchling_core::run_failure::ANSWERED_OUT_OF_TIME
         );
     }
 

@@ -74,6 +74,10 @@ pub struct LoopResult {
     /// to answer with no tools ([`Loop::with_deadline`]). Such an answer
     /// may leave work undone.
     pub out_of_time: bool,
+    /// Whether the run's token budget was nearly spent as it answered, so
+    /// it was told to answer with no tools ([`Loop::with_budget`]). Such an
+    /// answer may leave work undone.
+    pub out_of_tokens: bool,
 }
 
 impl LoopResult {
@@ -86,6 +90,7 @@ impl LoopResult {
             out_of_steps,
             out_of_room: false,
             out_of_time: false,
+            out_of_tokens: false,
         }
     }
 }
@@ -97,6 +102,8 @@ enum Limit {
     Room,
     /// Its time was nearly up.
     Time,
+    /// Its next call would have crossed its token budget.
+    Tokens,
 }
 
 /// `text`'s first `cap` bytes, ending on a character, and a line saying
@@ -131,6 +138,7 @@ pub struct Loop<'t, 'r, 'm> {
     room: Option<String>,
     output_cap: Option<usize>,
     deadline: Option<(std::time::Instant, String)>,
+    budget: Option<String>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -147,6 +155,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("room", &self.room.is_some())
             .field("output_cap", &self.output_cap)
             .field("deadline", &self.deadline.as_ref().map(|(at, _)| at))
+            .field("budget", &self.budget.is_some())
             .finish()
     }
 }
@@ -174,6 +183,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             room: None,
             output_cap: None,
             deadline: None,
+            budget: None,
         }
     }
 
@@ -220,6 +230,19 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         self
     }
 
+    /// Keep within the run's token budget (WO-051). Before every turn the
+    /// model is asked whether the request keeps within it
+    /// ([`Model::affords`]). When it doesn't, `note` is put to the model
+    /// and it's offered no tools: its answer is the run's, marked
+    /// [`LoopResult::out_of_tokens`]. That last turn may cross the budget,
+    /// as the call that crosses an owner's limit finishes; whoever holds
+    /// the budget refuses the next.
+    #[must_use]
+    pub fn with_budget(mut self, note: String) -> Self {
+        self.budget = Some(note);
+        self
+    }
+
     /// Cut each tool's output to a quarter of a `window` of tokens before
     /// it joins the history, saying so (WO-051): one tool's output can't
     /// fill the window by itself.
@@ -251,7 +274,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     }
 
     /// The limit the run is at before its next turn, if one: its time
-    /// ([`with_deadline`](Self::with_deadline)), then its room
+    /// ([`with_deadline`](Self::with_deadline)), its tokens
+    /// ([`with_budget`](Self::with_budget)), then its room
     /// ([`with_room`](Self::with_room)); and what it's told at it.
     fn limit_reached(
         &self,
@@ -266,13 +290,20 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         {
             return Some((note, Limit::Time));
         }
+        if let Some(note) = self
+            .budget
+            .as_deref()
+            .filter(|_| !model.affords(history, tools))
+        {
+            return Some((note, Limit::Tokens));
+        }
         self.room
             .as_deref()
             .filter(|_| !model.fits(history, tools))
             .map(|note| (note, Limit::Room))
     }
 
-    /// The run's last turn at a limit, room or time: told `note`, offered
+    /// The run's last turn at a limit, room, time or tokens: told `note`, offered
     /// no tools, and sent only if it fits. Its answer is the run's, marked
     /// for the limit; anything else ends the run at it.
     fn wrap_up(
@@ -285,6 +316,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         let ended = match limit {
             Limit::Room => Error::OutOfRoom,
             Limit::Time => Error::OutOfTime,
+            Limit::Tokens => Error::OutOfTokens,
         };
         history.push(Message::Note(note.to_owned()));
         if !model.fits(&history, &[]) {
@@ -300,6 +332,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                     out_of_steps: false,
                     out_of_room: limit == Limit::Room,
                     out_of_time: limit == Limit::Time,
+                    out_of_tokens: limit == Limit::Tokens,
                 })
             }
             Ok(ModelAction::ToolCalls(_)) => Err(ended),

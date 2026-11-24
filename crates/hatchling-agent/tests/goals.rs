@@ -51,6 +51,7 @@ fn ready_cell(broker: &FixtureBroker) -> Result<Cell<Ready>, Error> {
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,
         run_deadline: None,
+        run_token_budget: None,
         vault_fd: None,
     };
     let cell = Cell::new(config)

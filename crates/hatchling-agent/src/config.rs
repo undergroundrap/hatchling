@@ -107,6 +107,10 @@ pub struct Config {
     /// When the broker ends the run, in Unix seconds
     /// (`HATCHLING_RUN_DEADLINE`, WO-051): the run answers before it.
     pub run_deadline: Option<i64>,
+    /// The run's token budget, in input tokens summed over its calls
+    /// (`HATCHLING_RUN_TOKEN_BUDGET`, WO-051): the run answers before its
+    /// next call would cross it.
+    pub run_token_budget: Option<u64>,
 }
 
 impl Config {
@@ -202,6 +206,14 @@ impl Config {
                 })
             })
             .transpose()?;
+        let run_token_budget = get(env::HATCHLING_RUN_TOKEN_BUDGET.name)
+            .map(|raw| {
+                raw.parse::<u64>().map_err(|_| Error::InvalidConfig {
+                    key: "HATCHLING_RUN_TOKEN_BUDGET",
+                    reason: String::from("expected a base-10 count of input tokens"),
+                })
+            })
+            .transpose()?;
         let run_tools = get(env::HATCHLING_RUN_TOOLS.name)
             .map(|raw| {
                 hatchling_core::run_tools::parse(&raw).map_err(|reason| Error::InvalidConfig {
@@ -228,6 +240,7 @@ impl Config {
             run_builders,
             run_tools,
             run_deadline,
+            run_token_budget,
         })
     }
 }

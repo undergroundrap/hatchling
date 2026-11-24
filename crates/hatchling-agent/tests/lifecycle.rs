@@ -29,6 +29,7 @@ fn config_for(socket_path: &str, broker_uid: u32) -> Result<Config, Error> {
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,
         run_deadline: None,
+        run_token_budget: None,
         vault_fd: None,
     })
 }

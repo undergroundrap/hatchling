@@ -292,6 +292,10 @@ impl Cell<PeerAuthorized> {
 /// offered no tools: to say where it got to.
 pub(crate) const OUT_OF_TIME: &str = "Your time is nearly up: Hatchling ends this run in a moment, so you have no tool calls left in this reply; don't call a tool. Tell the person plainly that you ran out of time before you finished, what you did, what you found, and what is left to do. They can ask you to go on.";
 
+/// What the model is told when its next call would cross its token budget
+/// (WO-051), where it is offered no tools: to say where it got to.
+pub(crate) const OUT_OF_TOKENS: &str = "Your token budget for this run is nearly spent: the next step would cross it, so you have no tool calls left in this reply; don't call a tool. Tell the person plainly that you reached this run's budget before you finished, what you did, what you found, and what is left to do. They can ask you to go on.";
+
 /// How long before its deadline a run answers: a turn that would start
 /// inside it is the run's last (WO-051).
 pub(crate) const WRAP_UP: std::time::Duration = std::time::Duration::from_secs(90);
@@ -642,6 +646,7 @@ impl Cell<Ready> {
             .with_ledger(ledger)
             .with_last_step(String::from(LAST_STEP))
             .with_room(String::from(OUT_OF_ROOM))
+            .with_budget(String::from(OUT_OF_TOKENS))
             .with_unfinished(Box::new(|| running.unfinished()))
             .with_memory_provider(Box::new(crate::memory_provider::BrokerMemoryProvider::new(
                 self.connection(),
@@ -744,6 +749,7 @@ mod tests {
             run_builders: std::collections::BTreeMap::new(),
             run_tools: None,
             run_deadline: None,
+            run_token_budget: None,
             vault_fd: None,
         }
     }
