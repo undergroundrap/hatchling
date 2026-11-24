@@ -122,6 +122,11 @@ exclude_re = [
     # are deleted. That is the redundancy working. Mutants of
     # `past_its_ttl` itself are killed by its own test.
     'store\.rs:\d+:\d+: replace match guard is_expired\(&item, now_secs\) with true in MemoryStore::purge_expired',
+    # `memory_sealed::migrate`: `if done.moved > 0 || done.left > 0` only
+    # decides whether an info line is logged; the counts are returned
+    # either way, and no test can observe the log. Same class as
+    # `purge_expired`'s above.
+    'memory_sealed\.rs:\d+:\d+: replace (\|\| with &&|> with (==|<|>=)) in migrate$',
     'session\.rs:\d+:\d+: replace > with (<|==|>=) in SessionStore<.s>::reconcile_stale',
     'session\.rs:\d+:\d+: replace \+= with (\*=|-=) in SessionStore<.s>::reconcile$',
     # `ensure_chain` (moved verbatim from `MemoryStore::scope_dir` by

@@ -440,6 +440,32 @@ fn an_item_that_cant_be_sealed_keeps_its_file() {
     item.content = "x".repeat(sealed_blobs::MAX_CHUNKS * hatchling_vault::MAX_SECRET_BYTES);
     let bytes = serde_json::to_vec(&item).unwrap();
     std::fs::write(&path, &bytes).unwrap();
-    assert!(migrate(&root, &key).is_err());
+    let most = sealed_blobs::MAX_CHUNKS * hatchling_vault::MAX_SECRET_BYTES;
+    assert!(matches!(
+        migrate(&root, &key),
+        Err(hatchling_memory::Error::EncodedTooLarge { len, max })
+            if len == bytes.len() && max == most
+    ));
     assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file kept, whole");
+}
+
+#[test]
+fn every_key_is_a_name_of_its_own() {
+    let user = Space::new(vec![String::from("user"), String::from("4242")]);
+    let other = Space::new(vec![String::from("user"), String::from("4243")]);
+    let keys = [
+        item_key(&user, &id("a")),
+        item_key(&user, &id("b")),
+        item_key(&other, &id("a")),
+        index_key(&user),
+        index_key(&other),
+        registry_key(),
+    ];
+    for key in &keys {
+        assert_eq!(key.len(), 40, "{key}");
+        assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()), "{key}");
+    }
+    let distinct: BTreeSet<&String> = keys.iter().collect();
+    assert_eq!(distinct.len(), keys.len());
+    assert_eq!(registry_key(), sealed_blobs::key_of(&[b"spaces"]));
 }

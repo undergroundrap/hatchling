@@ -39,7 +39,10 @@ pub enum Failure {
     /// chunk missing or of the wrong size.
     Corrupt,
     /// The value needs more than [`MAX_CHUNKS`] chunks.
-    TooLarge,
+    TooLarge {
+        /// The value's length.
+        len: usize,
+    },
 }
 
 impl From<hatchling_vault::Error> for Failure {
@@ -136,9 +139,9 @@ pub fn write(vault: &SealedVault<'_>, key: &str, value: &[u8]) -> Result<(), Fai
         value.chunks(MAX_SECRET_BYTES).collect()
     };
     if pieces.len() > MAX_CHUNKS {
-        return Err(Failure::TooLarge);
+        return Err(Failure::TooLarge { len: value.len() });
     }
-    let chunks = u16::try_from(pieces.len()).map_err(|_| Failure::TooLarge)?;
+    let chunks = u16::try_from(pieces.len()).map_err(|_| Failure::TooLarge { len: value.len() })?;
     let old = head(vault, key)?;
     let generation = old.map_or(1, |old| old.generation.wrapping_add(1));
     for (chunk, piece) in (0..chunks).zip(&pieces) {

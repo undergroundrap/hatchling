@@ -137,7 +137,7 @@ fn too_large_a_value_is_refused_before_anything_is_written() {
     );
     assert!(matches!(
         write(&vault, &k, &vec![0; MAX_CHUNKS * MAX_SECRET_BYTES + 1]),
-        Err(Failure::TooLarge)
+        Err(Failure::TooLarge { len }) if len == MAX_CHUNKS * MAX_SECRET_BYTES + 1
     ));
     assert_eq!(
         read(&vault, &k).unwrap().map(|value| value.len()),

@@ -87,8 +87,8 @@ fn registry_key() -> String {
 fn told(failure: Failure) -> hatchling_memory::Error {
     match failure {
         Failure::Corrupt => hatchling_memory::Error::Corrupt,
-        Failure::TooLarge => hatchling_memory::Error::EncodedTooLarge {
-            len: 0,
+        Failure::TooLarge { len } => hatchling_memory::Error::EncodedTooLarge {
+            len,
             max: sealed_blobs::MAX_CHUNKS * hatchling_vault::MAX_SECRET_BYTES,
         },
         Failure::Vault(hatchling_vault::Error::DecryptFailed { .. }) => {
@@ -105,10 +105,10 @@ fn read_set<T: Ord + serde::de::DeserializeOwned>(
     vault: &SealedVault<'_>,
     key: &str,
 ) -> Result<BTreeSet<T>, Failure> {
-    match sealed_blobs::read(vault, key)? {
-        Some(bytes) => serde_json::from_slice(&bytes).map_err(|_| Failure::Corrupt),
-        None => Ok(BTreeSet::new()),
-    }
+    sealed_blobs::read(vault, key)?.map_or_else(
+        || Ok(BTreeSet::new()),
+        |bytes| serde_json::from_slice(&bytes).map_err(|_| Failure::Corrupt),
+    )
 }
 
 fn write_set<T: serde::Serialize>(
@@ -223,22 +223,28 @@ pub fn publish(keys: Box<dyn OpensStores>) {
     let _ = KEYS.set(keys);
 }
 
-/// The published keys. A test's process publishes a master key of its own
-/// the first time one is asked for; any other process that hasn't
-/// published has none, and opens no memory.
+/// The published keys. A process that hasn't published has none, and
+/// opens no memory.
+#[cfg(not(test))]
 fn published() -> Option<&'static dyn OpensStores> {
-    #[cfg(test)]
-    {
-        let keys = KEYS.get_or_init(|| {
-            Box::new(
-                hatchling_vault::MasterKey::generate()
-                    .unwrap_or_else(|_| unreachable!("the test's key")),
-            )
-        });
-        return Some(keys.as_ref());
-    }
-    #[cfg(not(test))]
     KEYS.get().map(AsRef::as_ref)
+}
+
+/// The published keys. A test's process publishes a master key of its own
+/// the first time one is asked for.
+#[cfg(test)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the build's signature, where there can be none"
+)]
+fn published() -> Option<&'static dyn OpensStores> {
+    let keys = KEYS.get_or_init(|| {
+        Box::new(
+            hatchling_vault::MasterKey::generate()
+                .unwrap_or_else(|_| unreachable!("the test's key")),
+        )
+    });
+    Some(keys.as_ref())
 }
 
 /// The memory store at the memory root `root`, its items sealed under the
