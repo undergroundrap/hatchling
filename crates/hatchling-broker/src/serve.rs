@@ -117,9 +117,6 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     // What the owner enabled, from its sealed store: until it's handed
     // over, every skill found waits (WO-046).
     crate::skill_enablement::load_enabled(config, &key, skills);
-    // Memory, sealed where it lives (WO-047): an install's plaintext items
-    // moved in first, then the key every memory read opens it with.
-    crate::memory_sealed::start(config, &key)?;
     // The output gate, when there is an ingress for it to guard:
     // from the operator's environment only, its settings recorded before
     // anything is served.
@@ -194,6 +191,11 @@ pub fn run_serve(config: &Config) -> Result<(), Error> {
     if crate::broker_user::drop_to_broker()? {
         let _swept = crate::sweep::sweep_at_start(config, redaction.as_ref());
     }
+    // Memory, sealed where it lives (WO-047): an install's plaintext items
+    // moved in first, then the key every memory read opens it with. As
+    // the broker's own user, whose memory is: the plaintext's
+    // directories are that user's, and root needn't touch them.
+    crate::memory_sealed::start(config, &key)?;
     // Then it holds itself to what it keeps and reads, root's broker or
     // not (WO-017, slice 4): nothing else of its user's, nothing to run.
     // Still on one thread: the confinement holds the thread that asks
