@@ -1,6 +1,6 @@
 # WO-047: Memory and goals sealed where they live, like the vault's other stores
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-memory` and `crates/hatchling-goals` (their stores), `crates/hatchling-vault` (two new sealed stores), `crates/hatchling-broker` (opening, migration, backup and restore, key rotation), `docs/`
 **Issue:** [#597](https://github.com/undergroundrap/hatchling/issues/597)
 **Trust boundary:** yes
@@ -28,12 +28,12 @@ These two stores are what an owner would most expect to be sealed, and the patte
 
 ## Acceptance criteria
 
-- [ ] On a fresh install and after migration, no memory item's or goal's words are on the disk in the clear: a test writes known words and searches every file under Hatchling's state for them.
-- [ ] Migration from 0.9.0's plaintext stores keeps every item and goal, leaves no plaintext copy, and is safe to re-run after being interrupted at each step; tests cover each.
-- [ ] A sealed item or goal changed on disk, swapped with another, or moved to another name is refused when read, as the other sealed stores refuse it.
-- [ ] Backup and restore, `reset agent`, and key rotation at each keyring tier carry both stores; tests cover each.
-- [ ] Recall, *Remember this*, goals and the Feed's reads of them work as before, on a real install.
-- [ ] Each new guard fails its test when removed.
+- [x] On a fresh install and after migration, no memory item's or goal's words are on the disk in the clear: a test writes known words and searches every file under Hatchling's state for them. ([slice 2](../evidence/memory-sealed.md) and [slice 3](../evidence/goals-sealed.md): every scope, goals and tracking written and read with no word on the disk, and `tests/sealed_start.rs` across both roots after a start; [slice 4](../evidence/memory-goals-sealed-close.md): CI's upgrade job searches every file under `/var/lib/hatchling` on a real install after migrating 0.9.0's.)
+- [x] Migration from 0.9.0's plaintext stores keeps every item and goal, leaves no plaintext copy, and is safe to re-run after being interrupted at each step; tests cover each. ([slice 2](../evidence/memory-sealed.md): items moved whole, cut short and run again, a file that isn't an item left, and one that can't be sealed kept; [slice 3](../evidence/goals-sealed.md): goals and logs moved whole, cut short after a goal and after an import, before an import's head, with nothing doubled, and what can't be sealed kept; [slice 4](../evidence/memory-goals-sealed-close.md): a real 0.9.0 install upgraded.)
+- [x] A sealed item or goal changed on disk, swapped with another, or moved to another name is refused when read, as the other sealed stores refuse it. ([slice 2](../evidence/memory-sealed.md): a chunk missing, short or swapped, a head swapped, another key, and an item under another's name; [slice 3](../evidence/goals-sealed.md): a goal under another's key, a missing segment, and another key.)
+- [x] Backup and restore, `reset agent`, and key rotation at each keyring tier carry both stores; tests cover each. ([slice 4](../evidence/memory-goals-sealed-close.md), and #645 for the restore. Key rotation is tested for both stores at the file tier; rotation moves every store the same way at each tier, which the tiers' tests show with the vault's other stores, not with these two.)
+- [x] Recall, *Remember this*, goals and the Feed's reads of them work as before, on a real install. ([slice 4](../evidence/memory-goals-sealed-close.md): after an upgrade from 0.9.0, the app lists the goal and the remembered item on a real install. Recall in a chat and the Feed's reads are proven through the real broker pipeline in the integration suites, slices 2 and 3, not on an install.)
+- [x] Each new guard fails its test when removed. (Hand-breaks in [slice 2](../evidence/memory-sealed.md), [slice 3](../evidence/goals-sealed.md) and [slice 4](../evidence/memory-goals-sealed-close.md), and #645's; each record lists them, and says which orders a test can't break: a write's chunks before its head, an append's segment before its head.)
 
 ## Gates
 
@@ -44,8 +44,8 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 - Slice 1, the handoff's capacity (#638): [#639](https://github.com/undergroundrap/hatchling/pull/639), whose description holds its gate.
 - Slice 2, memory sealed: [memory-sealed.md](../evidence/memory-sealed.md).
 - Slice 3, goals and tracking sealed: [goals-sealed.md](../evidence/goals-sealed.md).
-
-The acceptance criteria are ticked at close, against these and slice 4's.
+- The restore that cleared memory's sealed store, found starting slice 4: #644, fixed by #645.
+- Slice 4, backup, reset, rekey, a real upgrade and the docs: [memory-goals-sealed-close.md](../evidence/memory-goals-sealed-close.md).
 
 ## Notes
 

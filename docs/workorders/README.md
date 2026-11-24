@@ -86,7 +86,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [044](workorder-044-the-rooms-work-outlives-a-restart.md) | The Room's work outlives a restart: kept job records, receipts, and lock drilled with work running | yes | QUEUED |
 | [045](workorder-045-the-evaluation-harness.md) | The evaluation harness: how each model does as Hatchling's agent, measured and published |  | QUEUED |
 | [046](workorder-046-signed-playbook-skills.md) | Signed playbook skills: manifest v2, a signer, discovery, and the first skills | yes | CLOSED |
-| [047](workorder-047-memory-and-goals-sealed.md) | Memory and goals sealed where they live, like the vault's other stores | yes | IN-PROGRESS |
+| [047](workorder-047-memory-and-goals-sealed.md) | Memory and goals sealed where they live, like the vault's other stores | yes | CLOSED |
 | [048](workorder-048-memory-provenance-and-recall.md) | Memory that knows where it came from: provenance, supersession, bounded retrieval, then search | yes | QUEUED |
 | [049](workorder-049-your-voice.md) | Your voice: talk with the same agent, with speech models on your machine | yes | QUEUED |
 | [050](workorder-050-fuzz-what-comes-from-outside.md) | Fuzz every parser of what comes from outside | yes | QUEUED |
