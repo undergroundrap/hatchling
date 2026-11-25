@@ -392,13 +392,14 @@ pub(crate) fn fetch_with(
         body: Vec::new(),
         surrogate_b64: String::new(),
     };
-    let response = crate::https::forward(tls, &addrs, &request, None).map_err(|error| {
-        if matches!(error, crate::Error::ResponseTooLarge) {
-            FetchError::TooLarge
-        } else {
-            FetchError::Failed
-        }
-    })?;
+    let response = crate::https::forward(tls, &addrs, &request, None, &crate::Cut::default())
+        .map_err(|error| {
+            if matches!(error, crate::Error::ResponseTooLarge) {
+                FetchError::TooLarge
+            } else {
+                FetchError::Failed
+            }
+        })?;
     let header = |name: &str| {
         response
             .headers

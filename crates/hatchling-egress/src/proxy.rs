@@ -198,6 +198,23 @@ where
     /// [`Error::UpstreamFailed`] or [`Error::ResponseTooLarge`] for
     /// forwarding failures. All are opaque to the agent.
     pub fn forward(&self, peer_uid: u32, request: &EgressRequest) -> Result<EgressResponse> {
+        self.forward_or_cut(peer_uid, request, &crate::Cut::default())
+    }
+
+    /// As [`Proxy::forward`], with the upstream connection held for `cut`:
+    /// cut from another thread, the connection is shut down and the
+    /// forward fails at once, so an answer nobody will read isn't waited
+    /// for, or made (#657).
+    ///
+    /// # Errors
+    ///
+    /// As [`Proxy::forward`]; [`Error::UpstreamFailed`] once cut.
+    pub fn forward_or_cut(
+        &self,
+        peer_uid: u32,
+        request: &EgressRequest,
+        cut: &crate::Cut,
+    ) -> Result<EgressResponse> {
         // 1. Surrogate validation: signature, expiry, format.
         let validated: ValidatedSurrogate =
             validate_surrogate(&self.surrogate_key, &request.surrogate_b64)?;
@@ -266,13 +283,13 @@ where
         // anything else over HTTPS.
         let credential = credential.as_deref().map(Vec::as_slice);
         let mut response = if let Some(local) = self.allowlist.local(&request.destination) {
-            crate::local::forward(local.addrs(), request, credential)?
+            crate::local::forward(local.addrs(), request, credential, cut)?
         } else {
             let pinned = self
                 .allowlist
                 .addrs_for(&request.destination)
                 .ok_or(Error::DestinationDenied)?;
-            crate::https::forward(&self.tls, pinned, request, credential)?
+            crate::https::forward(&self.tls, pinned, request, credential, cut)?
         };
 
         // 9. Scrub: an upstream that echoes the credential must not hand

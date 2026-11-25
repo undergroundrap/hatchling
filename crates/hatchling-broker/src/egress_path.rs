@@ -30,6 +30,10 @@ pub enum RefusalKind {
     /// The request was allowed and sent, and no answer came in the time
     /// the broker waits for one: what was asked was still answering.
     NoAnswer,
+    /// The request was in flight when its run ended (its owner's Stop, a
+    /// hit, its clock), and was dropped: nobody will read its answer
+    /// (#657).
+    Ended,
 }
 
 /// A refused or failed egress request, and why, for the broker's log.
@@ -72,6 +76,15 @@ impl Refusal {
         Self {
             kind: RefusalKind::Failed,
             reason: reason.into(),
+        }
+    }
+
+    /// A request dropped in flight, its run having ended.
+    #[must_use]
+    pub fn ended() -> Self {
+        Self {
+            kind: RefusalKind::Ended,
+            reason: String::from("the run has ended"),
         }
     }
 
