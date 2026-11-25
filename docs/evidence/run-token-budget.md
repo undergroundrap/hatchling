@@ -33,7 +33,7 @@ New tests:
 - a run out of tokens answering with no tools, and a last turn for tokens that isn't an answer ending out of tokens;
 - the statuses at a limit, including 77 and 83, and 83 taken as an answer by the launcher;
 - end to end, `the_broker_refuses_a_call_past_the_runs_budget`: the agent's binary, told no budget, is refused its third call by the broker, which never reaches the server, and the run fails;
-- end to end, `a_run_at_its_token_budget_answers_with_no_tools`: the agent's binary, its first call reported as 60,000 tokens of a 100,000 budget, answers on its next turn with no tools offered and exits 83.
+- end to end, `a_run_at_its_token_budget_answers_with_no_tools`: the agent's binary, its first call reported as 10,000 tokens of a 15,000 budget, answers on its next turn with no tools offered and exits 83.
 
 **Hand-breaks**, each failing its tests and passing again when restored:
 
