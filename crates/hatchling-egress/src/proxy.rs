@@ -491,7 +491,7 @@ mod tests {
         let allowlist =
             Allowlist::parse_with("public:docs.example:443,internal:localhost:8443", |entry| {
                 match entry {
-                    "docs.example:443" => Ok(vec!["203.0.113.5:443".parse().unwrap()]),
+                    "docs.example:443" => Ok(vec!["93.184.215.14:443".parse().unwrap()]),
                     other => std::net::ToSocketAddrs::to_socket_addrs(other).map(Iterator::collect),
                 }
             })

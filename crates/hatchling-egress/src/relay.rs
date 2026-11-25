@@ -194,9 +194,10 @@ mod tests {
         let tls = TlsClient::bundled().unwrap();
         let listed = format!("localhost:{port}");
         // A public source can't be on this machine: it resolves, here, to a
-        // documentation address.
+        // public address it never connects to. (A documentation address is
+        // internal since #682.)
         let public = Allowlist::parse_with("public:docs.example:443", |_| {
-            Ok(vec!["203.0.113.5:443".parse().unwrap()])
+            Ok(vec!["93.184.215.14:443".parse().unwrap()])
         })
         .unwrap();
         for (allowlist, destination) in [(&public, "docs.example:443"), (&public, "localhost:1")] {

@@ -121,8 +121,8 @@ For the full threat model, see [the trust boundary](../arch/trust-boundary.md). 
 
 | Test | Proves |
 | --- | --- |
-| `each_internal_range_is_internal_and_the_internet_is_not` in [`hatchling-egress/src/allowlist.rs`](../../crates/hatchling-egress/src/allowlist.rs) | Loopback, private ranges, the cloud metadata addresses and IPv6 local and mapped addresses are internal; public addresses aren't. |
-| `a_host_resolving_inside_or_nowhere_is_refused_unconnected` in [`hatchling-egress/src/web.rs`](../../crates/hatchling-egress/src/web.rs) | A name resolving to any internal address, to `localhost` or to nothing is refused without connecting. |
+| `each_internal_range_is_internal_and_the_internet_is_not` in [`hatchling-egress/src/allowlist.rs`](../../crates/hatchling-egress/src/allowlist.rs) | Loopback, private, reserved and documentation ranges, the cloud metadata addresses, and IPv6 local addresses are internal. IPv6 that carries an IPv4 address (mapped, NAT64, 6to4) is judged by the address it carries. Public addresses aren't internal. |
+| `a_host_resolving_inside_or_nowhere_is_refused_unconnected` in [`hatchling-egress/src/web.rs`](../../crates/hatchling-egress/src/web.rs) | A name resolving to any internal address (a NAT64 form of the metadata address included), to `localhost` or to nothing is refused without connecting. |
 | `a_site_the_session_doesnt_hold_is_refused_before_its_name_is_looked_up` in [`hatchling-broker/src/browser_proxy.rs`](../../crates/hatchling-broker/src/browser_proxy.rs) | The browser's proxy refuses a site the owner hasn't allowed without resolving it. |
 
 ## Agent code with the whole network
