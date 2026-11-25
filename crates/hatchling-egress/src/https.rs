@@ -137,9 +137,10 @@ pub(crate) fn forward(
     pinned: &[SocketAddr],
     request: &EgressRequest,
     credential: Option<&[u8]>,
+    cut: &crate::Cut,
 ) -> Result<EgressResponse> {
     let bytes = crate::local::request_bytes(request, credential)?;
-    send(tls, pinned, &request.destination, &bytes)
+    send_or_cut(tls, pinned, &request.destination, &bytes, cut)
 }
 
 /// Sends the framed request `bytes` over HTTPS to one of `pinned`, the
@@ -154,12 +155,28 @@ pub(crate) fn send(
     destination: &str,
     bytes: &[u8],
 ) -> Result<EgressResponse> {
+    send_or_cut(tls, pinned, destination, bytes, &crate::Cut::default())
+}
+
+/// As [`send`], with its connection held for `cut` before a byte is sent.
+///
+/// # Errors
+///
+/// As [`forward`], and [`Error::UpstreamFailed`] once cut.
+fn send_or_cut(
+    tls: &TlsClient,
+    pinned: &[SocketAddr],
+    destination: &str,
+    bytes: &[u8],
+    cut: &crate::Cut,
+) -> Result<EgressResponse> {
     let host = destination
         .rsplit_once(':')
         .map(|(host, _)| host)
         .ok_or(Error::InvalidSurrogate)?;
     let name = ServerName::try_from(host.to_owned()).map_err(|_| Error::InvalidSurrogate)?;
     let tcp = connect(pinned)?;
+    cut.hold(&tcp)?;
     tcp.set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|()| tcp.set_write_timeout(Some(IO_TIMEOUT)))
         .map_err(|_| Error::UpstreamFailed)?;
@@ -210,6 +227,71 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::MAX_RESPONSE_BYTES;
+
+    /// A forward no cut comes for.
+    fn forward(
+        tls: &TlsClient,
+        pinned: &[SocketAddr],
+        request: &EgressRequest,
+        credential: Option<&[u8]>,
+    ) -> Result<EgressResponse> {
+        super::forward(tls, pinned, request, credential, &crate::Cut::default())
+    }
+
+    /// An HTTPS forward is held for its cut as a local one is: cut, it ends
+    /// at once, and the upstream sees its client gone (#657).
+    #[test]
+    fn an_https_forward_cut_in_flight_ends_at_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        // It takes the connection and the handshake's first bytes, and
+        // never answers: what it reads after says how it ended.
+        let upstream = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break Ok(()),
+                    Ok(_) => {}
+                    Err(error) => break Err(error.kind()),
+                }
+            }
+        });
+        let cut = crate::Cut::default();
+        let cutter = cut.clone();
+        let cutting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            cutter.cut();
+        });
+        let started = std::time::Instant::now();
+        let client = TlsClient::bundled().unwrap();
+        let request = EgressRequest {
+            method: String::from("GET"),
+            destination: format!("localhost:{}", addr.port()),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::new(),
+        };
+        assert!(matches!(
+            super::forward(&client, &[addr], &request, None, &cut),
+            Err(Error::UpstreamFailed)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the forward waited {:?} after its cut",
+            started.elapsed()
+        );
+        assert_eq!(
+            upstream.join().unwrap(),
+            Ok(()),
+            "the upstream wasn't hung up on"
+        );
+        cutting.join().unwrap();
+    }
 
     /// A throwaway CA, made fresh for this test, and a server certificate
     /// it signs for `name`: no key is ever committed. Built here as DER and

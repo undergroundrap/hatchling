@@ -68,6 +68,7 @@ pub(crate) fn forward(
     pinned: &[SocketAddr],
     request: &EgressRequest,
     credential: Option<&[u8]>,
+    cut: &crate::Cut,
 ) -> Result<EgressResponse> {
     if request.method != "GET" && request.method != "POST" {
         tracing::warn!(method = %request.method, "local model endpoint method denied");
@@ -75,6 +76,8 @@ pub(crate) fn forward(
     }
     let bytes = request_bytes(request, credential)?;
     let mut stream = connect(pinned)?;
+    // Held for a cut before a byte is sent: whoever asked may go (#657).
+    cut.hold(&stream)?;
     stream
         .set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
@@ -395,6 +398,81 @@ pub(crate) mod tests {
     use super::*;
     use std::net::TcpListener;
     use std::thread::JoinHandle;
+
+    /// A forward no cut comes for.
+    fn forward(
+        pinned: &[SocketAddr],
+        request: &EgressRequest,
+        credential: Option<&[u8]>,
+    ) -> Result<EgressResponse> {
+        super::forward(pinned, request, credential, &crate::Cut::default())
+    }
+
+    /// A forward cut while the upstream thinks ends at once, and the
+    /// upstream sees its client gone: an answer nobody will read isn't
+    /// waited for, or made (#657). One cut before it connects sends
+    /// nothing.
+    #[test]
+    fn a_forward_cut_in_flight_ends_at_once_and_hangs_up_on_the_upstream() {
+        use std::io::Read as _;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let live = listener.local_addr().unwrap();
+        // It reads the request, then waits on its client for 10 s,
+        // answering nothing: what it reads next says how it ended.
+        let upstream = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !seen.ends_with(b"{}") {
+                stream.read_exact(&mut byte).unwrap();
+                seen.push(byte[0]);
+            }
+            stream.read(&mut byte).map_err(|error| error.kind())
+        });
+        let cut = crate::Cut::default();
+        let cutter = cut.clone();
+        let cutting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            cutter.cut();
+        });
+        let started = std::time::Instant::now();
+        let request = request("POST", &[], b"{}");
+        assert!(matches!(
+            super::forward(&[live], &request, None, &cut),
+            Err(Error::UpstreamFailed)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the forward waited {:?} after its cut",
+            started.elapsed()
+        );
+        assert_eq!(
+            upstream.join().unwrap(),
+            Ok(0),
+            "the upstream wasn't hung up on"
+        );
+        cutting.join().unwrap();
+        // Cut before it connects: refused, with nothing sent.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let live = listener.local_addr().unwrap();
+        let upstream = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            stream.read_to_end(&mut seen).map(|_| seen.len())
+        });
+        assert!(matches!(
+            super::forward(&[live], &request, None, &cut),
+            Err(Error::UpstreamFailed)
+        ));
+        assert_eq!(
+            upstream.join().unwrap().unwrap(),
+            0,
+            "a cut request was sent"
+        );
+    }
 
     fn addr(text: &str) -> SocketAddr {
         text.parse().unwrap()

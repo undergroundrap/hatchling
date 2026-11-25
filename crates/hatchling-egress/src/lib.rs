@@ -28,6 +28,7 @@
 //! is parsed.
 
 pub mod allowlist;
+pub mod cut;
 pub mod error;
 pub mod https;
 pub mod local;
@@ -43,6 +44,7 @@ pub use allowlist::{
     Allowlist, INTERNAL_PREFIX, LOCAL_HOST, LOCAL_KEYLESS_PREFIX, LOCAL_PREFIX, Local,
     PUBLIC_PREFIX, is_internal, is_pinned_loopback,
 };
+pub use cut::Cut;
 pub use error::Error;
 pub use https::TlsClient;
 pub use proxy::{EgressRequest, EgressResponse, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Proxy};

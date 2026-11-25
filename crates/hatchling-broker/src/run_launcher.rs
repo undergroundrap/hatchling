@@ -525,6 +525,9 @@ pub struct CellRun<'scope> {
     errors: Option<JoinHandle<Vec<u8>>>,
     session: Option<ScopedJoinHandle<'scope, ()>>,
     stop: Arc<AtomicBool>,
+    /// Its session's egress, cut as the run ends: a model call in flight
+    /// isn't waited for (#657).
+    egress_cut: hatchling_egress::Cut,
     run_dir: PathBuf,
     /// Held while the run is live: a sweep leaves it alone (WO-012).
     held: Option<hatchling_sys::HeldLock>,
@@ -678,6 +681,9 @@ impl<'scope> CellLauncher<'scope, '_> {
         let stop = Arc::new(AtomicBool::new(false));
         let session_stop = Arc::clone(&stop);
         let session_hit = hit.clone();
+        // What the run's end cuts its session's egress with (#657).
+        let egress_cut = hatchling_egress::Cut::default();
+        let session_cut = egress_cut.clone();
         let session = self.scope.spawn(move || {
             serve_run_session(
                 &handoff,
@@ -686,6 +692,7 @@ impl<'scope> CellLauncher<'scope, '_> {
                 key,
                 &session_stop,
                 &session_hit,
+                &session_cut,
             );
         });
         let started = Instant::now();
@@ -694,6 +701,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             Ok(parts) => parts,
             Err(error) => {
                 stop.store(true, Ordering::Release);
+                egress_cut.cut();
                 let _ = session.join();
                 return Err(cleanup(error));
             }
@@ -712,6 +720,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             errors: Some(errors),
             session: Some(session),
             stop,
+            egress_cut,
             run_dir,
             held: Some(held),
             token,
@@ -921,6 +930,9 @@ impl CellRun<'_> {
         // A run that never connected leaves its session waiting to
         // accept: the flag ends that wait.
         self.stop.store(true, Ordering::Release);
+        // A session forwarding a model call waits for no answer: nobody
+        // will read it, and the call is dropped upstream (#657).
+        self.egress_cut.cut();
         if let Some(session) = self.session.take() {
             let _ = session.join();
         }
@@ -1143,6 +1155,7 @@ fn serve_run_session(
     key: &dyn OpensStores,
     stop: &AtomicBool,
     hit: &HeldHit,
+    cut: &hatchling_egress::Cut,
 ) {
     if let Err(error) = handoff.set_read_timeout(Some(ACCEPT_POLL)) {
         tracing::warn!(%error, "scheduled run handoff setup failed");
@@ -1177,6 +1190,7 @@ fn serve_run_session(
         config,
         key,
         crate::skills::live().unwrap_or(&NO_SKILLS),
+        cut,
     ) {
         // Escaped: a protocol error can quote what the cell sent.
         tracing::debug!(?error, "scheduled run session ended");
@@ -1999,6 +2013,7 @@ mod tests {
             errors: Some(errors),
             session: None,
             stop: Arc::new(AtomicBool::new(false)),
+            egress_cut: hatchling_egress::Cut::default(),
             run_dir: dir.to_path_buf(),
             held: None,
             token: String::from("helper-test"),
@@ -2192,12 +2207,14 @@ mod tests {
         let dir = helper_dir("drop");
         let run = helper_run(Path::new("/bin/sh"), &dir, Duration::from_secs(30));
         let stop = Arc::clone(&run.stop);
+        let cut = run.egress_cut.clone();
         drop(run);
         let stopped = stop.load(Ordering::Acquire);
         let removed = !dir.exists();
         let _ = std::fs::remove_dir_all(&dir);
         assert!(stopped, "drop must stop a session that never connected");
         assert!(removed, "drop must remove the run directory");
+        assert!(cut.is_cut(), "drop must cut its session's egress");
     }
 
     #[test]
@@ -2208,8 +2225,13 @@ mod tests {
         std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mut run = helper_run(&script, &dir, Duration::ZERO);
+        assert!(!run.egress_cut.is_cut());
         assert_eq!(run.poll_end(), Some(RunEnd::TimedOut));
         assert!(!dir.exists());
+        assert!(
+            run.egress_cut.is_cut(),
+            "a model call in flight would be waited for"
+        );
     }
 
     /// A hit ends a run the moment it's next looked at, however long it
@@ -2305,6 +2327,7 @@ echo the answer
         run.hit.stop();
         assert_eq!(run.poll_end(), Some(RunEnd::OwnerStopped));
         assert!(!dir.exists());
+        assert!(run.egress_cut.is_cut());
     }
 
     /// A stopped run is over only once each follow-up it asked for that
@@ -2460,7 +2483,15 @@ echo the answer
         let key = MasterKey::generate().unwrap();
         let logged = crate::test_log::captured(|| {
             let (stop, hit) = (AtomicBool::new(false), HeldHit::default());
-            serve_run_session(&ours, cell_id, &config, &key, &stop, &hit);
+            serve_run_session(
+                &ours,
+                cell_id,
+                &config,
+                &key,
+                &stop,
+                &hit,
+                &hatchling_egress::Cut::default(),
+            );
         });
         crate::test_log::assert_no_forged_line(&logged, "FORGED run admitted");
     }
@@ -2635,6 +2666,7 @@ echo the answer
                     &key,
                     &stop,
                     &HeldHit::default(),
+                    &hatchling_egress::Cut::default(),
                 );
                 let _ = ended.send(());
             });
@@ -2671,6 +2703,7 @@ echo the answer
                         &key,
                         &stop,
                         &HeldHit::default(),
+                        &hatchling_egress::Cut::default(),
                     );
                 });
                 if late {

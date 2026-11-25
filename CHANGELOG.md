@@ -51,6 +51,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **Stop and a run's clock end a model call in flight** ([#657](https://github.com/undergroundrap/hatchling/issues/657)). When a run was stopped, or ran out of time, while its model was answering, the run ended only once that answer came: 50 seconds after Stop in one test, and a 10-minute run told at 15 minutes in another. Meanwhile the model went on writing an answer nobody would read, and a hosted one could bill for it. Now a run's end cuts the call: the run ends at once, and the egress authority hangs up on the model's server, which a local model takes as its cue to stop.
+
 - **A site you grant again keeps its grant** ([#641](https://github.com/undergroundrap/hatchling/issues/641)). A site granted until a time has a timer that revokes it when that time comes. Granted again just as it came, the old timer could still revoke the new grant and close its connections, because it checked and revoked in two steps. It now does both at once, so an end the site is no longer held to revokes nothing.
 
 - **A broker with every store configured starts** ([#638](https://github.com/undergroundrap/hatchling/issues/638)). The keeper hands the broker its stores' keys in one handoff, which carried at most eight; since the skills' enablements made nine, an install configuring all of them (the web's stores, artifacts, spaces and redactions with the rest) refused to start, "too many stores". A handoff now carries up to fifteen, the most one message between the two can hold.

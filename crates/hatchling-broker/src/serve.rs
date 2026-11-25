@@ -645,6 +645,7 @@ pub fn serve_connection_with_runs(
         hub,
         runs,
         &HeldHit::default(),
+        None,
         SkillReach::WithHarnesses,
     )
 }
@@ -680,12 +681,18 @@ pub fn serve_cell_connection(
         hub,
         runs,
         SkillReach::WithHarnesses,
+        None,
     )
 }
 
 /// Serves `cell`'s session on its own connection, its skill ops reaching
-/// as `reach` says. Logged as every agent session is: the log is read by
-/// operators' tools, the hosted-model proof among them.
+/// as `reach` says, its egress held for `cut`. Logged as every agent
+/// session is: the log is read by operators' tools, the hosted-model proof
+/// among them.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the session's inputs, passed on to `serve_session` as they are"
+)]
 fn serve_spawned(
     cell: &AgentCell,
     config: &Config,
@@ -694,6 +701,7 @@ fn serve_spawned(
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
     reach: SkillReach,
+    cut: Option<&hatchling_egress::Cut>,
 ) -> Result<(), Error> {
     let stream = &cell.connection;
     let cell_id = handshake(stream, Some(&cell.cell_id))?;
@@ -705,7 +713,7 @@ fn serve_spawned(
         "agent session established"
     );
     serve_session(
-        stream, config, key, skills, &cell_id, true, creds, hub, runs, &cell.hit, reach,
+        stream, config, key, skills, &cell_id, true, creds, hub, runs, &cell.hit, cut, reach,
     )
 }
 
@@ -721,7 +729,8 @@ pub(crate) enum SkillReach {
 
 /// Serves a run's session on `cell`'s own connection, as
 /// [`serve_cell_connection`] does, reaching the broker's skills but no
-/// harness ([`SkillReach::SkillsOnly`]).
+/// harness ([`SkillReach::SkillsOnly`]). Its egress is held for `cut`,
+/// which the run's end cuts (#657).
 ///
 /// # Errors
 ///
@@ -731,6 +740,7 @@ pub(crate) fn serve_run_connection(
     config: &Config,
     key: &dyn OpensStores,
     skills: &Skills,
+    cut: &hatchling_egress::Cut,
 ) -> Result<(), Error> {
     serve_spawned(
         cell,
@@ -740,6 +750,7 @@ pub(crate) fn serve_run_connection(
         None,
         None,
         SkillReach::SkillsOnly,
+        Some(cut),
     )
 }
 
@@ -904,6 +915,7 @@ fn serve_session(
     hub: Option<&LocalHub>,
     runs: Option<crate::RunEnv>,
     hit: &HeldHit,
+    cut: Option<&hatchling_egress::Cut>,
     reach: SkillReach,
 ) -> Result<(), Error> {
     let run_cell = known.then_some(cell_id);
@@ -912,8 +924,10 @@ fn serve_session(
     // the egress authority, which holds the key and reads each credential
     // (WO-017, step 2), so the broker holds neither. In-process, with no
     // authority running, it's a proxy of the broker's own.
+    // A run's link is held for its `cut`: when the run ends, however it
+    // ends, a model call in flight isn't waited for (#657).
     let egress_path: Box<dyn EgressPath + '_> = match crate::egress_authority::authority() {
-        Some(authority) => Box::new(authority.connect()?.egress()?),
+        Some(authority) => Box::new(authority.connect()?.egress()?.cut_by(cut)),
         None => Box::new(init_egress_proxy(&config.egress, &config.vault, key)?),
     };
     // Egress bodies too large for one frame, in transit (see
@@ -1607,6 +1621,17 @@ fn refused_reply(refusal: &Refusal, cell_id: &CellId, request: &EgressRequest) -
             );
             EgressResult::EgressError
         }
+        // Its run ended as it waited: what a Stop is for, not a fault
+        // (#657).
+        RefusalKind::Ended => {
+            tracing::info!(
+                cell_id = %cell_id,
+                destination = ?destination,
+                reason = ?refusal.reason,
+                "egress request dropped in flight: its run ended"
+            );
+            EgressResult::EgressError
+        }
         RefusalKind::NotAllowed | RefusalKind::Policy | RefusalKind::BadSurrogate => {
             tracing::warn!(
                 cell_id = %cell_id,
@@ -1661,7 +1686,9 @@ const fn egress_verdict<T>(forwarded: &Result<T, Refusal>) -> EgressVerdict {
             RefusalKind::BadSurrogate => EgressVerdict::BadSurrogate,
             // Allowed, and it didn't come to anything: the operator's
             // verdict is the same.
-            RefusalKind::Failed | RefusalKind::NoAnswer => EgressVerdict::Failed,
+            RefusalKind::Failed | RefusalKind::NoAnswer | RefusalKind::Ended => {
+                EgressVerdict::Failed
+            }
         },
     }
 }
@@ -2134,6 +2161,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A request its run's end dropped is told as an end, not a fault: the
+    /// operator's log says so at info, and nothing at warn or error
+    /// (#657).
+    #[test]
+    fn a_request_dropped_as_its_run_ended_is_no_fault() {
+        let cell_id: CellId = "cell-ended".parse().unwrap();
+        let request = EgressRequest {
+            method: String::from("POST"),
+            destination: String::from("localhost:11434"),
+            path: String::from("/v1/chat/completions"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::new(),
+        };
+        let mut reply = None;
+        let logged = crate::test_log::captured(|| {
+            reply = Some(refused_reply(&Refusal::ended(), &cell_id, &request));
+        });
+        assert!(matches!(reply, Some(EgressResult::EgressError)));
+        assert!(
+            logged.contains("INFO") && logged.contains("dropped in flight: its run ended"),
+            "{logged}"
+        );
+        assert!(
+            !logged.contains("ERROR") && !logged.contains("WARN"),
+            "{logged}"
+        );
+    }
+
     #[test]
     fn each_egress_outcome_has_its_verdict() {
         let forwarded: Result<(), Refusal> = Ok(());
@@ -2144,6 +2200,7 @@ mod tests {
             (RefusalKind::BadSurrogate, EgressVerdict::BadSurrogate),
             (RefusalKind::Failed, EgressVerdict::Failed),
             (RefusalKind::NoAnswer, EgressVerdict::Failed),
+            (RefusalKind::Ended, EgressVerdict::Failed),
         ] {
             let refused: Result<(), Refusal> = Err(Refusal {
                 kind,
@@ -2549,6 +2606,7 @@ mod gate_scope_tests {
                     Some(&hub),
                     None,
                     &HeldHit::default(),
+                    None,
                     SkillReach::WithHarnesses,
                 )
             });
@@ -2695,6 +2753,7 @@ mod gate_scope_tests {
                         None,
                         None,
                         &HeldHit::default(),
+                        None,
                         SkillReach::WithHarnesses,
                     )
                 });
@@ -2802,6 +2861,7 @@ mod gate_scope_tests {
                         Some(&hub),
                         None,
                         &HeldHit::default(),
+                        None,
                         SkillReach::WithHarnesses,
                     )
                 });
@@ -3021,6 +3081,7 @@ mod gate_scope_tests {
         for kind in [
             RefusalKind::NoAnswer,
             RefusalKind::Failed,
+            RefusalKind::Ended,
             RefusalKind::NotAllowed,
             RefusalKind::Policy,
             RefusalKind::BadSurrogate,

@@ -19,6 +19,13 @@
 //! request, and a connection's state (a session's surrogate key) is gone
 //! when its end closes.
 //!
+//! **A run's end** (#657). A run's session holds its link for the run's
+//! [`hatchling_egress::Cut`]: when the run ends (its owner's Stop, a hit,
+//! its clock), the link is shut down, so the session waits for no answer.
+//! The authority watches the broker's end while it forwards: gone, the
+//! request's upstream connection is cut, so the answer nobody will read
+//! isn't made.
+//!
 //! **What it does now:**
 //! - **The egress swap** (slice 2). A session's connection opens its
 //!   egress ([`Connection::egress`]): the authority builds the session a
@@ -61,7 +68,7 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, ExitCode};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use hatchling_core::framing::{read_frame, read_frame_or_eof, write_frame};
@@ -418,6 +425,7 @@ impl Connection {
             Reply::Ready => Ok(EgressLink {
                 stream: Mutex::new(self.stream),
                 lost: AtomicBool::new(false),
+                cut: None,
             }),
             Reply::Failed { reason } => Err(Error::Authority { reason }),
             Reply::Results { .. }
@@ -546,9 +554,36 @@ pub struct EgressLink {
     /// Set once an exchange broke off: a late answer could be read as the
     /// next one's, so no request is sent again.
     lost: AtomicBool,
+    /// What its run's end cuts it with, for a run's session (#657).
+    cut: Option<hatchling_egress::Cut>,
 }
 
 impl EgressLink {
+    /// This link, held for `cut`: cut, the link is shut down, so an
+    /// exchange in flight ends at once and nothing more is sent. The
+    /// authority, seeing it gone, cuts the request's upstream. With no
+    /// `cut`, it's as it was.
+    #[must_use]
+    pub fn cut_by(mut self, cut: Option<&hatchling_egress::Cut>) -> Self {
+        if let Some(cut) = cut {
+            let stream = self
+                .stream
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner);
+            if cut.hold(&*stream).is_err() {
+                // Cut already, or not to be held: nothing is sent on it.
+                self.lost.store(true, Ordering::SeqCst);
+            }
+            self.cut = Some(cut.clone());
+        }
+        self
+    }
+
+    /// Whether its run's end cut it.
+    fn was_cut(&self) -> bool {
+        self.cut.as_ref().is_some_and(hatchling_egress::Cut::is_cut)
+    }
+
     /// Runs one exchange alone. One that breaks off, or is answered out
     /// of step, loses the link.
     fn exchange<T>(
@@ -559,6 +594,10 @@ impl EgressLink {
             .stream
             .lock()
             .map_err(|_| Refusal::failed(UNAVAILABLE))?;
+        if self.was_cut() {
+            self.lost.store(true, Ordering::SeqCst);
+            return Err(Refusal::ended());
+        }
         if self.lost.load(Ordering::SeqCst) {
             return Err(Refusal::failed(UNAVAILABLE));
         }
@@ -566,6 +605,12 @@ impl EgressLink {
         drop(stream);
         match outcome {
             Ok(Some(answer)) => Ok(answer),
+            // Cut as it ran: the run ended, and its answer isn't wanted.
+            Err(_) if self.was_cut() => {
+                self.lost.store(true, Ordering::SeqCst);
+                tracing::debug!("the link was cut: its run ended");
+                Err(Refusal::ended())
+            }
             Ok(None) => {
                 self.lost.store(true, Ordering::SeqCst);
                 tracing::error!("the egress authority answered out of step");
@@ -881,14 +926,22 @@ fn serve_connection(stream: &UnixStream, shared: &Shared) -> Result<(), Error> {
                     body,
                     surrogate_b64,
                 };
-                match granted(shared, proxy.as_ref(), &request.destination)
-                    .and_then(|proxy| EgressPath::forward(proxy, peer_uid, &request))
-                {
-                    Ok(answer) => {
+                let forwarded = match granted(shared, proxy.as_ref(), &request.destination) {
+                    Ok(proxy) => while_asked(stream, |cut| {
+                        proxy
+                            .forward_or_cut(peer_uid, &request, cut)
+                            .map_err(|error| Refusal::of(&error))
+                    }),
+                    Err(refusal) => Some(Err(refusal)),
+                };
+                match forwarded {
+                    // The broker let go: the connection is over.
+                    None => return Ok(()),
+                    Some(Ok(answer)) => {
                         answer_with(stream, answer)?;
                         continue;
                     }
-                    Err(refusal) => Reply::Denied { refusal },
+                    Some(Err(refusal)) => Reply::Denied { refusal },
                 }
             }
             Request::Relay { harness, surrogate } => {
@@ -902,6 +955,46 @@ fn serve_connection(stream: &UnixStream, shared: &Shared) -> Result<(), Error> {
         send(stream, &reply)?;
     }
     Ok(())
+}
+
+/// Runs `forward` with a cut for its upstream, cut if the broker hangs up
+/// on `broker` first: its run ended, and nobody will read the answer
+/// (#657). The broker sends nothing while it waits for an answer, so
+/// anything it sends then (its end shut down, or a frame out of step)
+/// ends the request, and the connection with it: `None`.
+fn while_asked<T>(
+    broker: &UnixStream,
+    forward: impl FnOnce(&hatchling_egress::Cut) -> Result<T, Refusal>,
+) -> Option<Result<T, Refusal>> {
+    let cut = hatchling_egress::Cut::default();
+    let Ok((done, answered)) = hatchling_sys::fds::pipe() else {
+        // Not watched: it runs to its own end, as before.
+        tracing::warn!("a request couldn't be watched for its broker hanging up");
+        return Some(forward(&cut));
+    };
+    let outcome = std::thread::scope(|scope| {
+        scope.spawn(|| watch_broker(broker, &done, &cut));
+        let outcome = forward(&cut);
+        drop(answered);
+        outcome
+    });
+    (!cut.is_cut()).then_some(outcome)
+}
+
+/// Waits until `broker` hangs up or sends, and cuts `cut`, or until
+/// `done` says the forward ended, and leaves it.
+fn watch_broker(broker: &UnixStream, done: &std::os::fd::OwnedFd, cut: &hatchling_egress::Cut) {
+    match hatchling_sys::fds::wait_readable(&[broker.as_fd(), done.as_fd()]) {
+        // Forwarded: whatever the broker does next is the next request's.
+        Ok(ready) if ready.get(1).copied().unwrap_or(true) => {}
+        Ok(_) => {
+            tracing::info!("the broker let go of a request in flight: its upstream is cut");
+            cut.cut();
+        }
+        Err(error) => {
+            tracing::warn!(%error, "a request couldn't be watched for its broker hanging up");
+        }
+    }
 }
 
 /// Starts the relay made ready, serving for `seconds`, with the handoff
@@ -1471,6 +1564,97 @@ mod tests {
         served.join().unwrap();
     }
 
+    /// A run's end cuts its session's request in flight through the
+    /// authority: the session waits for no answer, and the authority hangs
+    /// up on the upstream, so the answer nobody will read isn't made
+    /// (#657). Nothing more is sent on the link, and a link held for a cut
+    /// that came first sends nothing at all.
+    #[test]
+    fn a_runs_end_cuts_its_request_in_flight_and_the_upstream_is_hung_up_on() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // A model that reads the request and thinks for 10 s: what it
+        // reads after says how it ended.
+        let upstream = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .unwrap();
+            let mut seen = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !seen.ends_with(b"{}") {
+                stream.read_exact(&mut byte).unwrap();
+                seen.push(byte[0]);
+            }
+            let ended = stream.read(&mut byte).map_err(|error| error.kind());
+            (ended, Instant::now())
+        });
+        let destination = format!("localhost:{port}");
+        let config = egressing(&format!("local-keyless:{destination}"), &[&destination]);
+        let (shared, _) = shared_with(config, &[], None, FETCH_DEADLINE);
+        let (authority, served) = serving(shared);
+        let cut = hatchling_egress::Cut::default();
+        let link = authority
+            .connect()
+            .unwrap()
+            .egress()
+            .unwrap()
+            .cut_by(Some(&cut));
+        let surrogate_b64 = link.mint(1000, &destination, 60).unwrap();
+        let request = EgressRequest {
+            method: String::from("POST"),
+            destination: destination.clone(),
+            path: String::from("/v1/chat/completions"),
+            headers: Vec::new(),
+            body: b"{}".to_vec(),
+            surrogate_b64,
+        };
+        let cutter = cut.clone();
+        let cutting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let at = Instant::now();
+            cutter.cut();
+            at
+        });
+        assert_eq!(
+            link.forward(1000, &request).map(|_| ()),
+            Err(Refusal::ended())
+        );
+        let returned = Instant::now();
+        let cut_at = cutting.join().unwrap();
+        assert!(
+            returned - cut_at < Duration::from_secs(2),
+            "the session waited {:?} after its run ended",
+            returned - cut_at
+        );
+        let (ended, hung_up) = upstream.join().unwrap();
+        assert_eq!(ended, Ok(0), "the upstream wasn't hung up on");
+        assert!(
+            hung_up - cut_at < Duration::from_secs(2),
+            "the upstream was hung up on {:?} after the run ended",
+            hung_up - cut_at
+        );
+        assert_eq!(
+            link.mint(1000, &destination, 60),
+            Err(Refusal::ended()),
+            "something more was sent"
+        );
+        drop(link);
+        // Held for a cut that came first: nothing is sent on it.
+        let link = authority
+            .connect()
+            .unwrap()
+            .egress()
+            .unwrap()
+            .cut_by(Some(&cut));
+        assert_eq!(link.mint(1000, &destination, 60), Err(Refusal::ended()));
+        // The authority serves on: a link no cut came for is answered.
+        let link = authority.connect().unwrap().egress().unwrap();
+        assert!(link.mint(1000, &destination, 60).is_ok());
+        drop((link, authority));
+        served.join().unwrap();
+    }
+
     /// The authority refuses what the proxy would, and what no grant
     /// allows, whatever the broker asks; a connection whose egress isn't
     /// open mints nothing; an allowlist that doesn't resolve opens none.
@@ -1544,6 +1728,7 @@ mod tests {
         EgressLink {
             stream: Mutex::new(broker),
             lost: AtomicBool::new(false),
+            cut: None,
         }
     }
 

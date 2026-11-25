@@ -90,6 +90,7 @@ See [TEMPLATE.md](TEMPLATE.md#gates). Slice 4 changes the UI protocol: `protocol
 - Slice 3a, the clock by kind and the deadline: [run-clock.md](../evidence/run-clock.md).
 - Slice 3b, the token budget: [run-token-budget.md](../evidence/run-token-budget.md).
 - Slice 4, Stop: [stop-run.md](../evidence/stop-run.md).
+- The measurement found Stop and the clock waiting for a model call in flight ([#657](https://github.com/undergroundrap/hatchling/issues/657)), fixed before the close: [stop-ends-in-flight-call.md](../evidence/stop-ends-in-flight-call.md).
 
 The acceptance criteria are ticked at close, against these and the later slices'.
 
