@@ -32,6 +32,8 @@ On an IPv6-only network with DNS64 and a NAT64 gateway, `64:ff9b::a9fe:a9fe` is 
 
 Three tests used `203.0.113.5`, a documentation address, as a public source's address (`proxy.rs`, `relay.rs`, and the allowlist tests' `PUBLIC`). They now use a public one they never connect to.
 
+The browser's end-to-end proof (`scripts/browser_end_to_end.sh`) served its site on `198.51.100.7` too, and CI's `browser in the app` caught it: the browser refused the site as internal. Its site is now on a public address, on an interface of the proof's own network namespace, so nothing outside it is shadowed.
+
 ## Tests
 
 | Check | Result |
