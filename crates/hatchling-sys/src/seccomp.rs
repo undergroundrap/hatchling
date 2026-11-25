@@ -347,6 +347,23 @@ const AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
 #[cfg(target_arch = "aarch64")]
 const AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
 
+/// `profile`, the profile `name`, where its syscalls are verified: on
+/// `x86_64`. Elsewhere it would be the agent's profile under another name,
+/// so it's refused (#679). One function for both, so neither is compiled
+/// out of what's tested.
+fn verified(profile: SeccompProfile, name: &str) -> Result<SeccompProfile, Error> {
+    if cfg!(target_arch = "x86_64") {
+        Ok(profile)
+    } else {
+        Err(Error::SeccompInstall {
+            source: std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("the {name} profile's syscalls are verified for x86_64 only"),
+            ),
+        })
+    }
+}
+
 /// Looks up a syscall number by name for this architecture.
 #[must_use]
 pub fn syscall_number(name: &str) -> Option<u32> {
@@ -801,6 +818,9 @@ impl SeccompProfile {
         // Reads of any limit, and changes to any but the core size, which
         // answer EPERM: lowering it to 0 would let a pipe crash handler
         // have the cell's memory. prlimit64(pid, resource, new, old).
+        // The pid isn't checked: a cell's processes share its uid, so one
+        // may set another's limits, as with `setpriority`. In the Room
+        // that's a job and the supervisor, its own (#679).
         #[cfg(target_arch = "x86_64")]
         profile.allow_if(
             "prlimit64",
@@ -862,7 +882,7 @@ impl SeccompProfile {
         ] {
             profile.allow(name)?;
         }
-        Ok(profile)
+        verified(profile, "harness")
     }
 
     /// The browser cell's profile (WO-029): the CLI profile, with its
@@ -892,7 +912,7 @@ impl SeccompProfile {
                 profile.allow_if(name, Check::Never, Refusal::Errno(errno))?;
             }
         }
-        Ok(profile)
+        verified(profile, "browser")
     }
 
     /// The real harness CLIs' profile: the harness profile, plus
@@ -970,7 +990,7 @@ impl SeccompProfile {
                 Refusal::Errno(ENOTTY),
             )?;
         }
-        Ok(profile)
+        verified(profile, "harness_cli")
     }
 
     /// The room's `x86_64` syscall profile. Keep the CLI's process and file
@@ -1045,8 +1065,13 @@ impl SeccompProfile {
     /// The linear scan is O(n) in the allowlist size (~28 syscalls):
     /// simple to audit, and the filter runs once per syscall on a
     /// non-hot path (the agent is IO-bound on the broker socket).
-    #[must_use]
-    pub fn build(&self) -> Vec<SockFilter> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SeccompInstall`] if a jump in the program
+    /// doesn't fit classic BPF's offsets (see [`assemble`]): the
+    /// profile is refused rather than compiled wrong.
+    pub fn build(&self) -> Result<Vec<SockFilter>, Error> {
         assemble(&self.allowed_numbers(), &self.effective_rules())
     }
 
@@ -1217,7 +1242,17 @@ fn push_values(pending: &mut Vec<Pending>, arg: u32, values: &[u32], otherwise: 
 /// one return per errno a rule refuses with: return ERRNO | errno
 /// kill: return KILL_PROCESS
 /// ```
-fn assemble(allowed: &[u32], rules: &[Rule]) -> Vec<SockFilter> {
+///
+/// A conditional jump's offsets are eight bits, so no jump may go more
+/// than 255 instructions forward (#679): the architecture check's jump
+/// to kill is the program's length less 3. One that doesn't fit, or a
+/// label never placed, refuses the program: wrapped, the architecture
+/// check would let another architecture's syscalls into the scan.
+///
+/// # Errors
+///
+/// [`Error::SeccompInstall`] naming the jump that doesn't fit.
+fn assemble(allowed: &[u32], rules: &[Rule]) -> Result<Vec<SockFilter>, Error> {
     let mut pending = vec![
         Pending::plain(BPF_LD_W_ABS, SECCOMP_DATA_ARCH),
         Pending::branch(BPF_JMP_JEQ_K, AUDIT_ARCH, Label::Next, Label::Kill),
@@ -1270,57 +1305,60 @@ fn assemble(allowed: &[u32], rules: &[Rule]) -> Vec<SockFilter> {
         positions
             .iter()
             .find(|(placed, _)| *placed == label)
-            .map_or(0, |(_, position)| *position)
+            .map(|(_, position)| *position)
+    };
+    let len = pending.len();
+    let refused = |index: usize, label: Label| Error::SeccompInstall {
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "seccomp program of {len} instructions: the jump at {index} to {label:?} \
+                 doesn't fit a classic BPF offset"
+            ),
+        ),
     };
     pending
         .iter()
         .enumerate()
         .map(|(index, step)| {
             let offset = |label: Label| match label {
-                Label::Next => 0,
+                Label::Next => Ok(0),
                 Label::Allow
                 | Label::Kill
                 | Label::Block(_)
                 | Label::Values(_)
-                | Label::Errno(_) => jump_offset(index, at(label)),
+                | Label::Errno(_) => at(label)
+                    .and_then(|target| jump_offset(index, target))
+                    .ok_or_else(|| refused(index, label)),
             };
             let mut ins = step.ins;
-            ins.jt = offset(step.jt);
-            ins.jf = offset(step.jf);
+            ins.jt = offset(step.jt)?;
+            ins.jf = offset(step.jf)?;
             if let Some(label) = step.ja {
-                ins.k = jump_distance(index, at(label));
+                ins.k = at(label)
+                    .and_then(|target| jump_distance(index, target))
+                    .ok_or_else(|| refused(index, label))?;
             }
-            ins
+            Ok(ins)
         })
         .collect()
 }
 
 /// Forward BPF jump offset from instruction `at` to `target`:
-/// `target - (at + 1)`, always forward by construction. The program is
-/// a few dozen instructions, so the offset fits in a `u8`; the layout
-/// tests pin the exact program and would fail before any truncation
-/// could occur.
-const fn jump_offset(at: usize, target: usize) -> u8 {
-    #[allow(
-        clippy::as_conversions,
-        clippy::cast_possible_truncation,
-        reason = "forward jump within a tiny program; offset < 256 by construction, pinned by layout tests"
-    )]
-    let offset = (target - (at + 1)) as u8;
-    offset
+/// `target - (at + 1)`, or `None` when that isn't forward or doesn't fit
+/// the eight bits a conditional jump's offset has.
+fn jump_offset(at: usize, target: usize) -> Option<u8> {
+    target
+        .checked_sub(at.checked_add(1)?)
+        .and_then(|offset| u8::try_from(offset).ok())
 }
 
-/// Forward `BPF_JA` distance from instruction `at` to `target`.
-/// Unconditional jump within a tiny program: distance < 2^32 by
-/// construction.
-const fn jump_distance(at: usize, target: usize) -> u32 {
-    #[allow(
-        clippy::as_conversions,
-        clippy::cast_possible_truncation,
-        reason = "unconditional jump within a tiny program; distance < 2^32 by construction"
-    )]
-    let distance = (target - (at + 1)) as u32;
-    distance
+/// Forward `BPF_JA` distance from instruction `at` to `target`, or
+/// `None` when that isn't forward or doesn't fit its 32 bits.
+fn jump_distance(at: usize, target: usize) -> Option<u32> {
+    target
+        .checked_sub(at.checked_add(1)?)
+        .and_then(|distance| u32::try_from(distance).ok())
 }
 
 /// Installs a compiled profile on the current process.
@@ -1333,7 +1371,7 @@ const fn jump_distance(at: usize, target: usize) -> u32 {
 ///
 /// Returns [`Error::SeccompInstall`] if the `prctl` fails.
 pub fn install(profile: &SeccompProfile) -> Result<(), Error> {
-    let prog = profile.build();
+    let prog = profile.build()?;
     let len = u16::try_from(prog.len()).map_err(|_| Error::SeccompInstall {
         source: std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1468,8 +1506,8 @@ mod tests {
             );
         }
         // And sockets stay AF_UNIX-only in the built filter, as the agent's.
-        let built = SeccompProfile::harness().unwrap().build();
-        assert!(built.len() > SeccompProfile::agent().unwrap().build().len());
+        let built = SeccompProfile::harness().unwrap().build().unwrap();
+        assert!(built.len() > SeccompProfile::agent().unwrap().build().unwrap().len());
     }
 
     #[test]
@@ -1534,7 +1572,7 @@ mod tests {
         // kill. This pins the conditional layout — an unconditional
         // AF_UNIX check would let socket(AF_UNIX) through a profile
         // that denies socket entirely.
-        let prog = SeccompProfile::default().build();
+        let prog = SeccompProfile::default().build().unwrap();
         assert_eq!(prog.len(), 6);
         // scan_end is an unconditional jump to kill.
         let scan_end = prog.get(3).expect("layout pins scan_end at 3");
@@ -1559,7 +1597,7 @@ mod tests {
         // Reordering these would invert the policy.
         let mut profile = SeccompProfile::default();
         profile.allow("socket").unwrap();
-        let prog = profile.build();
+        let prog = profile.build().unwrap();
         let n = prog.len();
         assert!(n >= 9, "program too short to hold the fixed layout");
         let kill = prog.get(n - 1).expect("kill is last by layout");
@@ -1583,7 +1621,7 @@ mod tests {
 
     #[test]
     fn program_starts_with_arch_and_nr_loads() {
-        let prog = SeccompProfile::default().build();
+        let prog = SeccompProfile::default().build().unwrap();
         assert_eq!(
             prog.first().expect("arch load is first by layout"),
             &SockFilter {
@@ -1618,7 +1656,7 @@ mod tests {
         // Pins the scan completeness: dropping a JEQ would silently
         // deny (kill) a syscall the profile claims to allow.
         let profile = SeccompProfile::agent().unwrap();
-        let prog = profile.build();
+        let prog = profile.build().unwrap();
         let allow_idx = prog
             .iter()
             .position(|ins| ins.code == BPF_RET_K && ins.k == SECCOMP_RET_ALLOW)
@@ -1642,7 +1680,7 @@ mod tests {
         // to allow, or the AF_UNIX constraint is bypassed.
         let mut profile = SeccompProfile::default();
         profile.allow("socket").unwrap();
-        let prog = profile.build();
+        let prog = profile.build().unwrap();
         let socket_nr = syscall_number("socket").unwrap();
         let allow_idx = prog
             .iter()
@@ -1674,7 +1712,7 @@ mod tests {
         // socket(non-UNIX) would fall through toward allow.
         let mut profile = SeccompProfile::default();
         profile.allow("socket").unwrap();
-        let prog = profile.build();
+        let prog = profile.build().unwrap();
         let socket_nr = syscall_number("socket").unwrap();
         let allow_idx = prog
             .iter()
@@ -1701,12 +1739,12 @@ mod tests {
         assert_eq!(jeq.k, AF_UNIX);
         assert_eq!(
             jeq.jt,
-            jump_offset(jeq_idx, allow_idx),
+            jump_offset(jeq_idx, allow_idx).unwrap(),
             "JEQ AF_UNIX true-branch must land on allow"
         );
         assert_eq!(
             jeq.jf,
-            jump_offset(jeq_idx, kill_idx),
+            jump_offset(jeq_idx, kill_idx).unwrap(),
             "JEQ AF_UNIX false-branch must land on kill"
         );
     }
@@ -1716,12 +1754,86 @@ mod tests {
         // Direct pin: offset = target - (at + 1). A mutant returning
         // 0, 1, or the wrong arithmetic would misroute every patched
         // jump, so this is tested directly, not just via the layout.
-        assert_eq!(jump_offset(0, 1), 0);
-        assert_eq!(jump_offset(0, 5), 4);
-        assert_eq!(jump_offset(3, 10), 6);
-        assert_eq!(jump_distance(0, 1), 0);
-        assert_eq!(jump_distance(0, 5), 4);
-        assert_eq!(jump_distance(3, 10), 6);
+        assert_eq!(jump_offset(0, 1), Some(0));
+        assert_eq!(jump_offset(0, 5), Some(4));
+        assert_eq!(jump_offset(3, 10), Some(6));
+        assert_eq!(jump_distance(0, 1), Some(0));
+        assert_eq!(jump_distance(0, 5), Some(4));
+        assert_eq!(jump_distance(3, 10), Some(6));
+        // #679: eight bits and no more, and never backward.
+        assert_eq!(jump_offset(0, 256), Some(255));
+        assert_eq!(jump_offset(0, 257), None);
+        assert_eq!(jump_offset(4, 4), None);
+        assert_eq!(jump_offset(usize::MAX, 0), None);
+        assert_eq!(jump_distance(4, 4), None);
+        assert_eq!(jump_distance(usize::MAX, 0), None);
+    }
+
+    /// #679: every profile's program holds each jump in range, and its
+    /// architecture check lands on the kill: a jump that had wrapped would
+    /// land short, inside the program, on the wrong instruction.
+    #[test]
+    fn every_profiles_jumps_land_where_they_should() {
+        let mut profiles = vec![("agent", SeccompProfile::agent().unwrap())];
+        #[cfg(target_arch = "x86_64")]
+        profiles.extend([
+            ("harness", SeccompProfile::harness().unwrap()),
+            ("harness_cli", SeccompProfile::harness_cli().unwrap()),
+            ("browser", SeccompProfile::browser().unwrap()),
+            ("room", SeccompProfile::room().unwrap()),
+        ]);
+        for (name, profile) in profiles {
+            let prog = profile.build().unwrap();
+            let kill = prog.len() - 1;
+            assert_eq!(
+                prog.get(kill).map(|ins| ins.k),
+                Some(SECCOMP_RET_KILL_PROCESS),
+                "{name}"
+            );
+            let arch_check = prog.get(1).unwrap();
+            assert_eq!(
+                (arch_check.code, arch_check.k),
+                (BPF_JMP_JEQ_K, AUDIT_ARCH),
+                "{name}"
+            );
+            assert_eq!(
+                2 + usize::from(arch_check.jf),
+                kill,
+                "{name}: arch check misses the kill"
+            );
+            for (at, ins) in prog.iter().enumerate() {
+                if ins.code == BPF_JMP_JA {
+                    let to = at + 1 + usize::try_from(ins.k).unwrap();
+                    assert!(to < prog.len(), "{name}: ja at {at} leaves the program");
+                } else if ins.code == BPF_JMP_JEQ_K || ins.code & 0x07 == 0x05 {
+                    for offset in [ins.jt, ins.jf] {
+                        assert!(
+                            at + 1 + usize::from(offset) < prog.len(),
+                            "{name}: jump at {at}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// #679: a program whose architecture check can't reach the kill in
+    /// eight bits is refused, not wrapped. 252 allowed calls make a
+    /// program of 258 instructions, whose check jumps 255 forward, the
+    /// most it can; one more is refused, and so is `install`.
+    #[test]
+    fn a_program_too_long_for_its_jumps_is_refused() {
+        let numbers = |n: u32| (0..n).collect::<Vec<u32>>();
+        let fits = assemble(&numbers(252), &[]).unwrap();
+        assert_eq!(fits.len(), 258);
+        assert_eq!(fits.get(1).map(|ins| ins.jf), Some(255));
+        let refused = assemble(&numbers(253), &[]).unwrap_err();
+        assert!(refused.to_string().contains("doesn't fit"), "{refused}");
+        let mut long = SeccompProfile::default();
+        long.allowed
+            .extend(numbers(400).into_iter().map(|nr| nr + 10_000));
+        assert!(long.build().is_err());
+        assert!(install(&long).is_err(), "refused before any prctl");
     }
 
     #[test]
@@ -1802,14 +1914,14 @@ mod tests {
         // k field is jump_distance(scan_end_idx, kill_idx). If
         // jump_distance were mutated (0 or 1), this k would be wrong
         // and the program would misroute rejections.
-        let prog = SeccompProfile::default().build();
+        let prog = SeccompProfile::default().build().unwrap();
         let scan_end_idx = 3; // pinned by layout: arch(0), arch_check(1), nr(2), scan_end(3)
         let kill_idx = prog.len() - 1;
         let scan_end = prog.get(scan_end_idx).expect("scan_end at 3 by layout");
         assert_eq!(scan_end.code, BPF_JMP_JA);
         assert_eq!(
             scan_end.k,
-            jump_distance(scan_end_idx, kill_idx),
+            jump_distance(scan_end_idx, kill_idx).unwrap(),
             "JA distance must equal jump_distance(scan_end, kill)"
         );
         // And the distance must be the actual forward distance: kill
@@ -1947,7 +2059,7 @@ mod tests {
             SeccompProfile::harness(),
             SeccompProfile::harness_cli(),
         ] {
-            let prog = profile.unwrap().build();
+            let prog = profile.unwrap().build().unwrap();
             // prlimit64(pid, resource, new, old): the resource is the
             // second argument, and only its low 32 bits count; a new limit
             // is the third, a pointer.
@@ -1994,7 +2106,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn a_cli_cell_pairs_unix_sockets_only() {
-        let prog = SeccompProfile::harness_cli().unwrap().build();
+        let prog = SeccompProfile::harness_cli().unwrap().build().unwrap();
         let errno = |e: u32| SECCOMP_RET_ERRNO + e;
         // A socket pair: AF_UNIX only, any other family a soft refusal.
         for (family, action) in [
@@ -2044,7 +2156,7 @@ mod tests {
         };
         assert_eq!(inherited_rules(&room), inherited_rules(&cli));
 
-        let prog = room.build();
+        let prog = room.build().unwrap();
         let no = [0; 6];
         let errno = |e| SECCOMP_RET_ERRNO + e;
         for name in ["socket", "socketpair"] {
@@ -2174,7 +2286,7 @@ mod tests {
     #[test]
     fn room_allows_what_its_tools_ask_and_answers_what_it_does_not_grant() {
         let no = [0; 6];
-        let room = SeccompProfile::room().unwrap().build();
+        let room = SeccompProfile::room().unwrap().build().unwrap();
         for name in ROOM_TOOL_CALLS {
             assert_eq!(call(&room, name, no), SECCOMP_RET_ALLOW, "{name}");
         }
@@ -2221,7 +2333,7 @@ mod tests {
             ("harness", SeccompProfile::harness().unwrap()),
             ("harness CLI", SeccompProfile::harness_cli().unwrap()),
         ] {
-            let prog = profile.build();
+            let prog = profile.build().unwrap();
             for name in names.clone() {
                 assert_eq!(
                     call(&prog, name, no),
@@ -2230,7 +2342,7 @@ mod tests {
                 );
             }
         }
-        let browser = SeccompProfile::browser().unwrap().build();
+        let browser = SeccompProfile::browser().unwrap().build().unwrap();
         let decided: Vec<(&str, u32)> = names
             .map(|name| (name, call(&browser, name, no)))
             .filter(|(_, verdict)| *verdict != SECCOMP_RET_KILL_PROCESS)
@@ -2663,7 +2775,7 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_harness_cli_profile_decides_each_call_as_designed() {
-        let prog = SeccompProfile::harness_cli().unwrap().build();
+        let prog = SeccompProfile::harness_cli().unwrap().build().unwrap();
         let no = [0u64; 6];
         let errno = |e: u32| SECCOMP_RET_ERRNO + e;
         // Plain allowed calls, the harness profile's and the new ones.
@@ -2777,8 +2889,8 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn the_browser_profile_decides_each_call_as_designed() {
-        let prog = SeccompProfile::browser().unwrap().build();
-        let cli = SeccompProfile::harness_cli().unwrap().build();
+        let prog = SeccompProfile::browser().unwrap().build().unwrap();
+        let cli = SeccompProfile::harness_cli().unwrap().build().unwrap();
         let no = [0u64; 6];
         let errno = |e: u32| SECCOMP_RET_ERRNO + e;
         for name in BROWSER_CALLS {
@@ -2961,7 +3073,7 @@ mod tests {
             SeccompProfile::agent().unwrap(),
             SeccompProfile::harness().unwrap(),
         ] {
-            let prog = profile.build();
+            let prog = profile.build().unwrap();
             assert_eq!(call(&prog, "read", no), SECCOMP_RET_ALLOW);
             assert_eq!(
                 call(&prog, "socket", [u64::from(AF_UNIX), 1, 0, 0, 0, 0]),
@@ -3025,7 +3137,7 @@ mod tests {
             .unwrap();
         profile.refuse("futex", ENOSYS).unwrap();
         profile.refuse("futex", ENOSYS).unwrap();
-        let prog = profile.build();
+        let prog = profile.build().unwrap();
         assert_eq!(
             call(&prog, "socket", [u64::from(AF_INET), 0, 0, 0, 0, 0]),
             SECCOMP_RET_ALLOW
