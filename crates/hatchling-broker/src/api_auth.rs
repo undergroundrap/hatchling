@@ -421,10 +421,11 @@ pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
 /// be given to the owner.
 pub fn mint_ui_token_for(path: &Path, owner: u32) -> Result<ApiToken, Error> {
     let me = hatchling_sys::euid();
-    if me == 0 {
-        if let Some(dir) = path.parent() {
-            check_token_dir(dir, me)?;
-        }
+    // As root or not: a directory another user can write is one where
+    // they could replace the token, or a root broker be led to give
+    // their file away (#691).
+    if let Some(dir) = path.parent() {
+        check_token_dir(dir, me)?;
     }
     let earlier = std::fs::symlink_metadata(path).ok().map_or(owner, |meta| {
         if meta.uid() == me { meta.uid() } else { owner }
@@ -793,6 +794,22 @@ pub(crate) mod tests {
             let refused = check_token_dir(&dir.0, me.wrapping_add(1)).unwrap_err();
             assert!(refused.to_string().contains("root's or the broker's"), "{refused}");
         }
+    }
+
+    /// #691: a token isn't minted for the owner into a directory another
+    /// user could write, and nothing is left there.
+    #[test]
+    fn a_ui_token_is_not_minted_where_another_user_could_replace_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("loose-token-dir");
+        let path = dir.0.join("ui.sock.token");
+        let me = hatchling_sys::euid();
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let refused = mint_ui_token_for(&path, me).unwrap_err();
+        assert!(refused.to_string().contains("another user could replace"), "{refused}");
+        assert!(std::fs::symlink_metadata(&path).is_err(), "nothing minted");
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        mint_ui_token_for(&path, me).unwrap();
     }
 
     #[test]
