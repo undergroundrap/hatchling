@@ -120,6 +120,16 @@ impl FollowUps {
             .map(|flight| flight.sent_in == flight.hub.conversation())
     }
 
+    /// The cells of the runs in flight for the chat whose messages wait in
+    /// `hub`.
+    fn cells_of(&self, hub: &LocalHub) -> Vec<String> {
+        self.flights
+            .iter()
+            .filter(|flight| flight.hub.is(hub))
+            .map(|flight| flight.cell.clone())
+            .collect()
+    }
+
     /// `cell`'s run ended: everything it was given, oldest first. It is
     /// given nothing more.
     pub fn ended(&mut self, cell: &str) -> Vec<String> {
@@ -157,6 +167,20 @@ pub fn more(cell: &str) -> Vec<String> {
 #[must_use]
 pub fn open_for(cell: &str) -> Option<bool> {
     shared().open_for(cell)
+}
+
+/// Stops the chat's runs in flight, the chat whose messages wait in `hub`:
+/// each one's whole tree, there and then (WO-051). Whether one was running
+/// to stop.
+#[must_use]
+pub fn stop(hub: &LocalHub) -> bool {
+    let cells = shared().cells_of(hub);
+    // Each one stopped, not just up to the first.
+    let stopped = cells
+        .iter()
+        .filter(|cell| crate::run_launcher::stop_chat_run(cell))
+        .count();
+    stopped > 0
 }
 
 /// [`FollowUps::ended`], of the broker's own.
@@ -204,6 +228,22 @@ mod tests {
         assert_eq!(flights.open_for("cell-b"), Some(true));
         let _ = flights.ended("cell-a");
         assert_eq!(flights.open_for("cell-a"), None);
+    }
+
+    /// A chat's runs in flight are its own: another hub's, or one ended,
+    /// aren't among them (WO-051).
+    #[test]
+    fn a_chats_runs_in_flight_are_its_own() {
+        let (hub, other) = (hub(), hub());
+        assert!(hub.is(&hub.clone()) && !hub.is(&other));
+        let mut flights = FollowUps::new();
+        flights.began("cell-a", &hub, 0);
+        flights.began("cell-b", &other, 0);
+        flights.began("cell-c", &hub, 0);
+        assert_eq!(flights.cells_of(&hub), ["cell-a", "cell-c"]);
+        let _ = flights.ended("cell-a");
+        assert_eq!(flights.cells_of(&hub), ["cell-c"]);
+        assert_eq!(flights.cells_of(&other), ["cell-b"]);
     }
 
     /// A run in flight is given what the owner sent, oldest first and

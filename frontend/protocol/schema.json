@@ -689,6 +689,11 @@
           "type": "string"
         },
         {
+          "const": "stop_run",
+          "description": "[`UiAction::StopRun`].",
+          "type": "string"
+        },
+        {
           "const": "decide",
           "description": "[`UiAction::Decide`].",
           "type": "string"
@@ -13442,6 +13447,24 @@
           "type": "object"
         },
         {
+          "description": "Stop the chat's run in flight (WO-051): the owner's alone. Its\nwhole tree ends at once, nothing it says after is delivered, and the\nchat says it was stopped.",
+          "properties": {
+            "action": {
+              "const": "stop_run",
+              "type": "string"
+            },
+            "chat_id": {
+              "description": "The chat.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "chat_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Approve or deny a confirmation, at the revision and the action\ndigest the user saw.",
           "properties": {
             "action": {
@@ -14976,6 +14999,42 @@
           "required": [
             "result",
             "session_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The chat's run was stopped: the chat says so as it ends (v11).",
+          "properties": {
+            "chat_id": {
+              "description": "The chat.",
+              "type": "string"
+            },
+            "result": {
+              "const": "run_stopped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "chat_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The chat had no run in flight to stop: it had ended (v11).",
+          "properties": {
+            "chat_id": {
+              "description": "The chat.",
+              "type": "string"
+            },
+            "result": {
+              "const": "nothing_to_stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "chat_id"
           ],
           "type": "object"
         },
@@ -16612,7 +16671,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 34,
-    "ui_schema_version": 10
+    "ui_schema_version": 11
   },
   "x-roots": {
     "ActivityEvent": {

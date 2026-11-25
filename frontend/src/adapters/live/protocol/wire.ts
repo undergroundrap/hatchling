@@ -491,6 +491,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "stop_run",
+                "type": "string"
+            },
+            {
                 "const": "decide",
                 "type": "string"
             },
@@ -5392,6 +5396,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "stop_run",
+                        "type": "string"
+                    },
+                    "chat_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "chat_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "decide",
                         "type": "string"
                     },
@@ -6732,6 +6752,38 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "required": [
                     "result",
                     "session_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "chat_id": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "run_stopped",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "chat_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "chat_id": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "nothing_to_stop",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "chat_id"
                 ],
                 "type": "object"
             },

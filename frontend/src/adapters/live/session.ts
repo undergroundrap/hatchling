@@ -94,6 +94,8 @@ export class LiveChatSession implements ChatSessionPort {
             case 'control_accepted':
             case 'control_refused':
             case 'browser_stopped':
+            case 'run_stopped':
+            case 'nothing_to_stop':
             case 'input_done':
             case 'input_failed':
             case 'signed_in_kept':

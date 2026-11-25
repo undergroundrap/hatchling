@@ -297,6 +297,8 @@ pub enum Ending {
     /// Hatchling ended it: it tried to send a secret Hatchling keeps, to
     /// this.
     Stopped(SentTo),
+    /// Its owner stopped it, from the app (WO-051).
+    OwnerStopped,
 }
 
 /// Where a run's secret was caught going: all the person is told of it,

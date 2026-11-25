@@ -61,7 +61,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::{JoinHandle, Scope, ScopedJoinHandle};
 use std::time::{Duration, Instant};
 
@@ -542,6 +542,50 @@ pub struct CellRun<'scope> {
     /// How it ended, while what it asked for can't be held yet: it isn't
     /// over until that's done.
     unheld: Option<RunEnd>,
+    /// A chat run's place among those its owner can stop, while it runs.
+    stoppable: Option<Stoppable>,
+}
+
+/// The hits of the chat's runs in flight, by their cells' tokens: what its
+/// owner's Stop ends (WO-051).
+static STOPPABLE: Mutex<Vec<(String, HeldHit)>> = Mutex::new(Vec::new());
+
+fn stoppable() -> MutexGuard<'static, Vec<(String, HeldHit)>> {
+    STOPPABLE.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// A chat run's place in [`STOPPABLE`], given up as its run is dropped.
+#[derive(Debug)]
+pub(crate) struct Stoppable(String);
+
+impl Stoppable {
+    /// `hit`'s run, in `cell`, can be stopped until this is dropped.
+    pub(crate) fn new(cell: &str, hit: &HeldHit) -> Self {
+        let mut runs = stoppable();
+        runs.retain(|(held, _)| held != cell);
+        runs.push((cell.to_owned(), hit.clone()));
+        drop(runs);
+        Self(cell.to_owned())
+    }
+}
+
+impl Drop for Stoppable {
+    fn drop(&mut self) {
+        stoppable().retain(|(held, _)| *held != self.0);
+    }
+}
+
+/// Stops the chat run in `cell`, its whole tree, there and then: whether
+/// one was running there to stop (WO-051).
+pub(crate) fn stop_chat_run(cell: &str) -> bool {
+    let hit = stoppable()
+        .iter()
+        .find(|(held, _)| held == cell)
+        .map(|(_, hit)| hit.clone());
+    hit.is_some_and(|hit| {
+        hit.stop();
+        true
+    })
 }
 
 impl std::fmt::Debug for CellRun<'_> {
@@ -558,12 +602,15 @@ impl<'scope> Launcher for CellLauncher<'scope, '_> {
 
     fn launch(&self, request: RunRequest) -> Result<CellRun<'scope>, String> {
         let run = scheduled_run(self.config, &request);
-        let mut started = self.launch_cell(
-            &request.schedule_id,
-            run,
-            HeldHit::default(),
-            |token, socket| scoped_config(self.config, &request, token, socket),
-        )?;
+        let hit = HeldHit::default();
+        let mut started =
+            self.launch_cell(&request.schedule_id, run, hit.clone(), |token, socket| {
+                scoped_config(self.config, &request, token, socket)
+            })?;
+        // A chat run's owner is there, and can stop it (WO-051).
+        if request.chat {
+            started.stoppable = Some(Stoppable::new(&started.token, &hit));
+        }
         // Its session may ask for a follow-up, kept in the broker's store.
         if self.config.scheduler.enabled() {
             started.followups = Some((self.config.scheduler.root.clone(), self.key));
@@ -674,6 +721,7 @@ impl<'scope> CellLauncher<'scope, '_> {
             hit,
             followups: None,
             unheld: None,
+            stoppable: None,
         })
     }
 }
@@ -685,7 +733,7 @@ impl Run for CellRun<'_> {
             Some(end) => end,
             None => self.poll_end()?,
         };
-        if matches!(end, RunEnd::Stopped(_)) && !self.hold_followups() {
+        if matches!(end, RunEnd::Stopped(_) | RunEnd::OwnerStopped) && !self.hold_followups() {
             // Not over until they're held: a follow-up left free would run
             // on its own, another run of tries with nobody asked.
             self.unheld = Some(end);
@@ -718,6 +766,10 @@ impl Run for CellRun<'_> {
                 self.ending = Some(hatchling_scheduler::Ending::Stopped(to));
                 Err(String::from(crate::chat_run::stopped_told(to)))
             }
+            RunEnd::OwnerStopped => {
+                self.ending = Some(hatchling_scheduler::Ending::OwnerStopped);
+                Err(String::from(crate::chat_run::YOU_STOPPED))
+            }
             RunEnd::Failed(reason) => Err(reason),
         })
     }
@@ -749,14 +801,17 @@ pub(crate) enum RunEnd {
     /// Its agent tried to send a secret here, or one in its tree did, and
     /// it's over, whatever it wrote.
     Stopped(hatchling_scheduler::SentTo),
+    /// Its owner stopped it, from the app, and it's over, whatever it
+    /// wrote (WO-051).
+    OwnerStopped,
     /// It could not be waited on.
     Failed(String),
 }
 
 impl CellRun<'_> {
     /// Holds, for the owner, each follow-up this run asked for that hasn't
-    /// run: it was stopped for a secret. Whether they're all held: `false`
-    /// while the store can't, to try again.
+    /// run: it was stopped, for a secret or by them. Whether they're all
+    /// held: `false` while the store can't, to try again.
     fn hold_followups(&self) -> bool {
         let Some((root, key)) = &self.followups else {
             return true;
@@ -782,7 +837,8 @@ impl CellRun<'_> {
 
     /// How the run ended, once it has; `None` while it runs, and after
     /// its end was taken. Past its timeout it is killed and ends
-    /// [`RunEnd::TimedOut`]; after a hit, [`RunEnd::Stopped`].
+    /// [`RunEnd::TimedOut`]; after a hit, [`RunEnd::Stopped`], and after
+    /// its owner's Stop, [`RunEnd::OwnerStopped`].
     pub(crate) fn poll_end(&mut self) -> Option<RunEnd> {
         if self.done {
             return None;
@@ -791,15 +847,16 @@ impl CellRun<'_> {
         // is `Some` exactly then.
         let expired = self.started.elapsed().checked_sub(self.timeout).is_some();
         let waited = self.child.try_wait();
-        // Asked after the wait, so a hit before the cell's exit is seen here
-        // and its cell is reaped. It's not the last word: see `ended`.
-        if let Some(to) = self.hit.seen() {
+        // Asked after the wait, so a hit or a Stop before the cell's exit
+        // is seen here and its cell is reaped. It's not the last word: see
+        // `ended`.
+        if let Some(stopped) = self.stopped() {
             if !matches!(waited, Ok(Some(_))) {
                 let _ = self.child.terminate();
                 let _ = self.child.wait_deadline(REAP_AFTER_KILL);
             }
             let _ = self.teardown();
-            return Some(RunEnd::Stopped(to));
+            return Some(stopped);
         }
         let end = match waited {
             Ok(Some(exit)) => {
@@ -833,7 +890,16 @@ impl CellRun<'_> {
     /// joins the session, so by here nothing is left to land one, and what
     /// the run wrote isn't delivered.
     fn ended(&self, end: RunEnd) -> RunEnd {
-        self.hit.seen().map_or(end, RunEnd::Stopped)
+        self.stopped().unwrap_or(end)
+    }
+
+    /// How the run's tree was stopped, if it was: on a hit, which comes
+    /// first, or by its owner.
+    fn stopped(&self) -> Option<RunEnd> {
+        self.hit
+            .seen()
+            .map(RunEnd::Stopped)
+            .or_else(|| self.hit.stopped().then_some(RunEnd::OwnerStopped))
     }
 
     /// Kills the run now, and returns what it had written to stdout.
@@ -1942,6 +2008,7 @@ mod tests {
             hit: HeldHit::default(),
             followups: None,
             unheld: None,
+            stoppable: None,
         }
     }
 
@@ -2174,6 +2241,69 @@ mod tests {
             run.ending(),
             Some(hatchling_scheduler::Ending::Stopped(SentTo::Website))
         );
+        assert!(!dir.exists());
+    }
+
+    /// A chat run its owner stops ends the moment it's next looked at, as
+    /// one with a hit does: killed, its directory gone, and told so. Once
+    /// it's dropped it can't be stopped, and nor can a run never started
+    /// (WO-051).
+    #[test]
+    fn a_chat_run_its_owner_stops_is_killed_and_ends_stopped_by_them() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = helper_dir("owner-stop");
+        let script = dir.join("linger");
+        std::fs::write(
+            &script,
+            "#!/bin/sh
+exec sleep 30
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut run = helper_run(&script, &dir, Duration::from_secs(30));
+        let cell = format!("owner-stop-{}", std::process::id());
+        run.stoppable = Some(Stoppable::new(&cell, &run.hit));
+        assert_eq!(run.poll(), None, "not stopped: it runs on");
+        assert!(!stop_chat_run("never-started"));
+        let started = Instant::now();
+        assert!(stop_chat_run(&cell));
+        assert_eq!(
+            run.poll(),
+            Some(Err(String::from(crate::chat_run::YOU_STOPPED)))
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "killed, not waited for"
+        );
+        assert_eq!(
+            run.ending(),
+            Some(hatchling_scheduler::Ending::OwnerStopped)
+        );
+        assert!(!dir.exists());
+        drop(run);
+        assert!(!stop_chat_run(&cell), "its place went with it");
+    }
+
+    /// A run that ended before it was looked at, its owner having stopped
+    /// it, is stopped too: what it wrote is never delivered (WO-051).
+    #[test]
+    fn a_run_that_exited_after_its_owners_stop_is_stopped_and_its_output_dropped() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = helper_dir("owner-stop-exit");
+        let script = dir.join("answers");
+        std::fs::write(
+            &script,
+            "#!/bin/sh
+echo the answer
+",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut run = helper_run(&script, &dir, Duration::from_secs(30));
+        run.child.wait_deadline(Duration::from_secs(10)).unwrap();
+        run.hit.stop();
+        assert_eq!(run.poll_end(), Some(RunEnd::OwnerStopped));
         assert!(!dir.exists());
     }
 

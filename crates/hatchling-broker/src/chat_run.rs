@@ -85,6 +85,9 @@ pub const fn stopped_told(to: hatchling_scheduler::SentTo) -> &'static str {
     }
 }
 
+/// What the owner is told of a run they stopped, from the app (WO-051).
+pub const YOU_STOPPED: &str = "You stopped it.";
+
 /// What the person is told when a chat run failed as `ending` says.
 ///
 /// In plain words, and what they can do about it, naming `model`, the
@@ -99,6 +102,7 @@ pub fn chat_failed(ending: Option<hatchling_scheduler::Ending>, model: Option<&s
             "The agent took too long to answer, so Hatchling stopped it. A model that is still loading can do this: try again in a moment.",
         ),
         Some(hatchling_scheduler::Ending::Stopped(to)) => String::from(stopped_told(to)),
+        Some(hatchling_scheduler::Ending::OwnerStopped) => String::from(YOU_STOPPED),
         Some(hatchling_scheduler::Ending::Exited(code)) => match RunFailure::from_code(code) {
             Some(RunFailure::ModelUnavailable) => format!(
                 "Hatchling couldn't get an answer from its model{named}. Check that it is running and reachable; `sudo hatchling-broker doctor` tests it."
@@ -2220,6 +2224,10 @@ mod tests {
         for other in [Some(Ending::Exited(1)), Some(Ending::Exited(64)), None] {
             assert_eq!(chat_failed(other, Some("m")), CHAT_FAILED, "{other:?}");
         }
+        assert_eq!(
+            chat_failed(Some(Ending::OwnerStopped), Some("m")),
+            "You stopped it."
+        );
         let stopped = |to| chat_failed(Some(Ending::Stopped(to)), Some("m"));
         assert_eq!(
             stopped(SentTo::Website),

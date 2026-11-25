@@ -258,6 +258,10 @@ pub(crate) fn outcome_of(end: RunEnd, budget: u32, secrets: &SecretSet) -> (u32,
                 "the run was stopped: an agent in it tried to send a held secret",
             ),
         ),
+        RunEnd::OwnerStopped => (
+            budget,
+            failed(ChildFailure::CellFailed, "the run was stopped by its owner"),
+        ),
         RunEnd::Failed(_) => (
             budget,
             failed(

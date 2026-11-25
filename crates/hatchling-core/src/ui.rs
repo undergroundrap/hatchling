@@ -92,7 +92,9 @@ pub use surfaces::{
 /// 10: the skills the owner enables (WO-046): `manage_skills`, to list
 /// what the broker found, enable one bound to the digest the owner saw,
 /// and disable one.
-pub const UI_SCHEMA_VERSION: u16 = 10;
+/// 11: Stop (WO-051): `stop_run`, the owner's, to end a chat's run in
+/// flight, answered `run_stopped` or `nothing_to_stop`.
+pub const UI_SCHEMA_VERSION: u16 = 11;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -1681,6 +1683,13 @@ pub enum UiAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idea: Option<String>,
     },
+    /// Stop the chat's run in flight (WO-051): the owner's alone. Its
+    /// whole tree ends at once, nothing it says after is delivered, and the
+    /// chat says it was stopped.
+    StopRun {
+        /// The chat.
+        chat_id: String,
+    },
     /// Approve or deny a confirmation, at the revision and the action
     /// digest the user saw.
     Decide {
@@ -2147,6 +2156,16 @@ pub enum UiActionResult {
         /// The session.
         session_id: String,
     },
+    /// The chat's run was stopped: the chat says so as it ends (v11).
+    RunStopped {
+        /// The chat.
+        chat_id: String,
+    },
+    /// The chat had no run in flight to stop: it had ended (v11).
+    NothingToStop {
+        /// The chat.
+        chat_id: String,
+    },
     /// A file may be sent: its parts follow (v5).
     FileInBegun {
         /// The file's id, for its parts and its end.
@@ -2556,7 +2575,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 10);
+        assert_eq!(UI_SCHEMA_VERSION, 11);
     }
 
     #[test]
@@ -3550,6 +3569,12 @@ mod tests {
                 json!({"action": "stop_browser", "session_id": "w1"}),
             ),
             (
+                UiAction::StopRun {
+                    chat_id: s("local"),
+                },
+                json!({"action": "stop_run", "chat_id": "local"}),
+            ),
+            (
                 UiAction::KeepSignedIn {
                     session_id: s("w1"),
                 },
@@ -3642,6 +3667,18 @@ mod tests {
                     session_id: s("w1"),
                 },
                 json!({"result": "browser_stopped", "session_id": "w1"}),
+            ),
+            (
+                UiActionResult::RunStopped {
+                    chat_id: s("local"),
+                },
+                json!({"result": "run_stopped", "chat_id": "local"}),
+            ),
+            (
+                UiActionResult::NothingToStop {
+                    chat_id: s("local"),
+                },
+                json!({"result": "nothing_to_stop", "chat_id": "local"}),
             ),
             (
                 UiActionResult::InputDone {

@@ -129,6 +129,12 @@ impl std::fmt::Debug for LocalHub {
 }
 
 impl LocalHub {
+    /// Whether `other` is this hub, not a hub like it.
+    #[must_use]
+    pub fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// A hub with an empty queue and no client, whose replies pass
     /// `gate`.
     #[must_use]
@@ -440,6 +446,19 @@ impl LocalHub {
 mod tests {
     use super::*;
     use crate::{ChannelId, SenderId};
+
+    /// A hub is itself and its clones, never another hub like it.
+    #[test]
+    #[allow(
+        clippy::redundant_clone,
+        reason = "the clone is what's compared: that it's the same hub"
+    )]
+    fn a_hub_is_itself_and_its_clones_only() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        let other = LocalHub::new(OutputGate::disabled());
+        assert!(hub.is(&hub) && hub.is(&hub.clone()));
+        assert!(!hub.is(&other) && !other.is(&hub));
+    }
 
     #[test]
     fn notes_are_kept_by_key_taken_once_and_bounded() {

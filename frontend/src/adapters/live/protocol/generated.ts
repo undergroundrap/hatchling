@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 10;
+export const UI_SCHEMA_VERSION = 11;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 34;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -352,7 +352,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'manage_skills' | 'list_decisions' | 'list_covered' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'stop_run' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'manage_skills' | 'list_decisions' | 'list_covered' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -5442,6 +5442,12 @@ export type UiAction = {
      */
     readonly idea?: string | null;
 } | {
+    readonly action: 'stop_run';
+    /**
+     * The chat.
+     */
+    readonly chat_id: string;
+} | {
     readonly action: 'decide';
     /**
      * The confirmation.
@@ -6012,6 +6018,18 @@ export type UiActionResult = {
      * The session.
      */
     readonly session_id: string;
+} | {
+    /**
+     * The chat.
+     */
+    readonly chat_id: string;
+    readonly result: 'run_stopped';
+} | {
+    /**
+     * The chat.
+     */
+    readonly chat_id: string;
+    readonly result: 'nothing_to_stop';
 } | {
     /**
      * The most bytes a part carries.

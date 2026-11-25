@@ -6,6 +6,7 @@ import { ScriptedAdapter } from '../../dist/app/adapters/scripted-adapter.js';
 import { createFixtures } from '../../dist/app/adapters/fixtures.js';
 import { startBrowserWatch, reduceBrowserSession } from '../../dist/app/adapters/browser-fixtures.js';
 import { relativeChatTime } from '../../dist/app/features/chat/chat-navigation.js';
+import { turnAction } from '../../dist/app/features/chat/chat.js';
 import { clampSize } from '../../dist/app/components/resize.js';
 import { browserLabel } from '../../dist/app/features/browser/session.js';
 import { attachmentLabel } from '../../dist/app/features/chat/message-actions.js';
@@ -122,4 +123,13 @@ test('avatar request consumes only the next attachment and rejects non-raster co
     await a.execute({ type: 'chat.attach', chatId: 'main', artifactId: id });
     assert.equal(a.getSnapshot().settings.avatar, '');
     a.dispose();
+});
+test('the chat offers Stop while a run works, live too, and Resume only in the demo (WO-051)', () => {
+    assert.equal(turnAction('live', 'working'), 'stop');
+    assert.equal(turnAction('scripted', 'working'), 'stop');
+    assert.equal(turnAction('scripted', 'interrupted'), 'resume');
+    assert.equal(turnAction('live', 'interrupted'), null);
+    for (const mode of ['live', 'scripted'])
+        for (const turn of ['idle', 'awaiting', 'stalled'])
+            assert.equal(turnAction(mode, turn), null, `${mode} ${turn}`);
 });
