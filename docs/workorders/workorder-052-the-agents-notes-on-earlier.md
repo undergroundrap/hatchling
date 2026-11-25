@@ -39,6 +39,10 @@ Three things don't change:
 | The notes grow without bound, or crowd out the conversation | They have a size of their own inside the history's bounds (#595), and each new version replaces the last. |
 | A note drops something the owner cares about | The owner's words stay verbatim while they fit, ahead of the notes. The owner sees the notes and can correct them. And the notes are a setting: an owner who wants strictly verbatim turns them off. |
 | An injected note survives a New conversation | New conversation removes the notes with everything else. |
+| A constraint the owner cares about is dropped, or summarized away | The owner can pin a message. A pinned message is kept verbatim, ahead of the notes, whatever the bounds drop, until they unpin it. |
+| Telephone drift: notes rewritten from notes, each version a little further off | Each version is kept, and the owner can see what each change replaced and roll back to an earlier version. |
+| The writer invents a detail no exchange held | Each line of the notes names the exchanges it came from, which the broker checks are ones the writer was given. A claim can be traced to what was said, and a line naming none is refused. |
+| Stale notes contradict the owner's recent words | Verbatim wins, by order and by statement: the notes come before the exchanges, under a header saying that what the owner said since overrides them. |
 
 ## Scope
 
@@ -53,6 +57,11 @@ Three things don't change:
 - **Kept with the conversation.** Sealed in the conversation store, in the same write as the exchanges they replace. Shown again after a restart.
 - **Given to every chat run.** After *earlier* and before the exchanges, in the agent's role, under their own header. Their bytes come out of the history's bounds.
 - **The owner's view.** A card in the chat: "What the agent keeps from earlier", the notes as given. The owner can edit the notes, and an edit is marked as the owner's. They can delete them. They can turn notes off in Settings, which makes the conversation verbatim only, as today. Notes are on by default.
+- **Pinned messages.** The owner can pin any message of theirs. A pinned message is given verbatim to every chat run, before the notes, until it's unpinned. Pins have their own bound inside the history's, and the owner is told when a new pin would pass it.
+- **Versions.** Each version of the notes is kept with the conversation, with what it replaced, and the owner can see the changes and roll back. A New conversation removes them all.
+- **Sources.** Each line of the notes names the exchanges it came from, by their number in the conversation. The broker refuses a version with a line that names none, or names one the writer wasn't given, and keeps the last.
+- **Verbatim wins.** The notes are given before the exchanges, and their header says that what the owner said since overrides them.
+- **Memory agrees.** When the notes record a decision that contradicts an item the owner kept in memory, the agent is prompted to propose a correction to that item (WO-048). Neither silently overrides the other.
 - **Activity** records each notes run: its size, and what it replaced.
 
 **Not in scope:**
@@ -71,6 +80,10 @@ Three things don't change:
 - [ ] Notes survive a restart and go with New conversation. Store tests cover both, and a stopped write.
 - [ ] With notes off, the conversation is exactly #595's. A test compares the two.
 - [ ] An injected instruction in an answer doesn't come back attributed to the owner. A fixture plants one, and a test reads the notes' role and header. Its effect on the model is measured by WO-045's behaviour battery.
+- [ ] A pinned message is given verbatim to every run until unpinned, however far the bounds have moved past it. A test pins one and keeps going past the bounds.
+- [ ] Each version of the notes is kept, and rolling back gives the next run the earlier version. A store test covers both.
+- [ ] A version with a line that names no exchange, or one the writer wasn't given, is refused, and the last version stands. A test plants each.
+- [ ] WO-045 has fixtures for compaction: a decision reversed before it was compacted is recalled as reversed, a pinned constraint survives, and a planted line stays the agent's.
 - [ ] Each new guard fails its test when removed.
 
 ## Gates

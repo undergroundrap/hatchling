@@ -27,9 +27,12 @@ The queue named the first part of this as a candidate: *Memory: bounded retrieva
 - **No duplicates** (#596): a proposal whose words match a kept item isn't asked again, and `keep` makes no second copy.
 - **Absences kept as absences.** An item can record a settled negative: a claim found untrue, something that doesn't exist, a thread closed. Recall gives it as what it is, so "nothing is known" and "it's known not to be so" stay different to the agent: otherwise it works the settled answer out again, and now and then asserts the opposite. It's proposed and approved like any item, with the same provenance, and it can be superseded.
 - **When to check again.** An item can carry a date after which it's offered to the owner to confirm, change or forget.
+- **True as of.** Each item records when it was kept and when the owner last confirmed it, written by the broker. Recall gives the agent each item's date. An agent can then weigh "as of three months ago" against what it finds now, rather than treating a memory as timeless.
+- **A contradiction becomes a proposal.** When what a run finds contradicts a recalled item (a file moved, a plan changed, the owner said otherwise), the agent proposes a correction that names the item and quotes what contradicted it. It's put to the owner as a supersession. The agent is told to do this, not to act silently on either the memory or what it found.
+- **The conversation's notes and memory agree** (WO-052): a decision the notes record that contradicts a kept item prompts that proposal too. The notes are the conversation's working record and memory is what the owner approved to keep beyond it, so neither overrides the other unasked.
 - **Bounded retrieval.** Recall carries its budget to the store: it never reads more than it can give a run.
 - **Then search.** Recall by relevance to what the owner asked, not only the newest tagged items, within the same budget, without sending memory anywhere it doesn't go today. Its design comes first, in this work order, before code.
-- **The owner sees it.** The memory list shows where each item came from, what it replaced, and when it's due to be checked.
+- **The owner sees it.** The memory list shows where each item came from, what it replaced, when it was kept and last confirmed, and when it's due to be checked.
 
 **Not in scope:** the agent writing memory without approval; a model summarizing memory; a people model; importing memory from another agent (it builds on this provenance); sealing (WO-047).
 
@@ -41,6 +44,8 @@ The queue named the first part of this as a candidate: *Memory: bounded retrieva
 - [ ] A kept absence is recalled as an absence, marked as one, never as a missing item; a test recalls one beside a query that finds nothing.
 - [ ] Recall reads no more than its budget from the store; a test with many items checks what's read.
 - [ ] Search's design is written and approved by the maintainer before its code; recall by relevance then finds an item outside the newest ten, in a test.
+- [ ] Recall gives each item with when it was kept and last confirmed, from the broker's record; a test has a proposal claim another date and finds the broker's unchanged.
+- [ ] A run whose tool results contradict a recalled item proposes a correction naming it, with the contradiction quoted, and the owner's approval supersedes the item. A test runs a scripted model through it, and WO-045 measures how often real models do.
 - [ ] Items from 0.10 load, and say their provenance isn't recorded.
 - [ ] Each new guard fails its test when removed.
 
@@ -54,5 +59,6 @@ Filled in at close.
 
 ## Notes
 
+- *True as of*, contradictions as proposals, and agreement with WO-052's notes were added on 2026-11-25, by the maintainer's decision, while the two were designed together.
 - Absences were added to the scope on 2026-11-23, by the maintainer's decision, before any of this work started: a field and a test now, where a change to the sealed store's item format later would be a migration.
 - First on v0.11.0, by the maintainer's decision of 2026-11-22. WO-045, the evaluation harness, comes after it and measures recall too.
