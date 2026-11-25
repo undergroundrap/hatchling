@@ -1270,7 +1270,9 @@ mod tests {
             salt: &[u8; 32],
         ) -> Result<[u8; 32], AuthenticatorError> {
             self.asked.set(self.asked.get() + 1);
-            self.key.borrow_mut().hmac_secret(rp_id, credential_id, salt)
+            self.key
+                .borrow_mut()
+                .hmac_secret(rp_id, credential_id, salt)
         }
 
         fn hmac_secret_verified(
@@ -1346,7 +1348,10 @@ mod tests {
         let refused = keyring
             .key_kek(&wrap_b, &mut [&mut key_b, &mut after])
             .unwrap_err();
-        assert!(matches!(refused, Error::Authenticator { .. }), "{refused:?}");
+        assert!(
+            matches!(refused, Error::Authenticator { .. }),
+            "{refused:?}"
+        );
         assert_eq!(asked_both.get(), 0, "no key asked after a refusal");
     }
 
@@ -1379,7 +1384,11 @@ mod tests {
         assert!(matches!(refused, Error::KeyChange { .. }), "{refused:?}");
         assert_eq!(asked.get(), 1, "the second handle is never asked");
         assert_ne!(keyring.tier(), Tier::HardwareKey);
-        assert_eq!(std::fs::read(&path).unwrap(), saved, "the keyring is unchanged");
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            saved,
+            "the keyring is unchanged"
+        );
         // Two keys still enrol.
         let mut other = VirtualAuthenticator::new();
         keyring
