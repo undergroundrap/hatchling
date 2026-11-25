@@ -274,7 +274,8 @@ impl Keyring {
     /// # Errors
     ///
     /// Returns [`Error::TierChange`], [`Error::NeedTwoKeys`],
-    /// [`Error::MissingHmacSecret`], [`Error::Authenticator`],
+    /// [`Error::KeyChange`] for a key given twice (two handles to one key
+    /// are one key), [`Error::MissingHmacSecret`], [`Error::Authenticator`],
     /// [`Error::RotationUnfinished`], or an I/O or randomness error.
     pub fn enroll_hardware_keys(
         &mut self,
@@ -301,8 +302,15 @@ impl Keyring {
             return Err(Error::NeedTwoKeys);
         }
         let rotation = self.begin_rotation(unlocked, Tier::HardwareKey)?;
-        let mut wraps = Vec::with_capacity(keys.len());
+        let mut wraps: Vec<crate::Wrap> = Vec::with_capacity(keys.len());
         for device in keys.iter_mut() {
+            // Two handles to one key are one key: refused, as the staged
+            // enrollment refuses it, before it's asked for anything (#687).
+            if wraps.iter().any(|wrap| key_holds(&mut **device, wrap)) {
+                return Err(Error::KeyChange {
+                    reason: "this key is already registered",
+                });
+            }
             wraps.push(self.hardware_wrap(rotation.new_key(), &mut **device, check)?);
         }
         self.commit_rotation(rotation, Tier::HardwareKey, wraps)
@@ -434,6 +442,16 @@ impl Keyring {
 
     /// The KEK of the enrolled key whose wrap is `wrap`, from the first of
     /// `keys` that answers for its credential with a KEK that opens it.
+    ///
+    /// As [`Keyring::unlock_hardware_key`] does (#687): a key that says it
+    /// doesn't hold the credential isn't asked, so its owner isn't asked
+    /// for its PIN; and a refusal (a wrong PIN, no touch) stops it and is
+    /// said, since asking on would spend another of a key's PIN tries.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Authenticator`], saying why, when a key refuses;
+    /// [`Error::KeyAbsent`], naming the wrap, when none of `keys` opens it.
     pub(crate) fn key_kek(
         &self,
         wrap: &crate::Wrap,
@@ -459,14 +477,27 @@ impl Keyring {
         let salt = unhex(salt)
             .and_then(|salt| <[u8; 32]>::try_from(salt).ok())
             .ok_or_else(absent)?;
-        keys.iter_mut()
-            .find_map(|device| {
-                let mut output = answer(&mut **device, &credential, &salt, check).ok()?;
-                let kek = kek(self.vault_id(), &credential, &output);
-                output.zeroize();
-                self.unwrap(wrap, &kek).ok().map(|_| kek)
-            })
-            .ok_or_else(absent)
+        for device in keys.iter_mut() {
+            let device = &mut **device;
+            if device.holds(RP_ID, &credential) == Some(false) {
+                continue;
+            }
+            let mut output = match answer(device, &credential, &salt, check) {
+                Ok(output) => output,
+                Err(AuthenticatorError::UnknownCredential) => continue,
+                Err(refused) => {
+                    return Err(Error::Authenticator {
+                        reason: refused.said(),
+                    });
+                }
+            };
+            let kek = kek(self.vault_id(), &credential, &output);
+            output.zeroize();
+            if self.unwrap(wrap, &kek).is_ok() {
+                return Ok(kek);
+            }
+        }
+        Err(absent())
     }
 
     /// One credential on `key`, and `dek` wrapped under its KEK, from its
@@ -1214,6 +1245,147 @@ mod tests {
             keyring.key_kek(&file, &mut [&mut holder]),
             Err(Error::KeyAbsent { .. })
         ));
+    }
+
+    /// A handle to a shared virtual key, counting the times it's asked
+    /// for an answer. Two handles to one key are one key opened twice.
+    struct Handle<'a> {
+        key: &'a std::cell::RefCell<VirtualAuthenticator>,
+        asked: &'a std::cell::Cell<usize>,
+    }
+
+    impl Authenticator for Handle<'_> {
+        fn make_credential(
+            &mut self,
+            rp_id: &str,
+            user_id: &[u8],
+        ) -> Result<Credential, AuthenticatorError> {
+            self.key.borrow_mut().make_credential(rp_id, user_id)
+        }
+
+        fn hmac_secret(
+            &mut self,
+            rp_id: &str,
+            credential_id: &[u8],
+            salt: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            self.asked.set(self.asked.get() + 1);
+            self.key.borrow_mut().hmac_secret(rp_id, credential_id, salt)
+        }
+
+        fn hmac_secret_verified(
+            &mut self,
+            rp_id: &str,
+            credential_id: &[u8],
+            salt: &[u8; 32],
+        ) -> Result<[u8; 32], AuthenticatorError> {
+            self.asked.set(self.asked.get() + 1);
+            self.key
+                .borrow_mut()
+                .hmac_secret_verified(rp_id, credential_id, salt)
+        }
+
+        fn holds(&mut self, rp_id: &str, credential_id: &[u8]) -> Option<bool> {
+            self.key.borrow_mut().holds(rp_id, credential_id)
+        }
+
+        fn pin_set(&self) -> Option<bool> {
+            self.key.borrow().pin_set()
+        }
+    }
+
+    /// #687: rotation's KEK is asked only of a key that may hold the
+    /// credential, and a wrong PIN stops it and is said, with no other
+    /// key asked after.
+    #[test]
+    fn a_keys_kek_asks_only_its_holder_and_says_a_wrong_pin() {
+        use std::cell::{Cell, RefCell};
+        let dir = test_dir("fido2-key-kek-asks");
+        let (mut keyring, kek, _) = vault(&dir);
+        let (a, b) = (
+            RefCell::new(VirtualAuthenticator::with_pin("2468")),
+            RefCell::new(VirtualAuthenticator::with_pin("1357")),
+        );
+        let (asked_a, asked_b) = (Cell::new(0), Cell::new(0));
+        let (mut key_a, mut key_b) = (
+            Handle {
+                key: &a,
+                asked: &asked_a,
+            },
+            Handle {
+                key: &b,
+                asked: &asked_b,
+            },
+        );
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        keyring
+            .enroll_hardware_keys_checked(&unlocked, &mut [&mut key_a, &mut key_b], KeyCheck::Pin)
+            .unwrap();
+        let wrap_b = keyring
+            .wraps()
+            .iter()
+            .find(|wrap| key_holds(&mut key_b, wrap))
+            .unwrap()
+            .clone();
+        let (before_a, before_b) = (asked_a.get(), asked_b.get());
+        // `a` doesn't hold `b`'s credential: never asked.
+        let opened = keyring
+            .key_kek(&wrap_b, &mut [&mut key_a, &mut key_b])
+            .unwrap();
+        assert!(keyring.unwrap(&wrap_b, &opened).is_ok());
+        assert_eq!(asked_a.get(), before_a, "a key without it isn't asked");
+        assert_eq!(asked_b.get(), before_b + 1);
+        // A wrong PIN on `b`: said, and nothing asked after it.
+        b.borrow_mut().set_typed(Some("0000"));
+        let both = RefCell::new(VirtualAuthenticator::new());
+        let asked_both = Cell::new(0);
+        let mut after = Handle {
+            key: &both,
+            asked: &asked_both,
+        };
+        let refused = keyring
+            .key_kek(&wrap_b, &mut [&mut key_b, &mut after])
+            .unwrap_err();
+        assert!(matches!(refused, Error::Authenticator { .. }), "{refused:?}");
+        assert_eq!(asked_both.get(), 0, "no key asked after a refusal");
+    }
+
+    /// #687: the same key given twice to the batch enrolment, as two
+    /// handles to it, is refused before it's asked for anything, and the
+    /// keyring is unchanged.
+    #[test]
+    fn the_same_key_twice_is_refused_by_the_batch_enrolment() {
+        use std::cell::{Cell, RefCell};
+        let dir = test_dir("fido2-same-key-twice");
+        let (mut keyring, kek, _) = vault(&dir);
+        let path = dir.join("keys").join("keyring");
+        let saved = std::fs::read(&path).unwrap();
+        let one = RefCell::new(VirtualAuthenticator::new());
+        let asked = Cell::new(0);
+        let (mut first, mut again) = (
+            Handle {
+                key: &one,
+                asked: &asked,
+            },
+            Handle {
+                key: &one,
+                asked: &asked,
+            },
+        );
+        let unlocked = keyring.unlock_file(&kek).unwrap();
+        let refused = keyring
+            .enroll_hardware_keys(&unlocked, &mut [&mut first, &mut again])
+            .unwrap_err();
+        assert!(matches!(refused, Error::KeyChange { .. }), "{refused:?}");
+        assert_eq!(asked.get(), 1, "the second handle is never asked");
+        assert_ne!(keyring.tier(), Tier::HardwareKey);
+        assert_eq!(std::fs::read(&path).unwrap(), saved, "the keyring is unchanged");
+        // Two keys still enrol.
+        let mut other = VirtualAuthenticator::new();
+        keyring
+            .enroll_hardware_keys(&unlocked, &mut [&mut first, &mut other])
+            .unwrap();
+        assert_eq!(keyring.tier(), Tier::HardwareKey);
     }
 
     /// A key that answers for a touch only, keeping the trait's default.
