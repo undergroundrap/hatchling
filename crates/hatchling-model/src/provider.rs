@@ -15,7 +15,7 @@
 //! does not call tools. There is no local branch here: a local
 //! endpoint differs only in where the broker sends the bytes.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use hatchling_core::ModelReasoning;
@@ -187,6 +187,12 @@ pub struct ChatCompletionsProvider<T: Transport> {
     window: Option<u32>,
     /// What its server reported of the last request it answered.
     seen: Mutex<Option<Seen>>,
+    /// The run's token budget, in input tokens summed over its calls,
+    /// when it has one (WO-051).
+    budget: Option<u64>,
+    /// The input tokens its server reported, summed over every request it
+    /// answered.
+    spent: AtomicU64,
 }
 
 impl<T: Transport> ChatCompletionsProvider<T> {
@@ -215,7 +221,22 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             transport,
             window: config.context_window,
             seen: Mutex::new(None),
+            budget: None,
+            spent: AtomicU64::new(0),
         })
+    }
+
+    /// Keeps requests within `budget` input tokens, summed over the run's
+    /// calls as its server reports them (WO-051).
+    #[must_use]
+    pub const fn with_token_budget(mut self, budget: u64) -> Self {
+        self.budget = Some(budget);
+        self
+    }
+
+    /// The input tokens its server has reported, summed.
+    fn spent(&self) -> u64 {
+        self.spent.load(Ordering::Relaxed)
     }
 
     /// What the server reported of the last request it answered, held
@@ -406,6 +427,12 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         let body_bytes = self.wire(body)?;
         let reply = self.send(&body_bytes)?;
         if let Some(prompt_tokens) = prompt_tokens(&reply) {
+            // One request is answered at a time: a load and a store don't
+            // race.
+            self.spent.store(
+                self.spent().saturating_add(prompt_tokens),
+                Ordering::Relaxed,
+            );
             *self.seen() = Some(Seen {
                 prompt_tokens,
                 bytes: u64::try_from(body_bytes.len()).unwrap_or(u64::MAX),
@@ -639,6 +666,23 @@ impl<T: Transport> Model for ChatCompletionsProvider<T> {
         self.tokens_in(wire.len())
             .saturating_add(u64::from(room_kept(window)))
             <= u64::from(window)
+    }
+
+    /// Whether the request, measured as [`fits`](Self::fits) measures
+    /// it, keeps what's spent within the budget. Without a budget, or a
+    /// request this can't build, it does.
+    fn affords(&self, messages: &[Message], tools: &[ToolDescription]) -> bool {
+        let Some(budget) = self.budget else {
+            return true;
+        };
+        let Ok(mut body) = self.request_body(messages, tools) else {
+            return true;
+        };
+        self.redactor.redact_value(&mut body);
+        let Ok(wire) = self.wire(&body) else {
+            return true;
+        };
+        self.spent().saturating_add(self.tokens_in(wire.len())) <= budget
     }
 
     fn next_action(
@@ -1981,5 +2025,40 @@ mod tests {
             provider.fits(&messages, &no_tools()),
             "redacted, it's small"
         );
+    }
+
+    /// A run's budget is the input tokens its server reports, summed over
+    /// its calls: a request affords it when what's spent and the request
+    /// itself fit within it (WO-051).
+    #[test]
+    fn a_request_affords_the_budget_by_what_was_spent() {
+        let counted = |tokens: u64| {
+            format!(
+                r#"{{"choices": [{{"message": {{"role": "assistant", "content": "a"}}}}], "usage": {{"prompt_tokens": {tokens}}}}}"#
+            )
+        };
+        // Without a budget, every request affords it.
+        let provider = windowed(65_536, Canned::ok(&counted(900)));
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(provider.affords(&asking(100), &no_tools()));
+        // 900 spent and a request of 900 more: 1800.
+        let budgeted =
+            |budget| windowed(65_536, Canned::ok(&counted(900))).with_token_budget(budget);
+        let provider = budgeted(1800);
+        assert!(
+            provider.affords(&asking(100), &no_tools()),
+            "nothing spent yet"
+        );
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(provider.affords(&asking(100), &no_tools()), "1800 of 1800");
+        let provider = budgeted(1799);
+        provider.next_action(&asking(100), &no_tools()).unwrap();
+        assert!(!provider.affords(&asking(100), &no_tools()), "1800 of 1799");
+        // Each call's count is added.
+        let provider = budgeted(10_000);
+        for _ in 0..3 {
+            provider.next_action(&asking(100), &no_tools()).unwrap();
+        }
+        assert_eq!(provider.spent(), 2700);
     }
 }

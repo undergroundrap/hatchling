@@ -242,6 +242,22 @@ pub const DEFAULT_RUN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// keeps [`DEFAULT_RUN_TIMEOUT`].
 pub const CHAT_RUN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// A chat run's token budget: the input tokens its model calls may sum to
+/// (WO-051). About $6 at a frontier model's list price, and room for 200
+/// turns at a 10,000-token prompt.
+pub const CHAT_RUN_TOKENS: u64 = 2_000_000;
+
+/// The token budget of a run with nobody there: a schedule's, a hook's, a
+/// follow-up's or a child's (WO-051).
+pub const RUN_TOKENS: u64 = 200_000;
+
+/// The token budget of a run of this kind: a chat's, or one with nobody
+/// there.
+#[must_use]
+pub const fn run_tokens(chat: bool) -> u64 {
+    if chat { CHAT_RUN_TOKENS } else { RUN_TOKENS }
+}
+
 /// Most output a run may produce, in bytes.
 pub const MAX_RUN_OUTPUT_BYTES: usize = 16 * 1024;
 
@@ -291,9 +307,10 @@ impl RunEnv {
     }
 }
 
-/// `run` with its deadline, and its clock: a chat's, whose owner is there,
-/// or a run's with nobody there (WO-051). The deadline is told to its
-/// agent so it answers first; the clock is what ends it.
+/// `run` with its deadline and its token budget, and its clock: a chat's,
+/// whose owner is there, or a run's with nobody there (WO-051). Both are
+/// told to its agent so it answers first; the clock, and the budget its
+/// session holds it to, are what end it.
 fn clocked(env: &RunEnv, run: ScheduledRun) -> (ScheduledRun, Duration) {
     let timeout = if run.chat {
         env.chat_timeout
@@ -302,6 +319,7 @@ fn clocked(env: &RunEnv, run: ScheduledRun) -> (ScheduledRun, Duration) {
     };
     let run = ScheduledRun {
         deadline: Some(deadline_after(timeout)),
+        token_budget: Some(run_tokens(run.chat)),
         ..run
     };
     (run, timeout)
@@ -420,16 +438,7 @@ pub fn scoped_config(
     run.channel_ingress = None;
     run.skills = SkillConfig::disabled();
     run.artifacts = run_artifacts(config, request);
-    // A space task's run may use its own space and no other; any other
-    // run has no spaces at all.
-    run.spaces = request
-        .space
-        .as_ref()
-        .map_or_else(SpaceConfig::disabled, |space| SpaceConfig {
-            root: config.spaces.root.clone(),
-            bound: Some(space.clone()),
-            device_socket: None,
-        });
+    run.spaces = run_spaces(config, request);
     let model = crate::model_choice::server(&config.scheduler);
     run.scheduler = SchedulerConfig {
         // The model the run calls, named so its trail can ask the
@@ -448,9 +457,24 @@ pub fn scoped_config(
         // A run's model calls are the owner's usage too.
         usage: config.scheduler.usage.clone(),
         library: run_library(config, request),
+        // Its model calls sum to no more than its kind's budget (WO-051).
+        run_tokens: Some(run_tokens(request.chat)),
         ..SchedulerConfig::disabled()
     };
     run
+}
+
+/// The spaces a run of `request` may use: a space task's run its own space
+/// and no other, and any other run none at all.
+fn run_spaces(config: &Config, request: &RunRequest) -> SpaceConfig {
+    request
+        .space
+        .as_ref()
+        .map_or_else(SpaceConfig::disabled, |space| SpaceConfig {
+            root: config.spaces.root.clone(),
+            bound: Some(space.clone()),
+            device_socket: None,
+        })
 }
 
 /// Launches scheduled runs as cells (see the module docs).
@@ -911,6 +935,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         event: request.event.clone(),
         max_steps: None,
         deadline: None,
+        token_budget: None,
         subagent: false,
         chat: request.chat,
         history: request.history.clone(),
@@ -1948,6 +1973,7 @@ mod tests {
             event: None,
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2050,6 +2076,7 @@ mod tests {
         let spent = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS);
         let full = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM);
         let late = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TIME);
+        let spent_out = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TOKENS);
         for (code, told, ending) in [
             (0, Ok(String::from("this far")), None),
             (
@@ -2068,9 +2095,15 @@ mod tests {
                 Some(Ending::Exited(late)),
             ),
             (
-                late + 1,
-                Err(format!("the run exited {}: why", late + 1)),
-                Some(Ending::Exited(late + 1)),
+                spent_out,
+                Ok(String::from("this far")),
+                Some(Ending::Exited(spent_out)),
+            ),
+            // No status of the agent's: a failure.
+            (
+                99,
+                Err(String::from("the run exited 99: why")),
+                Some(Ending::Exited(99)),
             ),
         ] {
             let dir = helper_dir(&format!("spent-{code}"));
@@ -2360,6 +2393,7 @@ mod tests {
             event: None,
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2395,6 +2429,7 @@ mod tests {
             event: None,
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),
@@ -2748,6 +2783,7 @@ mod tests {
             let (run, timeout) = clocked(&env, scheduled_run(&config, &asked));
             let after = now();
             assert_eq!(timeout, Duration::from_secs(clock), "{chat}");
+            assert_eq!(run.token_budget, Some(run_tokens(chat)), "{chat}");
             let deadline = run.deadline.unwrap();
             assert!(
                 (before + i64::try_from(clock).unwrap()..=after + i64::try_from(clock).unwrap())
@@ -2756,5 +2792,35 @@ mod tests {
             );
         }
         assert_eq!(deadline_after(Duration::MAX), i64::MAX);
+    }
+
+    /// A chat run's budget is two million input tokens and a run's with
+    /// nobody there two hundred thousand, and a run's session is held to
+    /// its kind's (WO-051).
+    #[test]
+    fn a_runs_session_is_held_to_its_kinds_token_budget() {
+        assert_eq!((CHAT_RUN_TOKENS, RUN_TOKENS), (2_000_000, 200_000));
+        assert_eq!(
+            (run_tokens(true), run_tokens(false)),
+            (CHAT_RUN_TOKENS, RUN_TOKENS)
+        );
+        let config = crate::api_auth::tests::owner_config(None);
+        assert_eq!(
+            config.scheduler.run_tokens, None,
+            "the broker's own session has none"
+        );
+        let socket: SocketPath = "/tmp/hatchling-budget.sock".parse().unwrap();
+        for chat in [true, false] {
+            let asked = RunRequest {
+                chat,
+                ..request(Vec::new())
+            };
+            let scoped = scoped_config(&config, &asked, "run-1", socket.clone());
+            assert_eq!(
+                scoped.scheduler.run_tokens,
+                Some(run_tokens(chat)),
+                "{chat}"
+            );
+        }
     }
 }

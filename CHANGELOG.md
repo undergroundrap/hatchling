@@ -22,6 +22,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **A run has a token budget** ([WO-051](docs/workorders/workorder-051-runs-bounded-by-what-matters.md)). Only your daily and monthly limits bounded a run's model calls, so one run could spend a day's limit on its own. Now a chat run's calls may sum to 2,000,000 input tokens, about $6 at a frontier model's list price, and a run with nobody there's to 200,000. The broker counts them as the model's server reports them and refuses the call after a run reaches its budget, whatever the agent does. The agent is told its budget too: when its next call would cross it, it answers with no tools, saying where it got to, and the answer can be kept for later. Your daily and monthly limits still apply as they did.
+
 - **A chat run is bounded by its time, not 25 turns** ([WO-051](docs/workorders/workorder-051-runs-bounded-by-what-matters.md)). A chat run stopped at 25 model turns whatever it was doing, so a small model writing files one call at a time ran out with room to finish. Now a chat run has 30 minutes, where every run had 10, and up to 200 turns only as a backstop against a loop. Runs with nobody there (schedules, hooks, children) keep 10 turns and 10 minutes. The agent is told when its time ends: inside the last 90 seconds it answers with no tools, saying where it got to, and the answer can be kept for later. The broker still ends the run at its time, as before.
 
 - **The agent is told its cell's rules** ([#650](https://github.com/undergroundrap/hatchling/issues/650)). Its prompt said only that it runs in a secured cell and should say so when a tool is missing. Now every run that's offered tools is also told:

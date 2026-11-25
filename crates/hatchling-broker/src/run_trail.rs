@@ -67,6 +67,10 @@ pub struct Trail {
     model_calls_refused: u32,
     peak_input_tokens: u64,
     output_tokens: u64,
+    /// The input tokens of every model call answered, summed.
+    input_tokens: u64,
+    /// The run's token budget, when the session is a run's (WO-051).
+    budget: Option<u64>,
     /// The owner's app, told each step a chat run starts.
     app: Option<Arc<crate::app_stream::AppStream>>,
     /// The step last told.
@@ -104,6 +108,8 @@ impl Trail {
             model_calls_refused: 0,
             peak_input_tokens: 0,
             output_tokens: 0,
+            input_tokens: 0,
+            budget: None,
             app: None,
             step: None,
         }
@@ -213,6 +219,24 @@ impl Trail {
         self
     }
 
+    /// Holds the session's model calls to `budget` input tokens, summed
+    /// (WO-051): [`over_budget`](Self::over_budget) says when they've
+    /// reached it.
+    #[must_use]
+    pub const fn with_budget(mut self, budget: Option<u64>) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// Whether the session's model calls have reached its budget: the
+    /// next is refused. The call that crossed it finished, as the call
+    /// that crosses an owner's limit does. A refusal is counted.
+    pub fn over_budget(&mut self) -> Option<u64> {
+        let budget = self.budget.filter(|budget| self.input_tokens >= *budget)?;
+        self.model_calls_refused = self.model_calls_refused.saturating_add(1);
+        Some(budget)
+    }
+
     /// The owner's usage limit reached at `now` (Unix seconds), if one
     /// is: a model call about to go is refused, and noted so.
     pub fn over_limit(&mut self, now: i64) -> Option<crate::usage::Reached> {
@@ -271,6 +295,7 @@ impl Trail {
     pub fn model_call(&mut self, input: Option<u64>, output: Option<u64>) {
         self.model_calls = self.model_calls.saturating_add(1);
         self.peak_input_tokens = self.peak_input_tokens.max(input.unwrap_or(0));
+        self.input_tokens = self.input_tokens.saturating_add(input.unwrap_or(0));
         self.output_tokens = self.output_tokens.saturating_add(output.unwrap_or(0));
     }
 
@@ -1316,5 +1341,42 @@ mod tests {
             activity_log(&config),
             Some(PathBuf::from("/srv/h/s.activity"))
         );
+    }
+
+    /// A run's session sums the input tokens of the model calls answered;
+    /// once they reach its budget, the next is refused and noted. The call
+    /// that crossed it finished (WO-051).
+    #[test]
+    fn a_runs_calls_are_refused_once_they_reach_its_budget() {
+        let mut trail = Trail::new(None, "session-1", "run-1").with_budget(Some(100));
+        assert_eq!(trail.over_budget(), None, "nothing spent");
+        trail.model_call(Some(60), Some(1));
+        assert_eq!(trail.over_budget(), None, "60 of 100");
+        trail.model_call(Some(50), Some(1));
+        assert_eq!(
+            trail.over_budget(),
+            Some(100),
+            "110 of 100: the next is refused"
+        );
+        trail.model_call(None, None);
+        assert_eq!(
+            trail.over_budget(),
+            Some(100),
+            "a call reporting nothing spends nothing"
+        );
+        let mut exact = Trail::new(None, "session-2", "run-2").with_budget(Some(100));
+        exact.model_call(Some(100), None);
+        assert_eq!(exact.over_budget(), Some(100), "reached exactly");
+        let mut unbounded = Trail::new(None, "session-3", "run-3");
+        unbounded.model_call(Some(u64::MAX), None);
+        assert_eq!(unbounded.over_budget(), None, "no budget, no refusal");
+        let Some(SubagentEvent::RunSummary {
+            model_calls_refused,
+            ..
+        }) = trail.summary()
+        else {
+            unreachable!("a run's summary");
+        };
+        assert_eq!(model_calls_refused, 2, "each refusal noted");
     }
 }

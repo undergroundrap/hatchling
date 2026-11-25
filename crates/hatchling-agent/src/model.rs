@@ -162,6 +162,10 @@ impl Cell<Ready> {
             })?
             .with_reasoning(self.config().model_reasoning)
             .with_redactor(redactor);
+        let provider = match self.config().run_token_budget {
+            Some(budget) => provider.with_token_budget(budget),
+            None => provider,
+        };
         provider
             .verify_capabilities()
             .map_err(|error| match error {
@@ -195,6 +199,7 @@ impl Cell<Ready> {
                 Error::ModelCutOff(error.to_string())
             }
             hatchling_loop::Error::OutOfTime => Error::OutOfTime(error.to_string()),
+            hatchling_loop::Error::OutOfTokens => Error::OutOfTokens(error.to_string()),
             hatchling_loop::Error::ModelSilent(_) => Error::ModelSilent(error.to_string()),
             hatchling_loop::Error::ModelThoughtOnly(_) => {
                 Error::ModelThoughtOnly(error.to_string())
@@ -304,25 +309,17 @@ pub fn scheduled_task(task: &str) -> String {
 pub struct RunAnswer {
     /// The answer, as the caller prints it.
     pub answer: String,
-    /// Whether the run's steps ran out as it answered
-    /// ([`hatchling_loop::LoopResult::out_of_steps`]). Never so for a
-    /// subagent: its parent reads its status as done or failed.
-    pub out_of_steps: bool,
-    /// Whether the run's context filled as it answered
-    /// ([`hatchling_loop::LoopResult::out_of_room`]).
-    pub out_of_room: bool,
-    /// Whether the run's time was nearly up as it answered
-    /// ([`hatchling_loop::LoopResult::out_of_time`]).
-    pub out_of_time: bool,
+    /// The limit the run answered at, if one
+    /// ([`hatchling_loop::LoopResult::limit`]). Never so for a subagent:
+    /// its parent reads its status as done or failed.
+    pub limit: Option<hatchling_loop::Limit>,
 }
 
 impl From<LoopResult> for RunAnswer {
     fn from(result: LoopResult) -> Self {
         Self {
             answer: result.answer,
-            out_of_steps: result.out_of_steps,
-            out_of_room: result.out_of_room,
-            out_of_time: result.out_of_time,
+            limit: result.limit,
         }
     }
 }
@@ -393,9 +390,7 @@ pub fn run_command(task_args: &[String]) -> Result<RunAnswer, Error> {
     if config_subagent {
         return subagent_report(outcome).map(|answer| RunAnswer {
             answer,
-            out_of_steps: false,
-            out_of_room: false,
-            out_of_time: false,
+            limit: None,
         });
     }
     Ok(outcome?.into())
@@ -482,6 +477,7 @@ mod tests {
             run_builders: std::collections::BTreeMap::new(),
             run_tools: None,
             run_deadline: None,
+            run_token_budget: None,
             vault_fd: None,
         };
         assert_eq!(prompt_for(&config), hatchling_loop::PromptKind::Worker);
@@ -576,9 +572,7 @@ mod tests {
             answer: String::from("a"),
             history: Vec::new(),
             steps: 2,
-            out_of_steps: false,
-            out_of_room: false,
-            out_of_time: false,
+            limit: None,
         }))
         .unwrap();
         let done_wire = r#"{"status":"done","verdict":"ok","answer":"a","steps":2}"#;
@@ -596,27 +590,24 @@ mod tests {
     /// A run's answer keeps what the loop said of its steps and its room.
     #[test]
     fn a_runs_answer_says_whether_its_steps_or_room_ran_out() {
-        for (out_of_steps, out_of_room, out_of_time) in [
-            (true, false, false),
-            (false, true, false),
-            (false, false, true),
-            (false, false, false),
+        for limit in [
+            Some(hatchling_loop::Limit::Steps),
+            Some(hatchling_loop::Limit::Room),
+            Some(hatchling_loop::Limit::Time),
+            Some(hatchling_loop::Limit::Tokens),
+            None,
         ] {
             let answer = RunAnswer::from(LoopResult {
                 answer: String::from("this far"),
                 history: Vec::new(),
                 steps: 3,
-                out_of_steps,
-                out_of_room,
-                out_of_time,
+                limit,
             });
             assert_eq!(
                 answer,
                 RunAnswer {
                     answer: String::from("this far"),
-                    out_of_steps,
-                    out_of_room,
-                    out_of_time,
+                    limit,
                 }
             );
         }

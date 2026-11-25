@@ -220,6 +220,10 @@ pub struct SchedulerConfig {
     /// from the app ([`crate::model_choice`]); none when there's one.
     /// A run's own session never has it: its model is already chosen.
     pub other_model: Option<OtherModel>,
+    /// A run's token budget: the input tokens its session's model calls
+    /// may sum to, as their servers report them (WO-051). Set only on a
+    /// run's own session; `None` everywhere else.
+    pub run_tokens: Option<u64>,
 }
 
 /// A second model's server, as the operator set it up: one the owner may
@@ -284,6 +288,7 @@ impl SchedulerConfig {
             library: PathBuf::new(),
             usage: PathBuf::new(),
             other_model: None,
+            run_tokens: None,
         }
     }
 
@@ -1467,6 +1472,7 @@ fn parse_scheduler(
         library: PathBuf::new(),
         usage,
         other_model: None,
+        run_tokens: None,
     })
 }
 

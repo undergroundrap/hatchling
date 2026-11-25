@@ -32,11 +32,14 @@ pub enum RunFailure {
     /// The run's time was nearly up, and its last turn, with no tools,
     /// wasn't an answer (WO-051).
     OutOfTime,
+    /// The run's token budget was nearly spent, and its last turn, with no
+    /// tools, wasn't an answer (WO-051).
+    OutOfTokens,
 }
 
 impl RunFailure {
     /// Every failure, in order.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::ModelUnavailable,
         Self::ModelIncapable,
         Self::ModelSilent,
@@ -45,6 +48,7 @@ impl RunFailure {
         Self::OutOfSteps,
         Self::OutOfRoom,
         Self::OutOfTime,
+        Self::OutOfTokens,
     ];
 
     /// The agent's exit status for it: `sysexits.h` codes that don't
@@ -68,6 +72,8 @@ impl RunFailure {
             Self::OutOfRoom => 78,
             // EX_NOPERM's neighbour, unused by sysexits: the run's clock.
             Self::OutOfTime => 79,
+            // EX_NOPERM: the run's budget allows no more.
+            Self::OutOfTokens => 77,
         }
     }
 
@@ -105,6 +111,14 @@ pub const ANSWERED_OUT_OF_ROOM: u8 = 81;
 /// and no failure.
 pub const ANSWERED_OUT_OF_TIME: u8 = 82;
 
+/// The status an agent exits with when it answered as its token budget
+/// was nearly spent.
+///
+/// Its next call would have crossed the budget, so it was told to answer
+/// with no tools (WO-051). As with [`ANSWERED_OUT_OF_STEPS`], the answer
+/// is the run's, and no failure.
+pub const ANSWERED_OUT_OF_TOKENS: u8 = 83;
+
 /// Whether an agent's exit status says it answered as its steps ran out.
 #[must_use]
 pub fn answered_out_of_steps(code: i32) -> bool {
@@ -115,12 +129,14 @@ pub fn answered_out_of_steps(code: i32) -> bool {
 /// came, so its answer may leave work undone.
 ///
 /// The limit is its steps ([`ANSWERED_OUT_OF_STEPS`]), its room
-/// ([`ANSWERED_OUT_OF_ROOM`]) or its time ([`ANSWERED_OUT_OF_TIME`]).
+/// ([`ANSWERED_OUT_OF_ROOM`]), its time ([`ANSWERED_OUT_OF_TIME`]) or its
+/// tokens ([`ANSWERED_OUT_OF_TOKENS`]).
 #[must_use]
 pub fn answered_at_a_limit(code: i32) -> bool {
     answered_out_of_steps(code)
         || code == i32::from(ANSWERED_OUT_OF_ROOM)
         || code == i32::from(ANSWERED_OUT_OF_TIME)
+        || code == i32::from(ANSWERED_OUT_OF_TOKENS)
 }
 
 #[cfg(test)]
@@ -162,14 +178,20 @@ mod tests {
     fn answering_at_a_limit_is_either_status_and_nothing_else() {
         assert_eq!(ANSWERED_OUT_OF_ROOM, 81);
         assert_eq!(ANSWERED_OUT_OF_TIME, 82);
-        for at_a_limit in [ANSWERED_OUT_OF_ROOM, ANSWERED_OUT_OF_TIME] {
+        assert_eq!(ANSWERED_OUT_OF_TOKENS, 83);
+        for at_a_limit in [
+            ANSWERED_OUT_OF_ROOM,
+            ANSWERED_OUT_OF_TIME,
+            ANSWERED_OUT_OF_TOKENS,
+        ] {
             assert_eq!(RunFailure::from_code(at_a_limit.into()), None);
             assert!(!answered_out_of_steps(at_a_limit.into()));
         }
         assert!(answered_at_a_limit(ANSWERED_OUT_OF_STEPS.into()));
         assert!(answered_at_a_limit(ANSWERED_OUT_OF_ROOM.into()));
         assert!(answered_at_a_limit(ANSWERED_OUT_OF_TIME.into()));
-        for other in [-1, 0, 1, 64, 79, 83, 255] {
+        assert!(answered_at_a_limit(ANSWERED_OUT_OF_TOKENS.into()));
+        for other in [-1, 0, 1, 64, 79, 84, 255] {
             assert!(!answered_at_a_limit(other), "{other}");
         }
         for failure in RunFailure::ALL {

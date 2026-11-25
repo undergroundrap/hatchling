@@ -107,6 +107,10 @@ pub struct Config {
     /// When the broker ends the run, in Unix seconds
     /// (`HATCHLING_RUN_DEADLINE`, WO-051): the run answers before it.
     pub run_deadline: Option<i64>,
+    /// The run's token budget, in input tokens summed over its calls
+    /// (`HATCHLING_RUN_TOKEN_BUDGET`, WO-051): the run answers before its
+    /// next call would cross it.
+    pub run_token_budget: Option<u64>,
 }
 
 impl Config {
@@ -194,14 +198,16 @@ impl Config {
             parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat)?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
-        let run_deadline = get(env::HATCHLING_RUN_DEADLINE.name)
-            .map(|raw| {
-                raw.parse::<i64>().map_err(|_| Error::InvalidConfig {
-                    key: "HATCHLING_RUN_DEADLINE",
-                    reason: String::from("expected Unix seconds, base 10"),
-                })
-            })
-            .transpose()?;
+        let run_deadline = number(
+            get(env::HATCHLING_RUN_DEADLINE.name),
+            "HATCHLING_RUN_DEADLINE",
+            "expected Unix seconds, base 10",
+        )?;
+        let run_token_budget = number(
+            get(env::HATCHLING_RUN_TOKEN_BUDGET.name),
+            "HATCHLING_RUN_TOKEN_BUDGET",
+            "expected a base-10 count of input tokens",
+        )?;
         let run_tools = get(env::HATCHLING_RUN_TOOLS.name)
             .map(|raw| {
                 hatchling_core::run_tools::parse(&raw).map_err(|reason| Error::InvalidConfig {
@@ -228,8 +234,26 @@ impl Config {
             run_builders,
             run_tools,
             run_deadline,
+            run_token_budget,
         })
     }
+}
+
+/// A setting `key` that is a number when set: `None` unset, and refused,
+/// saying `reason`, when it isn't one.
+fn number<T: std::str::FromStr>(
+    value: Option<String>,
+    key: &'static str,
+    reason: &str,
+) -> Result<Option<T>, Error> {
+    value
+        .map(|raw| {
+            raw.parse::<T>().map_err(|_| Error::InvalidConfig {
+                key,
+                reason: reason.to_owned(),
+            })
+        })
+        .transpose()
 }
 
 /// `HATCHLING_RUN_HISTORY`: a chat turn's conversation so far, which only
@@ -831,6 +855,34 @@ mod tests {
             let error = Config::parse(lookup(&vars)).unwrap_err();
             assert!(
                 matches!(error, Error::InvalidConfig { key: "HATCHLING_MODEL_REASONING", reason } if reason == "expected provider-default or disabled")
+            );
+        }
+    }
+
+    /// A run's deadline and its token budget are read as the broker sets
+    /// them, and refused when they aren't numbers (WO-051).
+    #[test]
+    fn a_runs_deadline_and_budget_are_read_or_refused() {
+        let mut vars = valid_vars();
+        let parsed = Config::parse(lookup(&vars)).unwrap();
+        assert_eq!((parsed.run_deadline, parsed.run_token_budget), (None, None));
+        vars.insert("HATCHLING_RUN_DEADLINE", "1800000000");
+        vars.insert("HATCHLING_RUN_TOKEN_BUDGET", "200000");
+        let parsed = Config::parse(lookup(&vars)).unwrap();
+        assert_eq!(
+            (parsed.run_deadline, parsed.run_token_budget),
+            (Some(1_800_000_000), Some(200_000))
+        );
+        for (key, bad) in [
+            ("HATCHLING_RUN_DEADLINE", "soon"),
+            ("HATCHLING_RUN_TOKEN_BUDGET", "-1"),
+            ("HATCHLING_RUN_TOKEN_BUDGET", "lots"),
+        ] {
+            let mut vars = valid_vars();
+            vars.insert(key, bad);
+            assert!(
+                matches!(Config::parse(lookup(&vars)), Err(Error::InvalidConfig { key: named, .. }) if named == key),
+                "{key}={bad}"
             );
         }
     }

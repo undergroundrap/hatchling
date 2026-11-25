@@ -75,6 +75,13 @@ pub trait Model: Send + Sync {
         true
     }
 
+    /// Whether a request of `messages`, offered `tools`, keeps within the
+    /// run's token budget (WO-051). A model that has no budget says it
+    /// does.
+    fn affords(&self, _messages: &[Message], _tools: &[ToolDescription]) -> bool {
+        true
+    }
+
     /// Produce the next action given the history and the tools the
     /// host makes available.
     ///

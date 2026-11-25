@@ -173,6 +173,8 @@ pub fn child_config(
         subagent_depth: parent.scheduler.subagent_depth.saturating_add(1),
         // A child's model calls are the owner's usage too.
         usage: parent.scheduler.usage.clone(),
+        // A child is a run with nobody there (WO-051).
+        run_tokens: Some(crate::run_launcher::RUN_TOKENS),
         ..SchedulerConfig::disabled()
     };
     child
@@ -450,6 +452,9 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             event: None,
             max_steps: Some(budget),
             deadline: None,
+            // Told the budget its session is held to, so that its last
+            // turn says where it got to (WO-051).
+            token_budget: Some(crate::run_launcher::RUN_TOKENS),
             subagent: true,
             chat: false,
             history: Vec::new(),
@@ -752,6 +757,11 @@ mod tests {
         assert!(!child.scheduler.enabled());
         // Its model calls are counted with the owner's.
         assert_eq!(child.scheduler.usage, parent.scheduler.usage);
+        // It's held to the budget of a run with nobody there (WO-051).
+        assert_eq!(
+            child.scheduler.run_tokens,
+            Some(crate::run_launcher::RUN_TOKENS)
+        );
         assert!(child.egress.grants.is_empty());
         assert!(child.channels.is_empty());
         // Not the owner's signed-in profiles, or their sign-ins: no

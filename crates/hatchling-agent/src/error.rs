@@ -558,6 +558,11 @@ pub enum Error {
     /// wasn't an answer (WO-051).
     #[error("agent loop failed: {0}")]
     OutOfTime(String),
+
+    /// The run's token budget was nearly spent, and its last turn, with no
+    /// tools, wasn't an answer (WO-051).
+    #[error("agent loop failed: {0}")]
+    OutOfTokens(String),
 }
 
 impl Error {
@@ -582,6 +587,8 @@ impl Error {
             Some(RunFailure::OutOfSteps)
         } else if let Self::OutOfTime(_) = self {
             Some(RunFailure::OutOfTime)
+        } else if let Self::OutOfTokens(_) = self {
+            Some(RunFailure::OutOfTokens)
         } else {
             None
         }
@@ -664,6 +671,10 @@ mod tests {
                 Some(RunFailure::OutOfSteps),
             ),
             (Error::OutOfTime(String::new()), Some(RunFailure::OutOfTime)),
+            (
+                Error::OutOfTokens(String::new()),
+                Some(RunFailure::OutOfTokens),
+            ),
             (Error::LoopFailed(String::new()), None),
             (Error::Usage(String::new()), None),
             (Error::VaultFailed, None),

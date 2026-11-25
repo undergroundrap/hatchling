@@ -99,6 +99,9 @@ pub(crate) enum BrokerBehavior {
         grants: Vec<String>,
         /// Explicit vault grants.
         vault: Vec<hatchling_broker::VaultGrant>,
+        /// The session's token budget, as a run's session has one
+        /// (WO-051).
+        run_tokens: Option<u64>,
     },
     /// Complete the handshake, then answer every vault op with this
     /// canned result. Pins the agent's reply mapping, including results
@@ -249,6 +252,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
             allowlist,
             grants,
             vault: Vec::new(),
+            run_tokens: None,
         }
     } else {
         behavior
@@ -432,6 +436,7 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
         allowlist,
         grants,
         vault,
+        run_tokens,
     } = behavior
     {
         let socket: hatchling_core::SocketPath = match "/tmp/hatchling-fixture-dummy.sock".parse() {
@@ -453,7 +458,10 @@ fn serve(listener: UnixListener, behavior: BrokerBehavior, vault_root: Option<Pa
             agent_uid: PeerUid::from_kernel(rustix::process::getuid().as_raw()),
             socket_mode: 0o600,
             max_connections: hatchling_broker::DEFAULT_MAX_CONNECTIONS,
-            scheduler: hatchling_broker::SchedulerConfig::disabled(),
+            scheduler: hatchling_broker::SchedulerConfig {
+                run_tokens,
+                ..hatchling_broker::SchedulerConfig::disabled()
+            },
             log_level: LogLevel::Error,
             vault: VaultConfig {
                 root,

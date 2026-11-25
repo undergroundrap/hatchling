@@ -691,6 +691,7 @@ mod tests {
             event: None,
             max_steps: None,
             deadline: None,
+            token_budget: None,
             subagent: false,
             chat: false,
             history: Vec::new(),

@@ -61,19 +61,12 @@ pub struct LoopResult {
     pub history: Vec<Message>,
     /// How many model turns ran.
     pub steps: u32,
-    /// Whether the run's steps ran out as it answered: the answer was
-    /// given on its last step, told it was the last, or was one held
-    /// back until none were left. Such an answer may leave work undone.
-    pub out_of_steps: bool,
-    /// Whether the run's context filled as it answered: its next request
-    /// wouldn't have fit the model's window, so it was told to answer
-    /// with no tools ([`Loop::with_room`]). Such an answer may leave work
-    /// undone.
-    pub out_of_room: bool,
-    /// Whether the run's time was nearly up as it answered, so it was told
-    /// to answer with no tools ([`Loop::with_deadline`]). Such an answer
-    /// may leave work undone.
-    pub out_of_time: bool,
+    /// The limit the run's answer was given at, if one: its steps ran out
+    /// as it answered (the answer was given on its last step, told it was
+    /// the last, or was one held back until none were left), or its room,
+    /// time or tokens did ([`Loop::with_room`], [`Loop::with_deadline`],
+    /// [`Loop::with_token_budget`]). Such an answer may leave work undone.
+    pub limit: Option<Limit>,
 }
 
 impl LoopResult {
@@ -83,20 +76,26 @@ impl LoopResult {
             answer,
             history,
             steps,
-            out_of_steps,
-            out_of_room: false,
-            out_of_time: false,
+            limit: if out_of_steps {
+                Some(Limit::Steps)
+            } else {
+                None
+            },
         }
     }
 }
 
-/// The limit a run's last turn was made at.
+/// A limit a run's answer was given at (WO-051).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Limit {
+pub enum Limit {
+    /// Its steps ran out.
+    Steps,
     /// Its next request wouldn't have fit the model's window.
     Room,
     /// Its time was nearly up.
     Time,
+    /// Its next call would have crossed its token budget.
+    Tokens,
 }
 
 /// `text`'s first `cap` bytes, ending on a character, and a line saying
@@ -131,6 +130,7 @@ pub struct Loop<'t, 'r, 'm> {
     room: Option<String>,
     output_cap: Option<usize>,
     deadline: Option<(std::time::Instant, String)>,
+    token_budget: Option<String>,
 }
 
 impl std::fmt::Debug for Loop<'_, '_, '_> {
@@ -147,6 +147,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("room", &self.room.is_some())
             .field("output_cap", &self.output_cap)
             .field("deadline", &self.deadline.as_ref().map(|(at, _)| at))
+            .field("token_budget", &self.token_budget.is_some())
             .finish()
     }
 }
@@ -174,6 +175,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             room: None,
             output_cap: None,
             deadline: None,
+            token_budget: None,
         }
     }
 
@@ -198,7 +200,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     /// turn the model is asked whether the request fits
     /// ([`Model::fits`]). When it doesn't, `note` is put to the model as
     /// a [`Message::Note`] and it's offered no tools: it says where it got
-    /// to, and the run's answer is marked [`LoopResult::out_of_room`]. If
+    /// to, and the run's answer is marked at [`Limit::Room`]. If
     /// even that request doesn't fit, nothing is sent, and the run ends
     /// [`Error::OutOfRoom`]. Nothing in the history is dropped or
     /// summarized.
@@ -210,13 +212,26 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
 
     /// Answer by `at` (WO-051): a turn that would start at or after it is
     /// the run's last, told `note` and offered no tools, and its answer is
-    /// marked [`LoopResult::out_of_time`]. A last turn that isn't an
+    /// marked at [`Limit::Time`]. A last turn that isn't an
     /// answer ends the run [`Error::OutOfTime`]. The run's own clock, kept
     /// by whoever started it, still ends it at its deadline; this is the
     /// run's chance to say where it got to first.
     #[must_use]
     pub fn with_deadline(mut self, at: std::time::Instant, note: String) -> Self {
         self.deadline = Some((at, note));
+        self
+    }
+
+    /// Keep within the run's token budget (WO-051). Before every turn the
+    /// model is asked whether the request keeps within it
+    /// ([`Model::affords`]). When it doesn't, `note` is put to the model
+    /// and it's offered no tools: its answer is the run's, marked
+    /// at [`Limit::Tokens`]. That last turn may cross the budget,
+    /// as the call that crosses an owner's limit finishes; whoever holds
+    /// the budget refuses the next.
+    #[must_use]
+    pub fn with_token_budget(mut self, note: String) -> Self {
+        self.token_budget = Some(note);
         self
     }
 
@@ -251,7 +266,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
     }
 
     /// The limit the run is at before its next turn, if one: its time
-    /// ([`with_deadline`](Self::with_deadline)), then its room
+    /// ([`with_deadline`](Self::with_deadline)), its tokens
+    /// ([`with_token_budget`](Self::with_token_budget)), then its room
     /// ([`with_room`](Self::with_room)); and what it's told at it.
     fn limit_reached(
         &self,
@@ -266,13 +282,20 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         {
             return Some((note, Limit::Time));
         }
+        if let Some(note) = self
+            .token_budget
+            .as_deref()
+            .filter(|_| !model.affords(history, tools))
+        {
+            return Some((note, Limit::Tokens));
+        }
         self.room
             .as_deref()
             .filter(|_| !model.fits(history, tools))
             .map(|note| (note, Limit::Room))
     }
 
-    /// The run's last turn at a limit, room or time: told `note`, offered
+    /// The run's last turn at a limit, room, time or tokens: told `note`, offered
     /// no tools, and sent only if it fits. Its answer is the run's, marked
     /// for the limit; anything else ends the run at it.
     fn wrap_up(
@@ -285,6 +308,8 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         let ended = match limit {
             Limit::Room => Error::OutOfRoom,
             Limit::Time => Error::OutOfTime,
+            Limit::Tokens => Error::OutOfTokens,
+            Limit::Steps => Error::BudgetExhausted { steps },
         };
         history.push(Message::Note(note.to_owned()));
         if !model.fits(&history, &[]) {
@@ -297,9 +322,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
                     answer,
                     history,
                     steps,
-                    out_of_steps: false,
-                    out_of_room: limit == Limit::Room,
-                    out_of_time: limit == Limit::Time,
+                    limit: Some(limit),
                 })
             }
             Ok(ModelAction::ToolCalls(_)) => Err(ended),
@@ -1569,7 +1592,7 @@ mod tests {
             };
             asking
                 .run(&model, String::from("go"))
-                .map(|result| result.out_of_steps)
+                .map(|result| result.limit == Some(Limit::Steps))
                 .ok()
         };
         assert_eq!(
@@ -1601,7 +1624,7 @@ mod tests {
                 .with_budget(LoopBudget { max_steps: steps })
                 .with_unfinished(left_for(left, &asked))
                 .run(&model, String::from("go"))
-                .map(|result| result.out_of_steps)
+                .map(|result| result.limit == Some(Limit::Steps))
                 .ok()
         };
         let text = |words: &str| ModelAction::Text(String::from(words));
@@ -1787,7 +1810,7 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!((result.answer.as_str(), result.steps), ("this far", 3));
-        assert!(result.out_of_room && !result.out_of_steps);
+        assert_eq!(result.limit, Some(Limit::Room));
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
         assert_eq!(model.watched.offered(), [1, 1, 0]);
         assert_eq!(model.watched.told(), [None, None, Some(String::from(ROOM))]);
@@ -1826,18 +1849,20 @@ mod tests {
         }
     }
 
-    /// A model that doesn't know its window says every request fits: a
-    /// loop asked to keep within it runs as it would.
+    /// A model that doesn't know its window says every request fits, and
+    /// one with no budget that every request keeps within it: a loop asked
+    /// to keep within both runs as it would.
     #[test]
     fn a_model_with_no_window_fits_every_request() {
         let (registry, _) = counting();
         let model = Watched::doing(vec![Ok(counts()), Ok(says("done"))]);
         let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
             .with_room(String::from(ROOM))
+            .with_token_budget(String::from(TOKENS))
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!(result.answer, "done");
-        assert!(!result.out_of_room);
+        assert_ne!(result.limit, Some(Limit::Room));
         assert_eq!(model.offered(), [1, 1]);
     }
 
@@ -1850,7 +1875,7 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!(result.answer, "done");
-        assert!(!result.out_of_room);
+        assert_ne!(result.limit, Some(Limit::Room));
         assert_eq!(model.watched.offered(), [1, 1, 1]);
     }
 
@@ -1985,7 +2010,11 @@ mod tests {
             (result.answer.as_str(), result.steps),
             ("time's up, this far", 1)
         );
-        assert!(result.out_of_time && !result.out_of_room && !result.out_of_steps);
+        assert!(
+            result.limit == Some(Limit::Time)
+                && result.limit != Some(Limit::Room)
+                && result.limit != Some(Limit::Steps)
+        );
         assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(model.offered(), [0]);
         assert_eq!(model.told(), [Some(String::from(TIME))]);
@@ -1997,7 +2026,7 @@ mod tests {
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!(result.answer, "done");
-        assert!(!result.out_of_time);
+        assert_ne!(result.limit, Some(Limit::Time));
         assert_eq!(model.offered(), [1, 1]);
     }
 
@@ -2021,5 +2050,94 @@ mod tests {
             .run(&model, String::from("go"));
         assert!(matches!(ended, Err(Error::OutOfRoom)), "{ended:?}");
         assert!(model.watched.offered().is_empty(), "nothing sent");
+    }
+
+    /// A watched model whose budget covers a request of up to `until`
+    /// messages, whatever it's offered.
+    struct Budgeted {
+        watched: Watched,
+        until: usize,
+    }
+
+    impl Model for Budgeted {
+        fn affords(&self, messages: &[Message], _tools: &[crate::tool::ToolDescription]) -> bool {
+            messages.len() <= self.until
+        }
+
+        fn next_action(
+            &self,
+            messages: &[Message],
+            tools: &[crate::tool::ToolDescription],
+        ) -> Result<ModelAction, Error> {
+            self.watched.next_action(messages, tools)
+        }
+    }
+
+    const TOKENS: &str = "your token budget is nearly spent";
+
+    /// A run whose next call would cross its budget is told so, offered no
+    /// tools, and its answer is the run's, out of tokens. That last turn
+    /// isn't held to the budget: it may cross it.
+    #[test]
+    fn a_run_out_of_tokens_answers_with_no_tools() {
+        let (registry, runs) = counting();
+        let model = Budgeted {
+            watched: Watched::doing(vec![Ok(counts()), Ok(counts()), Ok(says("this far"))]),
+            until: 3,
+        };
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_token_budget(String::from(TOKENS))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!((result.answer.as_str(), result.steps), ("this far", 3));
+        assert!(
+            result.limit == Some(Limit::Tokens)
+                && result.limit != Some(Limit::Time)
+                && result.limit != Some(Limit::Room)
+        );
+        assert_eq!(runs.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(model.watched.offered(), [1, 1, 0]);
+        assert_eq!(
+            model.watched.told(),
+            [None, None, Some(String::from(TOKENS))]
+        );
+        // Without a budget set, the model isn't asked.
+        let model = Budgeted {
+            watched: Watched::doing(vec![Ok(counts()), Ok(counts()), Ok(says("done"))]),
+            until: 0,
+        };
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_ne!(result.limit, Some(Limit::Tokens));
+        assert_eq!(model.watched.offered(), [1, 1, 1]);
+    }
+
+    /// A last turn for tokens that isn't an answer ends the run out of
+    /// tokens; time, when it's up too, comes first.
+    #[test]
+    fn a_last_turn_for_tokens_that_isnt_an_answer_ends_out_of_tokens() {
+        let (registry, _) = counting();
+        for last in [Ok(counts()), Err(Error::ModelFailed(String::from("down")))] {
+            let model = Budgeted {
+                watched: Watched::doing(vec![last]),
+                until: 0,
+            };
+            let ended = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+                .with_token_budget(String::from(TOKENS))
+                .run(&model, String::from("go"));
+            assert!(matches!(ended, Err(Error::OutOfTokens)), "{ended:?}");
+        }
+        let model = Budgeted {
+            watched: Watched::doing(vec![Ok(says("time first"))]),
+            until: 0,
+        };
+        let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_deadline(std::time::Instant::now(), String::from(TIME))
+            .with_token_budget(String::from(TOKENS))
+            .run(&model, String::from("go"))
+            .unwrap();
+        assert_eq!(result.limit, Some(Limit::Time));
+        assert_eq!(model.watched.told(), [Some(String::from(TIME))]);
     }
 }

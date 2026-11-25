@@ -167,6 +167,11 @@ fn probe_reply() -> String {
 /// The real broker, with the local endpoint at `port` allowlisted as
 /// keyless and granted, and `api-key` storable.
 fn local_broker(name: &str, port: u16) -> FixtureBroker {
+    budgeted_broker(name, port, None)
+}
+
+/// [`local_broker`], its session held to `run_tokens`, as a run's is.
+fn budgeted_broker(name: &str, port: u16, run_tokens: Option<u64>) -> FixtureBroker {
     let grant = |action, name: &str| hatchling_broker::VaultGrant {
         action,
         name: name.parse().unwrap(),
@@ -177,6 +182,7 @@ fn local_broker(name: &str, port: u16) -> FixtureBroker {
             allowlist: format!("local-keyless:localhost:{port}"),
             grants: vec![format!("localhost:{port}")],
             vault: vec![grant(VaultAction::Store, "api-key")],
+            run_tokens,
         },
     )
     .unwrap()
@@ -208,6 +214,7 @@ fn ready_cell_with_reasoning(
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,
         run_deadline: None,
+        run_token_budget: None,
         vault_fd: None,
     };
     Cell::new(config)
@@ -454,7 +461,16 @@ fn the_binary_says_by_its_status_whether_its_steps_ran_out_as_it_answered() {
 /// `port`, in a window of 32768 tokens, with `extra` in its environment:
 /// its status, answer and errors.
 fn run_binary(name: &str, port: u16, extra: &[(&str, String)]) -> (Option<i32>, String, String) {
-    let broker = local_broker(name, port);
+    run_against(&local_broker(name, port), port, extra)
+}
+
+/// The agent's binary, run to its end against `broker` and the local
+/// server at `port`, as [`run_binary`] runs it.
+fn run_against(
+    broker: &FixtureBroker,
+    port: u16,
+    extra: &[(&str, String)],
+) -> (Option<i32>, String, String) {
     let uid = rustix::process::getuid().as_raw().to_string();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_hatchling-agent"))
         .args(["run", "count to two"])
@@ -573,6 +589,83 @@ fn a_run_near_its_deadline_answers_with_no_tools() {
             .get("tools")
             .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
         "the answer was asked for with no tools"
+    );
+}
+
+/// A run whose next call would cross its token budget answers with no
+/// tools, and says so by its status (WO-051). Its first request, measured
+/// by its bytes before any count, is well inside a budget of 100,000. The
+/// server counts it as 60,000 tokens, inside a window of 262,144: the next
+/// request, as large again, would cross the budget but fit the window.
+#[test]
+fn a_run_at_its_token_budget_answers_with_no_tools() {
+    let mut first: Value = serde_json::from_str(&tool_call_reply(
+        "egress_request",
+        &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+    ))
+    .unwrap();
+    if let Some(fields) = first.as_object_mut() {
+        fields.insert(String::from("usage"), json!({"prompt_tokens": 60_000}));
+    }
+    let server = LocalServer::start(vec![
+        probe_reply(),
+        first.to_string(),
+        text_reply("the budget is nearly spent"),
+    ]);
+    let (status, answer, errors) = run_binary(
+        "local-token-budget",
+        server.port,
+        &[
+            ("HATCHLING_RUN_TOKEN_BUDGET", String::from("100000")),
+            ("HATCHLING_MODEL_CONTEXT_WINDOW", String::from("262144")),
+        ],
+    );
+    let tokens = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TOKENS);
+    assert_eq!(
+        (status, answer.as_str()),
+        (Some(tokens), "the budget is nearly spent"),
+        "{errors}"
+    );
+    let seen = server.seen.lock().unwrap().clone();
+    let last = seen.last().unwrap();
+    assert!(
+        last.body
+            .get("tools")
+            .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty)),
+        "the answer was asked for with no tools"
+    );
+}
+
+/// The broker holds a run's session to its token budget whatever the agent
+/// does: an agent told no budget is refused the call after its calls reach
+/// it, and its run fails, the model unavailable to it (WO-051).
+#[test]
+fn the_broker_refuses_a_call_past_the_runs_budget() {
+    let counted = |tokens: u64| {
+        let mut reply: Value = serde_json::from_str(&tool_call_reply(
+            "egress_request",
+            &json!({"surrogate": "bogus", "method": "GET", "destination": "evil.example:443", "path": "/"}),
+        ))
+        .unwrap();
+        if let Some(fields) = reply.as_object_mut() {
+            fields.insert(String::from("usage"), json!({"prompt_tokens": tokens}));
+        }
+        reply.to_string()
+    };
+    let server = LocalServer::start(vec![
+        probe_reply(),
+        counted(900),
+        counted(200),
+        text_reply("never asked"),
+    ]);
+    let broker = budgeted_broker("local-broker-budget", server.port, Some(1000));
+    let (status, _, errors) = run_against(&broker, server.port, &[]);
+    let refused = i32::from(RunFailure::ModelUnavailable.code());
+    assert_eq!(status, Some(refused), "{errors}");
+    assert_eq!(
+        server.seen.lock().unwrap().len(),
+        3,
+        "the probe and two calls; the third, past the budget, never left"
     );
 }
 
