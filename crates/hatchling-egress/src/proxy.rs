@@ -917,7 +917,11 @@ mod tests {
         ] {
             assert!(validate_request(&with_path(refused)).is_err(), "{refused}");
         }
-        for accepted in ["/v1/chat/completions", "/v1/models/gemma4:12b", "/v1/a.b/c..d"] {
+        for accepted in [
+            "/v1/chat/completions",
+            "/v1/models/gemma4:12b",
+            "/v1/a.b/c..d",
+        ] {
             assert!(validate_request(&with_path(accepted)).is_ok(), "{accepted}");
         }
     }

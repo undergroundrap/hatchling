@@ -745,8 +745,16 @@ mod tests {
     fn a_model_request_is_read_on_any_destination_and_nothing_else_is() {
         let fetching = body(&with(chat(), "/tools/0", json!({"type": "web_search"})));
         // #681: with trailing slashes, still a model request, still read.
-        for destination in ["llm-gateway.example:443", "localhost:11434", "api.openai.com:443"] {
-            for path in ["/v1/chat/completions/", "/v1/chat/completions//", "/v1/responses/"] {
+        for destination in [
+            "llm-gateway.example:443",
+            "localhost:11434",
+            "api.openai.com:443",
+        ] {
+            for path in [
+                "/v1/chat/completions/",
+                "/v1/chat/completions//",
+                "/v1/responses/",
+            ] {
                 assert_eq!(
                     check(destination, "POST", path, &fetching),
                     Err(SERVER_TOOL),
