@@ -413,8 +413,9 @@ impl Allowlist {
 mod tests {
     use super::*;
 
-    /// A public address, from a documentation range (TEST-NET-3).
-    const PUBLIC: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 5);
+    /// A public address, never connected to: the resolver is fake. (Not
+    /// a documentation address: those are internal since #682.)
+    const PUBLIC: Ipv4Addr = Ipv4Addr::new(93, 184, 215, 14);
 
     /// Parses `raw`, resolving `localhost` to both loopback addresses,
     /// `gw.corp` to `internal`, and any other name to [`PUBLIC`].
@@ -785,10 +786,10 @@ mod tests {
         assert_eq!(Kind::of("a.example:1"), (Kind::Credentialed, "a.example:1"));
         let addr = |text: &str| text.parse::<SocketAddr>().unwrap();
         assert!(refuse_internal("a.example:443", &[]).is_ok());
-        assert!(refuse_internal("a.example:443", &[addr("203.0.113.5:443")]).is_ok());
+        assert!(refuse_internal("a.example:443", &[addr("93.184.215.14:443")]).is_ok());
         let refused = refuse_internal(
             "a.example:443",
-            &[addr("203.0.113.5:443"), addr("10.0.0.1:443")],
+            &[addr("93.184.215.14:443"), addr("10.0.0.1:443")],
         );
         assert!(
             matches!(&refused, Err(Error::InvalidAllowlist { reason }) if reason == "destination \"a.example:443\" resolves to 10.0.0.1, an internal address: if it is meant to be on your own network, write it internal:a.example:443"),
