@@ -418,6 +418,21 @@ mod tests {
                 "{destination}"
             );
         }
+        // A root `input` that is an object, as a tool call's would be: read
+        // too, because no request's root is a tool call.
+        let as_object = json!({
+            "type": "tool_use",
+            "model": "gpt-5",
+            "input": {"type": "image", "source": {"type": "url", "url": "http://169.254.169.254/"}}
+        });
+        let body = serde_json::to_vec(&as_object).unwrap();
+        for destination in ["api.openai.com:443", "localhost:11434", "llm.internal:8443"] {
+            assert_eq!(
+                check(destination, "POST", "/v1/responses", &body),
+                Err(URL_CONTENT),
+                "{destination}"
+            );
+        }
         let arguments = json!({"messages": [{"role": "assistant", "content": [
             {"type": "tool_use", "id": "toolu_1", "name": "WebFetch",
              "input": {"url": "https://docs.example.com", "image_url": "https://x.example/a.png"}}
