@@ -15,7 +15,7 @@
 //! does not call tools. There is no local branch here: a local
 //! endpoint differs only in where the broker sends the bytes.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use hatchling_core::ModelReasoning;
@@ -192,7 +192,7 @@ pub struct ChatCompletionsProvider<T: Transport> {
     budget: Option<u64>,
     /// The input tokens its server reported, summed over every request it
     /// answered.
-    spent: Mutex<u64>,
+    spent: AtomicU64,
 }
 
 impl<T: Transport> ChatCompletionsProvider<T> {
@@ -222,7 +222,7 @@ impl<T: Transport> ChatCompletionsProvider<T> {
             window: config.context_window,
             seen: Mutex::new(None),
             budget: None,
-            spent: Mutex::new(0),
+            spent: AtomicU64::new(0),
         })
     }
 
@@ -235,8 +235,8 @@ impl<T: Transport> ChatCompletionsProvider<T> {
     }
 
     /// The input tokens its server has reported, summed.
-    fn spent(&self) -> MutexGuard<'_, u64> {
-        self.spent.lock().unwrap_or_else(PoisonError::into_inner)
+    fn spent(&self) -> u64 {
+        self.spent.load(Ordering::Relaxed)
     }
 
     /// What the server reported of the last request it answered, held
@@ -427,9 +427,12 @@ impl<T: Transport> ChatCompletionsProvider<T> {
         let body_bytes = self.wire(body)?;
         let reply = self.send(&body_bytes)?;
         if let Some(prompt_tokens) = prompt_tokens(&reply) {
-            let mut spent = self.spent();
-            *spent = spent.saturating_add(prompt_tokens);
-            drop(spent);
+            // One request is answered at a time: a load and a store don't
+            // race.
+            self.spent.store(
+                self.spent().saturating_add(prompt_tokens),
+                Ordering::Relaxed,
+            );
             *self.seen() = Some(Seen {
                 prompt_tokens,
                 bytes: u64::try_from(body_bytes.len()).unwrap_or(u64::MAX),
@@ -679,8 +682,7 @@ impl<T: Transport> Model for ChatCompletionsProvider<T> {
         let Ok(wire) = self.wire(&body) else {
             return true;
         };
-        let spent = *self.spent();
-        spent.saturating_add(self.tokens_in(wire.len())) <= budget
+        self.spent().saturating_add(self.tokens_in(wire.len())) <= budget
     }
 
     fn next_action(
@@ -2057,6 +2059,6 @@ mod tests {
         for _ in 0..3 {
             provider.next_action(&asking(100), &no_tools()).unwrap();
         }
-        assert_eq!(*provider.spent(), 2700);
+        assert_eq!(provider.spent(), 2700);
     }
 }

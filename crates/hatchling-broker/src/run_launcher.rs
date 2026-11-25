@@ -2076,6 +2076,7 @@ mod tests {
         let spent = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_STEPS);
         let full = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_ROOM);
         let late = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TIME);
+        let spent_out = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TOKENS);
         for (code, told, ending) in [
             (0, Ok(String::from("this far")), None),
             (
@@ -2094,9 +2095,15 @@ mod tests {
                 Some(Ending::Exited(late)),
             ),
             (
-                late + 1,
-                Err(format!("the run exited {}: why", late + 1)),
-                Some(Ending::Exited(late + 1)),
+                spent_out,
+                Ok(String::from("this far")),
+                Some(Ending::Exited(spent_out)),
+            ),
+            // No status of the agent's: a failure.
+            (
+                99,
+                Err(String::from("the run exited 99: why")),
+                Some(Ending::Exited(99)),
             ),
         ] {
             let dir = helper_dir(&format!("spent-{code}"));

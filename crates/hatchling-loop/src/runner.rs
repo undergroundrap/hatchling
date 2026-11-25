@@ -1849,14 +1849,16 @@ mod tests {
         }
     }
 
-    /// A model that doesn't know its window says every request fits: a
-    /// loop asked to keep within it runs as it would.
+    /// A model that doesn't know its window says every request fits, and
+    /// one with no budget that every request keeps within it: a loop asked
+    /// to keep within both runs as it would.
     #[test]
     fn a_model_with_no_window_fits_every_request() {
         let (registry, _) = counting();
         let model = Watched::doing(vec![Ok(counts()), Ok(says("done"))]);
         let result = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
             .with_room(String::from(ROOM))
+            .with_token_budget(String::from(TOKENS))
             .run(&model, String::from("go"))
             .unwrap();
         assert_eq!(result.answer, "done");
