@@ -68,4 +68,4 @@ New tests:
 - **Stop kills; it doesn't ask.** The run gets no last turn to say where it got to. That's the design: Stop is for a run going wrong, and the limits (time, tokens, room) are the ones that ask it to wrap up.
 - **Activity keeps what it did.** A run's trail is summarized in Activity as its session ends, however it ends, a Stop included. Only what it would have said after is lost.
 - **A run already ending may still answer.** A Stop that lands after the run's end was taken finds nothing in flight, `nothing_to_stop`, and its answer was delivered.
-- **The live button has no browser test.** The app's browser suites run the demo, whose Stop they click. The live choice of button is tested as a function (`turnAction`), and the live adapter's sending of it in its own tests.
+- **The live button is seen, not pressed, in a browser.** The README quickstart's app run (`scripts/app_end_to_end.py`) sees Stop on the chat's working line against a real broker. That run first failed in CI on this branch: its check read the line's text to its end, which is now the button. Pressing Stop is tested in the live adapter's own tests and, with real cells, at the broker.
