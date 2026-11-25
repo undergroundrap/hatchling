@@ -613,7 +613,7 @@ fn a_run_at_its_token_budget_answers_with_no_tools() {
         text_reply("the budget is nearly spent"),
     ]);
     let (status, answer, errors) = run_binary(
-        "local-budget",
+        "local-token-budget",
         server.port,
         &[
             ("HATCHLING_RUN_TOKEN_BUDGET", String::from("100000")),
