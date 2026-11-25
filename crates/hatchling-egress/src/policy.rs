@@ -108,6 +108,9 @@ const ENDPOINT: Refusal =
 /// The [`Refusal`] that stopped it.
 pub fn check(destination: &str, method: &str, path: &str, body: &[u8]) -> Result<(), Refusal> {
     let path = path.split_once('?').map_or(path, |(path, _)| path);
+    // A trailing slash routes to the same endpoint on some servers: it's
+    // the same request, and is read as one (#681).
+    let path = path.trim_end_matches('/');
     let model = method == "POST" && MODEL_ENDPOINTS.iter().any(|end| path.ends_with(end));
     let host = destination
         .rsplit_once(':')
@@ -741,6 +744,16 @@ mod tests {
     #[test]
     fn a_model_request_is_read_on_any_destination_and_nothing_else_is() {
         let fetching = body(&with(chat(), "/tools/0", json!({"type": "web_search"})));
+        // #681: with trailing slashes, still a model request, still read.
+        for destination in ["llm-gateway.example:443", "localhost:11434", "api.openai.com:443"] {
+            for path in ["/v1/chat/completions/", "/v1/chat/completions//", "/v1/responses/"] {
+                assert_eq!(
+                    check(destination, "POST", path, &fetching),
+                    Err(SERVER_TOOL),
+                    "{destination}{path}"
+                );
+            }
+        }
         // A gateway the policy has never heard of, a local server, a
         // vendor: a model request is read wherever it goes.
         for destination in [
