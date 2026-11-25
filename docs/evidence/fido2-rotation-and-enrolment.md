@@ -29,10 +29,10 @@ Each wrong PIN spends one of a key's tries. After 8 the key's PIN is blocked, an
 
 | Check | Result |
 |---|---|
-| `cargo fmt --all --check` | GATE |
-| clippy `-D warnings`, 1.98.1 and 1.85.0 | GATE |
-| the whole workspace's tests | GATE |
-| `hatchling-dev audit` | GATE |
+| `cargo fmt --all --check` | pass |
+| clippy `-D warnings`, 1.98.1 and 1.85.0 | pass on both |
+| the whole workspace's tests | 4494 passed, 0 failed |
+| `hatchling-dev audit` | all checks passed |
 
 New tests, with a test-only `Handle` (a shared handle to one virtual key, counting the times it's asked for an answer):
 - `a_keys_kek_asks_only_its_holder_and_says_a_wrong_pin`:
@@ -44,15 +44,16 @@ New tests, with a test-only `Handle` (a shared handle to one virtual key, counti
   - the second handle is never asked;
   - the keyring file is byte for byte as it was and the tier unchanged;
   - with a second key, the enrolment then succeeds.
+- `a_key_enrolled_with_its_pin_opens_the_vault_only_with_it`, changed: rotating without a key's PIN was asserted to fail as `KeyAbsent`, which was the hidden refusal. It now fails as `Authenticator`.
 
 **Hand-breaks**, each failing its tests and passing again when restored:
 
 | Break | Caught by |
 |---|---|
-| A key that says it doesn't hold the credential is asked anyway | GATE |
-| A refusal passed over, not said | GATE |
-| The batch enrolment's same-key check removed | GATE |
+| A key that says it doesn't hold the credential is asked anyway | `a_keys_kek_asks_only_its_holder_and_says_a_wrong_pin` |
+| A refusal passed over, not said | `a_keys_kek_asks_only_its_holder_and_says_a_wrong_pin`, `a_key_enrolled_with_its_pin_opens_the_vault_only_with_it` |
+| The batch enrolment's same-key check removed | `the_same_key_twice_is_refused_by_the_batch_enrolment` |
 
-**Mutation**, on the lines changed against `76ebdf59` (`cargo mutants --in-diff`, `hatchling-vault`):
+**Mutation**, on the lines changed against `76ebdf59` (`cargo mutants --in-diff`, `hatchling-vault`): 3 tested, 1 caught, 2 unviable, 0 missed, 0 timeouts. The changed lines have few operators to mutate; the hand-breaks above take out each check they make.
 
-GATE
+All of the above ran on tree `34bc7eff`.
