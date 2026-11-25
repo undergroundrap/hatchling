@@ -28,10 +28,10 @@ The subordinate path then hands the helper the checked trees, not the broker's p
 
 | Check | Result |
 |---|---|
-| `cargo fmt --all --check` | GATE |
-| clippy `-D warnings`, 1.98.1 and 1.85.0 | GATE |
-| the whole workspace's tests | GATE |
-| `hatchling-dev audit` | GATE |
+| `cargo fmt --all --check` | pass |
+| clippy `-D warnings`, 1.98.1 and 1.85.0 | pass on both |
+| the whole workspace's tests | 4491 passed, 0 failed |
+| `hatchling-dev audit` | all checks passed |
 
 New test, `a_trees_request_is_held_to_the_policy_whichever_path_it_asks_for`, drives a real connection through `serve_connection`. The helper program is one that doesn't exist, so a request that got as far as starting it would fail with a different reason from any refusal it expects. It checks four refusals:
 - the subordinate path asked of a direct spawner, with the configured ids: refused for its mapping;
@@ -43,10 +43,12 @@ New test, `a_trees_request_is_held_to_the_policy_whichever_path_it_asks_for`, dr
 
 | Break | Caught by |
 |---|---|
-| The subordinate path passed the broker's directories unchecked, as before | GATE |
-| The mapping check removed | GATE |
-| The harness-tree check removed | GATE |
+| The subordinate path passed the broker's directories unchecked, as before | `a_trees_request_is_held_to_the_policy_whichever_path_it_asks_for` |
+| The mapping check removed | `a_trees_request_is_held_to_the_policy_whichever_path_it_asks_for` |
+| The harness-tree check removed | `a_trees_request_is_held_to_the_policy_whichever_path_it_asks_for` |
 
-**Mutation**, on the lines changed against `3b2b82e2` (`cargo mutants --in-diff`, `hatchling-broker`):
+**Mutation**, on the lines changed against `3b2b82e2` (`cargo mutants --in-diff`, `hatchling-broker`): 8 tested, 8 caught, 0 missed, 0 timeouts.
 
-GATE
+An earlier run timed out on one: with `serve_connection` replaced by `Ok(())`, nothing replied, and the test waited on a read while it still held the spawner's end of the socket. The test now closes that end before it reads, so a reply that never came is the end of the stream, and the mutant is caught.
+
+All of the above ran on tree `ff5a4a3c`.
