@@ -770,7 +770,14 @@ pub(crate) mod tests {
             mint_ui_token_for(&path, other).unwrap();
             assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
         } else {
-            assert!(mint_ui_token_for(&path, other).is_err());
+            // The earlier token is the broker's own, so it's cleared; what
+            // fails is handing the new one to a user this one can't give
+            // files to, not the earlier token's owner.
+            let refused = mint_ui_token_for(&path, other);
+            assert!(
+                matches!(refused, Err(Error::SocketSetup { .. })),
+                "{refused:?}"
+            );
         }
     }
 
