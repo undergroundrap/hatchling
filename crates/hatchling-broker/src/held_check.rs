@@ -460,6 +460,10 @@ mod tests {
     /// and then, and one held after; it's seen across the tree, and it is
     /// no hit (WO-051).
     #[test]
+    #[allow(
+        clippy::redundant_clone,
+        reason = "clippy 1.85 takes the clone for unused: both ends are, here"
+    )]
     fn a_stop_kills_each_cell_it_holds_and_is_no_hit() {
         let (hit, other) = (HeldHit::default(), HeldHit::default());
         let (parent, child, elsewhere) = (lingering(), lingering(), lingering());
