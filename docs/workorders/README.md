@@ -90,7 +90,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [048](workorder-048-memory-provenance-and-recall.md) | Memory that knows where it came from: provenance, supersession, bounded retrieval, then search | yes | QUEUED |
 | [049](workorder-049-your-voice.md) | Your voice: talk with the same agent, with speech models on your machine | yes | QUEUED |
 | [050](workorder-050-fuzz-what-comes-from-outside.md) | Fuzz every parser of what comes from outside | yes | QUEUED |
-| [051](workorder-051-runs-bounded-by-what-matters.md) | A chat run bounded by time, tokens and context, with Stop | yes | IN-PROGRESS |
+| [051](workorder-051-runs-bounded-by-what-matters.md) | A chat run bounded by time, tokens and context, with Stop | yes | CLOSED |
 
 ## Candidates
 

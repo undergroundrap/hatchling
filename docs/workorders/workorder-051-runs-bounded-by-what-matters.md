@@ -1,6 +1,6 @@
 # WO-051: A chat run bounded by time, tokens and context, with Stop
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-loop` (the budget, the last step), `crates/hatchling-agent` (its bounds, the context guard), `crates/hatchling-model` (usage as reported), `crates/hatchling-broker` (run limits by kind, a run's token budget, Stop), `crates/hatchling-core` (the Stop action), `frontend/` (the Stop button), `docs/`
 **Issue:** [#647](https://github.com/undergroundrap/hatchling/issues/647), for [#533](https://github.com/undergroundrap/hatchling/issues/533)
 **Trust boundary:** yes
@@ -70,15 +70,15 @@ The context guard is a security fix as well as a quality one: today an injected 
 
 ## Acceptance criteria
 
-- [ ] A chat run isn't stopped by a turn count before 200. A run with nobody there still stops at 10, and tests show both.
-- [ ] No model request is sent larger than the window less the room kept for the answer. A run that would need one ends with an answer that says it ran out of room. A test fills a window to show it, at a server that reports usage and at one that doesn't.
-- [ ] A tool's output longer than a quarter of the window is cut before it joins the history, saying so.
-- [ ] A chat run's clock is 30 minutes and a run with nobody there keeps 10. A run inside its last 90 seconds answers instead of being killed, and a test shows it.
-- [ ] The broker refuses a model call past a run's token budget, whatever the agent does. The agent, told its budget, answers before crossing it. Tests show both.
-- [ ] The owner can stop a running chat from the app. The run's whole tree ends at once, nothing it says after is delivered, and the chat says so. Tests cover the action, the broker and the button, and only the owner can send it.
-- [ ] Each limit the owner meets is named in plain words, and its answer can be kept for later.
-- [ ] Each new guard fails its test when removed.
-- [ ] The measurement before and after, on the same tasks with both models, is in the evidence: turns, time, tokens, and whether each finished.
+- [x] A chat run isn't stopped by a turn count before 200. A run with nobody there still stops at 10, and tests show both. ([slice 3a](../evidence/run-clock.md); and measured: no chat run met a limit after, where 7 had met the 25-turn cap before, [slice 5](../evidence/run-bounds-measured.md).)
+- [x] No model request is sent larger than the window less the room kept for the answer. A run that would need one ends with an answer that says it ran out of room. A test fills a window to show it, at a server that reports usage and at one that doesn't. ([slice 2](../evidence/context-guard.md): a request measured by the server's last count and by its bytes, and `a_run_whose_context_fills_answers_or_sends_nothing` end to end.)
+- [x] A tool's output longer than a quarter of the window is cut before it joins the history, saying so. ([slice 2](../evidence/context-guard.md).)
+- [x] A chat run's clock is 30 minutes and a run with nobody there keeps 10. A run inside its last 90 seconds answers instead of being killed, and a test shows it. ([slice 3a](../evidence/run-clock.md): `a_run_near_its_deadline_answers_with_no_tools`.)
+- [x] The broker refuses a model call past a run's token budget, whatever the agent does. The agent, told its budget, answers before crossing it. Tests show both. ([slice 3b](../evidence/run-token-budget.md): `the_broker_refuses_a_call_past_the_runs_budget` and `a_run_at_its_token_budget_answers_with_no_tools`; and in use, the budget ended a run looping at 2,003,773 tokens, [slice 5](../evidence/run-bounds-measured.md).)
+- [x] The owner can stop a running chat from the app. The run's whole tree ends at once, nothing it says after is delivered, and the chat says so. Tests cover the action, the broker and the button, and only the owner can send it. ([slice 4](../evidence/stop-run.md); with a model call in flight, at once since [#657](https://github.com/undergroundrap/hatchling/issues/657): told 0.12 to 0.20 s after Stop, [stop-ends-in-flight-call.md](../evidence/stop-ends-in-flight-call.md).)
+- [x] Each limit the owner meets is named in plain words, and its answer can be kept for later. (Each limit's answer is taken as an answer at a limit, delivered and offered to keep, and each failure has the owner's words: [slice 2](../evidence/context-guard.md) for room, [slice 3a](../evidence/run-clock.md) for time, [slice 3b](../evidence/run-token-budget.md) for tokens, [slice 4](../evidence/stop-run.md) for Stop.)
+- [x] Each new guard fails its test when removed. (Each slice's hand-breaks: [2](../evidence/context-guard.md), [3a](../evidence/run-clock.md), [3b](../evidence/run-token-budget.md), [4](../evidence/stop-run.md), and [#657's](../evidence/stop-ends-in-flight-call.md).)
+- [x] The measurement before and after, on the same tasks with both models, is in the evidence: turns, time, tokens, and whether each finished. ([slice 5](../evidence/run-bounds-measured.md): `qwen3.5:9b` and `gemma4:12b` locally, and a large hosted model, each run checked on disk.)
 
 ## Gates
 
@@ -90,9 +90,10 @@ See [TEMPLATE.md](TEMPLATE.md#gates). Slice 4 changes the UI protocol: `protocol
 - Slice 3a, the clock by kind and the deadline: [run-clock.md](../evidence/run-clock.md).
 - Slice 3b, the token budget: [run-token-budget.md](../evidence/run-token-budget.md).
 - Slice 4, Stop: [stop-run.md](../evidence/stop-run.md).
+- Slice 5, the measurement: [run-bounds-measured.md](../evidence/run-bounds-measured.md).
 - The measurement found Stop and the clock waiting for a model call in flight ([#657](https://github.com/undergroundrap/hatchling/issues/657)), fixed before the close: [stop-ends-in-flight-call.md](../evidence/stop-ends-in-flight-call.md).
 
-The acceptance criteria are ticked at close, against these and the later slices'.
+The acceptance criteria were ticked at the close, against these.
 
 ## Notes
 
