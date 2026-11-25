@@ -2587,12 +2587,12 @@ done < /proc/self/mountinfo
         assert!(!Filter::WorkTree.runs_processes());
         assert!(!Filter::Program.runs_processes());
         assert_eq!(
-            seccomp_profile(Filter::Browser).unwrap().build(),
-            SeccompProfile::browser().unwrap().build()
+            seccomp_profile(Filter::Browser).unwrap().build().unwrap(),
+            SeccompProfile::browser().unwrap().build().unwrap()
         );
         assert_ne!(
-            seccomp_profile(Filter::Browser).unwrap().build(),
-            seccomp_profile(Filter::Cli).unwrap().build()
+            seccomp_profile(Filter::Browser).unwrap().build().unwrap(),
+            seccomp_profile(Filter::Cli).unwrap().build().unwrap()
         );
     }
 

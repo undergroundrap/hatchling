@@ -71,33 +71,41 @@ The full model, what it deliberately doesn't cover, and the gaps our own pre-lau
 
 ```text
   outside: your model endpoint · the APIs you grant · harness vendors
- ─────────────────────────▲────────────────────────────────▲──────────────────
-                          │ real key swapped in            │ vendor key added,
-                          │ TLS · pinned addresses         │ echoes scrubbed
- ┌────────────────────────┼─── broker: the trusted side ───┼─────────────────┐
- │                   ┌────┴─────────┐  scheduler     ┌─────┴─────────┐       │
- │   vault ─────────►│ egress proxy │  memory, goals │ harness relay │       │
- │   sealed at rest; │ exact-match  │  spaces        │ Claude Code,  │       │
- │   keys go only to │ allowlist    │  skills        │ Codex         │       │
- │   the proxy and   └────▲─────────┘  audit log     └─────▲─────────┘       │
- │   the relay            │                                │                 │
- └───────▲────────────────┼────────────────────────────────┼─────────────────┘
-         │ local API      │ one session per cell, admitted │
-         │ (Unix socket)  │ by kernel peer credentials;    │
-         │                │ grants checked per request;    │
-         │                │ surrogate tokens, never keys   │
-         │          ┌─────┴────────────────────────────────┴─────┐
-        you         │ cell: namespaces · seccomp · no caps       │
-     every reply    │ empty network · read-only view             │
-     passes the     │                                            │
-     output gate    │ agent loop · skills · harness CLIs         │
-                    │                                            │
-                    │ the Room: its own computer, a cell with    │
-                    │ its files on an encrypted disk             │
-                    └────────────────────────────────────────────┘
+ ───────────────────────────────────────▲─────────────────────────────────────
+                                        │ real keys swapped in · TLS
+                                        │ pinned addresses · echoes scrubbed
+ the trusted side,         ┌────────────┴─────────────────────┐
+ as root: four processes   │ egress authority                 │
+ ┌──────────────────┐      │ hatchling-egress                 │
+ │ vault keeper     │ keys │ model and API calls: allowlist,  │
+ │ hatchling-keeper ├─────►│ surrogate swap, scrub; the       │
+ │ the master key;  │      │ harness relay; web search        │
+ │ the vault sealed │      └─────▲────────────────────────────┘
+ │ at rest; keys go │            │ egress requests,
+ │ to the authority │            │ never a key
+ └──────────────────┘            │
+ ┌───────────────────────────────┴─────┐    ┌──────────────────────────────┐
+ │ broker            hatchling-broker  │    │ spawner                 root │
+ │ scheduler · memory · goals · spaces ├───►│ starts every cell from a     │
+ │ skills · audit log · local API      │    │ verified image, and holds    │
+ │ holds no keys · Landlock-confined   │    │ each to its own policy       │
+ └────▲───────────────────▲────────────┘    └───────────────────────┬──────┘
+      │ local API         │ one session per cell, admitted by       │
+      │ (Unix socket)     │ kernel peer credentials; grants         │ starts
+      │                   │ checked per request; surrogate          │
+      │                   │ tokens, never keys                      │
+     you            ┌─────┴─────────────────────────────────────────▼─────┐
+every reply         │ cell: namespaces · seccomp · no caps                │
+passes the          │ empty network · read-only view                      │
+output gate         │                                                     │
+                    │ agent loop · skills · harness CLIs                  │
+                    │                                                     │
+                    │ the Room: its own computer, a cell with             │
+                    │ its files on an encrypted disk                      │
+                    └─────────────────────────────────────────────────────┘
 ```
 
-The **broker** is the trusted side, with the vault, the proxy, the schedules and the API, and it never executes untrusted code. Everything the model drives runs in a **cell**, the agent's own computer, the **Room**, among them: a cell the spawner starts from a verified image, which keeps the agent's files on an encrypted disk and is reached only through the broker. Run as root, the trusted side is four processes, each under its own user, so a bug in a busy part of the broker can't reach your keys ([WO-017](docs/workorders/workorder-017-privilege-separate-the-trusted-side.md)): the vault keeper (`hatchling-keeper`) holds the master key; the egress authority (`hatchling-egress`) alone reads the credentials of the requests it makes; the spawner, root, starts every cell and holds each one to its own policy; and the broker itself drops to `hatchling-broker` once its start is done. Without root they're processes of your user. Either way the broker then confines its own file access with Landlock, so a compromised broker can't read the rest of your files. Where each piece lives: **[module map](docs/arch/module-map.md)** · **[protocol](docs/arch/protocol.md)** · **[session protocol](docs/session-protocol.md)**.
+The **trusted side** holds the vault, the proxy, the schedules and the API, and never executes untrusted code. Everything the model drives runs in a **cell**, the agent's own computer, the **Room**, among them: a cell the spawner starts from a verified image, which keeps the agent's files on an encrypted disk and is reached only through the broker. Run as root, the trusted side is four processes, each under its own user, so a bug in a busy part of the broker can't reach your keys ([WO-017](docs/workorders/workorder-017-privilege-separate-the-trusted-side.md)): the vault keeper (`hatchling-keeper`) holds the master key; the egress authority (`hatchling-egress`) alone reads the credentials of the requests it makes; the spawner, root, starts every cell and holds each one to its own policy; and the broker itself drops to `hatchling-broker` once its start is done. Without root they're processes of your user. Either way the broker then confines its own file access with Landlock, so a compromised broker can't read the rest of your files. Where each piece lives: **[module map](docs/arch/module-map.md)** · **[protocol](docs/arch/protocol.md)** · **[session protocol](docs/session-protocol.md)**.
 
 ## Quickstart
 
