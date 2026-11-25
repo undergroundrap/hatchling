@@ -12,7 +12,7 @@ import type { AppState, Command, CommandResult, DeepReadonly, ProtocolAdapter, S
 import { keepPreferences, rememberedPreferences } from './preferences.js';
 import { ActivityBook } from './activity.js';
 import { LiveApprovals } from './approvals.js';
-import { ChatBook, KEEP, wireChat } from './chat.js';
+import { ChatBook, KEEP, MAIN_CHAT, wireChat } from './chat.js';
 import { LiveClient, askTheHost } from './client.js';
 import type { UiTransport } from './client.js';
 import type { ActionRefusal, UiEvent } from './protocol/generated.js';
@@ -54,6 +54,12 @@ const NOT_STARTED: Readonly<Record<ActionRefusal, string>> = {
     bad_request: 'Hatchling has no such conversation, so nothing changed.',
     unavailable: 'Hatchling cannot start a new conversation right now, so the agent still has the last one.',
     not_granted: 'This connection may not start a new conversation, so the agent still has the last one.',
+};
+const NOT_STOPPED: Readonly<Record<ActionRefusal, string>> = {
+    not_connected: 'Hatchling is not connected to its broker, so the agent is still working.',
+    bad_request: 'Hatchling has no such conversation, so nothing was stopped.',
+    unavailable: 'Hatchling cannot stop the agent right now, so it is still working.',
+    not_granted: 'This connection may not stop the agent, so it is still working.',
 };
 export class LiveAdapter implements ProtocolAdapter {
     readonly mode = 'live';
@@ -253,6 +259,8 @@ export class LiveAdapter implements ProtocolAdapter {
             case 'job.toggle':
             case 'job.run':
                 return { ok: false, message: 'A schedule can’t be paused or run early yet. Remove it to stop it.' };
+            case 'turn.interrupt':
+                return this.#stop();
             case 'demo.scenario':
             case 'demo.advance':
             case 'demo.reset':
@@ -295,6 +303,20 @@ export class LiveAdapter implements ProtocolAdapter {
         if (result.result === 'refused')
             return { ok: false, message: NOT_STARTED[result.reason] };
         return { ok: false, message: 'Hatchling answered with something else, so the new conversation is not confirmed.' };
+    }
+    /** Stop the chat's run (WO-051): its whole tree ends at once, nothing it says after is shown, and the broker's notice in the chat says so. */
+    async #stop(): Promise<CommandResult> {
+        const reply = await this.#client.request(`live-command-${++this.#serial}`, { action: 'stop_run', chat_id: wireChat(MAIN_CHAT) });
+        if (reply.kind !== 'answered')
+            return { ok: false, message: reply.detail };
+        const result = reply.result;
+        if (result.result === 'run_stopped')
+            return { ok: true, message: 'Stopped.' };
+        if (result.result === 'nothing_to_stop')
+            return { ok: true, message: 'The agent had already finished.' };
+        if (result.result === 'refused')
+            return { ok: false, message: NOT_STOPPED[result.reason] };
+        return { ok: false, message: 'Hatchling answered with something else, so the stop is not confirmed.' };
     }
     /** Keep the sign-in of a browser the user drives; the list shows it once the broker has kept it. */
     async #keepSignedIn(sessionId: string): Promise<CommandResult> {

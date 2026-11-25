@@ -351,12 +351,12 @@ test('local API calls are a thread of their own: one lane per caller, one row pe
     assert.equal(skill.report, 'uid 1000: ran a skill. The API refused it before any part of Hatchling acted on it. The caller held 1 capability.');
     assert.deepEqual([hello.id, hello.laneId, hello.startedAt, hello.endedAt, hello.durationMs], ['api-2', 'api:0', sampleTime(2), sampleTime(2), null]);
     // Every kind of request has its own words.
-    const kinds = ['hello', 'subscribe', 'send_message', 'new_conversation', 'decide', 'manage_schedule', 'invoke_skill', 'open_artifact', 'share_artifact', 'attach_artifact', 'save_file', 'take_control', 'return_control', 'stop_browser'];
+    const kinds = ['hello', 'subscribe', 'send_message', 'new_conversation', 'stop_run', 'decide', 'manage_schedule', 'invoke_skill', 'open_artifact', 'share_artifact', 'attach_artifact', 'save_file', 'take_control', 'return_control', 'stop_browser'];
     const every = connected();
     replay(every.transport, kinds.map((request, index) => call(index + 1, 'uid 1000', request, 'served', [])));
     const titles = every.adapter.getSnapshot().threads[0].lanes[0].rows.map(row => row.title);
     assert.equal(new Set(titles).size, kinds.length);
-    assert.equal(every.adapter.getSnapshot().threads[0].subtitle, '14 calls · 14 served, 0 refused');
+    assert.equal(every.adapter.getSnapshot().threads[0].subtitle, '15 calls · 15 served, 0 refused');
 });
 test('coding-harness runs are a thread of their own: one lane per harness, one row per run, never a hash', () => {
     const { transport, adapter } = connected();
@@ -1391,6 +1391,40 @@ test('sending: the typed send_message action under the UI\'s request id, with ho
     transport.deliver(SAMPLE_WELCOME);
     assert.equal(heard, 1, 'a stopped listener hears nothing more');
 });
+test('Stop: the typed stop_run action on the local chat, with honest outcomes (WO-051)', async () => {
+    const { transport, adapter } = connected();
+    const stop = () => adapter.execute({ type: 'turn.interrupt' });
+    const stopped = stop();
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'stop_run', chat_id: 'local' });
+    answer(transport, transport.last().request_id, { result: 'run_stopped', chat_id: 'local' });
+    assert.deepEqual(await stopped, { ok: true, message: 'Stopped.' });
+    const late = stop();
+    await flush();
+    answer(transport, transport.last().request_id, { result: 'nothing_to_stop', chat_id: 'local' });
+    assert.deepEqual(await late, { ok: true, message: 'The agent had already finished.' });
+    for (const [result, words] of [
+        [{ result: 'refused', reason: 'not_connected' }, /not connected to its broker, so the agent is still working/],
+        [{ result: 'refused', reason: 'bad_request' }, /no such conversation, so nothing was stopped/],
+        [{ result: 'refused', reason: 'unavailable' }, /cannot stop the agent right now/],
+        [{ result: 'refused', reason: 'not_granted' }, /may not stop the agent/],
+        [{ result: 'message_accepted', message_id: 'm' }, /stop is not confirmed/],
+    ]) {
+        const outcome = stop();
+        await flush();
+        answer(transport, transport.last().request_id, result);
+        const settled = await outcome;
+        assert.equal(settled.ok, false);
+        assert.match(settled.message, words);
+    }
+    // The broker's words in the chat say it was stopped.
+    transport.deliver(sampleEvent(40, 40, { kind: 'chat_message', chat_id: 'local', message_id: 'stopped-1', author: 'system', text: 'You stopped it.' }));
+    assert.deepEqual(adapter.getSnapshot().messages.filter(message => message.id === 'stopped-1').map(message => [message.kind, message.text]), [['notice', 'You stopped it.']]);
+    transport.drop();
+    const offline = await stop();
+    assert.equal(offline.ok, false);
+    assert.match(offline.message, /not connected to Hatchling/);
+});
 test('a new conversation: the typed new_conversation action on the local chat, never a Command, with honest outcomes', async () => {
     const { transport, adapter } = connected();
     const start = () => adapter.conversations.start('main');
@@ -1449,7 +1483,7 @@ test('the adapter: product commands go to the broker or are refused, never simul
     assert.deepEqual(await adapter.execute({ type: 'chat.read', id: 'main' }), { ok: true, message: 'Read.' });
     for (const type of ['demo.reset', 'demo.advance', 'demo.scenario'])
         assert.match((await adapter.execute({ type, step: 1, scenario: 'research' })).message, /Sample scenarios are not available/);
-    for (const command of [{ type: 'artifact.create', title: 't', format: 'markdown' }, { type: 'purchase.approve', id: 'p', revision: 1, total: 1 }, { type: 'turn.interrupt' }])
+    for (const command of [{ type: 'artifact.create', title: 't', format: 'markdown' }, { type: 'purchase.approve', id: 'p', revision: 1, total: 1 }, { type: 'turn.resume' }])
         assert.deepEqual(await adapter.execute(command), { ok: false, message: 'Hatchling cannot do this from the app yet.' });
 });
 test('the snapshot is honest: only what the broker said, display preferences kept locally', async () => {

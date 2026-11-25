@@ -428,6 +428,70 @@ fn a_missed_fire_runs_once_with_the_flag_visible_to_the_run() {
     );
 }
 
+/// The owner's Stop ends a chat run in its cell there and then, told in
+/// their words, and leaves nothing behind. A run with nobody there isn't
+/// one they can stop from the chat (WO-051).
+#[test]
+fn the_owners_stop_ends_a_chat_run_in_its_cell_at_once() {
+    if !guard_cell_available().unwrap() {
+        return;
+    }
+    let base = base("owner-stop");
+    let config = config(&base, &[]);
+    let key = MasterKey::generate().unwrap();
+    let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+    let request = |chat: bool| RunRequest {
+        schedule_id: String::from("chat"),
+        task: String::from("hang"),
+        grants: vec![send()],
+        due: ts("2026-09-21T12:01:01Z"),
+        missed: false,
+        channel: String::from("local"),
+        depth: 0,
+        event: None,
+        space: None,
+        feed: None,
+        chat,
+        history: Vec::new(),
+        earlier: Vec::new(),
+    };
+    std::thread::scope(|scope| {
+        let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
+        // A run with nobody there, in the chat's flights all the same: not
+        // stopped by the owner's Stop.
+        let mut background = launcher.launch(request(false)).unwrap();
+        let cell = background.cell_id().unwrap();
+        hatchling_broker::follow_ups::began(&cell, &hub, 0);
+        assert!(!hatchling_broker::follow_ups::stop(&hub), "nothing to stop");
+        assert_eq!(background.poll(), None, "it runs on");
+        let _ = hatchling_broker::follow_ups::ended(&cell);
+        drop(background);
+        let mut chat = launcher.launch(request(true)).unwrap();
+        let cell = chat.cell_id().unwrap();
+        hatchling_broker::follow_ups::began(&cell, &hub, 0);
+        assert_eq!(chat.poll(), None, "it hangs until it's stopped");
+        let stopped = Instant::now();
+        assert!(hatchling_broker::follow_ups::stop(&hub));
+        let end = loop {
+            if let Some(end) = chat.poll() {
+                break end;
+            }
+            assert!(
+                stopped.elapsed() < RUN_DEADLINE / 2,
+                "stopped, not timed out"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(end, Err(String::from("You stopped it.")));
+        assert_eq!(
+            chat.ending(),
+            Some(hatchling_scheduler::Ending::OwnerStopped)
+        );
+        let _ = hatchling_broker::follow_ups::ended(&cell);
+    });
+    assert!(run_dirs(&config.scheduler.run_root()).is_empty());
+}
+
 #[test]
 fn a_hung_run_blocks_the_next_fire_until_the_timeout_reaps_it() {
     if !guard_cell_available().unwrap() {
