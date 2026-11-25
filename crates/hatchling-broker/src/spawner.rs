@@ -4589,10 +4589,20 @@ sleep 30 </dev/null >/dev/null 2>&1 &
         // mapping, even with the configured ids.
         let mut configured_direct = policy();
         configured_direct.skill.identity.mapping = Mapping::Direct;
-        let refused = ask(&configured_direct, false, etc.clone(), ids(&configured_direct));
+        let refused = ask(
+            &configured_direct,
+            false,
+            etc.clone(),
+            ids(&configured_direct),
+        );
         assert!(refused.contains("configured cell"), "{refused}");
         // On a subordinate spawner: other ids, and a host directory.
-        let other = ask(&subordinate, false, etc.clone(), (ids(&subordinate).0 + 1, ids(&subordinate).1));
+        let other = ask(
+            &subordinate,
+            false,
+            etc.clone(),
+            (ids(&subordinate).0 + 1, ids(&subordinate).1),
+        );
         assert!(other.contains("configured cell"), "{other}");
         let host = ask(&subordinate, false, etc.clone(), ids(&subordinate));
         assert!(host.contains("harness's tree"), "{host}");
