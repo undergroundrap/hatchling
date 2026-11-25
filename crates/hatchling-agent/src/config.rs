@@ -192,10 +192,12 @@ impl Config {
             "HATCHLING_RUN_CHAT",
         )?;
         let model_max_steps = set_max_steps.unwrap_or_else(|| default_steps(run_chat));
-        let run_history =
-            parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat)?;
-        let run_earlier =
-            parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat)?;
+        let (run_history, run_earlier) = parse_run_conversation(
+            get(env::HATCHLING_RUN_HISTORY.name).as_deref(),
+            get(env::HATCHLING_RUN_EARLIER.name).as_deref(),
+            run_chat,
+            model_context_window,
+        )?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
         let run_deadline = number(
@@ -256,11 +258,28 @@ fn number<T: std::str::FromStr>(
         .transpose()
 }
 
+/// `HATCHLING_RUN_HISTORY` and `HATCHLING_RUN_EARLIER`, `history` and
+/// `earlier`: a chat turn's conversation, held to the bounds of the window
+/// the run was told (#595), as the broker sized what it sent.
+fn parse_run_conversation(
+    history: Option<&str>,
+    earlier: Option<&str>,
+    run_chat: bool,
+    window: Option<u32>,
+) -> Result<(Vec<hatchling_core::conversation::ChatExchange>, Vec<String>), Error> {
+    let bounds = hatchling_core::conversation::Bounds::for_window(window);
+    Ok((
+        parse_run_history(history, run_chat, &bounds)?,
+        parse_run_earlier(earlier, run_chat, &bounds)?,
+    ))
+}
+
 /// `HATCHLING_RUN_HISTORY`: a chat turn's conversation so far, which only
-/// a chat turn may be given.
+/// a chat turn may be given, within `bounds`.
 fn parse_run_history(
     value: Option<&str>,
     run_chat: bool,
+    bounds: &hatchling_core::conversation::Bounds,
 ) -> Result<Vec<hatchling_core::conversation::ChatExchange>, Error> {
     let Some(raw) = value else {
         return Ok(Vec::new());
@@ -271,15 +290,21 @@ fn parse_run_history(
             reason: String::from("only a chat run (HATCHLING_RUN_CHAT=1) has a conversation"),
         });
     }
-    hatchling_core::conversation::parse_history(raw).map_err(|reason| Error::InvalidConfig {
-        key: "HATCHLING_RUN_HISTORY",
-        reason,
+    hatchling_core::conversation::parse_history(raw, bounds).map_err(|reason| {
+        Error::InvalidConfig {
+            key: "HATCHLING_RUN_HISTORY",
+            reason,
+        }
     })
 }
 
 /// `HATCHLING_RUN_EARLIER`: what the owner said earlier in a chat turn's
-/// conversation, which only a chat turn may be given.
-fn parse_run_earlier(value: Option<&str>, run_chat: bool) -> Result<Vec<String>, Error> {
+/// conversation, which only a chat turn may be given, within `bounds`.
+fn parse_run_earlier(
+    value: Option<&str>,
+    run_chat: bool,
+    bounds: &hatchling_core::conversation::Bounds,
+) -> Result<Vec<String>, Error> {
     let Some(raw) = value else {
         return Ok(Vec::new());
     };
@@ -289,9 +314,11 @@ fn parse_run_earlier(value: Option<&str>, run_chat: bool) -> Result<Vec<String>,
             reason: String::from("only a chat run (HATCHLING_RUN_CHAT=1) has a conversation"),
         });
     }
-    hatchling_core::conversation::parse_earlier(raw).map_err(|reason| Error::InvalidConfig {
-        key: "HATCHLING_RUN_EARLIER",
-        reason,
+    hatchling_core::conversation::parse_earlier(raw, bounds).map_err(|reason| {
+        Error::InvalidConfig {
+            key: "HATCHLING_RUN_EARLIER",
+            reason,
+        }
     })
 }
 
@@ -664,8 +691,62 @@ mod tests {
                 ..
             })
         ));
-        assert!(parse_run_history(None, false).unwrap().is_empty());
-        assert!(parse_run_history(Some("[]"), true).unwrap().is_empty());
+        assert!(
+            parse_run_history(None, false, &hatchling_core::conversation::Bounds::LEAST)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_run_history(
+                Some("[]"),
+                true,
+                &hatchling_core::conversation::Bounds::LEAST
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    /// #595: a chat run reads a history as large as its window's bounds,
+    /// and with no window told, no more than the least.
+    #[test]
+    fn a_chat_run_reads_the_history_its_window_bounds() {
+        use hatchling_core::conversation::{Bounds, ChatExchange};
+        let history: Vec<ChatExchange> = (0..Bounds::MOST.exchanges)
+            .map(|n| ChatExchange {
+                user: format!("q{n}"),
+                assistant: format!("a{n}"),
+            })
+            .collect();
+        let raw: &'static str =
+            Box::leak(serde_json::to_string(&history).unwrap().into_boxed_str());
+        let said: Vec<String> = (0..Bounds::MOST.earlier).map(|n| format!("m{n}")).collect();
+        let earlier: &'static str =
+            Box::leak(serde_json::to_string(&said).unwrap().into_boxed_str());
+        let mut vars = valid_vars();
+        vars.insert("HATCHLING_RUN_CHAT", "1");
+        vars.insert("HATCHLING_RUN_HISTORY", raw);
+        vars.insert("HATCHLING_RUN_EARLIER", earlier);
+        for unbounded in [None, Some("32768"), Some("65536")] {
+            match unbounded {
+                Some(window) => vars.insert("HATCHLING_MODEL_CONTEXT_WINDOW", window),
+                None => vars.remove("HATCHLING_MODEL_CONTEXT_WINDOW"),
+            };
+            assert!(
+                matches!(
+                    Config::parse(lookup(&vars)),
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_RUN_HISTORY",
+                        ..
+                    })
+                ),
+                "{unbounded:?}"
+            );
+        }
+        vars.insert("HATCHLING_MODEL_CONTEXT_WINDOW", "131072");
+        let config = Config::parse(lookup(&vars)).unwrap();
+        assert_eq!(config.run_history, history);
+        assert_eq!(config.run_earlier, said);
     }
 
     /// WO-026: a chat turn reads what the owner said earlier; nothing
@@ -697,8 +778,20 @@ mod tests {
                 ..
             })
         ));
-        assert!(parse_run_earlier(None, false).unwrap().is_empty());
-        assert!(parse_run_earlier(Some("[]"), true).unwrap().is_empty());
+        assert!(
+            parse_run_earlier(None, false, &hatchling_core::conversation::Bounds::LEAST)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            parse_run_earlier(
+                Some("[]"),
+                true,
+                &hatchling_core::conversation::Bounds::LEAST
+            )
+            .unwrap()
+            .is_empty()
+        );
     }
 
     /// WO-032: a chat turn reads the builders it was told; nothing else

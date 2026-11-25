@@ -994,6 +994,15 @@ fn run_token() -> Result<String, String> {
 /// turn included.
 fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
     let model = crate::model_choice::server(&config.scheduler);
+    // What the run is given of the conversation, within the bounds of the
+    // window it's told (#595): those its agent reads it by.
+    let given = hatchling_core::conversation::Conversation {
+        earlier: request.earlier.clone(),
+        exchanges: request.history.clone(),
+    }
+    .within(&hatchling_core::conversation::Bounds::for_window(
+        model.context_window,
+    ));
     ScheduledRun {
         // A run for the owner's Feed page writes a post from their prompt.
         task: if request.channel == crate::feed_page::FEED_PAGE {
@@ -1016,8 +1025,8 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         token_budget: None,
         subagent: false,
         chat: request.chat,
-        history: request.history.clone(),
-        earlier: request.earlier.clone(),
+        history: given.exchanges,
+        earlier: given.earlier,
         builders: run_artifacts(config, request).builders,
         tools: Some(run_tools(
             config,
@@ -1536,6 +1545,48 @@ mod tests {
             scheduled_run(&config, &ideas).task,
             crate::suggestions::task("t")
         );
+    }
+
+    /// #595: a chat run's cell is given the conversation within the
+    /// bounds of the window it's told, the bounds its agent reads it by:
+    /// past them, the oldest answers go and what the owner said in them is
+    /// given as earlier. With no window told, the least.
+    #[test]
+    fn a_chat_runs_cell_is_given_the_conversation_its_window_bounds() {
+        use hatchling_core::conversation::{Bounds, ChatExchange, parse_earlier, parse_history};
+        let mut asked = request(Vec::new());
+        asked.chat = true;
+        asked.history = (0..30)
+            .map(|n| ChatExchange {
+                user: format!("q{n}"),
+                assistant: format!("a{n}"),
+            })
+            .collect();
+        asked.earlier = vec![String::from("said first")];
+        let mut config = config();
+        for (window, given) in [
+            (None, 8),
+            (Some(32_768), 8),
+            (Some(65_536), 19),
+            (Some(131_072), 24),
+        ] {
+            config.scheduler.model_context_window = window;
+            let run = scheduled_run(&config, &asked);
+            assert_eq!(run.model_context_window, window);
+            assert_eq!(run.history.len(), given, "{window:?}");
+            assert_eq!(run.history.first(), asked.history.get(30 - given));
+            assert_eq!(run.earlier.first().map(String::as_str), Some("said first"));
+            assert_eq!(
+                run.earlier.last().cloned(),
+                Some(format!("q{}", 29 - given))
+            );
+            // Read back as the agent reads it, by the window it's told.
+            let bounds = Bounds::for_window(window);
+            let history = serde_json::to_string(&run.history).unwrap();
+            assert_eq!(parse_history(&history, &bounds).unwrap(), run.history);
+            let earlier = serde_json::to_string(&run.earlier).unwrap();
+            assert_eq!(parse_earlier(&earlier, &bounds).unwrap(), run.earlier);
+        }
     }
 
     /// A run is told the tool groups the operator turned on, so its

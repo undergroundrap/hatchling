@@ -4095,10 +4095,13 @@ mod tests {
         let owner = caller(&[local_send()]);
         let store = ConversationStore::of(&config, &key).unwrap();
         let mut kept = hatchling_core::conversation::Conversation::default();
-        kept.push(hatchling_core::conversation::ChatExchange {
-            user: String::from("q0"),
-            assistant: String::from("a0"),
-        });
+        kept.push(
+            hatchling_core::conversation::ChatExchange {
+                user: String::from("q0"),
+                assistant: String::from("a0"),
+            },
+            &hatchling_core::conversation::Bounds::LEAST,
+        );
         assert!(store.keep_if(|| true, &kept, None).unwrap());
         // Giving files is off for the conversation, and it has given some.
         let library = crate::library::Library::of(&config, &key).unwrap();
