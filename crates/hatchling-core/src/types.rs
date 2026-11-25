@@ -146,7 +146,12 @@ impl FromStr for SocketPath {
 
     fn from_str(raw: &str) -> Result<Self, Self::Err> {
         let path = PathBuf::from(raw);
-        if path.is_absolute() {
+        // Absolute, and with no `..`: a socket path is checked as the
+        // path it is, never as one that climbs elsewhere (#691).
+        let climbs = path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir);
+        if path.is_absolute() && !climbs {
             Ok(Self(path))
         } else {
             Err(Error::InvalidSocketPath(raw.to_owned()))
@@ -315,6 +320,10 @@ mod tests {
     #[test]
     fn socket_path_rejects_relative() {
         assert!("relative/path.sock".parse::<SocketPath>().is_err());
+        // #691: nothing that climbs out of where it says it is.
+        assert!("/var/lib/hatchling/x/../sock/ui.sock".parse::<SocketPath>().is_err());
+        assert!("/run/../ui.sock".parse::<SocketPath>().is_err());
+        assert!("/run/a..b/ui.sock".parse::<SocketPath>().is_ok());
     }
 
     #[test]
