@@ -1577,7 +1577,7 @@ mod tests {
             assert_eq!(run.history.first(), asked.history.get(30 - given));
             assert_eq!(run.earlier.first().map(String::as_str), Some("said first"));
             assert_eq!(
-                run.earlier.last().map(String::clone),
+                run.earlier.last().cloned(),
                 Some(format!("q{}", 29 - given))
             );
             // Read back as the agent reads it, by the window it's told.

@@ -32,10 +32,10 @@ What was changed, and how it was tested: a chat run is given as much of the owne
 
 | Check | Result |
 |---|---|
-| `cargo fmt --all --check` | GATE |
-| `cargo clippy --workspace --all-targets --all-features -- -D warnings`, 1.98.1 and 1.85.0 | GATE |
-| the whole workspace's tests | GATE |
-| `hatchling-dev audit` | GATE |
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings`, 1.98.1 and 1.85.0 | pass, after the last round's four lints in tests were fixed: two size invariants the tests asserted are now checked as the broker is built |
+| the whole workspace's tests | 4490 passed, 0 failed (after a `cargo build --workspace`, which a cleaned target needs: some suites run the workspace's binaries) |
+| `hatchling-dev audit` | all checks passed |
 
 New tests:
 - the bounds by window: none, small, 32,768, 40,000, 65,536, just under the most, and larger;
@@ -51,18 +51,29 @@ New tests:
 
 | Break | Caught by |
 |---|---|
-| The window ignored: always the least | GATE |
-| A run's cell given the most, whatever its window | GATE |
-| The agent reading by the least, whatever its window | GATE |
-| The chat keeping the least, whatever its window | GATE |
-| A store from before never moved | GATE |
-| A side never split into parts | GATE |
-| A move writing into the old slots | GATE |
-| A switch's window ignored | GATE |
+| The window ignored: always the least | `the_bounds_are_sized_to_the_window` |
+| A run's cell given the most, whatever its window | `a_chat_runs_cell_is_given_the_conversation_its_window_bounds` |
+| The agent reading by the least, whatever its window | `a_chat_run_reads_the_history_its_window_bounds` |
+| The chat keeping the least, whatever its window | `a_chat_keeps_what_its_windows_bounds_hold` |
+| A store from before never moved | `a_store_from_before_is_moved_to_its_new_slots`, `a_move_stopped_part_way_leaves_a_whole_conversation` |
+| A side never split into parts | `a_side_larger_than_an_entry_is_kept_in_parts`, `a_conversation_at_the_most_is_kept_and_resumed` |
+| A move writing into the old slots | `a_store_from_before_is_moved_to_its_new_slots`, `a_move_stopped_part_way_leaves_a_whole_conversation` |
+| A switch's window ignored | `the_owner_switches_between_the_operators_two_servers` |
 
 **Mutation**, on the lines changed against `de1e137b`:
 
-GATE
+| Crate | Mutants | Caught | Missed | Timeouts | Unviable |
+|---|---|---|---|---|---|
+| `hatchling-core` (library) | 48 | 45 | 0 | 0 | 3 |
+| `hatchling-agent` (library) | 12 | 7 | 0 | 0 | 5 |
+| `hatchling-broker` (library and `schedule_run`) | 58 | 53 | 0 | 0 | 5 |
+
+The first full round missed 8, each fixed before this one:
+- **Core, 5:** the agent's length checks at their exact boundaries. A test now reads back exactly as many messages as the bounds allow, and raw text of exactly twice the bytes, which is parsed and isn't JSON. One byte more is refused unparsed.
+- **Broker, 2:** a guard that could never be false: every store has slots for more than one exchange. It was removed.
+- **Broker, 1:** a field the rewrite of New conversation made deletable: its numbers carrying on from the last conversation. A test now checks them.
+
+The tree mutated differs from the one merged only by the last four lints' fixes. They're in tests, and two size invariants moved into the store as checks made when the broker is built. No function changed.
 
 ## Said plainly
 

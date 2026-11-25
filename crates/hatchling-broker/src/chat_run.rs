@@ -42,7 +42,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use hatchling_core::conversation::{self, Bounds, ChatExchange, Compacted, Conversation};
+use hatchling_core::conversation::{Bounds, ChatExchange, Compacted, Conversation};
 
 use hatchling_channel::{ChannelId, LocalHub, Message};
 use hatchling_core::ScheduleGrant;
@@ -835,6 +835,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use hatchling_core::conversation;
     use std::cell::RefCell;
 
     use hatchling_channel::SenderId;

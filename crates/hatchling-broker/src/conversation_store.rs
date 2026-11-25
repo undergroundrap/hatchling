@@ -59,6 +59,11 @@ pub const LEGACY_SLOTS: u64 = 9;
 /// [`hatchling_core::MAX_SECRET_BYTES`].
 pub const PARTS: usize = 3;
 
+// A side at the most fits its parts, and a moved store's exchanges fit the
+// slots the old one never used: held when the broker is built.
+const _: () = assert!(Bounds::MOST.history_bytes <= PARTS * hatchling_core::MAX_SECRET_BYTES);
+const _: () = assert!(LEGACY_SLOTS - 1 <= SLOTS - LEGACY_SLOTS);
+
 /// The slots an index that names none has: a store's from before #595.
 const fn legacy_slots() -> u64 {
     LEGACY_SLOTS
@@ -412,13 +417,12 @@ impl<'k> ConversationStore<'k> {
             .min(index.kept.saturating_add(1))
             .min(index.slots.saturating_sub(1));
         let number = index.next;
-        match conversation.exchanges.last() {
-            Some(newest) if kept > 0 => {
-                let [user, assistant] = Self::sides(slot(number, index.slots));
-                Self::write_side(&vault, &user, &newest.user)?;
-                Self::write_side(&vault, &assistant, &newest.assistant)?;
-            }
-            Some(_) | None => {}
+        // With an exchange, at least it is kept: every store has slots
+        // for more than one.
+        if let Some(newest) = conversation.exchanges.last() {
+            let [user, assistant] = Self::sides(slot(number, index.slots));
+            Self::write_side(&vault, &user, &newest.user)?;
+            Self::write_side(&vault, &assistant, &newest.assistant)?;
         }
         let next = number
             .checked_add(1)
@@ -709,10 +713,6 @@ mod tests {
             ],
             [8, 0, 4]
         );
-        // A side at the most fits its parts, and a moved store's
-        // exchanges fit the slots the old one never used.
-        assert!(Bounds::MOST.history_bytes <= PARTS * hatchling_core::MAX_SECRET_BYTES);
-        assert!(LEGACY_SLOTS - 1 <= SLOTS - LEGACY_SLOTS);
         assert_eq!(Index::default().slots, SLOTS);
     }
 
@@ -812,7 +812,7 @@ mod tests {
         );
         let expected = Conversation {
             earlier: said(&["q0", "q1"]),
-            exchanges: old.clone(),
+            exchanges: old,
         };
         assert_eq!(store.resume().unwrap(), expected);
         let vault = store.vault().unwrap();
@@ -1043,6 +1043,12 @@ mod tests {
         store.start_new(|| started = true).unwrap();
         assert!(started);
         assert_eq!(store.resume().unwrap(), Conversation::default());
+        // Its numbers go on from the last conversation's, in a new store's
+        // slots.
+        let index = ConversationStore::read_index(&store.vault().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!((index.next, index.kept, index.slots), (2, 0, SLOTS));
         assert!(held(&config, &key).is_empty());
         keep_all(&store, &[exchange("q2", "a2")]);
         assert_eq!(store.resume().unwrap(), holding(&[exchange("q2", "a2")]));

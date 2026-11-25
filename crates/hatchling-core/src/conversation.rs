@@ -639,6 +639,41 @@ mod tests {
         assert!(parse_history(&raw, &L).is_err());
     }
 
+    /// What a run is given is read back at its bounds exactly: as many
+    /// messages as they allow, and raw text up to twice their bytes before
+    /// it's parsed at all. Past that, it's refused unparsed.
+    #[test]
+    fn a_run_reads_back_at_its_bounds_exactly() {
+        let most = Bounds::MOST;
+        let said: Vec<String> = (0..most.earlier).map(|n| format!("m{n}")).collect();
+        let raw = serde_json::to_string(&said).unwrap();
+        assert_eq!(
+            parse_earlier(&raw, &most).unwrap(),
+            said,
+            "as many as allowed"
+        );
+        let many: Vec<String> = (0..=most.earlier).map(|n| format!("m{n}")).collect();
+        let raw = serde_json::to_string(&many).unwrap();
+        assert!(
+            parse_earlier(&raw, &most)
+                .unwrap_err()
+                .contains("more than")
+        );
+        // Twice the bytes is parsed (and isn't JSON); one more isn't.
+        let at_and_past = |bound: usize, parse: &dyn Fn(&str) -> Result<(), String>| {
+            let at = parse(&"x".repeat(bound * 2)).unwrap_err();
+            assert!(at.starts_with("expected a JSON array"), "{at}");
+            let past = parse(&"x".repeat(bound * 2 + 1)).unwrap_err();
+            assert!(past.starts_with("larger than"), "{past}");
+        };
+        at_and_past(most.history_bytes, &|raw| {
+            parse_history(raw, &most).map(|_| ())
+        });
+        at_and_past(most.earlier_bytes, &|raw| {
+            parse_earlier(raw, &most).map(|_| ())
+        });
+    }
+
     /// A conversation kept within larger bounds, given within smaller
     /// ones, is compacted as a push would: the oldest answers go, and what
     /// the owner said in them is given as earlier, word for word. What was

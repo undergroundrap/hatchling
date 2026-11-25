@@ -192,18 +192,11 @@ impl Config {
             "HATCHLING_RUN_CHAT",
         )?;
         let model_max_steps = set_max_steps.unwrap_or_else(|| default_steps(run_chat));
-        // Held to the bounds of the window the run was told (#595), as
-        // the broker sized what it sent.
-        let bounds = hatchling_core::conversation::Bounds::for_window(model_context_window);
-        let run_history = parse_run_history(
+        let (run_history, run_earlier) = parse_run_conversation(
             get(env::HATCHLING_RUN_HISTORY.name).as_deref(),
-            run_chat,
-            &bounds,
-        )?;
-        let run_earlier = parse_run_earlier(
             get(env::HATCHLING_RUN_EARLIER.name).as_deref(),
             run_chat,
-            &bounds,
+            model_context_window,
         )?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
@@ -263,6 +256,22 @@ fn number<T: std::str::FromStr>(
             })
         })
         .transpose()
+}
+
+/// `HATCHLING_RUN_HISTORY` and `HATCHLING_RUN_EARLIER`, `history` and
+/// `earlier`: a chat turn's conversation, held to the bounds of the window
+/// the run was told (#595), as the broker sized what it sent.
+fn parse_run_conversation(
+    history: Option<&str>,
+    earlier: Option<&str>,
+    run_chat: bool,
+    window: Option<u32>,
+) -> Result<(Vec<hatchling_core::conversation::ChatExchange>, Vec<String>), Error> {
+    let bounds = hatchling_core::conversation::Bounds::for_window(window);
+    Ok((
+        parse_run_history(history, run_chat, &bounds)?,
+        parse_run_earlier(earlier, run_chat, &bounds)?,
+    ))
 }
 
 /// `HATCHLING_RUN_HISTORY`: a chat turn's conversation so far, which only

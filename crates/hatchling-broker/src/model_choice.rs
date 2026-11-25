@@ -208,20 +208,21 @@ pub fn named(
     }
 }
 
-/// The window of the server in use, as the operator declared it: as
-/// [`named`] finds the server, from the owner directory `owner_dir`, the
-/// first server's window `configured`, and the `other` server. What a
+/// The window of the server in use, as the operator declared it: what a
 /// chat sizes the conversation it keeps by (#595).
+///
+/// The server is found as [`named`] finds it, from the owner directory
+/// `owner_dir`, the first server's window `configured`, and the `other`
+/// server.
 #[must_use]
 pub fn window(
     owner_dir: Option<&Path>,
     configured: Option<u32>,
     other: Option<&OtherModel>,
 ) -> Option<u32> {
-    match owner_dir.and_then(|dir| switched(dir, other)) {
-        Some(other) => other.context_window,
-        None => configured,
-    }
+    owner_dir
+        .and_then(|dir| switched(dir, other))
+        .map_or(configured, |other| other.context_window)
 }
 
 /// Why a choice wasn't kept.
