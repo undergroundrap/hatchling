@@ -594,9 +594,9 @@ fn a_run_near_its_deadline_answers_with_no_tools() {
 
 /// A run whose next call would cross its token budget answers with no
 /// tools, and says so by its status (WO-051). Its first request, measured
-/// by its bytes before any count, is well inside a budget of 15,000. The
-/// server counts it as 10,000 tokens, inside the 32,768 window: the next
-/// request, as large again, would cross the budget.
+/// by its bytes before any count, is well inside a budget of 100,000. The
+/// server counts it as 60,000 tokens, inside a window of 262,144: the next
+/// request, as large again, would cross the budget but fit the window.
 #[test]
 fn a_run_at_its_token_budget_answers_with_no_tools() {
     let mut first: Value = serde_json::from_str(&tool_call_reply(
@@ -605,7 +605,7 @@ fn a_run_at_its_token_budget_answers_with_no_tools() {
     ))
     .unwrap();
     if let Some(fields) = first.as_object_mut() {
-        fields.insert(String::from("usage"), json!({"prompt_tokens": 10_000}));
+        fields.insert(String::from("usage"), json!({"prompt_tokens": 60_000}));
     }
     let server = LocalServer::start(vec![
         probe_reply(),
@@ -615,7 +615,10 @@ fn a_run_at_its_token_budget_answers_with_no_tools() {
     let (status, answer, errors) = run_binary(
         "local-budget",
         server.port,
-        &[("HATCHLING_RUN_TOKEN_BUDGET", String::from("15000"))],
+        &[
+            ("HATCHLING_RUN_TOKEN_BUDGET", String::from("100000")),
+            ("HATCHLING_MODEL_CONTEXT_WINDOW", String::from("262144")),
+        ],
     );
     let tokens = i32::from(hatchling_core::run_failure::ANSWERED_OUT_OF_TOKENS);
     assert_eq!(
