@@ -1479,11 +1479,13 @@ mod tests {
                 )
                 .is_err()
         );
-        // Rotating needs each key's PIN too.
+        // Rotating needs each key's PIN too, and a key that refuses for
+        // the want of it says so: it isn't taken for a key not there
+        // (#687).
         primary.set_typed(None);
         assert!(matches!(
             keyring.rotate_in_place(&opened, None, &mut [&mut primary, &mut backup]),
-            Err(Error::KeyAbsent { .. })
+            Err(Error::Authenticator { .. })
         ));
         primary.set_typed(Some("2468"));
         let rotated = keyring
