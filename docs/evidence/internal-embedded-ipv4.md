@@ -30,16 +30,16 @@ On an IPv6-only network with DNS64 and a NAT64 gateway, `64:ff9b::a9fe:a9fe` is 
   - `198.18.0.0/15`, benchmarking;
   - the three documentation TEST-NETs.
 
-Two tests used `203.0.113.5`, a documentation address, as a public source's address. They now use a public one they never connect to.
+Three tests used `203.0.113.5`, a documentation address, as a public source's address (`proxy.rs`, `relay.rs`, and the allowlist tests' `PUBLIC`). They now use a public one they never connect to.
 
 ## Tests
 
 | Check | Result |
 |---|---|
-| `cargo fmt --all --check` | GATE |
-| clippy `-D warnings`, 1.98.1 and 1.85.0 | GATE |
-| the whole workspace's tests | GATE |
-| `hatchling-dev audit` | GATE |
+| `cargo fmt --all --check` | pass |
+| clippy `-D warnings`, 1.98.1 and 1.85.0 | pass on both |
+| the whole workspace's tests | 4492 passed, 0 failed |
+| `hatchling-dev audit` | all checks passed |
 
 Extended tests:
 - `each_internal_range_is_internal_and_the_internet_is_not`:
@@ -51,11 +51,13 @@ Extended tests:
 
 | Break | Caught by |
 |---|---|
-| NAT64 not judged by what it carries | GATE |
-| 6to4 not judged by what it carries | GATE |
-| Teredo taken as public | GATE |
-| Documentation ranges taken as public | GATE |
+| NAT64 not judged by what it carries | `each_internal_range_is_internal_and_the_internet_is_not`, `a_host_resolving_inside_or_nowhere_is_refused_unconnected` |
+| 6to4 not judged by what it carries | `each_internal_range_is_internal_and_the_internet_is_not` |
+| Teredo taken as public | `each_internal_range_is_internal_and_the_internet_is_not` |
+| Documentation ranges taken as public | `each_internal_range_is_internal_and_the_internet_is_not` |
 
-**Mutation**, on the lines changed against `76ebdf59` (`cargo mutants --in-diff`, `hatchling-egress`):
+**Mutation**, on the lines changed against `76ebdf59` (`cargo mutants --in-diff`, `hatchling-egress`): 24 tested, 23 caught, 1 unviable, 0 missed, 0 timeouts.
 
-GATE
+An earlier run missed one: `|` to `^` where the two halves of a carried IPv4 address were joined. The halves' bits never overlap, so the two operators give the same address: an equivalent mutant. The address is now built from its four bytes, with no operator to mutate.
+
+All of the above ran on tree `bbdcd410`.
