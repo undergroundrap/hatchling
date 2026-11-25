@@ -241,7 +241,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         // Live, the broker says what the run is doing: the chat says that, and how long it has been.
         const running = ctx.state.mode === 'live' && ctx.state.turn === 'working' ? ctx.state.threads.find((thread) => thread.state === 'running' && thread.chatId === ctx.ui.chatId) : undefined;
         const stateLabel = ctx.state.turn === 'working' ? running?.statusTitle ?? 'Working on it' : ctx.state.turn === 'awaiting' ? 'Waiting for your confirmation' : ctx.state.turn === 'interrupted' ? 'Interrupted — context saved' : 'Stalled — waiting on a source';
-        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, running?.startedAt ? elapsedSince(running.startedAt) : null, ctx.state.turn === 'working' ? button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' }) : ctx.state.mode !== 'live' && ctx.state.turn === 'interrupted' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null));
+        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, running?.startedAt ? elapsedSince(running.startedAt) : null, turnButton(ctx)));
     }
     if (ctx.ui.attachmentNames.length)
         area.append(h('div', { class: 'attached-files' }, ...ctx.ui.attachmentNames.map((id) => h('span', { class: 'attachment-chip' }, icon('file', 14), ctx.state.artifacts.find((item) => item.id === id)?.title ?? 'Local file', iconButton('close', 'Remove attachment', () => { ctx.ui.attachmentNames = ctx.ui.attachmentNames.filter((item) => item !== id); ctx.render(); })))));
@@ -260,6 +260,18 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
 }
 const SHORT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 /** A model's window as it's named: 16K for 16,384, 128K for 131,072. */
+/** What the chat offers for the run in flight: Stop while it works, and, in the demo, Resume once it's paused. Connected to Hatchling a stopped run is over, so there's nothing to resume (WO-051). */
+export function turnAction(mode: AppContext['state']['mode'], turn: AppContext['state']['turn']): 'stop' | 'resume' | null {
+    if (turn === 'working')
+        return 'stop';
+    return mode !== 'live' && turn === 'interrupted' ? 'resume' : null;
+}
+function turnButton(ctx: AppContext): HTMLElement | null {
+    const action = turnAction(ctx.state.mode, ctx.state.turn);
+    if (action === 'stop')
+        return button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' });
+    return action === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
+}
 export function windowSize(window: number): string {
     return window % 1024 === 0 ? `${window / 1024}K` : SHORT.format(window);
 }

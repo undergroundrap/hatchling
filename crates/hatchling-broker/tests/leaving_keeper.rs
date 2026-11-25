@@ -1062,6 +1062,45 @@ fn a_hit_elsewhere_in_the_tree_refuses_the_next_op() -> Result<(), String> {
     })
 }
 
+/// The owner's Stop ends a run's session as a hit elsewhere does: its next
+/// op is refused unread, whatever it is (WO-051).
+#[test]
+fn the_owners_stop_refuses_the_next_op() -> Result<(), String> {
+    let install = install()?;
+    let cell_id: CellId = "cell-stopped".parse().map_err(|_| "cell id")?;
+    let (agent, connection) = UnixStream::pair().map_err(|e| e.to_string())?;
+    let hit = HeldHit::default();
+    let cell = AgentCell {
+        connection,
+        cell_id,
+        pid: 0,
+        hit: hit.clone(),
+    };
+    std::thread::scope(|scope| {
+        let _hangs = Hangs(&agent);
+        let (cell, config, keys) = (&cell, &install.config, &install.keys);
+        let served = scope.spawn(move || {
+            serve_cell_connection(cell, config, keys, &Skills::default(), None, None)
+                .map_err(|e| e.to_string())
+        });
+        say_hello(&agent, "cell-stopped")?;
+        let clean = ask(&agent, &reading("https://a.example/?k=nothing-held"))?;
+        assert!(
+            matches!(clean, SessionResponse::Web(WebResult::Waiting { .. })),
+            "it runs until it's stopped"
+        );
+        hit.stop();
+        let checks = install.checks()?.len();
+        session_is_over(&agent)?;
+        served
+            .join()
+            .map_err(|_| String::from("the session panicked"))??;
+        assert_eq!(install.checks()?.len(), checks, "unread");
+        assert_eq!(hit.seen(), None, "a Stop is no hit");
+        Ok::<(), String>(())
+    })
+}
+
 /// End to end, with nothing standing in for the keeper or the cell: a chat
 /// run's program sends a key in an address, then goes on spinning as a
 /// compromised one would. The broker ends the run anyway, long before its
