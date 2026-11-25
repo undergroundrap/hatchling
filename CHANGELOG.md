@@ -53,6 +53,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A model request can't hide its input by saying it's a tool call** ([#685](https://github.com/undergroundrap/hatchling/issues/685)). The model request policy leaves a tool call's arguments unread, since they're the model's own and may name URLs. But it did that for any object that said `"type": "tool_use"`, the request itself included. In the Responses API the whole conversation is the request's `input`, so a cell could add that one field and have an image or file given by URL go unread. A server that ignores unknown fields would then fetch it. Now only a real tool call is passed over: a block inside the request, never its top, whose input is an object.
+
 - **Stop and a run's clock end a model call in flight** ([#657](https://github.com/undergroundrap/hatchling/issues/657)). When a run was stopped, or ran out of time, while its model was answering, the run ended only once that answer came: 50 seconds after Stop in one test, and a 10-minute run told at 15 minutes in another. Meanwhile the model went on writing an answer nobody would read, and a hosted one could bill for it. Now a run's end cuts the call: the run ends at once, and the egress authority hangs up on the model's server, which a local model takes as its cue to stop.
 
 - **A site you grant again keeps its grant** ([#641](https://github.com/undergroundrap/hatchling/issues/641)). A site granted until a time has a timer that revokes it when that time comes. Granted again just as it came, the old timer could still revoke the new grant and close its connections, because it checked and revoked in two steps. It now does both at once, so an end the site is no longer held to revokes nothing.

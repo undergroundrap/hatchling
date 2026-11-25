@@ -134,15 +134,29 @@ pub fn check_body(body: &[u8]) -> Result<(), Refusal> {
 
 /// Walks a request's JSON, refusing what the policy refuses.
 fn scan(value: &Value) -> Result<(), Refusal> {
+    walk(value, true)
+}
+
+/// [`scan`] of `value`, the request's root when `root`.
+///
+/// An Anthropic `tool_use` block's `input` is the arguments of the
+/// model's own earlier tool call: opaque to the vendor, and it may name
+/// URLs, so it isn't read. Only such a block is passed over: one inside
+/// the request, never its root, whose `input` is an object. A root that
+/// says it's a `tool_use` would otherwise hide the whole of a request's
+/// `input`, which in the Responses API is the conversation (#685).
+fn walk(value: &Value, root: bool) -> Result<(), Refusal> {
     match value {
-        Value::Array(items) => items.iter().try_for_each(scan),
+        Value::Array(items) => items.iter().try_for_each(|item| walk(item, false)),
         Value::Object(object) => {
             check_object(object)?;
-            let tool_call = object.get("type").and_then(Value::as_str) == Some("tool_use");
+            let tool_call = !root
+                && object.get("type").and_then(Value::as_str) == Some("tool_use")
+                && matches!(object.get("input"), Some(Value::Object(_)));
             object
                 .iter()
                 .filter(|(key, _)| !(tool_call && key.as_str() == "input"))
-                .try_for_each(|(_, value)| scan(value))
+                .try_for_each(|(_, value)| walk(value, false))
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(()),
     }
@@ -380,6 +394,35 @@ mod tests {
             "prompt_cache_key": "k",
             "text": {"verbosity": "medium"}
         })
+    }
+
+    /// #685: a Responses request whose root says it's a `tool_use` still
+    /// has its whole `input` read, and its image by URL refused, on any
+    /// destination. An Anthropic tool call in an assistant message, whose
+    /// arguments name URLs, still passes.
+    #[test]
+    fn a_root_that_says_tool_use_hides_nothing() {
+        let hidden = json!({
+            "type": "tool_use",
+            "model": "gpt-5",
+            "input": [{"role": "user", "content": [
+                {"type": "input_image", "image_url": "http://169.254.169.254/latest/meta-data"}
+            ]}]
+        });
+        let body = serde_json::to_vec(&hidden).unwrap();
+        assert_eq!(check_body(&body), Err(URL_CONTENT));
+        for destination in ["api.openai.com:443", "localhost:11434", "llm.internal:8443"] {
+            assert_eq!(
+                check(destination, "POST", "/v1/responses", &body),
+                Err(URL_CONTENT),
+                "{destination}"
+            );
+        }
+        let arguments = json!({"messages": [{"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "WebFetch",
+             "input": {"url": "https://docs.example.com", "image_url": "https://x.example/a.png"}}
+        ]}]});
+        assert_eq!(check_body(&serde_json::to_vec(&arguments).unwrap()), Ok(()));
     }
 
     #[test]
@@ -647,8 +690,17 @@ mod tests {
             Err(URL_CONTENT)
         );
         assert_eq!(
-            scan(&json!({"type": "tool_use", "input": {"type": "url"}})),
+            scan(&json!({"messages": [{"type": "tool_use", "input": {"type": "url"}}]})),
             Ok(())
+        );
+        // #685: never the root's, and never an input that isn't an object.
+        assert_eq!(
+            scan(&json!({"type": "tool_use", "input": {"type": "url"}})),
+            Err(URL_CONTENT)
+        );
+        assert_eq!(
+            scan(&json!({"messages": [{"type": "tool_use", "input": [{"type": "url"}]}]})),
+            Err(URL_CONTENT)
         );
         assert_eq!(
             scan(&json!({"type": "tool_result", "input": {"type": "url"}})),
