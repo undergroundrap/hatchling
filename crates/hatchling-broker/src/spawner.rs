@@ -4578,10 +4578,16 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 &sessions,
             )
             .unwrap();
-            match receive(&broker).unwrap() {
-                Reply::Refused { reason } => reason,
-                other => panic!("not refused: {other:?}"),
-            }
+            // The spawner's end closed first: a reply that never came is
+            // the end of the stream, not a read that waits forever.
+            drop(theirs);
+            let reply = receive(&broker).unwrap();
+            // Anything but a refusal fails every assertion below, shown.
+            let shown = format!("not refused: {reply:?}");
+            let Reply::Refused { reason } = reply else {
+                return shown;
+            };
+            reason
         };
         let ids = |policy: &Policy| (policy.skill.identity.principal, policy.skill.identity.group);
         let etc = vec![String::from("/etc")];
