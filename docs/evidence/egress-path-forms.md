@@ -25,10 +25,10 @@ So a cell could send a model request to a local server or a gateway whose body t
 
 | Check | Result |
 |---|---|
-| `cargo fmt --all --check` | GATE |
-| clippy `-D warnings`, 1.98.1 and 1.85.0 | GATE |
-| the whole workspace's tests | GATE |
-| `hatchling-dev audit` | GATE |
+| `cargo fmt --all --check` | pass |
+| clippy `-D warnings`, 1.98.1 and 1.85.0 | pass on both |
+| the whole workspace's tests | 4491 passed, 0 failed |
+| `hatchling-dev audit` | all checks passed |
 
 New and extended tests:
 - `validate_request_refuses_a_path_a_server_would_rewrite`:
@@ -40,10 +40,10 @@ New and extended tests:
 
 | Break | Caught by |
 |---|---|
-| `%` accepted in a path | GATE |
-| `.` and `..` segments accepted | GATE |
-| Trailing slashes left on the path the policy reads | GATE |
+| `%` accepted in a path | `validate_request_refuses_a_path_a_server_would_rewrite` |
+| `.` and `..` segments accepted | `validate_request_refuses_a_path_a_server_would_rewrite` |
+| Trailing slashes left on the path the policy reads | `a_model_request_is_read_on_any_destination_and_nothing_else_is` |
 
-**Mutation**, on the lines changed against `3b2b82e2` (`cargo mutants --in-diff`, `hatchling-egress`):
+**Mutation**, on the lines changed against `3b2b82e2` (`cargo mutants --in-diff`, `hatchling-egress`): 6 tested, 6 caught, 0 missed, 0 timeouts.
 
-GATE
+All of the above ran on tree `88cd438e`.
