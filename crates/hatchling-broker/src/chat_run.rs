@@ -42,7 +42,7 @@
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-use hatchling_core::conversation::{self, ChatExchange, Compacted, Conversation};
+use hatchling_core::conversation::{self, Bounds, ChatExchange, Compacted, Conversation};
 
 use hatchling_channel::{ChannelId, LocalHub, Message};
 use hatchling_core::ScheduleGrant;
@@ -299,6 +299,9 @@ pub struct Chat<R, K = ()> {
     /// The operator's other model's server, the owner may switch to: its
     /// model is named when they did.
     other: Option<crate::config::OtherModel>,
+    /// The operator's first model's window: with the other's, what the
+    /// conversation is sized by (#595).
+    window: Option<u32>,
     /// Whether the person was told, in this conversation, that older
     /// answers are no longer given whole, and that their oldest words are
     /// no longer given at all.
@@ -365,6 +368,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             model: None,
             choice: None,
             other: None,
+            window: None,
             usage: None,
             waiting: None,
             answered: None,
@@ -425,6 +429,25 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         self
     }
 
+    /// The chat, sizing the conversation it keeps and gives by `window`,
+    /// the operator's first model's, or the other server's when the owner
+    /// switched to it (#595).
+    #[must_use]
+    pub const fn with_window(mut self, window: Option<u32>) -> Self {
+        self.window = window;
+        self
+    }
+
+    /// The bounds of the conversation now: those of the window of the
+    /// server in use.
+    fn bounds(&self) -> Bounds {
+        Bounds::for_window(crate::model_choice::window(
+            self.choice.as_deref(),
+            self.window,
+            self.other.as_ref(),
+        ))
+    }
+
     /// The chat, checking the owner's usage limits in `usage` before each
     /// run, and naming one reached when a run fails for it.
     #[must_use]
@@ -446,27 +469,33 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         crate::usage::reached(self.usage.as_deref()?, now.as_second())
     }
 
-    /// The exchanges a run started now is given, oldest first.
+    /// The exchanges a run started now is given, oldest first: within the
+    /// bounds of the window in use, which a switch to a smaller one makes
+    /// less than is kept.
     #[must_use]
     pub fn history(&self) -> Vec<ChatExchange> {
-        conversation::recent(&self.kept.exchanges)
+        self.kept.within(&self.bounds()).exchanges
     }
 
     /// What the owner said earlier that a run started now is given,
-    /// oldest first.
+    /// oldest first, within the same bounds.
     #[must_use]
     pub fn earlier(&self) -> Vec<String> {
-        conversation::earlier(&self.kept.earlier)
+        self.kept.within(&self.bounds()).earlier
     }
 
     /// Keeps the exchange of `user` and `answer`, the person having been
     /// shown `answer` as written; past the bounds, the oldest answers go,
     /// and what the owner said in them is kept as earlier.
     fn keep(&mut self, user: String, answer: String, run: Option<&str>) -> Compacted {
-        let compacted = self.kept.push(ChatExchange {
-            user,
-            assistant: answer,
-        });
+        let bounds = self.bounds();
+        let compacted = self.kept.push(
+            ChatExchange {
+                user,
+                assistant: answer,
+            },
+            &bounds,
+        );
         self.keeps.keep(self.conversation, &self.kept, run);
         compacted
     }
@@ -737,6 +766,7 @@ pub fn chat_forever<'scope, 'env>(
     let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps)
         .with_model(config.scheduler.model_name.clone())
         .with_other(config.scheduler.other_model.clone())
+        .with_window(config.scheduler.model_context_window)
         .with_choice(
             config
                 .scheduler
@@ -1315,6 +1345,35 @@ mod tests {
         let histories = histories(&launches);
         assert_eq!(histories.last(), Some(&vec![turn("keep me", "kept")]));
         assert!(histories.iter().take(4).all(Vec::is_empty), "{histories:?}");
+    }
+
+    /// #595: a chat on a model with a large window keeps, and gives, as
+    /// much of the conversation as the window's bounds hold.
+    #[test]
+    fn a_chat_keeps_what_its_windows_bounds_hold() {
+        let most = Bounds::MOST;
+        let launches = Launches::default();
+        let count = most.exchanges + 3;
+        launches
+            .outcomes
+            .borrow_mut()
+            .extend((0..count).map(|n| Ok(answering(&format!("a{n}")))));
+        let answers = Answers::default();
+        let mut chat = Chat::new(vec![send_local()]).with_window(Some(131_072));
+        for n in 0..count {
+            assert_eq!(
+                exchange(&mut chat, &format!("q{n}"), &launches, &answers),
+                Step::Answered
+            );
+        }
+        assert_eq!(chat.kept.exchanges.len(), most.exchanges);
+        assert_eq!(chat.history().len(), most.exchanges);
+        assert_eq!(chat.earlier(), ["q0", "q1", "q2"]);
+        // The last run was given every exchange kept before it.
+        assert_eq!(
+            histories(&launches).last().map(Vec::len),
+            Some(most.exchanges)
+        );
     }
 
     #[test]

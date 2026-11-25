@@ -2841,12 +2841,20 @@ mod run_cell_tests {
         };
         let raw = given(&turn).unwrap();
         assert_eq!(
-            hatchling_core::conversation::parse_history(&raw).unwrap(),
+            hatchling_core::conversation::parse_history(
+                &raw,
+                &hatchling_core::conversation::Bounds::LEAST
+            )
+            .unwrap(),
             history
         );
         let raw = said(&turn).unwrap();
         assert_eq!(
-            hatchling_core::conversation::parse_earlier(&raw).unwrap(),
+            hatchling_core::conversation::parse_earlier(
+                &raw,
+                &hatchling_core::conversation::Bounds::LEAST
+            )
+            .unwrap(),
             earlier
         );
         let first = ScheduledRun {

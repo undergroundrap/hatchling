@@ -208,6 +208,22 @@ pub fn named(
     }
 }
 
+/// The window of the server in use, as the operator declared it: as
+/// [`named`] finds the server, from the owner directory `owner_dir`, the
+/// first server's window `configured`, and the `other` server. What a
+/// chat sizes the conversation it keeps by (#595).
+#[must_use]
+pub fn window(
+    owner_dir: Option<&Path>,
+    configured: Option<u32>,
+    other: Option<&OtherModel>,
+) -> Option<u32> {
+    match owner_dir.and_then(|dir| switched(dir, other)) {
+        Some(other) => other.context_window,
+        None => configured,
+    }
+}
+
 /// Why a choice wasn't kept.
 #[derive(Debug)]
 pub enum NotSet {
@@ -503,6 +519,12 @@ mod tests {
             Some("gemma4:12b"),
             "the chat names the model in use"
         );
+        assert_eq!(
+            window(Some(&config.owner_dir()), Some(16384), Some(&local())),
+            local().context_window,
+            "the chat sizes by the window of the server in use"
+        );
+        assert_eq!(window(None, Some(16384), Some(&local())), Some(16384));
 
         // One chosen on the other is its own; switching to it again keeps it.
         set(&config, Some("llama3.2"), None).unwrap();
@@ -559,6 +581,15 @@ mod tests {
             )
             .as_deref(),
             Some("qwen3.5:9b")
+        );
+        assert_eq!(
+            window(
+                Some(&config.owner_dir()),
+                Some(16384),
+                config.other_model.as_ref()
+            ),
+            Some(16384),
+            "a server no longer set up is no window"
         );
         config.other_model = None;
         assert_eq!(server(&config), first);

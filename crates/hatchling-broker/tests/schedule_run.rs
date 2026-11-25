@@ -647,7 +647,11 @@ fn a_chats_next_cell_is_given_the_exchange_before_it() {
         .and_then(|line| line.strip_prefix("chat=1 history="))
         .unwrap();
     assert_eq!(
-        hatchling_core::conversation::parse_history(given).unwrap(),
+        hatchling_core::conversation::parse_history(
+            given,
+            &hatchling_core::conversation::Bounds::LEAST
+        )
+        .unwrap(),
         [hatchling_core::conversation::ChatExchange {
             user: String::from("history one"),
             assistant: String::from("chat=1 history="),
@@ -713,14 +717,22 @@ fn a_chats_cell_is_given_what_the_owner_said_earlier() {
         .and_then(|rest| rest.split_once(" earlier="))
         .unwrap();
     assert_eq!(
-        hatchling_core::conversation::parse_history(history).unwrap(),
+        hatchling_core::conversation::parse_history(
+            history,
+            &hatchling_core::conversation::Bounds::LEAST
+        )
+        .unwrap(),
         [hatchling_core::conversation::ChatExchange {
             user: String::from("Hi."),
             assistant: String::from("Hello, Sam."),
         }]
     );
     assert_eq!(
-        hatchling_core::conversation::parse_earlier(earlier).unwrap(),
+        hatchling_core::conversation::parse_earlier(
+            earlier,
+            &hatchling_core::conversation::Bounds::LEAST
+        )
+        .unwrap(),
         ["Call me Sam."]
     );
     assert!(run_dirs(&config.scheduler.run_root()).is_empty());

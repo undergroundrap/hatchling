@@ -2,18 +2,27 @@
 //! store of its own (`HATCHLING_CONVERSATION_DIR`), written by the chat
 //! and cleared by the owner alone.
 //!
-//! - **What's kept is what a run is given:** the newest exchanges within
-//!   [`conversation::recent`]'s bounds, each kept once its answer reached
-//!   the owner as written, and what the owner said in those before them,
-//!   within [`conversation::earlier`]'s. No session op reaches this store,
-//!   so a cell can't add to it, read it or clear it.
-//! - **Each side is an entry of its own,** raw. A side is at most
-//!   [`conversation::MAX_HISTORY_BYTES`] as a run is sent it, so less as
-//!   text, and fits one sealed entry. The index says which exchanges are the
-//!   conversation, and their sides live in [`SLOTS`] slots, one more than
-//!   a conversation holds, so a new exchange never overwrites one kept.
-//!   What the owner said earlier is in the index, so it changes with the
-//!   exchanges it was said in, in one write.
+//! - **What's kept is what the chat holds:** the newest exchanges within
+//!   the bounds of the window in use ([`conversation::Bounds`]), each kept
+//!   once its answer reached the owner as written, and what the owner said
+//!   in those before them. Read back, it's held to [`Bounds::MOST`], the
+//!   most any window's bounds are. No session op reaches this store, so a
+//!   cell can't add to it, read it or clear it.
+//! - **Each side is kept raw, in entries of its own:** one, and as many
+//!   more as it needs, up to [`PARTS`]. A side is at most
+//!   [`Bounds::MOST`]'s history bytes as a run is sent it, so less as
+//!   text, and an entry holds [`hatchling_core::MAX_SECRET_BYTES`]. A side
+//!   kept before it could take more is its first entry alone. The index
+//!   says which exchanges are the conversation, and their sides live in [`SLOTS`] slots, one more
+//!   than a conversation holds at the most, so a new exchange never
+//!   overwrites one kept. What the owner said earlier is in the index, so
+//!   it changes with the exchanges it was said in, in one write.
+//! - **A store from before there were [`SLOTS`]** has [`LEGACY_SLOTS`],
+//!   and its index says none. It's moved as the broker starts
+//!   ([`ConversationStore::resume`]): its sides are written again under
+//!   numbers from [`LEGACY_SLOTS`] on, so in slots it never used, then the
+//!   index names them, then the old slots go. Stopped at any step, the
+//!   index names a whole conversation, the old one or the moved one.
 //! - **A new conversation removes every slot,** whatever the index says,
 //!   before the owner is told it started. A keep checks, with the store
 //!   locked, that its conversation is still the chat's, so an answer to a
@@ -27,7 +36,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use hatchling_channel::LocalHub;
 use hatchling_core::SecretName;
-use hatchling_core::conversation::{self, ChatExchange, Conversation, MAX_EXCHANGES};
+use hatchling_core::conversation::{self, Bounds, ChatExchange, Conversation};
 use hatchling_core::ui::{ChatAuthor, ChatMessage, UiEventBody};
 use hatchling_scheduler::Timestamp;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
@@ -37,8 +46,23 @@ use crate::Config;
 use crate::api_stream::Bus;
 use crate::chat_run::Keeps;
 
-/// The slots the sides are kept in: one more than a conversation holds.
-pub const SLOTS: u64 = 9;
+/// The slots the sides are kept in: one more than a conversation holds at
+/// the most ([`Bounds::MOST`]).
+pub const SLOTS: u64 = 25;
+
+/// The slots of a store from before #595, whose index says none: one more
+/// than the 8 exchanges a conversation held then.
+pub const LEGACY_SLOTS: u64 = 9;
+
+/// The most entries one side is kept in: a side is at most
+/// [`Bounds::MOST`]'s history bytes, and an entry holds
+/// [`hatchling_core::MAX_SECRET_BYTES`].
+pub const PARTS: usize = 3;
+
+/// The slots an index that names none has: a store's from before #595.
+const fn legacy_slots() -> u64 {
+    LEGACY_SLOTS
+}
 
 /// What the app shows above a conversation kept across a restart.
 pub const KEPT: &str =
@@ -65,14 +89,18 @@ static AT_START: OnceLock<Resumed> = OnceLock::new();
 static RUNS_AT_START: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Which exchanges are the conversation: those numbered from
-/// `next - kept` up to `next`, each in the slot its number gives, and
-/// what the owner said `earlier`, oldest first. An index from before
-/// there was any says nothing was.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// `next - kept` up to `next`, each in the slot its number gives among
+/// `slots`, and what the owner said `earlier`, oldest first. An index from
+/// before there was any says nothing was.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Index {
     next: u64,
     kept: u64,
+    /// How many slots its sides go round: [`SLOTS`], or [`LEGACY_SLOTS`]
+    /// in an index from before there were more.
+    #[serde(default = "legacy_slots")]
+    slots: u64,
     #[serde(default)]
     earlier: Vec<String>,
     /// The cell id of the run that answered each exchange kept, in their
@@ -82,9 +110,22 @@ struct Index {
     runs: Vec<String>,
 }
 
-/// The slot exchange `number` is kept in.
-const fn slot(number: u64) -> u64 {
-    number % SLOTS
+impl Default for Index {
+    /// A new store's: nothing kept, in [`SLOTS`] slots.
+    fn default() -> Self {
+        Self {
+            next: 0,
+            kept: 0,
+            slots: SLOTS,
+            earlier: Vec::new(),
+            runs: Vec::new(),
+        }
+    }
+}
+
+/// The slot exchange `number` is kept in, among `slots`.
+const fn slot(number: u64, slots: u64) -> u64 {
+    number % slots
 }
 
 /// Whether the chat goes on with a conversation from before the broker
@@ -154,13 +195,17 @@ impl<'k> ConversationStore<'k> {
         };
         let index: Index = serde_json::from_slice(secret.as_bytes())
             .map_err(|error| format!("the conversation's index is corrupt: {error}"))?;
-        let most = u64::try_from(MAX_EXCHANGES).unwrap_or(u64::MAX);
-        if index.kept > most || index.kept > index.next {
+        if index.slots != SLOTS && index.slots != LEGACY_SLOTS {
+            return Err(String::from(
+                "the conversation's index names slots no store has",
+            ));
+        }
+        if index.kept >= index.slots || index.kept > index.next {
             return Err(String::from(
                 "the conversation's index holds more than a conversation can",
             ));
         }
-        if conversation::earlier(&index.earlier).len() != index.earlier.len() {
+        if conversation::earlier(&index.earlier, &Bounds::MOST).len() != index.earlier.len() {
             return Err(String::from(
                 "what the owner said earlier is past the bounds a run is given",
             ));
@@ -190,38 +235,85 @@ impl<'k> ConversationStore<'k> {
         Self::write(vault, INDEX, bytes)
     }
 
-    /// Removes slot `slot`'s sides: one already gone is fine.
+    /// The entry name of part `part` of side `side`: the side's own name
+    /// for its first.
+    fn part(side: &str, part: usize) -> String {
+        if part == 0 {
+            side.to_owned()
+        } else {
+            format!("{side}-{part}")
+        }
+    }
+
+    /// Removes the entry `name`: one already gone is fine.
+    fn remove(vault: &SealedVault<'_>, name: &str) -> Result<(), String> {
+        match vault.remove(&Self::name(name)?) {
+            Ok(()) | Err(hatchling_vault::Error::NotFound { .. }) => Ok(()),
+            Err(error) => Err(format!(
+                "the conversation's {name} can't be removed: {error}"
+            )),
+        }
+    }
+
+    /// Removes slot `slot`'s sides, every part: one already gone is fine.
     fn clear_slot(vault: &SealedVault<'_>, slot: u64) -> Result<(), String> {
-        for name in Self::sides(slot) {
-            match vault.remove(&Self::name(&name)?) {
-                Ok(()) | Err(hatchling_vault::Error::NotFound { .. }) => {}
-                Err(error) => {
-                    return Err(format!(
-                        "the conversation's {name} can't be removed: {error}"
-                    ));
-                }
+        for side in Self::sides(slot) {
+            for part in 0..PARTS {
+                Self::remove(vault, &Self::part(&side, part))?;
             }
         }
         Ok(())
     }
 
-    fn read_side(vault: &SealedVault<'_>, name: &str) -> Result<String, String> {
-        let secret = vault
-            .fetch(&Self::name(name)?)
-            .map_err(|error| format!("the conversation's {name} can't be read: {error}"))?;
-        String::from_utf8(secret.as_bytes().to_vec())
-            .map_err(|_| format!("the conversation's {name} isn't text"))
+    /// Keeps `text` as side `side`: in as many parts as it needs, and
+    /// any part an earlier side there had past them removed.
+    fn write_side(vault: &SealedVault<'_>, side: &str, text: &str) -> Result<(), String> {
+        let bytes = text.as_bytes();
+        let parts: Vec<&[u8]> = if bytes.is_empty() {
+            vec![bytes]
+        } else {
+            bytes.chunks(hatchling_core::MAX_SECRET_BYTES).collect()
+        };
+        if parts.len() > PARTS {
+            return Err(format!(
+                "the conversation's {side} is larger than a side is kept"
+            ));
+        }
+        for (at, part) in parts.iter().enumerate() {
+            Self::write(vault, &Self::part(side, at), part.to_vec())?;
+        }
+        for past in parts.len()..PARTS {
+            Self::remove(vault, &Self::part(side, past))?;
+        }
+        Ok(())
+    }
+
+    /// Side `side`, its parts read in order until one isn't there.
+    fn read_side(vault: &SealedVault<'_>, side: &str) -> Result<String, String> {
+        let mut bytes = Vec::new();
+        for at in 0..PARTS {
+            let name = Self::part(side, at);
+            match vault.fetch(&Self::name(&name)?) {
+                Ok(secret) => bytes.extend_from_slice(secret.as_bytes()),
+                Err(hatchling_vault::Error::NotFound { .. }) if at > 0 => break,
+                Err(error) => {
+                    return Err(format!("the conversation's {name} can't be read: {error}"));
+                }
+            }
+        }
+        String::from_utf8(bytes).map_err(|_| format!("the conversation's {side} isn't text"))
     }
 
     /// The conversation kept, oldest first; nothing when none is.
     ///
     /// The sides a keep wrote before its index, when the broker stopped
-    /// in between, are removed: they were never part of it.
+    /// in between, are removed: they were never part of it. A store with
+    /// [`LEGACY_SLOTS`] is moved to [`SLOTS`] ([`Self::move_slots`]).
     ///
     /// # Errors
     ///
     /// Why it can't be read: the store's failure, an entry that isn't
-    /// what the chat writes, or a conversation past the bounds a run is
+    /// what the chat writes, or a conversation past the most a run is
     /// given.
     pub fn resume(&self) -> Result<Conversation, String> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
@@ -229,25 +321,66 @@ impl<'k> ConversationStore<'k> {
         let Some(index) = Self::read_index(&vault)? else {
             return Ok(Conversation::default());
         };
-        Self::clear_slot(&vault, slot(index.next))?;
+        Self::clear_slot(&vault, slot(index.next, index.slots))?;
         let exchanges = (index.next - index.kept..index.next)
             .map(|number| {
-                let [user, assistant] = Self::sides(slot(number));
+                let [user, assistant] = Self::sides(slot(number, index.slots));
                 Ok(ChatExchange {
                     user: Self::read_side(&vault, &user)?,
                     assistant: Self::read_side(&vault, &assistant)?,
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        if conversation::recent(&exchanges).len() != exchanges.len() {
+        if conversation::recent(&exchanges, &Bounds::MOST).len() != exchanges.len() {
             return Err(String::from(
-                "the conversation kept is past the bounds a run is given",
+                "the conversation kept is past the most a run is given",
             ));
+        }
+        if index.slots != SLOTS {
+            Self::move_slots(&vault, &index, &exchanges)?;
         }
         Ok(Conversation {
             earlier: index.earlier,
             exchanges,
         })
+    }
+
+    /// Moves a conversation kept in `index`'s slots to [`SLOTS`], its
+    /// `exchanges` read: each is written again, numbered from
+    /// `index.slots` on, so in a slot the old index never names; then the
+    /// new index names them, in one write; then the old slots go. A stop
+    /// before the index leaves the old conversation whole, and one after
+    /// leaves the new.
+    fn move_slots(
+        vault: &SealedVault<'_>,
+        index: &Index,
+        exchanges: &[ChatExchange],
+    ) -> Result<(), String> {
+        let first = index.slots;
+        for (number, exchange) in (first..).zip(exchanges) {
+            let [user, assistant] = Self::sides(slot(number, SLOTS));
+            Self::write_side(vault, &user, &exchange.user)?;
+            Self::write_side(vault, &assistant, &exchange.assistant)?;
+        }
+        let kept = u64::try_from(exchanges.len()).unwrap_or(u64::MAX);
+        Self::write_index(
+            vault,
+            &Index {
+                next: first.saturating_add(kept),
+                kept,
+                slots: SLOTS,
+                earlier: index.earlier.clone(),
+                runs: index.runs.clone(),
+            },
+        )?;
+        for old in 0..index.slots {
+            Self::clear_slot(vault, old)?;
+        }
+        tracing::info!(
+            kept,
+            "the conversation kept was moved to its store's new slots"
+        );
+        Ok(())
     }
 
     /// Keeps `conversation`, as the chat holds it once its newest exchange
@@ -276,20 +409,21 @@ impl<'k> ConversationStore<'k> {
         let index = Self::read_index(&vault)?.unwrap_or_default();
         let kept = u64::try_from(conversation.exchanges.len())
             .unwrap_or(u64::MAX)
-            .min(index.kept.saturating_add(1));
+            .min(index.kept.saturating_add(1))
+            .min(index.slots.saturating_sub(1));
         let number = index.next;
         match conversation.exchanges.last() {
             Some(newest) if kept > 0 => {
-                let [user, assistant] = Self::sides(slot(number));
-                Self::write(&vault, &user, newest.user.clone().into_bytes())?;
-                Self::write(&vault, &assistant, newest.assistant.clone().into_bytes())?;
+                let [user, assistant] = Self::sides(slot(number, index.slots));
+                Self::write_side(&vault, &user, &newest.user)?;
+                Self::write_side(&vault, &assistant, &newest.assistant)?;
             }
             Some(_) | None => {}
         }
         let next = number
             .checked_add(1)
             .ok_or_else(|| String::from("the conversation has no number left"))?;
-        let earlier = conversation::earlier(&conversation.earlier);
+        let earlier = conversation::earlier(&conversation.earlier, &Bounds::MOST);
         // The run that answered each exchange kept: those before, as the
         // index says them, and the newest's, kept with it in this one write.
         // With none kept, the last `kept` of them are none.
@@ -310,13 +444,14 @@ impl<'k> ConversationStore<'k> {
             &Index {
                 next,
                 kept,
+                slots: index.slots,
                 earlier,
                 runs,
             },
         )?;
         // The exchanges the conversation no longer holds.
         for gone in number - index.kept..next - kept {
-            Self::clear_slot(&vault, slot(gone))?;
+            Self::clear_slot(&vault, slot(gone, index.slots))?;
         }
         Ok(true)
     }
@@ -358,9 +493,7 @@ impl<'k> ConversationStore<'k> {
             .map_or(0, |index| index.next);
         let empty = Index {
             next,
-            kept: 0,
-            earlier: Vec::new(),
-            runs: Vec::new(),
+            ..Index::default()
         };
         Self::write_index(&vault, &empty)?;
         for slot in 0..SLOTS {
@@ -478,7 +611,7 @@ impl Keeps for SealedConversation<'_> {
 
 #[cfg(test)]
 mod tests {
-    use hatchling_core::conversation::{MAX_EARLIER, MAX_EARLIER_BYTES, MAX_HISTORY_BYTES};
+    use hatchling_core::conversation::{MAX_EARLIER_BYTES, MAX_EXCHANGES, MAX_HISTORY_BYTES};
     use hatchling_core::ui::UiEvent;
     use hatchling_vault::MasterKey;
 
@@ -507,7 +640,7 @@ mod tests {
         exchanges: &[ChatExchange],
     ) -> Conversation {
         for exchange in exchanges {
-            kept.push(exchange.clone());
+            kept.push(exchange.clone(), &Bounds::LEAST);
             assert!(store.keep_if(|| true, &kept, None).unwrap());
         }
         kept
@@ -556,12 +689,170 @@ mod tests {
 
     #[test]
     fn there_is_one_slot_more_than_a_conversation_holds() {
-        assert_eq!(SLOTS, u64::try_from(MAX_EXCHANGES).unwrap() + 1);
+        assert_eq!(SLOTS, u64::try_from(Bounds::MOST.exchanges).unwrap() + 1);
+        assert_eq!(LEGACY_SLOTS, u64::try_from(MAX_EXCHANGES).unwrap() + 1);
         // Exchanges go round the slots in order.
         assert_eq!(
-            [slot(0), slot(8), slot(9), slot(13), slot(18)],
-            [0, 8, 0, 4, 0]
+            [
+                slot(0, SLOTS),
+                slot(24, SLOTS),
+                slot(25, SLOTS),
+                slot(30, SLOTS)
+            ],
+            [0, 24, 0, 5]
         );
+        assert_eq!(
+            [
+                slot(8, LEGACY_SLOTS),
+                slot(9, LEGACY_SLOTS),
+                slot(13, LEGACY_SLOTS)
+            ],
+            [8, 0, 4]
+        );
+        // A side at the most fits its parts, and a moved store's
+        // exchanges fit the slots the old one never used.
+        assert!(Bounds::MOST.history_bytes <= PARTS * hatchling_core::MAX_SECRET_BYTES);
+        assert!(LEGACY_SLOTS - 1 <= SLOTS - LEGACY_SLOTS);
+        assert_eq!(Index::default().slots, SLOTS);
+    }
+
+    /// #595: a side larger than one entry is kept in parts and read back
+    /// whole, characters split across them included; kept again shorter,
+    /// the parts past it go; a slot is emptied of every part; and one past
+    /// every part isn't kept.
+    #[test]
+    fn a_side_larger_than_an_entry_is_kept_in_parts() {
+        let (config, _scratch, key) = kept("parts");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        let vault = store.vault().unwrap();
+        let entry = hatchling_core::MAX_SECRET_BYTES;
+        // An odd byte first, so each "é" (two bytes) is split at a part.
+        let long = format!("x{}", "é".repeat(entry));
+        ConversationStore::write_side(&vault, "user-3", &long).unwrap();
+        assert_eq!(
+            ConversationStore::read_side(&vault, "user-3").unwrap(),
+            long
+        );
+        let exists = |name: &str| vault.exists(&name.parse().unwrap());
+        assert!(exists("user-3-1") && exists("user-3-2"));
+        ConversationStore::write_side(&vault, "user-3", "short").unwrap();
+        assert_eq!(
+            ConversationStore::read_side(&vault, "user-3").unwrap(),
+            "short"
+        );
+        assert!(!exists("user-3-1") && !exists("user-3-2"));
+        ConversationStore::write_side(&vault, "assistant-3", "").unwrap();
+        assert_eq!(
+            ConversationStore::read_side(&vault, "assistant-3").unwrap(),
+            ""
+        );
+        ConversationStore::write_side(&vault, "user-3", &long).unwrap();
+        ConversationStore::clear_slot(&vault, 3).unwrap();
+        assert!(!exists("user-3") && !exists("user-3-1") && !exists("user-3-2"));
+        let past = "x".repeat(PARTS * entry + 1);
+        let reason = ConversationStore::write_side(&vault, "user-4", &past).unwrap_err();
+        assert!(reason.contains("larger than a side is kept"), "{reason}");
+    }
+
+    /// #595: a conversation at the most any window gives, a side larger
+    /// than one entry among it, is kept and resumed as it was.
+    #[test]
+    fn a_conversation_at_the_most_is_kept_and_resumed() {
+        let (config, _scratch, key) = kept("most");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        let most = Bounds::MOST;
+        let big = "b".repeat(hatchling_core::MAX_SECRET_BYTES + 100);
+        let mut kept = Conversation::default();
+        for n in 0..most.exchanges + 2 {
+            let user = if n == most.exchanges {
+                big.clone()
+            } else {
+                format!("q{n}")
+            };
+            kept.push(exchange(&user, &format!("a{n}")), &most);
+            assert!(store.keep_if(|| true, &kept, None).unwrap());
+        }
+        assert_eq!(kept.exchanges.len(), most.exchanges);
+        assert_eq!(kept.earlier, said(&["q0", "q1"]));
+        assert_eq!(store.resume().unwrap(), kept);
+    }
+
+    /// #595: a store from before there were more slots is moved as it's
+    /// resumed, to slots the old one never used, and goes on from there;
+    /// what the old slots held is gone.
+    #[test]
+    fn a_store_from_before_is_moved_to_its_new_slots() {
+        let (config, _scratch, key) = kept("legacy");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        // Exchanges 4 to 11, in a 9-slot store's slots, and an index
+        // that names no slots.
+        let old: Vec<_> = (4..12)
+            .map(|n| exchange(&format!("q{n}"), &format!("a{n}")))
+            .collect();
+        for (n, exchange) in (4_u64..).zip(&old) {
+            let at = slot(n, LEGACY_SLOTS);
+            plant(
+                &config,
+                &key,
+                &format!("user-{at}"),
+                exchange.user.as_bytes(),
+            );
+            plant(
+                &config,
+                &key,
+                &format!("assistant-{at}"),
+                exchange.assistant.as_bytes(),
+            );
+        }
+        plant(
+            &config,
+            &key,
+            INDEX,
+            br#"{"next":12,"kept":8,"earlier":["q0","q1"]}"#,
+        );
+        let expected = Conversation {
+            earlier: said(&["q0", "q1"]),
+            exchanges: old.clone(),
+        };
+        assert_eq!(store.resume().unwrap(), expected);
+        let vault = store.vault().unwrap();
+        let index = ConversationStore::read_index(&vault).unwrap().unwrap();
+        assert_eq!((index.slots, index.next, index.kept), (SLOTS, 17, 8));
+        assert_eq!(held(&config, &key), (9..17).collect::<Vec<u64>>());
+        assert_eq!(store.resume().unwrap(), expected, "moved once");
+        // It goes on, in the new slots.
+        let kept = keep_on(&store, expected, &[exchange("q12", "a12")]);
+        assert_eq!(store.resume().unwrap(), kept);
+        assert_eq!(held(&config, &key), (10..18).collect::<Vec<u64>>());
+    }
+
+    /// A move stopped before its index is written leaves the old store as
+    /// it was, and is made again; one stopped after leaves the moved one,
+    /// whatever the old slots still hold.
+    #[test]
+    fn a_move_stopped_part_way_leaves_a_whole_conversation() {
+        let (config, _scratch, key) = kept("legacy-stop");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        plant(&config, &key, "user-0", b"q0");
+        plant(&config, &key, "assistant-0", b"a0");
+        // Before the index: a new slot written, the old index still the
+        // store's.
+        plant(&config, &key, "user-9", b"half moved");
+        plant(&config, &key, INDEX, br#"{"next":1,"kept":1}"#);
+        assert_eq!(store.resume().unwrap(), holding(&[exchange("q0", "a0")]));
+        assert_eq!(held(&config, &key), [9]);
+        // After the index: old slots left, never read.
+        plant(&config, &key, "user-0", b"stale");
+        plant(&config, &key, "assistant-0", b"stale");
+        assert_eq!(store.resume().unwrap(), holding(&[exchange("q0", "a0")]));
+        let index = ConversationStore::read_index(&store.vault().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!((index.slots, index.next), (SLOTS, 10));
+        // An index naming slots no store has is damage.
+        plant(&config, &key, INDEX, br#"{"next":1,"kept":1,"slots":10}"#);
+        let reason = store.resume().unwrap_err();
+        assert!(reason.contains("slots no store has"), "{reason}");
     }
 
     /// Each entry is written, read back, and removed as it was: the index,
@@ -577,6 +868,7 @@ mod tests {
         let index = Index {
             next: 12,
             kept: 3,
+            slots: SLOTS,
             earlier: said(&["Call me Sam."]),
             runs: Vec::new(),
         };
@@ -687,8 +979,8 @@ mod tests {
         assert_eq!(resumed.exchanges, many.get(4..).unwrap());
         assert_eq!(resumed.earlier, said(&["q0", "q1", "q2", "q3"]));
         assert_eq!(resumed, kept);
-        // Exchanges 4 to 11, in slots 4 to 8 and 0 to 2: slot 3 is next.
-        assert_eq!(held(&config, &key), [0, 1, 2, 4, 5, 6, 7, 8]);
+        // Exchanges 4 to 11, in slots 4 to 11: slot 12 is next.
+        assert_eq!(held(&config, &key), (4..12).collect::<Vec<u64>>());
         let huge = "x".repeat(MAX_HISTORY_BYTES);
         let kept = keep_on(&store, kept, &[exchange("big", &huge)]);
         let resumed = store.resume().unwrap();
@@ -725,7 +1017,7 @@ mod tests {
         let store = ConversationStore::of(&config, &key).unwrap();
         let kept = keep_all(&store, &[exchange("q0", "a0")]);
         let mut moved = kept.clone();
-        moved.push(exchange("q1", "a1"));
+        moved.push(exchange("q1", "a1"), &Bounds::LEAST);
         assert!(!store.keep_if(|| false, &moved, None).unwrap());
         assert_eq!(store.resume().unwrap(), kept);
         assert_eq!(held(&config, &key), [0]);
@@ -786,7 +1078,7 @@ mod tests {
         let too_many = serde_json::json!({
             "next": 0,
             "kept": 0,
-            "earlier": vec!["x"; MAX_EARLIER + 1],
+            "earlier": vec!["x"; Bounds::MOST.earlier + 1],
         });
         unreadable(&serde_json::to_vec(&too_many).unwrap(), "past the bounds");
         unreadable(br#"{"next":9,"kept":9}"#, "more than");
@@ -794,10 +1086,15 @@ mod tests {
         unreadable(br#"{"next":1,"kept":1}"#, "user-0");
         plant(&config, &key, "user-0", &[0xff]);
         unreadable(br#"{"next":1,"kept":1}"#, "isn't text");
-        let huge = "x".repeat(MAX_HISTORY_BYTES / 2 + 1);
-        plant(&config, &key, "user-0", huge.as_bytes());
-        plant(&config, &key, "assistant-0", huge.as_bytes());
-        unreadable(br#"{"next":1,"kept":1}"#, "past the bounds");
+        // Past the most a run is given: each side half the most and one
+        // byte more, in two parts.
+        let entry = hatchling_core::MAX_SECRET_BYTES;
+        let rest = "x".repeat(Bounds::MOST.history_bytes / 2 + 1 - entry);
+        for side in ["user-0", "assistant-0"] {
+            plant(&config, &key, side, "x".repeat(entry).as_bytes());
+            plant(&config, &key, &format!("{side}-1"), rest.as_bytes());
+        }
+        unreadable(br#"{"next":1,"kept":1}"#, "past the most");
         // Sealed under another key, nothing opens.
         keep_all(&store, &[exchange("q0", "a0")]);
         let other = MasterKey::generate().unwrap();
@@ -873,7 +1170,7 @@ mod tests {
         let mut kept = Conversation::default();
         let most = u64::try_from(MAX_EXCHANGES).unwrap();
         for n in 0..=most {
-            kept.push(exchange(&format!("q{n}"), &format!("a{n}")));
+            kept.push(exchange(&format!("q{n}"), &format!("a{n}")), &Bounds::LEAST);
             let named = run(n);
             let said = match n {
                 1 => None,
