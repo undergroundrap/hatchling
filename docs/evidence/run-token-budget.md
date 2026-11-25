@@ -22,8 +22,8 @@ What was added, and how it was tested, for WO-051's token budget: the broker's h
 |---|---|
 | `cargo fmt --all --check` | pass |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings`, 1.98.1 and 1.85.0 | pass |
-| the whole workspace's tests | TESTS |
-| `hatchling-dev audit` | AUDIT |
+| the whole workspace's tests | 4462 passed, 1 failed: the end-to-end budget test, its numbers outside its window. Fixed, and rerun with the subagent's budget: `hatchling-agent` and `hatchling-broker`, 2442 passed, 0 failed |
+| `hatchling-dev audit` | all checks passed |
 
 New tests:
 - a run's session held to its kind's budget, and a subagent's to `RUN_TOKENS`;
@@ -47,7 +47,16 @@ New tests:
 
 **Mutation**, on the lines changed against `5fee8784`:
 
-MUTATION
+| Crate | Mutants | Caught | Missed | Timeouts | Unviable |
+|---|---|---|---|---|---|
+| `hatchling-loop` | 9 | 4 | 0 | 0 | 5 |
+| `hatchling-model` | 9 | 8 | 0 | 0 | 1 |
+| `hatchling-core` | 6 | 6 | 0 | 0 | 0 |
+| `hatchling-agent` (library and `local_model`) | 13 | 6 | 0 | 0 | 7 |
+| `hatchling-broker` | 28 | 17 | 1 | 0 | 10 |
+| `hatchling-broker`, `subagent_ops.rs` rerun | 3 | 1 | 0 | 0 | 2 |
+
+The one broker miss, the subagent's session given no budget, is caught by the rerun: a child's session is now checked for `RUN_TOKENS`.
 
 ## Said plainly
 
