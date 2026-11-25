@@ -280,6 +280,12 @@ impl<'a> Ops<'a> {
                 }
                 self.new_conversation(chat_id, idea.as_deref())
             }
+            UiAction::StopRun { chat_id } => {
+                if !owns {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.stop_run(chat_id)
+            }
             UiAction::InvokeSkill { op } => self.skill(owns, op),
             UiAction::ManageSchedule { op } => self.schedule(caller, owns, &owner, op),
             UiAction::ManageGrants { op } => self.owned(owns, Owned::Grants(op)),
@@ -832,6 +838,28 @@ impl Ops<'_> {
     /// started it for `idea`, one on their Ideas page that they started,
     /// the conversation is kept as that idea's; for any other id it is a
     /// new conversation like any.
+    /// The owner's Stop (WO-051): the chat's run in flight, its whole
+    /// tree, ends at once. The chat says so as the run's end is taken.
+    fn stop_run(&self, chat_id: &str) -> (UiActionResult, ApiOutcome) {
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        if chat_id != LOCAL_CHAT {
+            return refused(ActionRefusal::BadRequest);
+        }
+        let Some(hub) = self.hub else {
+            return refused(ActionRefusal::Unavailable);
+        };
+        let chat_id = chat_id.to_owned();
+        if crate::follow_ups::stop(hub) {
+            tracing::info!("the owner stopped the chat's run");
+            (UiActionResult::RunStopped { chat_id }, ApiOutcome::Served)
+        } else {
+            (
+                UiActionResult::NothingToStop { chat_id },
+                ApiOutcome::Served,
+            )
+        }
+    }
+
     fn new_conversation(&self, chat_id: &str, idea: Option<&str>) -> (UiActionResult, ApiOutcome) {
         let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
         if chat_id != LOCAL_CHAT {
@@ -3868,6 +3896,84 @@ mod tests {
         );
         let shown = format!("{:?}", Replies::default());
         assert!(shown.contains("attached: false"));
+    }
+
+    /// Only the owner stops the chat's run in flight, in the local chat:
+    /// its tree is stopped, and another chat's isn't. With none in flight,
+    /// there's nothing to stop (WO-051).
+    #[test]
+    fn only_the_owner_stops_the_chats_run_in_flight() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        config.goals.grants = Vec::new();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let (hub, elsewhere) = (
+            LocalHub::new(hatchling_channel::OutputGate::disabled()),
+            LocalHub::new(hatchling_channel::OutputGate::disabled()),
+        );
+        let bus = Arc::new(Bus::starting_at(1));
+        let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
+        let mut replies = Replies::default();
+        let stop = |chat: &str| UiAction::StopRun {
+            chat_id: chat.to_owned(),
+        };
+        let local = || String::from(LOCAL_CHAT);
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        let owner = caller(&[local_send()]);
+        assert_eq!(
+            ops.handle(&owner, &stop(LOCAL_CHAT), &mut replies),
+            (
+                UiActionResult::NothingToStop { chat_id: local() },
+                ApiOutcome::Served
+            )
+        );
+        let (mine, theirs) = (
+            format!("stop-mine-{}", std::process::id()),
+            format!("stop-theirs-{}", std::process::id()),
+        );
+        let (hit, other_hit) = (
+            crate::held_check::HeldHit::default(),
+            crate::held_check::HeldHit::default(),
+        );
+        let _held = (
+            crate::run_launcher::Stoppable::new(&mine, &hit),
+            crate::run_launcher::Stoppable::new(&theirs, &other_hit),
+        );
+        crate::follow_ups::began(&mine, &hub, 0);
+        crate::follow_ups::began(&theirs, &elsewhere, 0);
+        // A caller holding less than the owner's grants can't.
+        let other = caller(&[ScheduleGrant::ChannelSend {
+            channel: String::from("elsewhere"),
+        }]);
+        assert_eq!(
+            ops.handle(&other, &stop(LOCAL_CHAT), &mut replies),
+            refused(ActionRefusal::NotGranted)
+        );
+        // Nor in a chat that isn't the local one.
+        assert_eq!(
+            ops.handle(&owner, &stop("main"), &mut replies),
+            refused(ActionRefusal::BadRequest)
+        );
+        assert!(!hit.over(), "nothing was stopped");
+        assert_eq!(
+            ops.handle(&owner, &stop(LOCAL_CHAT), &mut replies),
+            (
+                UiActionResult::RunStopped { chat_id: local() },
+                ApiOutcome::Served
+            )
+        );
+        assert!(hit.stopped(), "the chat's run is stopped");
+        assert!(!other_hit.over(), "another chat's runs on");
+        // Without the local channel's hub there is no chat to stop.
+        let alone = Ops::new(&config, &key, &skills, None, Arc::clone(&bus));
+        assert_eq!(
+            alone.handle(&owner, &stop(LOCAL_CHAT), &mut replies),
+            refused(ActionRefusal::Unavailable)
+        );
+        let _ = (
+            crate::follow_ups::ended(&mine),
+            crate::follow_ups::ended(&theirs),
+        );
     }
 
     #[test]

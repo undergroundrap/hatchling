@@ -129,6 +129,12 @@ impl std::fmt::Debug for LocalHub {
 }
 
 impl LocalHub {
+    /// Whether `other` is this hub, not a hub like it.
+    #[must_use]
+    pub fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// A hub with an empty queue and no client, whose replies pass
     /// `gate`.
     #[must_use]

@@ -1008,8 +1008,9 @@ fn serve_session(
                 tracing::info!(cell_id = %cell_id, "agent session closed");
                 return Ok(());
             };
-            // A hit elsewhere in the run's tree: this is refused unread.
-            if hit.seen().is_some() {
+            // A hit elsewhere in the run's tree, or its owner's Stop: this
+            // is refused unread.
+            if hit.over() {
                 return Ok(());
             }
             let request = request_of(&Zeroizing::new(frame))?;
@@ -1137,14 +1138,22 @@ fn serve_session(
             trail.note(used, &response);
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
-            // This op's hit: it's answered, and it's the last.
-            if hit.seen().is_some() {
+            // This op's hit, or a Stop as it ran: it's answered, and it's
+            // the last.
+            if hit.over() {
                 return Ok(());
             }
         }
     });
     if let Some(to) = hit.seen() {
         stopped(stream, cell_id, hub, to);
+    } else if hit.stopped() {
+        // Its owner stopped it (WO-051): closed to the cell, as for a hit.
+        // They're told by the run's end, in the chat.
+        tracing::info!(cell_id = %cell_id, "the owner stopped the run");
+        if let Err(error) = stream.shutdown(std::net::Shutdown::Both) {
+            tracing::debug!(%error, "a stopped session's connection was already gone");
+        }
     }
     ended
 }

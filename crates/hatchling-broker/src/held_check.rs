@@ -122,6 +122,8 @@ impl CheckFor {
 /// one state, shared by a run's session, its children's sessions and what
 /// watches them. The first hit stays.
 ///
+/// Its owner's Stop ends a tree the same way ([`HeldHit::stop`], WO-051).
+///
 /// A hit kills every cell the tree holds there and then, from whatever
 /// thread found it: a run's cell can hold a channel to the keeper that no
 /// session stands in front of, so ending the session isn't enough, and the
@@ -145,6 +147,8 @@ type Held = Weak<dyn Supervised + Send + Sync>;
 struct Tree {
     /// Where the first hit was on its way to.
     to: Option<SentTo>,
+    /// Whether its owner stopped it, from the app (WO-051).
+    owner: bool,
     /// The tree's cells, while their runs last and until a hit.
     cells: Vec<Held>,
 }
@@ -178,10 +182,35 @@ impl HeldHit {
         cells.iter().for_each(kill);
     }
 
+    /// Ends the run: its owner stopped it, from the app (WO-051). As for a
+    /// hit, every cell held is killed before this returns.
+    pub fn stop(&self) {
+        let cells = {
+            let mut tree = self.tree();
+            tree.owner = true;
+            std::mem::take(&mut tree.cells)
+        };
+        cells.iter().for_each(kill);
+    }
+
     /// Where the hit was on its way to, once there's been one.
     #[must_use]
     pub fn seen(&self) -> Option<SentTo> {
         self.tree().to
+    }
+
+    /// Whether its owner stopped it ([`HeldHit::stop`]).
+    #[must_use]
+    pub fn stopped(&self) -> bool {
+        self.tree().owner
+    }
+
+    /// Whether the tree is over, on a hit or its owner's Stop: nothing it
+    /// sends after is read.
+    #[must_use]
+    pub fn over(&self) -> bool {
+        let tree = self.tree();
+        tree.to.is_some() || tree.owner
     }
 
     /// Holds `cell`, a cell of this tree, for a hit to kill: at once if
@@ -190,7 +219,7 @@ impl HeldHit {
         let weak = Arc::downgrade(cell);
         let cell: Held = weak;
         let mut tree = self.tree();
-        if tree.to.is_none() {
+        if tree.to.is_none() && !tree.owner {
             // A tree's runs come and go: what's left is what's alive.
             tree.cells.retain(|held| held.strong_count() > 0);
             tree.cells.push(cell);
@@ -424,6 +453,32 @@ mod tests {
         assert_eq!(hit.seen(), Some(SentTo::Search));
         assert_eq!(child.seen(), Some(SentTo::Search));
         assert_eq!(HeldHit::default().seen(), None, "another run's is its own");
+        assert!(hit.over() && !hit.stopped(), "a hit isn't a Stop");
+    }
+
+    /// The owner's Stop ends a tree as a hit does: every cell held, there
+    /// and then, and one held after; it's seen across the tree, and it is
+    /// no hit (WO-051).
+    #[test]
+    fn a_stop_kills_each_cell_it_holds_and_is_no_hit() {
+        let (hit, other) = (HeldHit::default(), HeldHit::default());
+        let (parent, child, elsewhere) = (lingering(), lingering(), lingering());
+        hit.hold(&parent);
+        let tree = hit.clone();
+        tree.hold(&child);
+        other.hold(&elsewhere);
+        assert!(!hit.over() && !hit.stopped());
+        tree.stop();
+        assert!(dies(&parent) && dies(&child), "the tree's cells are killed");
+        assert!(hit.over() && hit.stopped(), "seen across the tree");
+        assert_eq!(hit.seen(), None, "a Stop is no hit");
+        let late = lingering();
+        hit.hold(&late);
+        assert!(dies(&late), "a cell held after the Stop dies as it's held");
+        assert_eq!(elsewhere.try_wait().unwrap(), None, "another tree runs on");
+        assert!(!other.over());
+        let _ = elsewhere.terminate();
+        assert!(dies(&elsewhere));
     }
 
     /// `/bin/sh -c script`, supervised as a helper is.
