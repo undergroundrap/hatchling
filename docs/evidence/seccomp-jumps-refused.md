@@ -31,10 +31,10 @@ About 25 more rules on the Room's profile would have wrapped it. A wrong-archite
 
 | Check | Result |
 |---|---|
-| `cargo fmt --all --check` | GATE |
-| clippy `-D warnings`, 1.98.1 and 1.85.0 | GATE |
-| the whole workspace's tests | GATE |
-| `hatchling-dev audit` | GATE |
+| `cargo fmt --all --check` | pass |
+| clippy `-D warnings`, 1.98.1 and 1.85.0 | pass on both |
+| the whole workspace's tests | 4492 passed, 0 failed |
+| `hatchling-dev audit` | all checks passed |
 
 New tests:
 - `every_profiles_jumps_land_where_they_should`: every profile's program keeps each jump inside the program, and its architecture check lands on the kill.
@@ -48,10 +48,12 @@ New tests:
 
 | Break | Caught by |
 |---|---|
-| The eight-bit check removed (the offset masked to a `u8`, as before) | GATE |
-| A jump that doesn't fit taken as 0, not refused | GATE |
-| The architecture check's failure sent to allow, not kill | GATE |
+| The eight-bit check removed (the offset masked to a `u8`, as before) | `a_program_too_long_for_its_jumps_is_refused`, `jump_offset_is_target_minus_next` |
+| A jump that doesn't fit taken as 0, not refused | `a_program_too_long_for_its_jumps_is_refused` |
+| The architecture check's failure sent to allow, not kill | `a_program_too_long_for_its_jumps_is_refused`, `program_starts_with_arch_and_nr_loads`, `every_profiles_jumps_land_where_they_should`, `the_harness_cli_profile_decides_each_call_as_designed` |
 
-**Mutation**, on the lines changed against `3b2b82e2`:
+**Mutation**, on the lines changed against `3b2b82e2` (`cargo mutants --in-diff`, `hatchling-sys`): 15 tested, 14 caught, 1 unviable, 0 missed, 0 timeouts.
 
-GATE
+An earlier run missed one: `verified` was two functions, and the non-x86_64 one is compiled out of every test on x86_64, so its mutant could never be caught. It's one function now, with `cfg!` deciding inside it, and its mutant is caught.
+
+All of the above ran on tree `0a1e9bf6`.

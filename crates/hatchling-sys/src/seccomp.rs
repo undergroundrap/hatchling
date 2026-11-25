@@ -349,25 +349,19 @@ const AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
 
 /// `profile`, the profile `name`, where its syscalls are verified: on
 /// `x86_64`. Elsewhere it would be the agent's profile under another name,
-/// so it's refused (#679).
-#[cfg(target_arch = "x86_64")]
-#[allow(
-    clippy::unnecessary_wraps,
-    reason = "the same signature refuses it on another architecture"
-)]
-const fn verified(profile: SeccompProfile, _name: &str) -> Result<SeccompProfile, Error> {
-    Ok(profile)
-}
-
-/// As above, on an architecture whose syscalls aren't verified.
-#[cfg(not(target_arch = "x86_64"))]
-fn verified(_profile: SeccompProfile, name: &str) -> Result<SeccompProfile, Error> {
-    Err(Error::SeccompInstall {
-        source: std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            format!("the {name} profile's syscalls are verified for x86_64 only"),
-        ),
-    })
+/// so it's refused (#679). One function for both, so neither is compiled
+/// out of what's tested.
+fn verified(profile: SeccompProfile, name: &str) -> Result<SeccompProfile, Error> {
+    if cfg!(target_arch = "x86_64") {
+        Ok(profile)
+    } else {
+        Err(Error::SeccompInstall {
+            source: std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("the {name} profile's syscalls are verified for x86_64 only"),
+            ),
+        })
+    }
 }
 
 /// Looks up a syscall number by name for this architecture.
