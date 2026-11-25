@@ -321,7 +321,11 @@ mod tests {
     fn socket_path_rejects_relative() {
         assert!("relative/path.sock".parse::<SocketPath>().is_err());
         // #691: nothing that climbs out of where it says it is.
-        assert!("/var/lib/hatchling/x/../sock/ui.sock".parse::<SocketPath>().is_err());
+        assert!(
+            "/var/lib/hatchling/x/../sock/ui.sock"
+                .parse::<SocketPath>()
+                .is_err()
+        );
         assert!("/run/../ui.sock".parse::<SocketPath>().is_err());
         assert!("/run/a..b/ui.sock".parse::<SocketPath>().is_ok());
     }

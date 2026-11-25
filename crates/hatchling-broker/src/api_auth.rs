@@ -784,7 +784,13 @@ pub(crate) mod tests {
         let mode = |bits: u32| {
             std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(bits)).unwrap();
         };
-        for (bits, refused) in [(0o700, false), (0o755, false), (0o1777, false), (0o777, true), (0o775, true)] {
+        for (bits, refused) in [
+            (0o700, false),
+            (0o755, false),
+            (0o1777, false),
+            (0o777, true),
+            (0o775, true),
+        ] {
             mode(bits);
             assert_eq!(check_token_dir(&dir.0, me).is_err(), refused, "{bits:o}");
         }
@@ -792,7 +798,10 @@ pub(crate) mod tests {
         if me != 0 {
             // Owned by this user, who is neither root nor the broker named.
             let refused = check_token_dir(&dir.0, me.wrapping_add(1)).unwrap_err();
-            assert!(refused.to_string().contains("root's or the broker's"), "{refused}");
+            assert!(
+                refused.to_string().contains("root's or the broker's"),
+                "{refused}"
+            );
         }
     }
 
@@ -806,7 +815,10 @@ pub(crate) mod tests {
         let me = hatchling_sys::euid();
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o777)).unwrap();
         let refused = mint_ui_token_for(&path, me).unwrap_err();
-        assert!(refused.to_string().contains("another user could replace"), "{refused}");
+        assert!(
+            refused.to_string().contains("another user could replace"),
+            "{refused}"
+        );
         assert!(std::fs::symlink_metadata(&path).is_err(), "nothing minted");
         std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
         mint_ui_token_for(&path, me).unwrap();
