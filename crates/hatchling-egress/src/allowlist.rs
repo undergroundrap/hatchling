@@ -134,7 +134,10 @@ pub fn is_internal(ip: IpAddr) -> bool {
 /// (`64:ff9b::/96`, its last 32 bits) and 6to4 (`2002::/16`, bits 16 to
 /// 47). `None` for any other address.
 fn carried_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
-    let ipv4 = |high: u16, low: u16| Ipv4Addr::from((u32::from(high) << 16) | u32::from(low));
+    let ipv4 = |high: u16, low: u16| {
+        let ([a, b], [c, d]) = (high.to_be_bytes(), low.to_be_bytes());
+        Ipv4Addr::new(a, b, c, d)
+    };
     match v6.segments() {
         [0, 0, 0, 0, 0, 0xffff, high, low] | [0x64, 0xff9b, 0, 0, 0, 0, high, low] => {
             Some(ipv4(high, low))
