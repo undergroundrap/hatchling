@@ -20,10 +20,10 @@ What was added, and how it was tested, for WO-051's Stop: the owner's action, th
 
 | Check | Result |
 |---|---|
-| `cargo fmt --all --check` | FMT |
-| `cargo clippy --workspace --all-targets --all-features -- -D warnings`, 1.98.1 and 1.85.0 | CLIPPY |
-| the whole workspace's tests | TESTS |
-| `hatchling-dev audit`, `protocol-schema` | AUDIT |
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings`, 1.98.1 and 1.85.0 | pass (1.85.0 after allowing one test's clone, as its neighbour does) |
+| the whole workspace's tests | 4470 passed, 0 failed; then the hub's own test, added after, passes |
+| `hatchling-dev audit`, `protocol-schema` | all checks passed |
 | the app: typecheck, lint, design, actions, protocol, seam, format | all pass |
 | the app's unit tests | 620 passed, 0 failed; coverage 88.65% lines, 95.34% branches, 88.37% functions (floors 78, 88, 81) |
 | the live adapter's coverage gate | 264 passed; 100% lines, branches and functions |
@@ -45,17 +45,23 @@ New tests:
 
 | Break | Caught by |
 |---|---|
-| The session reads a stopped run's frames | HB1 |
-| A Stop that isn't recorded | HB2 |
-| A chat run never registered as stoppable | HB3 |
-| Every run registered, background ones too | HB4 |
-| Another chat's runs stopped too | HB5 |
-| Anyone may stop it | HB6 |
-| A stopped run's end not taken as stopped | HB7 |
+| The session reads a stopped run's frames | `the_owners_stop_refuses_the_next_op` |
+| A Stop that isn't recorded | `a_stop_kills_each_cell_it_holds_and_is_no_hit`, `a_chat_run_its_owner_stops_is_killed_and_ends_stopped_by_them`, `a_run_that_exited_after_its_owners_stop_is_stopped_and_its_output_dropped` |
+| A chat run never registered as stoppable | `the_owners_stop_ends_a_chat_run_in_its_cell_at_once` |
+| Every run registered, background ones too | `the_owners_stop_ends_a_chat_run_in_its_cell_at_once` |
+| Another chat's runs stopped too | `a_chats_runs_in_flight_are_its_own`, `only_the_owner_stops_the_chats_run_in_flight` |
+| Anyone may stop it | `only_the_owner_stops_the_chats_run_in_flight` |
+| A stopped run's end not taken as stopped | `a_chat_run_its_owner_stops_is_killed_and_ends_stopped_by_them`, `a_run_that_exited_after_its_owners_stop_is_stopped_and_its_output_dropped` |
 
 **Mutation**, on the lines changed against `c2cadd8c` (slice 3b's head, the tree #654 merged):
 
-MUTATION
+| Crate | Mutants | Caught | Missed | Timeouts | Unviable |
+|---|---|---|---|---|---|
+| `hatchling-core` | 1 | 0 | 0 | 0 | 1 |
+| `hatchling-channel` | 2 | 2 | 0 | 0 | 0 |
+| `hatchling-broker` (library, `schedule_run` and `leaving_keeper`) | 53 | 34 | 0 | 0 | 19 |
+
+`LocalHub::is`'s two mutants were missed at first: only the broker's tests used it. A test of its own in `hatchling-channel` catches both.
 
 ## Said plainly
 
