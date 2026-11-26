@@ -812,7 +812,6 @@ mod tests {
 
     #[test]
     fn a_cells_own_connection_is_adopted_and_authorized_like_a_socket() {
-        use std::os::fd::IntoRawFd as _;
         let (_broker, agent) = UnixStream::pair().unwrap();
         let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
         config.broker = BrokerAddress::Connection(handed(agent));
@@ -843,7 +842,6 @@ mod tests {
     #[test]
     fn a_cells_vault_ops_go_to_its_vault_channel() {
         use std::io::{Read as _, Write as _};
-        use std::os::fd::IntoRawFd as _;
         let me = PeerUid::from_kernel(rustix::process::getuid().as_raw());
         let adopted = |vault: Option<i32>| {
             let (broker, agent) = UnixStream::pair().unwrap();
@@ -900,7 +898,6 @@ mod tests {
     fn a_chat_turns_loop_gives_the_model_its_conversation() {
         use hatchling_core::framing::{read_frame, write_frame};
         use hatchling_loop::{FakeModel, Message, ModelAction};
-        use std::os::fd::IntoRawFd as _;
         let (broker, agent) = UnixStream::pair().unwrap();
         let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
         config.broker = BrokerAddress::Connection(handed(agent));
@@ -1022,7 +1019,6 @@ mod tests {
         use hatchling_core::framing::{read_frame, write_frame};
         use hatchling_core::{ChatOp, ChatResult, SessionRequest, SessionResponse};
         use hatchling_loop::{FakeModel, Message, ModelAction};
-        use std::os::fd::IntoRawFd as _;
         let run = |chat: bool| {
             let (broker, agent) = UnixStream::pair().unwrap();
             let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
@@ -1109,7 +1105,6 @@ mod tests {
     #[test]
     fn a_runs_answer_waits_for_the_programs_it_started() {
         use hatchling_loop::{FakeModel, Message, ModelAction, ToolCall};
-        use std::os::fd::IntoRawFd as _;
         let (broker, agent) = UnixStream::pair().unwrap();
         let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
         config.broker = BrokerAddress::Connection(handed(agent));
