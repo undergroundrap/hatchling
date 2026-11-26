@@ -23,7 +23,7 @@ Two more pieces are missing too.
   - code owns every durable write.
 - **A clock that actually wakes them.** On Windows, WSL stops a distro about 30 seconds after its last `wsl.exe` exits. Setup's **Keep Hatchling running while I'm logged in** holds one idle process from the Startup folder, but it's off unless the owner chose it, and nothing notices when it's missing. A PC also sleeps. A loop that is due while nothing runs has to catch up, once, when Hatchling is next up, and the owner has to be able to see that.
 
-**The maintainer's decisions (2026-11-26):**
+**The maintainer's decisions (2026-11-26), and approval of this design:**
 - **Routine memory writes run unattended**, under the loop's own checks: evidence handles, a verifier that reopens them, ungrounded claims dropped.
 - **Destructive ones go to a review queue the owner clears when they want.** That means replacing or removing a preference, a boundary or a commitment; facts about who the owner is; and anything a verifier couldn't resolve. The queue never blocks a run.
 - **Learned guidance works the same way:** distilling and checking it is the control, and only installing new guidance goes to the queue.
@@ -66,7 +66,7 @@ A background run reads the owner's most private material: the conversation, memo
 
 ### Keeping it up
 
-- **The Startup entry becomes the default.** Setup offers **Keep Hatchling running while I'm logged in** checked by default, on the reasoning that an always-on agent should be on. The app offers the same switch, so it can be turned on later.
+- **The Startup entry becomes the default** (the maintainer, 2026-11-26). Setup offers **Keep Hatchling running while I'm logged in** checked by default, so an always-on agent is on unless the owner unchecks it. The app offers the same switch, so it can be turned on later.
 - **It's watched.** The broker can't see Windows or start its own distro, but it knows two things:
   - **Whether keep-running is on.** Setup records it in the Windows marker the broker already reads at start.
   - **Its own gaps.** It notes when it starts, and a loop that came due while it was down shows the gap.
@@ -120,5 +120,5 @@ Each slice commits its evidence under `docs/evidence/`.
 
 ## Notes
 
-- **Placement.** The memory loop needs WO-048's provenance: who said a thing, where it came from, what it supersedes. So this work order and the first loop fit v0.11, "Memory you can trust", beside WO-048 and WO-052. That's the maintainer's call.
+- **Placement (the maintainer, 2026-11-26): v0.11, "Memory you can trust",** beside WO-048 and WO-052. The memory loop needs WO-048's provenance: who said a thing, where it came from, what it supersedes.
 - **What isn't here.** Publishing lessons off the machine, place signals and location, connectors, and the proactive composer each wait for their own design.
