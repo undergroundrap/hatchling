@@ -49,7 +49,10 @@ static ALLOCATOR: Watched = Watched;
 
 /// Forks, runs `child` in the child with allocation forbidden, and says
 /// how the child ended.
-#[allow(clippy::expect_used, reason = "a test's fork or wait that fails must fail the test")]
+#[allow(
+    clippy::expect_used,
+    reason = "a test's fork or wait that fails must fail the test"
+)]
 fn in_child(child: impl FnOnce()) -> i32 {
     match fork().expect("fork") {
         ForkResult::Child => {
