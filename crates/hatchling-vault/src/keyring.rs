@@ -947,8 +947,8 @@ mod tests {
     fn a_keyring_is_opened_as_itself_in_its_own_directory() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = test_dir("keyring-nofollow");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::create_dir_all(&*dir).unwrap();
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let real = dir.join("real");
         std::fs::write(&real, b"{}").unwrap();
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -966,13 +966,13 @@ mod tests {
             matches!(err, Error::KeyringFormat { .. }),
             "its own directory, then its text: {err:?}"
         );
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o770)).unwrap();
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o770)).unwrap();
         let err = Keyring::load_as(&real, own()).unwrap_err();
         assert!(
             matches!(err, Error::InsecurePermissions { .. }),
             "got {err:?}"
         );
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
