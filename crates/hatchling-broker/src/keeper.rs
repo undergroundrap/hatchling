@@ -3158,7 +3158,7 @@ mod tests {
             use std::io::Write as _;
             let (stalled, end) = UnixStream::pair().unwrap();
             end.set_nonblocking(true).unwrap();
-            while (&end).write(&[0u8; 65_536]).is_ok() {}
+            while (&end).write(&[0u8; 4096]).is_ok() {}
             end.set_nonblocking(false).unwrap();
             end.set_write_timeout(Some(FILL_TIMEOUT)).unwrap();
             keep_channel("browser-5", end);
@@ -3189,9 +3189,9 @@ mod tests {
                 assert!(until(&|| allowed() > before), "the fill was decided");
                 std::thread::sleep(Duration::from_millis(200));
                 let started = std::time::Instant::now();
-                let other = kept.lock().map(|guard| guard.browsers.len());
+                let other = kept.lock().is_ok();
                 let waited = started.elapsed();
-                assert!(other.is_ok());
+                assert!(other);
                 assert!(
                     waited < Duration::from_secs(1),
                     "another caller waited {waited:?} on a stalled fill"
