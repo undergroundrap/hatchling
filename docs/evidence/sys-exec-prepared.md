@@ -36,8 +36,22 @@ Closes [#704](https://github.com/undergroundrap/hatchling/issues/704), with [#73
 - `a_prepared_filter_installs_allocating_nothing`: the agent's filter, prepared, installs in the child without allocating.
 - `building_the_exec_in_the_child_is_caught`: the check works. `exec()`, building in the child, is ended for it.
 
-In `fds::tests`, one descriptor past `MAX_PLACED` is refused. The isolation (98), browser (31) and `sys` (333) unit tests pass with each child preparing before its fork.
+In the unit tests:
+- `fds::tests`: one descriptor past `MAX_PLACED` is refused, and exactly `MAX_PLACED` are placed, in a child.
+- `exec_gives_up_on_a_program_held_open_for_good`: a program open for writing throughout is given up on with the busy error, after its tries (about a second) and not before.
+- `a_prepared_exec_says_what_it_runs`: its `Debug` shows the path, argv and how many settings, never their values; an interior NUL is refused in argv and env.
+- `a_prepared_filter_says_its_length`: its `Debug` shows only its length. The isolation (98), browser (31) and `sys` (333) unit tests pass with each child preparing before its fork.
 
 ## The gate
 
-RESULTS
+On the sandbox, with `HATCHLING_REQUIRE_CELL=1`:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4602 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught:
+  - an allocation in `PreparedExec::exec`: the child exits 77;
+  - an allocation in `PreparedFilter::install`: likewise;
+  - the descriptor bound removed.
+- **Mutation** on the changed lines of `process.rs`, `seccomp.rs` and `fds.rs`, against the library's tests and `exec_no_alloc`: 16 mutants, 13 caught, 3 unviable, none missed.
+  - The first pass missed four: the bound's `>` as `>=`, the busy retry's count, and each `Debug`.
+  - The tests above were added for them.
