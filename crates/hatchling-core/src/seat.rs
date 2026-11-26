@@ -199,7 +199,9 @@ impl Snapshot {
             .ok_or_else(|| format!("{handle} isn't among the records you were given"))?;
         if let Some(quote) = &cited.quote {
             if quote.len() > MAX_QUOTE_BYTES {
-                return Err(format!("the quote from {handle} is over {MAX_QUOTE_BYTES} bytes"));
+                return Err(format!(
+                    "the quote from {handle} is over {MAX_QUOTE_BYTES} bytes"
+                ));
             }
             if quote.trim().is_empty() || !record.text.contains(quote.as_str()) {
                 return Err(format!("{handle} doesn't say what's quoted from it"));
@@ -267,7 +269,9 @@ pub fn check<C: Claim>(output: &str, snapshot: &Snapshot) -> Result<Checked<C>, 
         .map_err(|error| Refused(vec![format!("the output isn't the step's schema: {error}")]))?;
     let mut reasons = Vec::new();
     if finish.no_change && !finish.claims.is_empty() {
-        reasons.push(String::from("no_change says there's nothing, yet there are claims"));
+        reasons.push(String::from(
+            "no_change says there's nothing, yet there are claims",
+        ));
     }
     if !finish.no_change && finish.claims.is_empty() {
         reasons.push(String::from(
