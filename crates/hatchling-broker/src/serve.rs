@@ -3505,7 +3505,10 @@ mod run_record_tests {
                 ("second", "the token is held-token-value-9431"),
             ] {
                 let _ = hub.inject(user(said));
-                assert!(matches!(ask(&agent, receive()), ChannelResult::Message { .. }));
+                assert!(matches!(
+                    ask(&agent, receive()),
+                    ChannelResult::Message { .. }
+                ));
                 assert_eq!(ask(&agent, send(answer)), ChannelResult::Sent);
             }
             assert_eq!(ask(&agent, send("unasked")), ChannelResult::Denied);
@@ -3513,7 +3516,11 @@ mod run_record_tests {
             served.join().unwrap().unwrap();
         });
         let record = crate::run_record::take(run).expect("the session left the run's record");
-        let effects: Vec<Effect> = record.entries.into_iter().map(|entry| entry.effect).collect();
+        let effects: Vec<Effect> = record
+            .entries
+            .into_iter()
+            .map(|entry| entry.effect)
+            .collect();
         let message = |text: &str| Effect::MessageSent {
             channel: String::from("local"),
             outcome: Sent::Sent,
