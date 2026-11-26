@@ -202,16 +202,16 @@ fn ldd() -> std::io::Result<&'static Path> {
 /// Where `ldd` may be, in order.
 const LDD: [&str; 2] = ["/usr/bin/ldd", "/bin/ldd"];
 
-/// Who `ldd` runs as on `binary`, when this process is root: whoever
+/// Who `ldd` runs as on `binary`, when this process (`euid`) is root: whoever
 /// could change what that path names ([`changer`], WO-017, #688). The
 /// dynamic loader then never parses, as root, an ELF that another user
 /// wrote, such as the browser in the broker's snapshot: a loader bug would
 /// be root's. None, to run as this process, when it isn't root or root
 /// alone could change it; one that can't be looked at is left to `ldd` to
 /// fail on.
-fn ldd_identity(binary: &Path) -> Option<(u32, u32)> {
+fn ldd_identity(euid: u32, binary: &Path) -> Option<(u32, u32)> {
     use std::os::unix::fs::MetadataExt as _;
-    if hatchling_sys::euid() != 0 {
+    if euid != 0 {
         return None;
     }
     changer(
@@ -295,7 +295,7 @@ fn ldd_output(agent_bin: &Path) -> Result<std::process::Output, Error> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some((uid, gid)) = ldd_identity(agent_bin) {
+    if let Some((uid, gid)) = ldd_identity(hatchling_sys::euid(), agent_bin) {
         // Root setting another uid also drops every supplementary group.
         std::os::unix::process::CommandExt::uid(&mut command, uid);
         std::os::unix::process::CommandExt::gid(&mut command, gid);
@@ -661,7 +661,8 @@ pub(super) mod tests {
     #[test]
     fn ldd_runs_as_whoever_could_change_the_binary() {
         use std::os::unix::fs::PermissionsExt as _;
-        assert_eq!(ldd_identity(Path::new("/bin/true")), None);
+        let euid = hatchling_sys::euid();
+        assert_eq!(ldd_identity(euid, Path::new("/bin/true")), None);
         let dir = std::env::temp_dir().join(format!("hatchling-ldd-owner-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
@@ -670,17 +671,22 @@ pub(super) mod tests {
         std::fs::copy("/bin/true", &binary).unwrap();
         if hatchling_sys::euid() != 0 {
             // Not root: as this process, even on its own file.
-            assert_eq!(ldd_identity(&binary), None);
+            assert_eq!(ldd_identity(euid, &binary), None);
+            // As root would see it: this user's own directory is theirs to
+            // swap, so root runs ldd as them.
+            let meta = std::fs::metadata(&binary).unwrap();
+            let own = std::os::unix::fs::MetadataExt::gid(&meta);
+            assert_eq!(ldd_identity(0, &binary), Some((euid, own)));
             std::fs::remove_dir_all(&dir).unwrap();
             return;
         }
         // Root's file, in another user's directory: that user's to swap.
         std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
-        assert_eq!(ldd_identity(&binary), Some((4242, 4343)));
+        assert_eq!(ldd_identity(euid, &binary), Some((4242, 4343)));
         // That user's file, in root's directory: that user's to rewrite.
         std::os::unix::fs::chown(&dir, Some(0), Some(0)).unwrap();
         std::os::unix::fs::chown(&binary, Some(4444), Some(4545)).unwrap();
-        assert_eq!(ldd_identity(&binary), Some((4444, 4545)));
+        assert_eq!(ldd_identity(euid, &binary), Some((4444, 4545)));
         // And ldd, run as that user, still reads it and its libraries.
         let owned = binary.clone();
         let output = within_watchdog("ldd_output", move || ldd_output(&owned)).unwrap();
