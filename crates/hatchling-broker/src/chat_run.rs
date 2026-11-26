@@ -291,11 +291,8 @@ impl<K: Keeps> Keeps for Option<K> {
     }
 }
 
-/// Who a message the owner sends with Keep going is from (WO-053): the
-/// chat gives its run [`hatchling_prompt::KEEP_GOING_TASK`] in its place.
-pub const KEEP_GOING_SENDER: &str = "keep-going";
-
-/// What the owner is shown they said when they ask a run to keep going.
+/// What the owner says when they ask a run to keep going (WO-053): the
+/// record it's given says what keeping going means.
 pub const KEEP_GOING_TEXT: &str = "Keep going.";
 
 /// The chat's one run in flight, and the conversation so far.
@@ -707,17 +704,10 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             (Vec::new(), Vec::new())
         };
         let given = notes.take();
-        // Keep going (WO-053): the run is given its fixed task, and the
-        // owner is shown what they said.
-        let asked = if message.sender.0 == KEEP_GOING_SENDER {
-            hatchling_prompt::KEEP_GOING_TASK
-        } else {
-            message.text.as_str()
-        };
         let task = if given.is_empty() {
-            asked.to_owned()
+            message.text.clone()
         } else {
-            format!("{}\n\n{asked}", crate::file_in::told(&given))
+            format!("{}\n\n{}", crate::file_in::told(&given), message.text)
         };
         // What the runs it continues did, as the broker recorded it, for a
         // run in the conversation they were in.

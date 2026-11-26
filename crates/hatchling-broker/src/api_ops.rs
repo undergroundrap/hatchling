@@ -789,17 +789,15 @@ impl<'a> Ops<'a> {
         text: &str,
         replies: &mut Replies<'a>,
     ) -> (UiActionResult, ApiOutcome) {
-        self.send_as("api", chat_id, text, replies)
+        self.send_as(chat_id, text, replies)
     }
 
     /// Keep going (WO-053): when the conversation's last run stopped
     /// before it was done, sends the owner's [`KEEP_GOING_TEXT`] as theirs,
-    /// from [`KEEP_GOING_SENDER`], so its run is given the fixed task and
-    /// the broker's record of the runs it continues. Otherwise there's
-    /// nothing to continue.
+    /// and its run is given the broker's record of the runs it continues.
+    /// Otherwise there's nothing to continue.
     ///
     /// [`KEEP_GOING_TEXT`]: crate::chat_run::KEEP_GOING_TEXT
-    /// [`KEEP_GOING_SENDER`]: crate::chat_run::KEEP_GOING_SENDER
     fn keep_going(&self, chat_id: &str, replies: &mut Replies<'a>) -> (UiActionResult, ApiOutcome) {
         if chat_id != LOCAL_CHAT {
             return (
@@ -817,18 +815,12 @@ impl<'a> Ops<'a> {
                 ApiOutcome::Served,
             );
         }
-        self.send_as(
-            crate::chat_run::KEEP_GOING_SENDER,
-            chat_id,
-            crate::chat_run::KEEP_GOING_TEXT,
-            replies,
-        )
+        self.send_as(chat_id, crate::chat_run::KEEP_GOING_TEXT, replies)
     }
 
-    /// As [`Self::send`], the message from `sender`.
+    /// As [`Self::send`].
     fn send_as(
         &self,
-        sender: &str,
         chat_id: &str,
         text: &str,
         replies: &mut Replies<'a>,
@@ -845,7 +837,7 @@ impl<'a> Ops<'a> {
         };
         replies.route(hub, &self.bus);
         let message = Message {
-            sender: SenderId(sender.to_owned()),
+            sender: SenderId(String::from("api")),
             channel: ChannelId::local(),
             text: text.to_owned(),
         };

@@ -385,14 +385,14 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         self
     }
 
-    /// The broker's record of the runs this one continues (WO-053), in its
-    /// envelope (`hatchling_prompt::carried_records`): one
+    /// The broker's records of the runs this one continues (WO-053), their
+    /// JSON put in its envelope (`hatchling_prompt::carried_records`): one
     /// [`Message::Assistant`] after the prior turns and before the request.
     /// It's in the agent's role, never the person's: what earlier runs did,
     /// not what anyone asked.
     #[must_use]
-    pub fn with_record(mut self, record: Option<String>) -> Self {
-        self.record = record;
+    pub fn with_records(mut self, records: Option<&str>) -> Self {
+        self.record = records.map(hatchling_prompt::carried_records);
         self
     }
 
@@ -940,7 +940,7 @@ mod tests {
         let agent_loop = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
             .with_earlier(Some("Earlier: call me Sam.".to_owned()))
             .with_prior_turns(vec![("Hi.".to_owned(), "Hello, Sam.".to_owned())])
-            .with_record(Some("<run_record>[]</run_record>".to_owned()));
+            .with_records(Some("[]"));
         let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
         agent_loop.run(&model, "Keep going.".to_owned()).unwrap();
         let seen = model.seen_histories();
@@ -948,11 +948,11 @@ mod tests {
         assert_eq!(history.len(), 6, "{history:?}");
         assert!(matches!(history.get(3), Some(Message::Assistant(text)) if text == "Hello, Sam."));
         assert!(
-            matches!(history.get(4), Some(Message::Assistant(text)) if text == "<run_record>[]</run_record>")
+            matches!(history.get(4), Some(Message::Assistant(text)) if *text == hatchling_prompt::carried_records("[]"))
         );
         assert!(matches!(history.get(5), Some(Message::User(text)) if text == "Keep going."));
         // Without one, nothing is added.
-        let plain = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_record(None);
+        let plain = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_records(None);
         let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
         plain.run(&model, "Thanks.".to_owned()).unwrap();
         assert_eq!(model.seen_histories().first().map(Vec::len), Some(2));
