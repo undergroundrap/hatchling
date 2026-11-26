@@ -41,7 +41,26 @@ The broker checks the output again before it applies anything (slice 3c). The ce
   - `a_step_finishes_once`;
   - `a_seat_that_never_finishes_hands_back_nothing`: an answer with no finish, and running out of steps;
   - `a_tool_a_seat_wasnt_given_runs_nothing`: `memory_propose`, `egress_request`, `spawn_subagent` and `write` are each told there's no such tool.
+  - `each_tool_says_what_its_for`: the words the model reads.
+- **`hatchling-core`**, `the_bounds_are_what_they_say`: every bound as a number.
 
 ## The gate
 
-RESULTS
+On the sandbox, at the tree under test:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4591 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by the seat's tests:
+  - `finish` taking any output;
+  - a second refusal answered again;
+  - a step finishing more than once;
+  - the list showing what a record says;
+  - one record past the packet's bound.
+- **Mutation** on the changed lines:
+  - `hatchling-core`: 16 mutants, 15 caught, 1 unviable.
+  - `hatchling-agent`: 26 mutants, 22 caught, 4 unviable.
+
+  The first pass missed eight, each fixed:
+  - The two byte bounds were written `16 * 1024` and `32 * 1024`, which a test using only the constants can't tell from `16 + 1024`. They're numbers now, pinned by `the_bounds_are_what_they_say`.
+  - The three tools' descriptions, which are what the model reads, are pinned by `each_tool_says_what_its_for`.
+- `Cargo.lock` gains `serde` among the agent's dev-dependencies, for the test's claim type. It's already in the workspace and reviewed.
