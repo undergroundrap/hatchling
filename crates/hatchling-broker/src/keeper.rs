@@ -3157,6 +3157,7 @@ mod tests {
         {
             use std::io::Write as _;
             let (stalled, end) = UnixStream::pair().unwrap();
+            let (_reading, since) = UnixStream::pair().unwrap();
             end.set_nonblocking(true).unwrap();
             while (&end).write(&[0u8; 4096]).is_ok() {}
             end.set_nonblocking(false).unwrap();
@@ -3196,6 +3197,8 @@ mod tests {
                     waited < Duration::from_secs(1),
                     "another caller waited {waited:?} on a stalled fill"
                 );
+                // The cell's channel since, which the stalled fill never wrote to.
+                keep_channel("browser-5", since);
                 assert!(filling.join().unwrap().is_ok());
             });
             let reply: Reply = serde_json::from_slice(&read_frame(&asked).unwrap()).unwrap();
@@ -3204,8 +3207,8 @@ mod tests {
                 "{reply:?}"
             );
             assert!(
-                !held("browser-5"),
-                "a channel a fill timed out on is dropped"
+                held("browser-5"),
+                "a fill that timed out drops the channel it wrote to, not one held since"
             );
             drop(stalled);
         }
