@@ -119,6 +119,7 @@ The usual: fmt, clippy on both toolchains, the whole workspace's tests, the audi
 Each slice commits its evidence under `docs/evidence/`.
 
 - Slice 1, the background clock: [wo054-background-clock.md](../evidence/wo054-background-clock.md).
+- Slice 2a, Windows saying whether it keeps Hatchling running: [wo054-keep-running.md](../evidence/wo054-keep-running.md).
 
 ## Notes
 
