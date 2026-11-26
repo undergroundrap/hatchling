@@ -1,6 +1,9 @@
 """A stand-in for a model server, so you can try Hatchling without one.
 
-Usage: python3 docs/examples/stand-in-model.py [port]   (default 18089)
+Usage: python3 docs/examples/stand-in-model.py [port] [--detach]   (default 18089)
+
+With --detach it returns once it is listening, and goes on serving in the
+background: a broker started after it never asks it before it can answer.
 
 It speaks just enough of the OpenAI chat-completions API for an agent run:
 it passes the agent's tool-calling check, then answers every task with a
@@ -10,6 +13,7 @@ HATCHLING_SCHEDULER_MODEL_ENDPOINT at it instead (for example Ollama's
 http://localhost:11434/v1) and allow that port in the egress settings.
 """
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -62,5 +66,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 18089
-    HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    args = [arg for arg in sys.argv[1:] if arg != "--detach"]
+    port = int(args[0]) if args else 18089
+    server = HTTPServer(("127.0.0.1", port), Handler)
+    # Listening from here: give the shell back, and serve from a child.
+    if "--detach" in sys.argv[1:] and os.fork():
+        os._exit(0)
+    server.serve_forever()

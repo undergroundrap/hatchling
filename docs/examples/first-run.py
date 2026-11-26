@@ -6,7 +6,10 @@ It sends the task on the local chat. The broker answers each message there
 with an agent run: the agent, in a fresh cell, given the message as its task,
 holding the API's grants (HATCHLING_API_GRANTS), which must include reaching
 the model (egress to it) and replying on the local channel. Its answer comes
-back here as a chat message, usually within seconds. See docs/local-api.md.
+back here as a chat message, usually within seconds. When the run fails,
+Hatchling says why as a message of its own, and this prints it and stops.
+Only what comes after its own message is about its task.
+See docs/local-api.md.
 """
 import json
 import socket
@@ -53,16 +56,36 @@ def main(path):
     sock.settimeout(300)
     deadline = time.monotonic() + 300
     print("waiting for the agent...")
+    # The task's own message, as the stream shows it, is where this task's
+    # part of the chat starts. What comes before it is earlier, the
+    # conversation a restarted broker kept and replays among it, and that
+    # can reach us after the task was accepted.
+    task = None
+    seen = set()
+    started = False
     while time.monotonic() < deadline:
         frame = receive(sock)
         if frame.get("type") == "action_result" and frame.get("request_id") == "task":
             if frame["result"].get("result") != "message_accepted":
                 print("message refused:", json.dumps(frame["result"]))
                 return 1
+            task = frame["result"].get("message_id")
+            started = task in seen
+            continue
         body = frame.get("body", {}) if frame.get("type") == "event" else {}
-        if body.get("kind") == "chat_message" and body.get("author") == "agent":
+        if body.get("kind") != "chat_message":
+            continue
+        if not started:
+            seen.add(body.get("message_id"))
+            started = task is not None and body.get("message_id") == task
+            continue
+        if body.get("author") == "agent":
             print("agent:", body["text"])
             return 0
+        if body.get("author") == "system":
+            # Hatchling's own word on the run: it failed, and why.
+            print("hatchling:", body["text"])
+            return 1
     print("no answer within five minutes; check the broker's log")
     return 1
 
