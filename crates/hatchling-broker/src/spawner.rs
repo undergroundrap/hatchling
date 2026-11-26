@@ -1872,7 +1872,7 @@ pub(crate) fn start_helper(
             .stdin(Stdio::from(their_in))
             .stdout(Stdio::from(their_out))
             .stderr(Stdio::from(their_err));
-        let mut std_child =
+        let std_child =
             crate::skill_run::retry_while_busy(|| command.spawn(), std::thread::sleep).map_err(
                 |error| {
                     forget_spec(run_dir);
