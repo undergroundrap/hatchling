@@ -1505,84 +1505,30 @@ mod tests {
             PINNED_DOMAIN_OF
         );
         assert_eq!(
-            DOMAINS,
+            DOMAINS
+                .iter()
+                .map(|domain| (domain.name, domain.owner))
+                .collect::<Vec<_>>(),
             [
-                Domain {
-                    name: "core",
-                    owner: "",
-                },
-                Domain {
-                    name: "agent",
-                    owner: "",
-                },
-                Domain {
-                    name: "chat",
-                    owner: "",
-                },
-                Domain {
-                    name: "shared",
-                    owner: "",
-                },
-                Domain {
-                    name: "activity",
-                    owner: "",
-                },
-                Domain {
-                    name: "session",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:research",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:artifacts",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:ideas",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:spaces",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:sync",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:scheduler",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:memory",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:channels",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:alignment",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:goals",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:browser",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:handoff",
-                    owner: "",
-                },
-                Domain {
-                    name: "product:hooks",
-                    owner: "",
-                },
+                ("core", ""),
+                ("agent", ""),
+                ("chat", ""),
+                ("shared", ""),
+                ("activity", ""),
+                ("session", ""),
+                ("product:research", ""),
+                ("product:artifacts", ""),
+                ("product:ideas", ""),
+                ("product:spaces", ""),
+                ("product:sync", ""),
+                ("product:scheduler", ""),
+                ("product:memory", ""),
+                ("product:channels", ""),
+                ("product:browser", ""),
+                ("product:handoff", ""),
+                ("product:hooks", ""),
+                ("product:alignment", ""),
+                ("product:goals", ""),
             ]
         );
         for section in SECTIONS {
