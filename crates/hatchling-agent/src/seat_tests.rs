@@ -89,9 +89,12 @@ fn told(histories: &[Vec<Message>]) -> Vec<String> {
         .map(|history| {
             history
                 .iter()
-                .filter_map(|message| match message {
-                    Message::ToolUse { results, .. } => Some(results),
-                    _ => None,
+                .filter_map(|message| {
+                    if let Message::ToolUse { results, .. } = message {
+                        Some(results)
+                    } else {
+                        None
+                    }
                 })
                 .flatten()
                 .map(|output| format!("{output:?}"))
