@@ -1146,11 +1146,13 @@ mod tests {
         // A short secret's hex spaced out passes: too few bytes to tell
         // apart from ordinary hex. Unbroken, and percent-decoded, it's a
         // form the gate finds at any length.
-        let short = [b"abc".to_vec()].map(Zeroizing::new);
-        assert!(!holds_secret("61 62 63", &short));
-        assert!(holds_secret("616263", &short));
-        assert!(holds_secret("see %61%62%63", &short));
-        assert!(holds_secret("abc", &short));
+        // Seven bytes: fourteen hex digits, past the folded form's own
+        // minimum, so only the byte bound keeps it out.
+        let short = [b"abcdefg".to_vec()].map(Zeroizing::new);
+        assert!(!holds_secret("61 62 63 64 65 66 67", &short));
+        assert!(holds_secret("61626364656667", &short));
+        assert!(holds_secret("see %61%62%63%64%65%66%67", &short));
+        assert!(holds_secret("abcdefg", &short));
     }
 
     #[test]
