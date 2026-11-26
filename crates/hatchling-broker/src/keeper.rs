@@ -1132,8 +1132,10 @@ struct Kept {
 struct BrowserChannel {
     /// The profile the cell was started for: only its sign-ins are filled.
     profile: String,
-    /// The keeper's end, written by fills alone.
-    stream: UnixStream,
+    /// The keeper's end, written by fills alone, one at a time: its own
+    /// lock, so a browser that stops reading holds up its own fills and no
+    /// other keeper caller (#689).
+    stream: Arc<Mutex<UnixStream>>,
 }
 
 /// The keeper's start under `config`: every store's key, the broker's
@@ -1274,6 +1276,12 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
             answer_contains(stream, kept, role, (bytes, check), cell.as_deref())?;
             continue;
         }
+        // Outside the lock too: writing to a browser cell takes as long as
+        // the cell takes to read (#689).
+        if let Request::Fill { id, cell, origin } = request {
+            answer_fill(stream, kept, &id, &cell, &origin)?;
+            continue;
+        }
         let mut guard = kept.lock().map_err(|_| Error::Keeper {
             reason: String::from("an earlier answer panicked"),
         })?;
@@ -1284,10 +1292,9 @@ fn serve(stream: &UnixStream, kept: &Mutex<Kept>, role: Role) -> Result<(), Erro
             }
             Request::Scan { purpose } => answer_scan(stream, kept, &purpose)?,
             Request::SignIn { op } => answer_sign_in(stream, kept, op)?,
-            Request::Fill { id, cell, origin } => answer_fill(stream, kept, &id, &cell, &origin)?,
             Request::Protection => answer_protection(stream)?,
             // Answered above.
-            Request::Contains { .. } => {}
+            Request::Contains { .. } | Request::Fill { .. } => {}
         }
         drop(guard);
     }
@@ -1532,7 +1539,7 @@ fn hold_browser(
         cell.to_owned(),
         BrowserChannel {
             profile,
-            stream: channel,
+            stream: Arc::new(Mutex::new(channel)),
         },
     );
     drop(guard);
@@ -1635,6 +1642,19 @@ fn answer_read(
 /// alone, read and recorded as [`Secrets::broker_read`] does.
 fn answer_scan(stream: &UnixStream, kept: &Kept, purpose: &str) -> Result<(), Error> {
     if !Releases::scans(purpose) {
+        // On the record the owner reads, as every other refusal is (#689).
+        let caller = Caller::Broker {
+            purpose: purpose.to_owned(),
+        };
+        if let Err(error) = crate::vault_access::record(
+            &kept.config.vault.root,
+            caller,
+            "read",
+            Vec::new(),
+            Outcome::Denied,
+        ) {
+            tracing::error!(%error, "a refused scan not recorded");
+        }
         tracing::warn!(purpose, "refused a scan for a purpose that isn't a gate's");
         return send(
             stream,
@@ -1822,13 +1842,78 @@ fn answer_protection(stream: &UnixStream) -> Result<(), Error> {
 /// as denied. A fill is a release: recorded before it is sent, on the
 /// cell's own channel, and never to the broker, which is told its nonce
 /// alone. A channel a fill can't be written to is dropped.
+///
+/// Decided under the keeper's lock, and written outside it, under the
+/// channel's own (#689): a browser that stops reading holds up its own
+/// fills, never another caller of the keeper.
 fn answer_fill(
     stream: &UnixStream,
-    kept: &mut Kept,
+    kept: &Mutex<Kept>,
     id: &str,
     cell: &str,
     origin: &str,
 ) -> Result<(), Error> {
+    let decided = {
+        let guard = kept.lock().map_err(|_| Error::Keeper {
+            reason: String::from("an earlier answer panicked"),
+        })?;
+        decide_fill(stream, &guard, id, cell, origin)?
+    };
+    let Some(fill) = decided else {
+        return Ok(());
+    };
+    let sent = fill.channel.lock().map_or_else(
+        |_| Err(std::io::Error::other("an earlier fill panicked")),
+        |channel| {
+            write_frame(&channel, &fill.header)
+                .and_then(|()| write_frame(&channel, fill.sign_in.username.expose().as_bytes()))
+                .and_then(|()| write_frame(&channel, fill.sign_in.password.expose().as_bytes()))
+        },
+    );
+    if let Err(error) = sent {
+        tracing::warn!(cell, %error, "a fill couldn't be sent: the browser's channel is dropped");
+        if let Ok(channel) = fill.channel.lock() {
+            let _ = channel.shutdown(std::net::Shutdown::Both);
+        }
+        let mut guard = kept.lock().map_err(|_| Error::Keeper {
+            reason: String::from("an earlier answer panicked"),
+        })?;
+        // The channel this fill was written to, not one held since.
+        if guard
+            .browsers
+            .get(cell)
+            .is_some_and(|held| Arc::ptr_eq(&held.stream, &fill.channel))
+        {
+            guard.browsers.remove(cell);
+        }
+        drop(guard);
+        return send(
+            stream,
+            &Reply::Refused {
+                reason: String::from("the browser's channel broke"),
+            },
+        );
+    }
+    send(stream, &Reply::Filling { nonce: fill.nonce })
+}
+
+/// A fill, decided and recorded: what to write, and to which channel.
+struct Fill {
+    channel: Arc<Mutex<UnixStream>>,
+    header: Vec<u8>,
+    sign_in: crate::browser_credentials::SignIn,
+    nonce: String,
+}
+
+/// Decides the fill [`answer_fill`] was asked for, under the keeper's lock:
+/// refused and answered, or recorded and ready to write.
+fn decide_fill(
+    stream: &UnixStream,
+    kept: &Kept,
+    id: &str,
+    cell: &str,
+    origin: &str,
+) -> Result<Option<Fill>, Error> {
     let refuse = |reason: &str| {
         send(
             stream,
@@ -1836,6 +1921,7 @@ fn answer_fill(
                 reason: reason.to_owned(),
             },
         )
+        .map(|()| None)
     };
     let Some(credentials) = Credentials::through(None, &kept.config, &kept.keys) else {
         return refuse("the configuration keeps no sign-ins");
@@ -1894,19 +1980,15 @@ fn answer_fill(
     .map_err(|error| Error::Keeper {
         reason: format!("cannot write a fill: {error}"),
     })?;
-    let sent = kept.browsers.get(cell).map(|held| {
-        write_frame(&held.stream, &header)
-            .and_then(|()| write_frame(&held.stream, sign_in.username.expose().as_bytes()))
-            .and_then(|()| write_frame(&held.stream, sign_in.password.expose().as_bytes()))
-    });
-    if let Some(Err(error)) = sent {
-        tracing::warn!(cell, %error, "a fill couldn't be sent: the browser's channel is dropped");
-        if let Some(held) = kept.browsers.remove(cell) {
-            let _ = held.stream.shutdown(std::net::Shutdown::Both);
-        }
+    let Some(channel) = kept.browsers.get(cell).map(|held| Arc::clone(&held.stream)) else {
         return refuse("the browser's channel broke");
-    }
-    send(stream, &Reply::Filling { nonce })
+    };
+    Ok(Some(Fill {
+        channel,
+        header,
+        sign_in,
+        nonce,
+    }))
 }
 
 fn send(stream: &UnixStream, reply: &Reply) -> Result<(), Error> {
@@ -3050,43 +3132,76 @@ mod tests {
         let refused = hold_browser(end, "browser-4", profile.id.clone(), &kept);
         assert!(refused.is_err_and(|error| error.to_string().contains("second channel")));
         // A channel a fill can't be written to is dropped.
-        let mut guard = kept.lock().unwrap();
         std::fs::remove_dir(config.vault.root.join(crate::vault_access::ACCESS_LOG)).unwrap();
+        let hold = |cell: &str, end: UnixStream| {
+            kept.lock().unwrap().browsers.insert(
+                cell.to_owned(),
+                BrowserChannel {
+                    profile: profile.id.clone(),
+                    stream: Arc::new(Mutex::new(end)),
+                },
+            );
+        };
         let (gone, end) = UnixStream::pair().unwrap();
         drop(gone);
-        guard.browsers.insert(
-            String::from("browser-3"),
-            BrowserChannel {
-                profile: profile.id.clone(),
-                stream: end,
-            },
-        );
+        hold("browser-3", end);
         let (ours, theirs) = UnixStream::pair().unwrap();
-        answer_fill(
-            &theirs,
-            &mut guard,
-            &work.id,
-            "browser-3",
-            "https://a.example",
-        )
-        .unwrap();
-        assert!(!guard.browsers.contains_key("browser-3"), "kept");
+        answer_fill(&theirs, &kept, &work.id, "browser-3", "https://a.example").unwrap();
+        assert!(!held("browser-3"), "kept");
         let reply: Reply = serde_json::from_slice(&read_frame(&ours).unwrap()).unwrap();
         assert!(
             matches!(&reply, Reply::Refused { reason } if reason.contains("broke")),
             "{reply:?}"
         );
+        // A browser that stops reading holds up its own fill, and no other
+        // caller of the keeper (#689).
+        {
+            use std::io::Write as _;
+            let (stalled, end) = UnixStream::pair().unwrap();
+            end.set_nonblocking(true).unwrap();
+            while (&end).write(&[0u8; 65_536]).is_ok() {}
+            end.set_nonblocking(false).unwrap();
+            end.set_write_timeout(Some(FILL_TIMEOUT)).unwrap();
+            hold("browser-5", end);
+            let allowed = || {
+                crate::vault_access::read_log(&config.vault.root)
+                    .unwrap()
+                    .0
+                    .iter()
+                    .filter(|access| access.outcome == Outcome::Allowed)
+                    .count()
+            };
+            let before = allowed();
+            let (asked, answering) = UnixStream::pair().unwrap();
+            asked.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+            std::thread::scope(|scope| {
+                let filling = scope.spawn(|| {
+                    answer_fill(&answering, &kept, &work.id, "browser-5", "https://a.example")
+                });
+                // Recorded, so it's past deciding and writing to the stalled cell.
+                assert!(until(&|| allowed() > before), "the fill was decided");
+                std::thread::sleep(Duration::from_millis(200));
+                let started = std::time::Instant::now();
+                let other = kept.lock().map(|guard| guard.browsers.len());
+                let waited = started.elapsed();
+                assert!(other.is_ok());
+                assert!(
+                    waited < Duration::from_secs(1),
+                    "another caller waited {waited:?} on a stalled fill"
+                );
+                assert!(filling.join().unwrap().is_ok());
+            });
+            let reply: Reply = serde_json::from_slice(&read_frame(&asked).unwrap()).unwrap();
+            assert!(
+                matches!(&reply, Reply::Refused { reason } if reason.contains("broke")),
+                "{reply:?}"
+            );
+            assert!(!held("browser-5"), "a channel a fill timed out on is dropped");
+            drop(stalled);
+        }
         // A keeper whose configuration keeps no sign-ins fills none.
-        guard.config.web.credentials = PathBuf::new();
-        answer_fill(
-            &theirs,
-            &mut guard,
-            &work.id,
-            "browser-3",
-            "https://a.example",
-        )
-        .unwrap();
-        drop(guard);
+        kept.lock().unwrap().config.web.credentials = PathBuf::new();
+        answer_fill(&theirs, &kept, &work.id, "browser-3", "https://a.example").unwrap();
         let reply: Reply = serde_json::from_slice(&read_frame(&ours).unwrap()).unwrap();
         assert!(
             matches!(&reply, Reply::Refused { reason } if reason.contains("keeps no sign-ins")),
@@ -3429,6 +3544,19 @@ mod tests {
         answer_scan(&ours, &kept, "egress").unwrap();
         let reply = String::from_utf8(read_frame(&theirs).unwrap()).unwrap();
         assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
+        // On the record the owner reads, by its purpose (#689).
+        let (log, _) = crate::vault_access::read_log(&kept.config.vault.root).unwrap();
+        let refused = log.last().map(|access| (access.caller.clone(), access.action.clone(), access.outcome));
+        assert_eq!(
+            refused,
+            Some((
+                Caller::Broker {
+                    purpose: String::from("egress")
+                },
+                String::from("read"),
+                Outcome::Denied
+            ))
+        );
     }
 
     /// A keeper's state for a room disk's tests: an empty vault at
