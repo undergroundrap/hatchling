@@ -308,3 +308,66 @@ fn a_step_takes_one_repair_then_ends_with_nothing() {
         Some((0, 1))
     );
 }
+
+/// A packet's records make its snapshot, within the bounds, and one that
+/// breaks one is refused.
+#[test]
+fn a_packets_records_make_its_snapshot() {
+    let wire = |handle: &str, text: &str| PacketRecord {
+        handle: handle.to_owned(),
+        fingerprint: String::from("fp"),
+        origin: Origin::Owner,
+        text: text.to_owned(),
+    };
+    let packet = Packet {
+        prompt: String::from("rules"),
+        assignment: String::from("do this"),
+        records: vec![wire("memory:k1", "one"), wire("goal:g1", "two")],
+    };
+    let snapshot = packet.snapshot().unwrap();
+    assert_eq!(snapshot.records().count(), 2);
+    assert_eq!(
+        snapshot
+            .get(&"goal:g1".parse().unwrap())
+            .map(|found| (found.origin, found.text.as_str())),
+        Some((Origin::Owner, "two"))
+    );
+    let said: Packet = serde_json::from_str(&serde_json::to_string(&packet).unwrap()).unwrap();
+    assert_eq!(said, packet);
+    assert!(
+        serde_json::from_str::<Packet>(r#"{"prompt": "", "assignment": "", "records": [], "tools": []}"#)
+            .is_err(),
+        "nothing else reaches a seat"
+    );
+    let with = |records: Vec<PacketRecord>| Packet {
+        records,
+        ..packet.clone()
+    };
+    assert!(matches!(
+        with(vec![wire("k1", "x")]).snapshot(),
+        Err(PacketError::Handle { .. })
+    ));
+    assert!(matches!(
+        with(vec![wire("memory:k1", "x"), wire("memory:k1", "y")]).snapshot(),
+        Err(PacketError::Duplicate(_))
+    ));
+    assert!(with(vec![wire("memory:k1", &"x".repeat(MAX_RECORD_BYTES))]).snapshot().is_ok());
+    assert_eq!(
+        with(vec![wire("memory:k1", &"x".repeat(MAX_RECORD_BYTES + 1))]).snapshot(),
+        Err(PacketError::TooBig("a record's text"))
+    );
+    let many = (0..=MAX_RECORDS).map(|at| wire(&format!("memory:k{at}"), "x")).collect::<Vec<_>>();
+    assert_eq!(with(many.iter().take(MAX_RECORDS).cloned().collect()).snapshot().map(|kept| kept.records().count()), Ok(MAX_RECORDS));
+    assert_eq!(with(many).snapshot(), Err(PacketError::TooBig("the records")));
+    let long = "x".repeat(MAX_BRIEF_BYTES + 1);
+    assert_eq!(
+        Packet { prompt: long.clone(), ..packet.clone() }.snapshot(),
+        Err(PacketError::TooBig("the prompt or the assignment"))
+    );
+    assert_eq!(
+        Packet { assignment: long, ..packet.clone() }.snapshot(),
+        Err(PacketError::TooBig("the prompt or the assignment"))
+    );
+    let fits = "x".repeat(MAX_BRIEF_BYTES);
+    assert!(Packet { prompt: fits.clone(), assignment: fits, ..packet }.snapshot().is_ok());
+}
