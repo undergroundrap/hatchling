@@ -2824,6 +2824,45 @@ mod run_cell_tests {
         );
     }
 
+    /// WO-053: a chat run's records of the runs it continues reach its
+    /// agent typed, as sent; none are sent when there are none, and a run
+    /// that isn't a chat turn carries none.
+    #[test]
+    fn only_a_chat_turn_carries_the_records_it_continues() {
+        let mut record = hatchling_core::run_record::RunRecord::new("run-1");
+        record.note(
+            3,
+            hatchling_core::run_record::Effect::LibraryItem {
+                name: String::from("a.md"),
+                bytes: 1,
+            },
+        );
+        let named = |run: &ScheduledRun| {
+            run.env()
+                .into_iter()
+                .find(|(name, _)| *name == "HATCHLING_RUN_RECORD")
+                .map(|(_, value)| value)
+        };
+        let turn = ScheduledRun {
+            chat: true,
+            records: vec![record.clone()],
+            ..run()
+        };
+        let raw = named(&turn).unwrap();
+        let read: Vec<hatchling_core::run_record::RunRecord> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(read, [record.clone()]);
+        let none = ScheduledRun {
+            chat: true,
+            ..run()
+        };
+        assert_eq!(named(&none), None);
+        let worker = ScheduledRun {
+            records: vec![record],
+            ..run()
+        };
+        assert_eq!(named(&worker), None, "only a chat turn is given them");
+    }
+
     /// WO-026: a chat run's history, and what the owner said earlier,
     /// reach its agent typed, as sent, and no other run carries them.
     #[test]

@@ -1807,6 +1807,126 @@ mod tests {
         }
     }
 
+    /// Launches each [`Spent`] run in turn, keeping each request.
+    #[derive(Default)]
+    struct SpentSeen {
+        runs: RefCell<Vec<Spent>>,
+        requests: RefCell<Vec<RunRequest>>,
+    }
+
+    impl Launcher for SpentSeen {
+        type Run = Spent;
+
+        fn launch(&self, request: RunRequest) -> Result<Spent, String> {
+            self.requests.borrow_mut().push(request);
+            let mut runs = self.runs.borrow_mut();
+            if runs.is_empty() {
+                Err(String::new())
+            } else {
+                Ok(runs.remove(0))
+            }
+        }
+    }
+
+    /// The broker's record of the run `cell`, left as its session leaves
+    /// one, holding one item named `name`.
+    fn left(cell: &str, name: &str) -> RunRecord {
+        let mut record = RunRecord::new(cell);
+        record.note(
+            0,
+            hatchling_core::run_record::Effect::LibraryItem {
+                name: name.to_owned(),
+                bytes: 1,
+            },
+        );
+        crate::run_record::publish(record.clone(), |_| Some(false));
+        record
+    }
+
+    /// Runs `run` to its end for the owner's `text`, in `conversation`.
+    fn run_through(
+        chat: &mut Chat<Spent>,
+        launches: &SpentSeen,
+        run: Spent,
+        text: &str,
+        conversation: u64,
+    ) {
+        launches.runs.borrow_mut().push(run);
+        let now = Timestamp::now();
+        let answers = Answers::default();
+        assert_eq!(
+            chat.step(|| Some((message(text), conversation)), conversation, launches, &answers, now),
+            Step::Started
+        );
+        assert_eq!(chat.step(|| None, conversation, launches, &answers, now), Step::Answered);
+    }
+
+    /// WO-053: a run that stops before it's done (out of steps, or failed)
+    /// hands the broker's record of it to the next run, which may then be
+    /// asked to keep going; a run that answers with steps to spare settles
+    /// it, and the run after is given none.
+    #[test]
+    fn a_run_that_stopped_hands_its_record_to_the_next() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let mut chat: Chat<Spent> = Chat::new(vec![send_local()]).with_follow_ups(hub.clone());
+        let launches = SpentSeen::default();
+        let given = |at: usize| {
+            launches
+                .requests
+                .borrow()
+                .get(at)
+                .map(|request| request.records.clone())
+        };
+        let first = left("run-0000000000000000000000c1", "first.md");
+        run_through(&mut chat, &launches, spent(Some(ran_out()), "run-0000000000000000000000c1"), "make it", 0);
+        assert_eq!(given(0), Some(Vec::new()), "the first is given none");
+        assert!(hub.keeps_going(), "it ran out: the owner may keep going");
+        let second = left("run-0000000000000000000000c2", "second.md");
+        let failed = Spent {
+            outcome: Err(String::from("the run exited 1")),
+            ending: None,
+            cell: "run-0000000000000000000000c2",
+        };
+        run_through(&mut chat, &launches, failed, KEEP_GOING_TEXT, 0);
+        assert_eq!(given(1), Some(vec![first.clone()]));
+        assert!(hub.keeps_going(), "it failed: still not done");
+        let _third = left("run-0000000000000000000000c3", "third.md");
+        run_through(&mut chat, &launches, spent(None, "run-0000000000000000000000c3"), KEEP_GOING_TEXT, 0);
+        assert_eq!(given(2), Some(vec![first, second]), "the chain, oldest first");
+        assert!(!hub.keeps_going(), "it answered: nothing to keep going from");
+        run_through(&mut chat, &launches, spent(None, "run-0000000000000000000000c4"), "thanks", 0);
+        assert_eq!(given(3), Some(Vec::new()), "an answer settles the chain");
+    }
+
+    /// WO-053: the chain holds the last three runs that stopped, and a new
+    /// conversation lets go of it.
+    #[test]
+    fn the_chain_is_the_last_three_and_goes_with_its_conversation() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let mut chat: Chat<Spent> = Chat::new(vec![send_local()]).with_follow_ups(hub.clone());
+        let launches = SpentSeen::default();
+        let cells = [
+            "run-0000000000000000000000d1",
+            "run-0000000000000000000000d2",
+            "run-0000000000000000000000d3",
+            "run-0000000000000000000000d4",
+        ];
+        let records: Vec<RunRecord> = cells.iter().map(|cell| left(cell, "x.md")).collect();
+        for cell in cells {
+            run_through(&mut chat, &launches, spent(Some(ran_out()), cell), KEEP_GOING_TEXT, 0);
+        }
+        run_through(&mut chat, &launches, spent(Some(ran_out()), "run-0000000000000000000000d5"), KEEP_GOING_TEXT, 0);
+        let fifth = launches.requests.borrow().get(4).map(|request| request.records.clone());
+        assert_eq!(fifth, Some(records.get(1..).unwrap_or_default().to_vec()), "the last three");
+        assert!(hub.keeps_going());
+        hub.new_conversation();
+        let next = hub.conversation();
+        run_through(&mut chat, &launches, spent(None, "run-0000000000000000000000d6"), "a new thing", next);
+        let sixth = launches.requests.borrow().get(5).map(|request| request.records.clone());
+        assert_eq!(sixth, Some(Vec::new()), "a new conversation is given none");
+        assert!(!hub.keeps_going());
+    }
+
     /// The ending of a run whose agent answered as its steps ran out.
     fn ran_out() -> hatchling_scheduler::Ending {
         hatchling_scheduler::Ending::Exited(

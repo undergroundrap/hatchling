@@ -3937,6 +3937,72 @@ mod tests {
         assert!(shown.contains("attached: false"));
     }
 
+    /// Only the owner keeps going, in the local chat, and only when its
+    /// conversation's last run stopped before it was done: then it's the
+    /// owner's own message, "Keep going.", queued and shown as theirs
+    /// (WO-053). Otherwise there's nothing to continue, and nothing is sent.
+    #[test]
+    fn only_the_owner_keeps_going_and_only_from_a_run_that_stopped() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        config.goals.grants = Vec::new();
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let bus = Arc::new(Bus::starting_at(1));
+        let ops = Ops::new(&config, &key, &skills, Some(&hub), Arc::clone(&bus));
+        let mut replies = Replies::default();
+        let keep_going = |chat: &str| UiAction::KeepGoing {
+            chat_id: chat.to_owned(),
+        };
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        let owner = caller(&[local_send()]);
+        let nothing = (
+            UiActionResult::NothingToContinue {
+                chat_id: String::from(LOCAL_CHAT),
+            },
+            ApiOutcome::Served,
+        );
+        assert_eq!(ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies), nothing);
+        assert!(hub.take().is_none(), "nothing sent");
+        hub.may_keep_going(hub.conversation(), true);
+        let other = caller(&[ScheduleGrant::ChannelSend {
+            channel: String::from("elsewhere"),
+        }]);
+        assert_eq!(
+            ops.handle(&other, &keep_going(LOCAL_CHAT), &mut replies),
+            refused(ActionRefusal::NotGranted)
+        );
+        assert_eq!(
+            ops.handle(&owner, &keep_going("main"), &mut replies),
+            refused(ActionRefusal::BadRequest)
+        );
+        assert!(hub.take().is_none(), "nothing sent for either");
+        let (accepted, outcome) = ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies);
+        assert!(matches!(accepted, UiActionResult::MessageAccepted { .. }), "{accepted:?}");
+        assert_eq!(outcome, ApiOutcome::Served);
+        let queued = hub.take().expect("the owner's message is queued");
+        assert_eq!(queued.text, crate::chat_run::KEEP_GOING_TEXT);
+        // Shown as the owner's.
+        let shown: Vec<(ChatAuthor, String)> = bus
+            .after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let UiEventBody::ChatMessage(chat) = event.body {
+                    Some((chat.author, chat.text))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [(ChatAuthor::User, String::from(crate::chat_run::KEEP_GOING_TEXT))]
+        );
+        // A new conversation has nothing to continue.
+        hub.new_conversation();
+        assert_eq!(ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies), nothing);
+    }
+
     /// Only the owner stops the chat's run in flight, in the local chat:
     /// its tree is stopped, and another chat's isn't. With none in flight,
     /// there's nothing to stop (WO-051).

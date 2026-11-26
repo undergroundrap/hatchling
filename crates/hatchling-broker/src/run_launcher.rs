@@ -1601,6 +1601,75 @@ mod tests {
         }
     }
 
+    /// WO-053: a chat run's cell is given the records of the runs it
+    /// continues fitted to their share of the window, at most three, and
+    /// the history gives up the room they take: fewer exchanges than the
+    /// same run without them, within what's left.
+    #[test]
+    fn a_chat_runs_records_are_fitted_and_taken_out_of_the_historys_room() {
+        use hatchling_core::conversation::{Bounds, ChatExchange};
+        use hatchling_core::run_record::{
+            Effect, MAX_CARRIED, RunRecord, carried_budget, carried_bytes, fitted,
+        };
+        let mut asked = request(Vec::new());
+        asked.chat = true;
+        asked.history = (0..30)
+            .map(|n| ChatExchange {
+                user: format!("q{n} {}", "x".repeat(300)),
+                assistant: format!("a{n} {}", "y".repeat(300)),
+            })
+            .collect();
+        let record = |n: usize| {
+            let mut record = RunRecord::new(&format!("run-{n}"));
+            for at in 0..20 {
+                record.note(
+                    at,
+                    Effect::RoomWrote {
+                        path: format!("notes/{n}/{at}-{}.md", "p".repeat(150)),
+                        bytes: 1,
+                        replaced: false,
+                    },
+                );
+            }
+            record
+        };
+        asked.records = (0..5).map(record).collect();
+        let config = config();
+        let budget = carried_budget(Bounds::LEAST.history_bytes);
+        let run = scheduled_run(&config, &asked);
+        assert_eq!(run.records, fitted(&asked.records, budget));
+        assert!(run.records.len() <= MAX_CARRIED);
+        assert!(!run.records.is_empty());
+        assert!(carried_bytes(&run.records) <= budget);
+        assert_eq!(
+            run.records.last().map(|record| record.run.as_str()),
+            Some("run-4"),
+            "the newest is given"
+        );
+        // Without records, more of the history fits.
+        let mut plain = asked.clone();
+        plain.records.clear();
+        let without = scheduled_run(&config, &plain);
+        assert!(without.records.is_empty());
+        assert!(
+            run.history.len() < without.history.len(),
+            "{} given beside the records, {} without",
+            run.history.len(),
+            without.history.len()
+        );
+        assert_eq!(run.history.last(), asked.history.last(), "the newest kept");
+        // What's given beside them fits what they leave.
+        let left = Bounds {
+            history_bytes: Bounds::LEAST.history_bytes - carried_bytes(&run.records),
+            ..Bounds::LEAST
+        };
+        let history = serde_json::to_string(&run.history).unwrap();
+        assert_eq!(
+            hatchling_core::conversation::parse_history(&history, &left).unwrap(),
+            run.history
+        );
+    }
+
     /// A run is told the tool groups the operator turned on, so its
     /// agent offers its model nothing the broker would only refuse.
     #[test]
