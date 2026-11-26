@@ -484,7 +484,10 @@ mod tests {
         hub.may_keep_going(now, true);
         assert!(hub.keeps_going());
         hub.may_keep_going(now.wrapping_add(7), false);
-        assert!(hub.keeps_going(), "another conversation's word changes nothing");
+        assert!(
+            hub.keeps_going(),
+            "another conversation's word changes nothing"
+        );
         hub.may_keep_going(now, false);
         assert!(!hub.keeps_going());
         hub.may_keep_going(now.wrapping_add(1), true);

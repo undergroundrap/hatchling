@@ -653,7 +653,13 @@ impl<'k> SealedConversation<'k> {
 }
 
 impl Keeps for SealedConversation<'_> {
-    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>, record: Option<&RunRecord>) {
+    fn keep(
+        &self,
+        sent_in: u64,
+        kept: &Conversation,
+        run: Option<&str>,
+        record: Option<&RunRecord>,
+    ) {
         let current = || self.hub.conversation() == sent_in;
         if let Err(error) = self.store.keep_if(current, kept, run, record) {
             tracing::warn!(%error, "the conversation can't be kept");

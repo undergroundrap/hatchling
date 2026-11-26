@@ -336,9 +336,8 @@ fn parse_run_records(
     if records.len() > MAX_CARRIED {
         return Err(refused(format!("more than {MAX_CARRIED} records")));
     }
-    let budget = carried_budget(
-        hatchling_core::conversation::Bounds::for_window(window).history_bytes,
-    );
+    let budget =
+        carried_budget(hatchling_core::conversation::Bounds::for_window(window).history_bytes);
     if carried_bytes(&records) > budget {
         return Err(refused(format!(
             "past the {budget} bytes the window has room for"
@@ -763,17 +762,29 @@ mod tests {
         use hatchling_core::run_record::{Effect, MAX_CARRIED, RunRecord, carried_budget};
         let record = |n: usize| {
             let mut record = RunRecord::new(&format!("run-{n}"));
-            record.note(0, Effect::LibraryItem { name: String::from("a.md"), bytes: 1 });
+            record.note(
+                0,
+                Effect::LibraryItem {
+                    name: String::from("a.md"),
+                    bytes: 1,
+                },
+            );
             record
         };
         let json = |records: &[RunRecord]| serde_json::to_string(records).unwrap();
         assert!(parse_run_records(None, false, None).unwrap().is_empty());
         let one = [record(1)];
-        assert_eq!(parse_run_records(Some(&json(&one)), true, None).unwrap(), one);
+        assert_eq!(
+            parse_run_records(Some(&json(&one)), true, None).unwrap(),
+            one
+        );
         let refused = |value: &str, chat: bool, window: Option<u32>| {
             matches!(
                 parse_run_records(Some(value), chat, window),
-                Err(Error::InvalidConfig { key: "HATCHLING_RUN_RECORD", .. })
+                Err(Error::InvalidConfig {
+                    key: "HATCHLING_RUN_RECORD",
+                    ..
+                })
             )
         };
         assert!(refused(&json(&one), false, None), "only a chat run");
@@ -782,14 +793,20 @@ mod tests {
         let many: Vec<RunRecord> = (0..=MAX_CARRIED).map(record).collect();
         assert!(refused(&json(&many), true, None));
         let three: Vec<RunRecord> = (0..MAX_CARRIED).map(record).collect();
-        assert_eq!(parse_run_records(Some(&json(&three)), true, None).unwrap(), three);
+        assert_eq!(
+            parse_run_records(Some(&json(&three)), true, None).unwrap(),
+            three
+        );
         // Past the budget the window leaves: the least window's, here.
         let least = carried_budget(hatchling_core::conversation::Bounds::LEAST.history_bytes);
         let mut big = RunRecord::new("run-big");
         while big.bytes() <= least {
             big.entries.push(hatchling_core::run_record::Entry {
                 at: 0,
-                effect: Effect::LibraryItem { name: "x".repeat(200), bytes: 1 },
+                effect: Effect::LibraryItem {
+                    name: "x".repeat(200),
+                    bytes: 1,
+                },
             });
         }
         assert!(refused(&json(&[big.clone()]), true, None));

@@ -37,8 +37,9 @@ pub const fn carried_budget(history_bytes: usize) -> usize {
     history_bytes / 2
 }
 
-/// `records`, oldest first, fitted to `budget` bytes of entries in all:
-/// at most [`MAX_CARRIED`], the newest first to be given room. The newest
+/// `records`, oldest first, fitted to `budget` bytes of entries in all.
+///
+/// At most [`MAX_CARRIED`], the newest first to be given room. The newest
 /// is always given, cut to what's left if it must be; an older one only
 /// while it keeps an entry, and none once one doesn't.
 #[must_use]
@@ -692,15 +693,24 @@ mod tests {
         let mut uncut = record.clone();
         uncut.cut_to(whole);
         assert_eq!(uncut, record, "a record within the bytes is left as it is");
-        let first = entry_bytes(&Entry { at: 0, effect: sent("one") });
+        let first = entry_bytes(&Entry {
+            at: 0,
+            effect: sent("one"),
+        });
         record.cut_to(first);
         assert_eq!(effects(&record), [sent("one")]);
-        assert_eq!(record.more, BTreeMap::from([(String::from("room_wrote"), 2)]));
+        assert_eq!(
+            record.more,
+            BTreeMap::from([(String::from("room_wrote"), 2)])
+        );
         record.cut_to(0);
         assert!(record.entries.is_empty());
         assert_eq!(
             record.more,
-            BTreeMap::from([(String::from("message_sent"), 1), (String::from("room_wrote"), 2)])
+            BTreeMap::from([
+                (String::from("message_sent"), 1),
+                (String::from("room_wrote"), 2)
+            ])
         );
         assert!(!record.is_empty(), "what went is still counted");
     }
@@ -723,22 +733,32 @@ mod tests {
         ];
         let roomy = fitted(&chain, MAX_RECORD_BYTES * 4);
         assert_eq!(
-            roomy.iter().map(|record| record.run.as_str()).collect::<Vec<_>>(),
+            roomy
+                .iter()
+                .map(|record| record.run.as_str())
+                .collect::<Vec<_>>(),
             ["run-2", "run-3", "run-4"],
             "the three newest, oldest first"
         );
         assert_eq!(roomy.last(), chain.last());
-        assert_eq!(carried_bytes(&roomy), roomy.iter().map(RunRecord::bytes).sum::<usize>());
+        assert_eq!(
+            carried_bytes(&roomy),
+            roomy.iter().map(RunRecord::bytes).sum::<usize>()
+        );
         // Room for one entry: the newest whole, and no older one.
         let one = of("run-4", &["d.md"]).bytes();
         assert_eq!(fitted(&chain, one), [of("run-4", &["d.md"])]);
         // No room at all: the newest is still given, cut, its effects counted.
         let none = fitted(&chain, 0);
         assert_eq!(none.len(), 1);
-        assert_eq!(none.first().map(|record| record.run.as_str()), Some("run-4"));
+        assert_eq!(
+            none.first().map(|record| record.run.as_str()),
+            Some("run-4")
+        );
         assert_eq!(none.first().map(|record| record.entries.len()), Some(0));
         assert_eq!(
-            none.first().and_then(|record| record.more.get("room_wrote").copied()),
+            none.first()
+                .and_then(|record| record.more.get("room_wrote").copied()),
             Some(1)
         );
         // An older one is given in part while it keeps an entry.

@@ -263,7 +263,13 @@ pub trait Keeps {
     /// its newest exchange, the last of `kept.exchanges` if any, is kept,
     /// with the cell id of the `run` that answered it (WO-043), and the
     /// broker's `record` of that run (WO-053).
-    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>, record: Option<&RunRecord>);
+    fn keep(
+        &self,
+        sent_in: u64,
+        kept: &Conversation,
+        run: Option<&str>,
+        record: Option<&RunRecord>,
+    );
 }
 
 /// Nowhere: the conversation lives in the broker's memory alone.
@@ -272,7 +278,13 @@ impl Keeps for () {
 }
 
 impl<K: Keeps> Keeps for Option<K> {
-    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>, record: Option<&RunRecord>) {
+    fn keep(
+        &self,
+        sent_in: u64,
+        kept: &Conversation,
+        run: Option<&str>,
+        record: Option<&RunRecord>,
+    ) {
         if let Some(keeps) = self {
             keeps.keep(sent_in, kept, run, record);
         }
