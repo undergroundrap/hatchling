@@ -385,6 +385,17 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         self
     }
 
+    /// When the run started, `stamp` as the broker said it on the owner's
+    /// machine, told at the end of the system prompt
+    /// (`hatchling_prompt::now_note`); nothing when there's none.
+    #[must_use]
+    pub fn with_now(self, stamp: Option<&str>) -> Self {
+        match stamp {
+            Some(stamp) => self.with_system_note(&hatchling_prompt::now_note(stamp)),
+            None => self,
+        }
+    }
+
     /// The broker's records of the runs this one continues (WO-053), their
     /// JSON put in its envelope (`hatchling_prompt::carried_records`): one
     /// [`Message::Assistant`] after the prior turns and before the request.
@@ -930,6 +941,22 @@ mod tests {
         let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
         plain.run(&model, "Thanks.".to_owned()).unwrap();
         assert_eq!(model.seen_histories().first().map(Vec::len), Some(2));
+    }
+
+    /// When the run started is told at the end of the system prompt, in the
+    /// pack's words; with none, the prompt is as it was.
+    #[test]
+    fn when_the_run_started_ends_the_system_prompt() {
+        let registry = empty_registry();
+        let plain = hatchling_prompt::system_prompt_for(hatchling_prompt::PromptKind::Chat);
+        let stamp = "Thursday 26 November 2026, 06:31 (UTC, UTC+00:00)";
+        let told = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_now(Some(stamp));
+        assert_eq!(
+            told.system_prompt,
+            format!("{plain}\n\n{}", hatchling_prompt::now_note(stamp))
+        );
+        let untold = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_now(None);
+        assert_eq!(untold.system_prompt, plain);
     }
 
     /// The record of the runs a run continues comes after the prior turns,

@@ -472,6 +472,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
                 capabilities,
                 false,
             )),
+            now: hatchling_scheduler::clock::machine_stamp(Timestamp::now()),
         };
         let config = self.config;
         let started = launcher.launch_cell("subagent", run, self.hit.clone(), |token, socket| {

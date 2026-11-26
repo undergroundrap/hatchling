@@ -1527,6 +1527,7 @@ fn a_hit_kills_the_brokers_long_lived_cell_and_its_vault_channel() -> Result<(),
         records: Vec::new(),
         builders: std::collections::BTreeMap::new(),
         tools: None,
+        now: String::new(),
     };
     let cell = CellConfig::for_run(
         &runs.agent_bin,

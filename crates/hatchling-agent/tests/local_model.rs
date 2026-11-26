@@ -211,6 +211,7 @@ fn ready_cell_with_reasoning(
         run_chat: false,
         run_history: Vec::new(),
         run_earlier: Vec::new(),
+        run_now: None,
         run_records: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,

@@ -1039,6 +1039,9 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         earlier: given.earlier,
         records,
         builders: run_artifacts(config, request).builders,
+        // When it starts, said on this machine, so its agent never guesses
+        // the day.
+        now: hatchling_scheduler::clock::machine_stamp(Timestamp::now()),
         tools: Some(run_tools(
             config,
             &request.grants,
@@ -1599,6 +1602,21 @@ mod tests {
             let earlier = serde_json::to_string(&run.earlier).unwrap();
             assert_eq!(parse_earlier(&earlier, &bounds).unwrap(), run.earlier);
         }
+    }
+
+    /// A run's cell is told when it starts, said on this machine.
+    #[test]
+    fn a_run_cell_is_told_when_it_starts_on_this_machine() {
+        let config = config();
+        let before = hatchling_scheduler::clock::machine_stamp(Timestamp::now());
+        let run = scheduled_run(&config, &request(Vec::new()));
+        let after = hatchling_scheduler::clock::machine_stamp(Timestamp::now());
+        assert!(
+            run.now == before || run.now == after,
+            "{:?} is neither {before:?} nor {after:?}",
+            run.now
+        );
+        assert!(!run.now.is_empty());
     }
 
     /// WO-053: a chat run's cell is given the records of the runs it
@@ -2196,6 +2214,7 @@ mod tests {
             records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         };
         std::thread::scope(|scope| {
             let env = RunEnv {
@@ -2696,6 +2715,7 @@ echo the answer
             records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         });
         let err =
             run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
@@ -2733,6 +2753,7 @@ echo the answer
             records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         });
         assert_eq!(agent_log_level(&agent, Some("debug")), LogLevel::Error);
     }
