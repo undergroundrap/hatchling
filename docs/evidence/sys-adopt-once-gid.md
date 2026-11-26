@@ -12,7 +12,7 @@ Part of [#704](https://github.com/undergroundrap/hatchling/issues/704), from an 
    - No count or set is kept, so a descriptor number reused later is judged as itself.
 2. **`drop_to` refuses gid 0,** as it refuses uid 0, before anything changes. A misconfigured gid 0 would have left the dropped process in root's group, with what root's group may read and write in reach.
 
-**What callers see:** every real adoption is of a descriptor that crossed `exec`, which is never close-on-exec, so none changes. The agent's tests handed over an end of an in-process `UnixStream::pair`, which is close-on-exec. They now hand it over as a launcher does: `handed` clears the flag first.
+**What callers see:** every real adoption is of a descriptor that crossed `exec`, which is never close-on-exec, so none changes. Two sets of tests handed over descriptors made in-process, which are close-on-exec. They now hand them over as a launcher does, clearing the flag first: the agent's ends of a `UnixStream::pair` (with `handed`), and the keeper's test security key.
 
 ## Tests
 
@@ -21,8 +21,19 @@ In `hatchling-sys`:
 - `only_an_inherited_unix_stream_is_adopted_and_it_closes_on_exec`: the same for a connection, and for an end of a pair never handed across `exec`.
 - `a_drop_leaves_the_user_alone_with_nothing_more`: `drop_to(4242, 0)` is refused as "drop to root's group".
 
-The agent's 210 tests pass with their ends handed over as a launcher would.
+The agent's 210 tests, and the keeper's, pass with their ends handed over as a launcher would.
 
 ## The gate
 
-RESULTS
+On the sandbox, with `HATCHLING_REQUIRE_CELL=1`:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- **The whole workspace's tests: 4595 passed, 0 failed.**
+  - The gate's first run found one more caller to hand over as a launcher does: the keeper's `security_keys_cross_to_the_keeper_by_their_descriptors` adopted a `/dev/null` it had opened itself.
+  - The keeper's real launcher already keeps each key across `exec`, and the test now does the same.
+- `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by `hatchling-sys`'s tests:
+  - a device adopted though close-on-exec;
+  - a connection adopted though close-on-exec;
+  - a drop to gid 0 let through.
+- **Mutation** on the changed lines of `fds.rs`, `net.rs` and `process.rs`: 14 mutants, 12 caught, 2 unviable, none missed.
