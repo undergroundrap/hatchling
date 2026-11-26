@@ -9,7 +9,7 @@
 
 ## What it does
 
-The last 34 sections go in, and the pack has 122. None of them reaches a prompt: every kind's prompt is byte for byte what it was. Each section is pinned, with its domain, and held out of every prompt by the waiting check until its run exists.
+The last 34 sections go in, and the pack has 122. The waiting list is now a named constant, `WAITING`, so the check that reads it stays short. None of them reaches a prompt: every kind's prompt is byte for byte what it was. Each section is pinned, with its domain, and held out of every prompt by the waiting check until its run exists.
 
 | Group | Sections | Bytes |
 |---|---|---|
@@ -86,7 +86,7 @@ The run that routes them keeps one.
 |---|---|
 | `cargo fmt --all --check` | pass |
 | clippy `-D warnings`, 1.98.1 and 1.85.0 | pass |
-| the whole workspace's tests | TESTS |
+| the whole workspace's tests | 4546 passed, 0 failed (tree `00fbcf21`) |
 | `hatchling-dev audit` | all checks passed |
 
 **Hand-breaks**, each caught and the tree restored:
