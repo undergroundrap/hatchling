@@ -1108,8 +1108,11 @@ mod tests {
     /// spaced or punctuated (#705).
     #[test]
     fn a_secret_is_found_percent_encoded_or_as_hex_written_any_way() {
-        let secrets = [HELD.as_bytes().to_vec(), vec![0xff, 0x00, 0x41, 0x7f, 0x80, 0x01, 0x02, 0x03]]
-            .map(Zeroizing::new);
+        let secrets = [
+            HELD.as_bytes().to_vec(),
+            vec![0xff, 0x00, 0x41, 0x7f, 0x80, 0x01, 0x02, 0x03],
+        ]
+        .map(Zeroizing::new);
         let percent: String = HELD.bytes().map(|byte| format!("%{byte:02x}")).collect();
         let upper: String = HELD.bytes().map(|byte| format!("%{byte:02X}")).collect();
         let spaced: Vec<String> = HELD.bytes().map(|byte| format!("{byte:02x}")).collect();
@@ -1128,7 +1131,10 @@ mod tests {
             assert!(holds_secret(&text, &secrets), "{text:?}");
         }
         // Hex that isn't a held secret's passes.
-        assert!(!holds_secret("commit 6e6967687482a7f3 in 01 02 03 04", &secrets));
+        assert!(!holds_secret(
+            "commit 6e6967687482a7f3 in 01 02 03 04",
+            &secrets
+        ));
         // A short secret's hex passes: too few bytes to tell apart from
         // ordinary hex. Percent-decoded, it is the secret itself, which the
         // gate finds raw at any length.
