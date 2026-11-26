@@ -12,7 +12,7 @@ Part of [#718](https://github.com/undergroundrap/hatchling/issues/718), [WO-054]
   - **The schema:** an unknown field, a missing one or a wrong type refuses it.
   - **Bounds:** claims, citations per claim, the quote's length, and the reasons said.
   - **`no_change` is said, not left as an empty list.** No claims without `no_change` is refused, and so is both.
-  - **Every citation resolves:** its handle names a record the step was given, and its quote, if any, is in that record's text. **One that doesn't refuses the whole output**, so an invented id applies nothing. That's the design's threat-model rule, the stricter of its two wordings; the seat-runner section said the claim alone fails.
+  - **Every citation resolves:** its handle names a record the step was given, and its quote, if any, is in that record's text. **One that doesn't refuses the whole output**, so an invented id applies nothing. That's the threat model's rule, which the maintainer chose over the seat-runner section's earlier wording (the claim alone fails) on 2026-11-26; the design now says the same.
   - **Outside content applies nothing:** a claim whose every citation is outside content goes in `outside_only`, kept apart for the loop's apply step to queue or drop.
 - **One repair:** `Step` answers the first refusal with every reason, and a second ends the step with nothing.
 - **The gate's record:** how a step ended (proposed, no change, failed), whether it took its repair, and its counts. Never text.
