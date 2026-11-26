@@ -8,6 +8,7 @@ holding the API's grants (HATCHLING_API_GRANTS), which must include reaching
 the model (egress to it) and replying on the local channel. Its answer comes
 back here as a chat message, usually within seconds. When the run fails,
 Hatchling says why as a message of its own, and this prints it and stops.
+Only what comes after its own message is about its task.
 See docs/local-api.md.
 """
 import json
@@ -55,18 +56,28 @@ def main(path):
     sock.settimeout(300)
     deadline = time.monotonic() + 300
     print("waiting for the agent...")
-    # Messages before the task is accepted are the conversation the broker
-    # kept, replayed: none of them is about this task.
-    accepted = False
+    # The task's own message, as the stream shows it, is where this task's
+    # part of the chat starts. What comes before it is earlier, the
+    # conversation a restarted broker kept and replays among it, and that
+    # can reach us after the task was accepted.
+    task = None
+    seen = set()
+    started = False
     while time.monotonic() < deadline:
         frame = receive(sock)
         if frame.get("type") == "action_result" and frame.get("request_id") == "task":
             if frame["result"].get("result") != "message_accepted":
                 print("message refused:", json.dumps(frame["result"]))
                 return 1
-            accepted = True
+            task = frame["result"].get("message_id")
+            started = task in seen
+            continue
         body = frame.get("body", {}) if frame.get("type") == "event" else {}
-        if not accepted or body.get("kind") != "chat_message":
+        if body.get("kind") != "chat_message":
+            continue
+        if not started:
+            seen.add(body.get("message_id"))
+            started = task is not None and body.get("message_id") == task
             continue
         if body.get("author") == "agent":
             print("agent:", body["text"])
