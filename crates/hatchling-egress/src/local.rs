@@ -450,8 +450,8 @@ pub(crate) mod tests {
 
     /// A forward cut while the upstream thinks ends at once, and the
     /// upstream sees its client gone: an answer nobody will read isn't
-    /// waited for, or made (#657). One cut before it connects sends
-    /// nothing.
+    /// waited for, or made (#657). One cut before it connects opens
+    /// nothing (#684).
     #[test]
     fn a_forward_cut_in_flight_ends_at_once_and_hangs_up_on_the_upstream() {
         use std::io::Read as _;
@@ -495,22 +495,18 @@ pub(crate) mod tests {
             "the upstream wasn't hung up on"
         );
         cutting.join().unwrap();
-        // Cut before it connects: refused, with nothing sent.
+        // Cut before it connects: refused, and nothing is even opened
+        // (#684).
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
         let live = listener.local_addr().unwrap();
-        let upstream = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut seen = Vec::new();
-            stream.read_to_end(&mut seen).map(|_| seen.len())
-        });
         assert!(matches!(
             super::forward(&[live], &request, None, &cut),
             Err(Error::UpstreamFailed)
         ));
-        assert_eq!(
-            upstream.join().unwrap().unwrap(),
-            0,
-            "a cut request was sent"
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "a cut forward connected"
         );
     }
 
