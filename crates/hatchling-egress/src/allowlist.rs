@@ -78,36 +78,72 @@ const METADATA: [Ipv4Addr; 1] = [Ipv4Addr::new(168, 63, 129, 16)];
 
 /// Whether `ip` may be reached only by a destination written `internal:`.
 ///
-/// Loopback, private (RFC 1918), shared (`100.64.0.0/10`), link-local,
-/// this network (`0.0.0.0/8`), broadcast, multicast, a known metadata
-/// address, or IPv6 loopback, unspecified, unique-local (`fc00::/7`),
-/// link-local (`fe80::/10`) or multicast. An IPv4 address mapped into
-/// IPv6 (`::ffff:10.0.0.1`) is judged as the IPv4 address it is.
+/// IPv4: loopback, private (RFC 1918), shared (`100.64.0.0/10`),
+/// link-local, this network (`0.0.0.0/8`), reserved (`240.0.0.0/4`, with
+/// broadcast), multicast, IETF protocol assignments (`192.0.0.0/24`),
+/// benchmarking (`198.18.0.0/15`), documentation (the three TEST-NETs), or
+/// a known metadata address. None is a public site.
+///
+/// IPv6: loopback, unspecified, unique-local (`fc00::/7`), link-local
+/// (`fe80::/10`), multicast, local-use NAT64 (`64:ff9b:1::/48`, whose
+/// embedding is the network's own), Teredo (`2001::/32`) or
+/// IPv4-compatible (`::a.b.c.d`). The last two are deprecated, and no
+/// destination needs them.
+///
+/// An address that carries an IPv4 address a router delivers to is judged
+/// as that IPv4 address (#682): mapped (`::ffff:10.0.0.1`), well-known
+/// NAT64 (`64:ff9b::10.0.0.1`, on an IPv6-only network with DNS64) and
+/// 6to4 (`2002:0a00:0001::`). Refusing NAT64 outright would refuse every
+/// site on such a network, where public IPv4 names resolve into it.
 #[must_use]
 pub fn is_internal(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            let [first, second, ..] = v4.octets();
+            let [first, second, third, _] = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
-                || v4.is_broadcast()
                 || v4.is_multicast()
+                || v4.is_documentation()
                 || first == 0
+                || first >= 240
                 || (first == 100 && (64..128).contains(&second))
+                || (first, second, third) == (192, 0, 0)
+                || (first == 198 && (second & 0xfe) == 18)
                 || METADATA.contains(&v4)
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            if let Some(v4) = carried_ipv4(v6) {
                 return is_internal(IpAddr::V4(v4));
             }
-            let [first, ..] = v6.segments();
+            let [first, second, third, fourth, fifth, sixth, ..] = v6.segments();
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (first & 0xfe00) == 0xfc00
                 || (first & 0xffc0) == 0xfe80
+                || (first, second, third) == (0x64, 0xff9b, 1)
+                || (first, second) == (0x2001, 0)
+                || [first, second, third, fourth, fifth, sixth] == [0; 6]
         }
+    }
+}
+
+/// The IPv4 address `v6` is delivered to, where it carries one a router
+/// translates or tunnels to: mapped (`::ffff:0:0/96`), well-known NAT64
+/// (`64:ff9b::/96`, its last 32 bits) and 6to4 (`2002::/16`, bits 16 to
+/// 47). `None` for any other address.
+fn carried_ipv4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    let ipv4 = |high: u16, low: u16| {
+        let ([a, b], [c, d]) = (high.to_be_bytes(), low.to_be_bytes());
+        Ipv4Addr::new(a, b, c, d)
+    };
+    match v6.segments() {
+        [0, 0, 0, 0, 0, 0xffff, high, low] | [0x64, 0xff9b, 0, 0, 0, 0, high, low] => {
+            Some(ipv4(high, low))
+        }
+        [0x2002, high, low, ..] => Some(ipv4(high, low)),
+        _ => None,
     }
 }
 
@@ -380,8 +416,9 @@ impl Allowlist {
 mod tests {
     use super::*;
 
-    /// A public address, from a documentation range (TEST-NET-3).
-    const PUBLIC: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 5);
+    /// A public address, never connected to: the resolver is fake. (Not
+    /// a documentation address: those are internal since #682.)
+    const PUBLIC: Ipv4Addr = Ipv4Addr::new(93, 184, 215, 14);
 
     /// Parses `raw`, resolving `localhost` to both loopback addresses,
     /// `gw.corp` to `internal`, and any other name to [`PUBLIC`].
@@ -631,13 +668,44 @@ mod tests {
             "::ffff:10.0.0.1",
             "::ffff:127.0.0.1",
             "::ffff:169.254.169.254",
+            // #682: reserved and special IPv4 ranges.
+            "240.0.0.1",
+            "250.1.2.3",
+            "192.0.0.8",
+            "192.0.0.255",
+            "198.18.0.1",
+            "198.19.255.255",
+            "192.0.2.1",
+            "198.51.100.7",
+            "203.0.113.5",
+            // #682: IPv6 that carries an internal IPv4, judged by it.
+            "64:ff9b::a9fe:a9fe",
+            "64:ff9b::10.0.0.1",
+            "64:ff9b::127.0.0.1",
+            "2002:a9fe:a9fe::",
+            "2002:0a00:0001::1",
+            "2002:c0a8:0101:1::1",
+            // #682: local-use NAT64, Teredo and IPv4-compatible, whatever
+            // they carry.
+            "64:ff9b:1::1",
+            "64:ff9b:1:ffff::808:808",
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "2001::1",
+            "::10.0.0.1",
+            "::8.8.8.8",
         ] {
             assert!(is_internal(ip(internal)), "{internal} is internal");
         }
         for public in [
             "8.8.8.8",
             "1.1.1.1",
-            "203.0.113.5",
+            "223.255.255.255",
+            "192.0.1.1",
+            "192.0.3.1",
+            "198.17.255.255",
+            "198.20.0.1",
+            "198.51.99.1",
+            "203.0.112.1",
             "172.15.255.255",
             "172.32.0.1",
             "100.63.255.255",
@@ -647,6 +715,11 @@ mod tests {
             "2606:4700:4700::1111",
             "fec0::1",
             "::ffff:8.8.8.8",
+            // #682: IPv6 that carries a public IPv4, judged by it.
+            "64:ff9b::8.8.8.8",
+            "64:ff9b::101:101",
+            "2002:0808:0808::1",
+            "2001:4860:4860::8888",
         ] {
             assert!(!is_internal(ip(public)), "{public} is public");
         }
@@ -716,10 +789,10 @@ mod tests {
         assert_eq!(Kind::of("a.example:1"), (Kind::Credentialed, "a.example:1"));
         let addr = |text: &str| text.parse::<SocketAddr>().unwrap();
         assert!(refuse_internal("a.example:443", &[]).is_ok());
-        assert!(refuse_internal("a.example:443", &[addr("203.0.113.5:443")]).is_ok());
+        assert!(refuse_internal("a.example:443", &[addr("93.184.215.14:443")]).is_ok());
         let refused = refuse_internal(
             "a.example:443",
-            &[addr("203.0.113.5:443"), addr("10.0.0.1:443")],
+            &[addr("93.184.215.14:443"), addr("10.0.0.1:443")],
         );
         assert!(
             matches!(&refused, Err(Error::InvalidAllowlist { reason }) if reason == "destination \"a.example:443\" resolves to 10.0.0.1, an internal address: if it is meant to be on your own network, write it internal:a.example:443"),

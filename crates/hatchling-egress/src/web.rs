@@ -845,6 +845,16 @@ mod tests {
             is_internal,
         );
         assert_eq!(failing, Err(FetchError::Unresolved));
+        // #682: a name that resolves, by DNS64, to the metadata address
+        // NAT64 delivers to is refused unconnected too.
+        let nat64 = "64:ff9b::a9fe:a9fe".parse::<IpAddr>().unwrap();
+        let metadata = fetch_with(
+            &tls,
+            &page,
+            resolving_to(vec![SocketAddr::new(nat64, 443)]),
+            is_internal,
+        );
+        assert_eq!(metadata, Err(FetchError::Internal { addr: nat64 }));
         // The system resolver's localhost is internal.
         let local = fetch(&tls, &url("https://localhost/"));
         assert!(

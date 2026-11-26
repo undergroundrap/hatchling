@@ -51,11 +51,12 @@ export HATCHLING_EGRESS_ALLOWLIST=local-keyless:localhost:18090
 export HATCHLING_EGRESS_GRANTS=localhost:18090
 export HATCHLING_API_GRANTS=egress:localhost:18090,channel-send:local
 export HATCHLING_WEB=sites
-# The site: a name for a documentation address (RFC 5737), which isn't
-# internal, so the browser's relay reaches it as it would a public site, in
-# this network namespace.
+# The site: a name for a public address, so the browser's relay reaches it
+# as it would any public site. It's on an interface of this network
+# namespace alone, so nothing outside it is shadowed. (Not a documentation
+# address: those are internal since #682.)
 site_name=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from browsing_model import BROWSER_URL; print(BROWSER_URL.split("/")[2])')
-site_address=198.51.100.7
+site_address=93.184.215.14
 ip link set lo up
 # On an interface of its own, not loopback: with loopback alone, the app's
 # browser says it's offline, and holds the owner's messages back.
