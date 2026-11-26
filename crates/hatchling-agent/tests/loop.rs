@@ -50,6 +50,7 @@ fn ready_cell_offering(
         run_chat: false,
         run_history: Vec::new(),
         run_earlier: Vec::new(),
+        run_now: None,
         run_builders: std::collections::BTreeMap::new(),
         run_tools,
         run_deadline: None,

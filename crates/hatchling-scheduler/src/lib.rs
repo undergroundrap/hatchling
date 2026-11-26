@@ -31,6 +31,7 @@
 //! The broker owns the store, the session ops, and the real launcher
 //! and delivery path; the cell never sees any of it.
 
+pub mod clock;
 pub mod cron;
 pub mod dispatcher;
 pub mod hook;

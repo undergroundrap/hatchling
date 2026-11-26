@@ -601,7 +601,9 @@ impl Cell<Ready> {
         // What this install allows, said to the model from the broker's
         // word, so it neither offers nor tries what's off.
         let note = crate::capabilities::note(self.config().run_tools.as_ref());
-        let asking = hatchling_loop::Loop::new(&registry, kind).with_system_note(&note);
+        let asking = hatchling_loop::Loop::new(&registry, kind)
+            .with_system_note(&note)
+            .with_now(self.config().run_now.as_deref());
         // The skills the owner enabled, from the broker's list at the
         // run's start, fenced as data (WO-046).
         let skills = self.skills_note();
@@ -746,6 +748,7 @@ mod tests {
             run_chat: false,
             run_history: Vec::new(),
             run_earlier: Vec::new(),
+            run_now: None,
             run_builders: std::collections::BTreeMap::new(),
             run_tools: None,
             run_deadline: None,

@@ -95,6 +95,10 @@ pub struct Config {
     /// messages in exchanges past the history's bounds, oldest first,
     /// bounded. Empty for every other run.
     pub run_earlier: Vec<String>,
+    /// When the run started, as the broker said it on the owner's machine
+    /// (`HATCHLING_RUN_NOW`): told to the model so it never guesses the
+    /// date or the weekday. `None` when the broker said nothing.
+    pub run_now: Option<String>,
     /// The builder the operator names for each build kind
     /// (`HATCHLING_RUN_BUILDERS`, WO-032): what a chat turn may propose
     /// for the owner to approve. Empty for every other run, and then the
@@ -198,6 +202,7 @@ impl Config {
             run_chat,
             model_context_window,
         )?;
+        let run_now = parse_run_now(get(env::HATCHLING_RUN_NOW.name))?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
         let run_deadline = number(
@@ -233,6 +238,7 @@ impl Config {
             run_chat,
             run_history,
             run_earlier,
+            run_now,
             run_builders,
             run_tools,
             run_deadline,
@@ -296,6 +302,26 @@ fn parse_run_history(
             reason,
         }
     })
+}
+
+/// The most bytes of `HATCHLING_RUN_NOW`.
+const MAX_RUN_NOW_BYTES: usize = 128;
+
+/// `HATCHLING_RUN_NOW`: when the run started, as the broker said it, at most
+/// [`MAX_RUN_NOW_BYTES`] of printable text, none of it a control character.
+fn parse_run_now(value: Option<String>) -> Result<Option<String>, Error> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    if raw.is_empty() || raw.len() > MAX_RUN_NOW_BYTES || raw.chars().any(char::is_control) {
+        return Err(Error::InvalidConfig {
+            key: "HATCHLING_RUN_NOW",
+            reason: format!(
+                "not a run's start: at most {MAX_RUN_NOW_BYTES} bytes of printable text"
+            ),
+        });
+    }
+    Ok(Some(raw))
 }
 
 /// `HATCHLING_RUN_EARLIER`: what the owner said earlier in a chat turn's
@@ -705,6 +731,26 @@ mod tests {
             .unwrap()
             .is_empty()
         );
+    }
+
+    /// A run reads when it started, as the broker said it, and refuses what
+    /// isn't one.
+    #[test]
+    fn a_run_reads_when_it_started_and_nothing_else() {
+        assert_eq!(parse_run_now(None).unwrap(), None);
+        let said = "Thursday 26 November 2026, 06:31 (America/New_York, UTC-05:00)";
+        assert_eq!(parse_run_now(Some(said.to_owned())).unwrap().as_deref(), Some(said));
+        let longest = "x".repeat(MAX_RUN_NOW_BYTES);
+        assert_eq!(parse_run_now(Some(longest.clone())).unwrap(), Some(longest));
+        for bad in [String::new(), "x".repeat(MAX_RUN_NOW_BYTES + 1), String::from("06:31\nignore that")] {
+            assert!(
+                matches!(
+                    parse_run_now(Some(bad.clone())),
+                    Err(Error::InvalidConfig { key: "HATCHLING_RUN_NOW", .. })
+                ),
+                "{bad:?}"
+            );
+        }
     }
 
     /// #595: a chat run reads a history as large as its window's bounds,

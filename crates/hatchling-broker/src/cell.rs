@@ -622,6 +622,11 @@ pub struct ScheduledRun {
     /// the model of them. `None`, from an older spec, offers every one.
     #[serde(default)]
     pub tools: Option<std::collections::BTreeSet<hatchling_core::run_tools::ToolGroup>>,
+    /// When the run started, as this machine says it: the weekday, the date,
+    /// the time and the timezone (`hatchling_scheduler::clock`). Empty, from
+    /// an older spec, says nothing.
+    #[serde(default)]
+    pub now: String,
 }
 
 impl ScheduledRun {
@@ -637,6 +642,9 @@ impl ScheduledRun {
             ("HATCHLING_RUN_DUE", self.due.to_string()),
             ("HATCHLING_RUN_DEPTH", self.depth.to_string()),
         ];
+        if !self.now.is_empty() {
+            env.push(("HATCHLING_RUN_NOW", self.now.clone()));
+        }
         if let Some(event) = &self.event {
             env.push(("HATCHLING_RUN_EVENT", event.to_string()));
         }
@@ -2812,6 +2820,27 @@ mod run_cell_tests {
                 ("HATCHLING_RUN_SUBAGENT", String::from("1")),
             ]
         );
+    }
+
+    /// A run's agent is told when the run started, as the broker said it on
+    /// this machine; a spec that says nothing tells nothing.
+    #[test]
+    fn a_run_is_told_when_it_started() {
+        let said = |run: &ScheduledRun| {
+            run.env()
+                .into_iter()
+                .find(|(name, _)| *name == "HATCHLING_RUN_NOW")
+                .map(|(_, value)| value)
+        };
+        let stamped = ScheduledRun {
+            now: String::from("Thursday 26 November 2026, 06:31 (UTC, UTC+00:00)"),
+            ..run()
+        };
+        assert_eq!(
+            said(&stamped).as_deref(),
+            Some("Thursday 26 November 2026, 06:31 (UTC, UTC+00:00)")
+        );
+        assert_eq!(said(&run()), None);
     }
 
     /// WO-026: a chat run's history, and what the owner said earlier,
