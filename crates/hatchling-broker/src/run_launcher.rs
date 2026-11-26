@@ -1030,7 +1030,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         builders: run_artifacts(config, request).builders,
         // When it starts, said on this machine, so its agent never guesses
         // the day.
-        now: hatchling_scheduler::clock::machine_stamp(hatchling_scheduler::Timestamp::now()),
+        now: hatchling_scheduler::clock::machine_stamp(Timestamp::now()),
         tools: Some(run_tools(
             config,
             &request.grants,
@@ -2131,6 +2131,7 @@ mod tests {
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         };
         std::thread::scope(|scope| {
             let env = RunEnv {
@@ -2630,6 +2631,7 @@ echo the answer
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         });
         let err =
             run_helper(Some(&test_spec(&serde_json::to_string(&skill).unwrap()))).unwrap_err();
@@ -2666,6 +2668,7 @@ echo the answer
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         });
         assert_eq!(agent_log_level(&agent, Some("debug")), LogLevel::Error);
     }

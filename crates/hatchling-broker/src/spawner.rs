@@ -5244,6 +5244,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 earlier: Vec::new(),
                 builders: std::collections::BTreeMap::new(),
                 tools: None,
+                now: String::new(),
             });
         };
         assert_eq!(
@@ -5296,6 +5297,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         });
         let configured = Policy {
             agent_program: Some(run.agent_bin.clone()),
@@ -5365,6 +5367,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         });
         run.connected = true;
         assert_eq!(

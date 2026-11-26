@@ -698,6 +698,7 @@ mod tests {
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         };
         let request = hatchling_scheduler::RunRequest {
             schedule_id: String::from(PLANTED[0]),

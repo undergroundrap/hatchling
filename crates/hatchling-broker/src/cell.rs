@@ -2665,6 +2665,7 @@ mod run_cell_tests {
             earlier: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
+            now: String::new(),
         }
     }
 
