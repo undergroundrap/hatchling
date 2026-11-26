@@ -106,7 +106,7 @@ In order, each its own pull request with its gate. The loops themselves get thei
 - [ ] A record changed between snapshot and apply is skipped and counted.
 - [ ] A destructive memory change reaches the queue and is never applied without the owner's approval; a test tries each kind.
 - [ ] A claim sourced only from outside content is never applied.
-- [ ] The clock runs a missed loop once after a gap of many periods, and never while a chat run is active.
+- [x] The clock runs a missed loop once after a gap of many periods, and never while a chat run is active ([slice 1](../evidence/wo054-background-clock.md)).
 - [ ] The pause stops the next run and the next step.
 - [ ] The app says when each loop last ran, when keep-running is off, and when Hatchling was stopped while a loop came due.
 

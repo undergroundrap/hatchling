@@ -46,4 +46,27 @@ In `hatchling-broker`: `the_state_is_kept_and_a_restart_shows_the_gap` (sealed, 
 
 ## The gate
 
-RESULTS
+On the sandbox, at the tree under test:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4567 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each run against the tests named and each caught:
+
+| Break | Caught by |
+| --- | --- |
+| A claim moves the due time one second on, so missed periods pile up | `a_suspend_shows_up_as_one_catch_up_run` and four more |
+| Chat first dropped for a loop that's due | `nothing_starts_while_a_chat_run_is_active`, `a_chat_run_stops_the_run_in_flight_once_and_it_runs_again_after` |
+| The claim doesn't say the loop is running before it starts | `the_claim_is_written_before_the_run_starts`, `a_run_an_earlier_broker_left_is_noted_and_not_rerun_early` |
+| The run in flight isn't told to stop | `a_chat_run_stops_the_run_in_flight_once_and_it_runs_again_after` |
+| Gaps go unrecorded | `a_suspend_shows_up_as_one_catch_up_run`, `only_real_gaps_are_kept_and_only_the_newest` |
+| The broker's chat no longer holds background work | `a_run_in_flight_for_the_chat_holds_background_work` |
+
+- **Mutation on the changed lines:**
+  - `hatchling-scheduler`: 36 mutants, 36 caught.
+  - `hatchling-broker` (`background_ops`, `follow_ups`): 15 mutants, 12 caught and 3 unviable.
+
+  The first pass missed six, and each was fixed:
+  - The gap cap's `>` to `>=`, and its `-` to `/`, were equivalent as written (with 17 gaps, `17 - 16` and `17 / 16` are both 1), so the cap is now a `saturating_sub` with no branch.
+  - The clock's `running()` and its `Debug` gained assertions.
+  - The broker's empty loop list was equivalent to `vec![]`, so it went: the clock is made with an empty list until there's a loop.
+  - The placeholder run's `poll` gained a test.

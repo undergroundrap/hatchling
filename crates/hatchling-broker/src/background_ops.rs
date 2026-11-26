@@ -14,9 +14,7 @@ use std::sync::{Mutex, PoisonError};
 
 use hatchling_channel::LocalHub;
 use hatchling_scheduler::Timestamp;
-use hatchling_scheduler::background::{
-    Clock, Gate, Launcher, Outcome, Report, Run, State, Store,
-};
+use hatchling_scheduler::background::{Clock, Gate, Launcher, Outcome, Report, Run, State, Store};
 use hatchling_vault::{OpensStores, SealedVault};
 
 use crate::schedule_ops::{read_json, write_json};
