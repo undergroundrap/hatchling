@@ -894,7 +894,8 @@ mod tests {
         ));
         // At most MAX_PLACED at once, in a fixed array (#704): one more is
         // refused, before anything is copied.
-        let many = vec![std::io::stdout().as_fd(); MAX_PLACED + 1];
+        let out = std::io::stdout();
+        let many = vec![out.as_fd(); MAX_PLACED + 1];
         assert!(matches!(
             place_across_exec(&many, 3),
             Err(Error::InvalidExecArg { reason }) if reason.contains("too many")
