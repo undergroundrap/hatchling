@@ -403,3 +403,14 @@ fn a_packets_records_make_its_snapshot() {
         .is_ok()
     );
 }
+
+/// The bounds, as numbers: a test that only uses the constants can't see
+/// one change.
+#[test]
+fn the_bounds_are_what_they_say() {
+    assert_eq!(
+        (MAX_HANDLE_BYTES, MAX_CLAIMS, MAX_CITATIONS, MAX_QUOTE_BYTES, MAX_REASONS),
+        (512, 64, 8, 1024, 16)
+    );
+    assert_eq!((MAX_RECORDS, MAX_RECORD_BYTES, MAX_BRIEF_BYTES), (256, 16_384, 32_768));
+}

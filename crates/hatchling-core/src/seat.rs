@@ -50,10 +50,10 @@ pub const MAX_REASONS: usize = 16;
 pub const MAX_RECORDS: usize = 256;
 
 /// The longest a record's text is.
-pub const MAX_RECORD_BYTES: usize = 16 * 1024;
+pub const MAX_RECORD_BYTES: usize = 16_384;
 
 /// The longest a seat's prompt or assignment is.
-pub const MAX_BRIEF_BYTES: usize = 32 * 1024;
+pub const MAX_BRIEF_BYTES: usize = 32_768;
 
 /// Where a claim came from: a record the step was given.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
