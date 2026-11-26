@@ -47,7 +47,7 @@ The pack keeps 40 sections. Each kind's prompt, in bytes:
 |---|---|
 | `cargo fmt --all --check` | pass |
 | clippy `-D warnings`, 1.98.1 and 1.85.0 | pass |
-| the whole workspace's tests | TESTS |
+| the whole workspace's tests | 4545 passed, 0 failed (tree `59712a8f`) |
 | `hatchling-dev audit` | all checks passed |
 
 The pack's pinned tests hold every section's text and domain, every kind's list and every assembled prompt word for word. They were updated with the change.
@@ -57,4 +57,4 @@ The pack's pinned tests hold every section's text and domain, every kind's list 
 - Worker loses `formatting`;
 - one word of `honesty` changed in the pack but not in its pin.
 
-**Mutation** on `hatchling-prompt`'s changed lines since `main`: MUT.
+**Mutation** on `hatchling-prompt`'s changed lines since `main`: 2 caught, 0 missed, 0 timeouts. The pack's text is data; its two mutants are in `now_note`, from #712.
