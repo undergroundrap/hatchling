@@ -1113,8 +1113,16 @@ mod tests {
             vec![0xff, 0x00, 0x41, 0x7f, 0x80, 0x01, 0x02, 0x03],
         ]
         .map(Zeroizing::new);
-        let percent = HELD.bytes().map(|byte| format!("%{byte:02x}")).collect::<Vec<_>>().concat();
-        let upper = HELD.bytes().map(|byte| format!("%{byte:02X}")).collect::<Vec<_>>().concat();
+        let percent = HELD
+            .bytes()
+            .map(|byte| format!("%{byte:02x}"))
+            .collect::<Vec<_>>()
+            .concat();
+        let upper = HELD
+            .bytes()
+            .map(|byte| format!("%{byte:02X}"))
+            .collect::<Vec<_>>()
+            .concat();
         let spaced: Vec<String> = HELD.bytes().map(|byte| format!("{byte:02x}")).collect();
         let colons: Vec<String> = HELD.bytes().map(|byte| format!("{byte:02X}")).collect();
         for text in [
