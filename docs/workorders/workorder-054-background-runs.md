@@ -1,6 +1,6 @@
 # WO-054: Background runs: seats that propose, code that applies, and a clock that wakes them
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (the background clock, the seat runner, the apply steps, the review queue), `crates/hatchling-core` (a seat's packet, handles, finish output and the queue's types), `crates/hatchling-agent` (the finish tool and a seat's read tools), `crates/hatchling-prompt` (each loop's kind, routing its waiting sections), `installer/windows` (keeping the distro up)
 **Issue:** [#718](https://github.com/undergroundrap/hatchling/issues/718)
 **Trust boundary:** yes
@@ -117,6 +117,8 @@ The usual: fmt, clippy on both toolchains, the whole workspace's tests, the audi
 ## Evidence
 
 Each slice commits its evidence under `docs/evidence/`.
+
+- Slice 1, the background clock: [wo054-background-clock.md](../evidence/wo054-background-clock.md).
 
 ## Notes
 
