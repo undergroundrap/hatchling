@@ -34,6 +34,7 @@ pub mod memory_provider;
 pub mod model;
 pub mod research;
 pub mod room;
+pub mod seat;
 pub mod skill;
 pub mod subagent;
 #[cfg(test)]

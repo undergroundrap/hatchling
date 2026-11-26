@@ -35,6 +35,8 @@ tracing-subscriber = "0.3"
 serde_json = "1"
 
 [dev-dependencies]
+# A seat test's claim type, as a loop would write one.
+serde = { version = "1", features = ["derive"] }
 # Unit and integration tests use the real kernel identity oracle.
 rustix = { version = "0.38", features = ["net", "process"] }
 # Component tests run the real broker pipeline (peer gate + grant

@@ -44,10 +44,10 @@ Every crate has a row below: `hatchling-dev audit` fails the gate if one doesn't
 | Crate | Role |
 | --- | --- |
 | `hatchling-broker` | Central coordinator. Spawns cells, routes messages, enforces grants, serves the local API, and holds the owner's approvals (`approvals`, WO-027). Never executes untrusted code. |
-| `hatchling-agent` | The binary that runs inside a cell. It reaches the broker over its one peer-authorized session; all its logic is library code, tested without spawning it. |
+| `hatchling-agent` | The binary that runs inside a cell. It reaches the broker over its one peer-authorized session; all its logic is library code, tested without spawning it. A background run's seat (`seat`, WO-054) is offered only reads over the records it was given and `finish`. |
 | `hatchling-browser` | *Not published.* The browser cell's controller: it starts headless Chromium and drives it over its DevTools pipe (WO-029). It runs on the untrusted side. |
 | `hatchling-room` | *Not published.* The supervisor inside the Room, the agent's computer (WO-034): it runs the agent's commands, keeps their output, and reads and searches its files, speaking `hatchling-core`'s room protocol to the spawner. Built static for the Room's image. It runs on the untrusted side. |
-| `hatchling-core` | The shared foundation: identity newtypes, protocol framing and message types, grants, kernel peer credentials, and the canonical form and digest an approval binds (`action`). The vocabulary everything else speaks. |
+| `hatchling-core` | The shared foundation: identity newtypes, protocol framing and message types, grants, kernel peer credentials, the canonical form and digest an approval binds (`action`), and what a background run's seat is given and how what it hands back is checked (`seat`, WO-054). The vocabulary everything else speaks. |
 | `hatchling-loop` | The agent's tool-calling loop. The model proposes; the host validates and bounds. LLM-agnostic. |
 
 ## Isolation and security
