@@ -6,7 +6,9 @@ It sends the task on the local chat. The broker answers each message there
 with an agent run: the agent, in a fresh cell, given the message as its task,
 holding the API's grants (HATCHLING_API_GRANTS), which must include reaching
 the model (egress to it) and replying on the local channel. Its answer comes
-back here as a chat message, usually within seconds. See docs/local-api.md.
+back here as a chat message, usually within seconds. When the run fails,
+Hatchling says why as a message of its own, and this prints it and stops.
+See docs/local-api.md.
 """
 import json
 import socket
@@ -53,16 +55,26 @@ def main(path):
     sock.settimeout(300)
     deadline = time.monotonic() + 300
     print("waiting for the agent...")
+    # Messages before the task is accepted are the conversation the broker
+    # kept, replayed: none of them is about this task.
+    accepted = False
     while time.monotonic() < deadline:
         frame = receive(sock)
         if frame.get("type") == "action_result" and frame.get("request_id") == "task":
             if frame["result"].get("result") != "message_accepted":
                 print("message refused:", json.dumps(frame["result"]))
                 return 1
+            accepted = True
         body = frame.get("body", {}) if frame.get("type") == "event" else {}
-        if body.get("kind") == "chat_message" and body.get("author") == "agent":
+        if not accepted or body.get("kind") != "chat_message":
+            continue
+        if body.get("author") == "agent":
             print("agent:", body["text"])
             return 0
+        if body.get("author") == "system":
+            # Hatchling's own word on the run: it failed, and why.
+            print("hatchling:", body["text"])
+            return 1
     print("no answer within five minutes; check the broker's log")
     return 1
 

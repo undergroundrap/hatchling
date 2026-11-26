@@ -165,10 +165,10 @@ export HATCHLING_EGRESS_GRANTS=localhost:18089
 export HATCHLING_API_GRANTS=egress:localhost:18089,channel-send:local
 ```
 
-Start a stand-in for a model server, seal the vault, and start the broker:
+Start a stand-in for a model server (it returns once it's listening), seal the vault, and start the broker:
 
 ```bash
-python3 docs/examples/stand-in-model.py 18089 &
+python3 docs/examples/stand-in-model.py 18089 --detach
 hatchling-broker migrate-vault
 hatchling-broker &
 ```
@@ -281,10 +281,10 @@ export HATCHLING_EGRESS_GRANTS=localhost:18089
 export HATCHLING_API_GRANTS=egress:localhost:18089,channel-send:local
 ```
 
-Start the stand-in model, seal the vault, start the broker, and give the agent its first task:
+Start the stand-in model (it returns once it's listening), seal the vault, start the broker, and give the agent its first task:
 
 ```bash
-python3 docs/examples/stand-in-model.py 18089 &
+python3 docs/examples/stand-in-model.py 18089 --detach
 hatchling-broker migrate-vault
 hatchling-broker &
 python3 docs/examples/first-run.py "$HATCHLING_API_SOCKET"
