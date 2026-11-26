@@ -2355,7 +2355,9 @@ mod tests {
         source.load_or_create_as(real_uid()).unwrap();
         let link = dir.join("vault-link.key");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        let opened = open_nofollow(&link).map(|_| ()).map_err(|error| error.raw_os_error());
+        let opened = open_nofollow(&link)
+            .map(|_| ())
+            .map_err(|error| error.raw_os_error());
         assert_eq!(opened, Err(Some(rustix::io::Errno::LOOP.raw_os_error())));
         let linked = FileKey::new(link);
         for err in [
@@ -2435,7 +2437,10 @@ mod tests {
         for mode in [0o770, 0o777, 0o1777, 0o750] {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
             let err = source.load_as(real_uid()).unwrap_err();
-            assert!(matches!(err, Error::InsecurePermissions { .. }), "{mode:o}: got {err:?}");
+            assert!(
+                matches!(err, Error::InsecurePermissions { .. }),
+                "{mode:o}: got {err:?}"
+            );
         }
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }

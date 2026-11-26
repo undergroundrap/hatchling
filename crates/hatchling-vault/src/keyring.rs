@@ -508,7 +508,10 @@ impl Keyring {
         // Opened without following a symlink, its directory checked, and
         // judged by the descriptor, not the path (#686).
         let file = open_nofollow(path).map_err(load)?;
-        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             check_owner_only_dir(parent, owner)?;
         }
         let metadata = file.metadata().map_err(load)?;
@@ -953,13 +956,22 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let err = Keyring::load_as(&link, own()).unwrap_err();
         assert!(matches!(err, Error::KeyringLoad { .. }), "got {err:?}");
-        assert!(digest_file(&link).is_err(), "a change check doesn't follow it");
+        assert!(
+            digest_file(&link).is_err(),
+            "a change check doesn't follow it"
+        );
         assert!(digest_file(&real).unwrap().is_some());
         let err = Keyring::load_as(&real, own()).unwrap_err();
-        assert!(matches!(err, Error::KeyringFormat { .. }), "its own directory, then its text: {err:?}");
+        assert!(
+            matches!(err, Error::KeyringFormat { .. }),
+            "its own directory, then its text: {err:?}"
+        );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o770)).unwrap();
         let err = Keyring::load_as(&real, own()).unwrap_err();
-        assert!(matches!(err, Error::InsecurePermissions { .. }), "got {err:?}");
+        assert!(
+            matches!(err, Error::InsecurePermissions { .. }),
+            "got {err:?}"
+        );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
