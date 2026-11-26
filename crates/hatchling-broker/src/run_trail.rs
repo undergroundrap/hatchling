@@ -29,7 +29,7 @@ use hatchling_core::{
 
 /// How one use of a tool ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ending {
+pub(crate) enum Ending {
     /// It answered.
     Done,
     /// It was put to the owner, to approve or answer.
@@ -261,6 +261,16 @@ impl Trail {
     /// Notes a use of `tool`, the tool a request used ([`tool_of`]), if
     /// it used one, answered with `response`: by how it ended. A model
     /// call is noted apart ([`Self::model_call`]).
+    /// What the session spent on its model so far (WO-053).
+    #[must_use]
+    pub const fn spend(&self) -> hatchling_core::run_record::Spend {
+        hatchling_core::run_record::Spend {
+            model_calls: self.model_calls,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+        }
+    }
+
     pub fn note(&mut self, tool: Option<ToolUse>, response: &SessionResponse) {
         let Some(tool) = tool else {
             return;
@@ -396,7 +406,7 @@ pub fn tool_of(request: &SessionRequest) -> Option<ToolUse> {
 }
 
 /// How the use `response` answers ended.
-const fn ending_of(response: &SessionResponse) -> Ending {
+pub(crate) const fn ending_of(response: &SessionResponse) -> Ending {
     match response {
         SessionResponse::Vault(result) => vault_ending(result),
         SessionResponse::Egress(result) => egress_ending(result),

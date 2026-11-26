@@ -130,6 +130,23 @@ impl Effect {
         self
     }
 
+    /// Each string it holds, in order.
+    #[must_use]
+    pub fn texts(&self) -> Vec<&str> {
+        match self {
+            Self::MessageSent { channel, text, .. } => {
+                let mut texts = vec![channel.as_str()];
+                texts.extend(text.as_deref());
+                texts
+            }
+            Self::RoomWrote { path, .. } | Self::RoomEdited { path, .. } => vec![path.as_str()],
+            Self::LibraryItem { name, .. } | Self::LibraryFolder { name, .. } => vec![name.as_str()],
+            Self::ApprovalAsked { .. } | Self::ApprovalUsed { .. } | Self::Refused { .. } => {
+                Vec::new()
+            }
+        }
+    }
+
     /// Each string it holds, with its bound.
     fn strings(&mut self) -> Vec<(&mut String, usize)> {
         match self {
@@ -256,6 +273,17 @@ impl RunRecord {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty() && self.more.is_empty()
+    }
+
+    /// Every string its entries hold, in order, each on a line of its own:
+    /// what one check of the whole record reads.
+    #[must_use]
+    pub fn texts(&self) -> String {
+        self.entries
+            .iter()
+            .flat_map(|entry| entry.effect.texts())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Each kept string `holds` says holds a secret, replaced by
@@ -458,6 +486,27 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<RunRecord>(&unknown).is_err(), "{unknown}");
         }
+    }
+
+    #[test]
+    fn its_texts_are_every_string_kept_in_order() {
+        let mut record = RunRecord::new("run-abc");
+        assert_eq!(record.texts(), "");
+        record.note(0, sent("hello"));
+        record.note(
+            0,
+            Effect::MessageSent {
+                channel: String::from("local"),
+                outcome: Sent::Redacted,
+                text: None,
+            },
+        );
+        record.note(0, wrote("a.md"));
+        record.note(0, Effect::RoomEdited { path: String::from("b.md"), bytes: 0, replaced: 1 });
+        record.note(0, Effect::LibraryItem { name: String::from("c.md"), bytes: 0 });
+        record.note(0, Effect::LibraryFolder { name: String::from("d"), files: 0, bytes: 0 });
+        record.note(0, Effect::Refused { tool: ToolUse::Network });
+        assert_eq!(record.texts(), "local\nhello\nlocal\na.md\nb.md\nc.md\nd");
     }
 
     #[test]

@@ -1004,6 +1004,9 @@ fn serve_session(
         config.scheduler.model_name.as_deref(),
     )
     .telling(crate::app_stream::stream(config));
+    // What the run did outside itself, as the broker serves it (WO-053):
+    // held for the chat once the session ends, however it ends.
+    let mut journal = crate::run_record::Journal::new(cell_id.as_str());
 
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the
@@ -1029,6 +1032,7 @@ fn serve_session(
             }
             let request = request_of(&Zeroizing::new(frame))?;
             let used = crate::run_trail::tool_of(&request);
+            let asked = crate::run_record::asked(&request);
             if used.is_some() {
                 trail.starting(used);
             }
@@ -1150,6 +1154,12 @@ fn serve_session(
                 }
             };
             trail.note(used, &response);
+            journal.note(
+                asked,
+                used,
+                &response,
+                hatchling_scheduler::Timestamp::now().as_second(),
+            );
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
             // This op's hit, or a Stop as it ran: it's answered, and it's
@@ -1159,6 +1169,22 @@ fn serve_session(
             }
         }
     });
+    // A run's record, for the chat to keep with the exchange it answered:
+    // checked against the vault first, and a string that can't be checked
+    // is withheld.
+    if run_cell.is_some() && crate::library::is_reply(cell_id.as_str()) {
+        crate::run_record::publish(journal.finish(trail.spend()), |text| {
+            crate::held_check::check(
+                crate::keeper::keeper(),
+                config,
+                key,
+                crate::held_check::CheckFor::Record,
+                run_cell,
+                text.as_bytes(),
+            )
+            .ok()
+        });
+    }
     if let Some(to) = hit.seen() {
         stopped(stream, cell_id, hub, to);
     } else if hit.stopped() {
