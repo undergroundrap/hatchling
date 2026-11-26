@@ -2593,7 +2593,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 11);
+        assert_eq!(UI_SCHEMA_VERSION, 12);
     }
 
     #[test]
@@ -3593,6 +3593,12 @@ mod tests {
                 json!({"action": "stop_run", "chat_id": "local"}),
             ),
             (
+                UiAction::KeepGoing {
+                    chat_id: s("local"),
+                },
+                json!({"action": "keep_going", "chat_id": "local"}),
+            ),
+            (
                 UiAction::KeepSignedIn {
                     session_id: s("w1"),
                 },
@@ -3697,6 +3703,12 @@ mod tests {
                     chat_id: s("local"),
                 },
                 json!({"result": "nothing_to_stop", "chat_id": "local"}),
+            ),
+            (
+                UiActionResult::NothingToContinue {
+                    chat_id: s("local"),
+                },
+                json!({"result": "nothing_to_continue", "chat_id": "local"}),
             ),
             (
                 UiActionResult::InputDone {

@@ -767,6 +767,11 @@ mod tests {
         );
     }
 
+    /// The bytes one entry takes, as the record counts them.
+    fn exact_size(entry: &hatchling_core::run_record::Entry) -> usize {
+        serde_json::to_vec(entry).unwrap().len()
+    }
+
     /// WO-053: a chat run reads the records of the runs it continues, at
     /// most three and within its window's budget, and nothing else does.
     #[test]
@@ -822,6 +827,28 @@ mod tests {
             });
         }
         assert!(refused(&json(&[big.clone()]), true, None));
+        // Exactly at the budget is within it; a byte past isn't.
+        let mut exact = RunRecord::new("run-exact");
+        let entry = |name: String| hatchling_core::run_record::Entry {
+            at: 0,
+            effect: Effect::LibraryItem { name, bytes: 1 },
+        };
+        while exact.bytes() + exact_size(&entry(String::from("x"))) < least {
+            exact.entries.push(entry(String::from("x")));
+        }
+        exact.entries.pop();
+        let short = least - exact.bytes();
+        let name_len = short - exact_size(&entry(String::new()));
+        exact.entries.push(entry("n".repeat(name_len)));
+        assert_eq!(exact.bytes(), least);
+        assert_eq!(
+            parse_run_records(Some(&json(&[exact.clone()])), true, None).unwrap(),
+            [exact.clone()]
+        );
+        if let Some(last) = exact.entries.last_mut() {
+            *last = entry("n".repeat(name_len + 1));
+        }
+        assert!(refused(&json(&[exact]), true, None));
         // A larger window has room for it.
         assert_eq!(
             parse_run_records(Some(&json(&[big.clone()])), true, Some(1_000_000)).unwrap(),

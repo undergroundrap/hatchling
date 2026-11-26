@@ -292,9 +292,9 @@ impl LocalHub {
     pub fn may_keep_going(&self, conversation: u64, may: bool) {
         let mut state = self.state();
         if may {
-            if state.conversation == conversation {
-                state.continuing = Some(conversation);
-            }
+            // Held for that conversation: [`Self::keeps_going`] reads it only
+            // while it's the one open.
+            state.continuing = Some(conversation);
         } else if state.continuing == Some(conversation) {
             state.continuing = None;
         }
