@@ -28,7 +28,7 @@ Python 3.14.4
 old (& then the broker at once): refused 20 of 20
 new (--detach): refused 0 of 20
 second --detach on a used port: exit 1
-old first-run.py, run failed: exit 124 after 10s; last line: 
+old first-run.py, run failed: exit 124 after 10s; last line: (none)
 new first-run.py, run failed: exit 1 after 0s; last line: hatchling: The model couldn't be reached.
 old first-run.py, answered: exit 0 after 0s; last line: agent: Hello from the fake.
 new first-run.py, answered: exit 0 after 0s; last line: agent: Hello from the fake.
@@ -36,7 +36,7 @@ done
 ```
 
 - The old order lost the race every time; `--detach` never did.
-- The old `first-run.py` hung on a failed run until it was killed (124); the new one stopped at once with the broker's reason.
+- The old `first-run.py` hung on a failed run until it was killed (124), having printed nothing; the new one stopped at once with the broker's reason.
 - Both answer when the agent answers, and the new one wasn't stopped by the replayed `system` message before its task was accepted.
 
 No stand-in or fake process was left running afterwards. CI's README quickstart runs both sections with these files, root and without root.
