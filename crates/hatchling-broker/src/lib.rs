@@ -92,6 +92,7 @@ mod folder_walk;
 )]
 mod hand_over;
 pub use feed_run::{FEED_TASK, FeedLauncher, FeedRun};
+pub mod background_ops;
 pub mod follow_ups;
 pub mod goals_ops;
 pub mod goals_sealed;

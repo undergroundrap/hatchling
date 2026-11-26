@@ -120,6 +120,12 @@ impl FollowUps {
             .map(|flight| flight.sent_in == flight.hub.conversation())
     }
 
+    /// Whether any chat run is in flight.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        !self.flights.is_empty()
+    }
+
     /// The cells of the runs in flight for the chat whose messages wait in
     /// `hub`.
     fn cells_of(&self, hub: &LocalHub) -> Vec<String> {
@@ -183,6 +189,13 @@ pub fn stop(hub: &LocalHub) -> bool {
     stopped > 0
 }
 
+/// [`FollowUps::any`], of the broker's own: background work waits while
+/// this is so (WO-054).
+#[must_use]
+pub fn any_in_flight() -> bool {
+    shared().any()
+}
+
 /// [`FollowUps::ended`], of the broker's own.
 #[must_use]
 pub fn ended(cell: &str) -> Vec<String> {
@@ -219,7 +232,9 @@ mod tests {
         let hub = hub();
         let mut flights = FollowUps::new();
         assert_eq!(flights.open_for("cell-a"), None);
+        assert!(!flights.any());
         flights.began("cell-a", &hub, hub.conversation());
+        assert!(flights.any());
         assert_eq!(flights.open_for("cell-a"), Some(true));
         assert_eq!(flights.open_for("cell-b"), None);
         hub.new_conversation();
@@ -228,6 +243,9 @@ mod tests {
         assert_eq!(flights.open_for("cell-b"), Some(true));
         let _ = flights.ended("cell-a");
         assert_eq!(flights.open_for("cell-a"), None);
+        assert!(flights.any(), "cell-b is still in flight");
+        let _ = flights.ended("cell-b");
+        assert!(!flights.any());
     }
 
     /// A chat's runs in flight are its own: another hub's, or one ended,

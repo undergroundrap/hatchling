@@ -763,7 +763,7 @@ fn secret_name(name: &str) -> Result<SecretName, Error> {
     })
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(
+pub(crate) fn read_json<T: serde::de::DeserializeOwned>(
     vault: &SealedVault<'_>,
     name: &str,
 ) -> Result<Option<T>, Error> {
@@ -778,7 +778,7 @@ fn read_json<T: serde::de::DeserializeOwned>(
     }
 }
 
-fn write_json<T: serde::Serialize>(
+pub(crate) fn write_json<T: serde::Serialize>(
     vault: &SealedVault<'_>,
     name: &str,
     value: &T,
