@@ -118,7 +118,10 @@ fn refusal(proposal: &Proposal<'_>) -> Option<&'static str> {
 }
 
 /// The schedule store's vault, where the items are kept.
-fn vault<'k>(scheduler: &'k SchedulerConfig, key: &'k dyn OpensStores) -> Result<SealedVault<'k>, Error> {
+fn vault<'k>(
+    scheduler: &'k SchedulerConfig,
+    key: &'k dyn OpensStores,
+) -> Result<SealedVault<'k>, Error> {
     SealedVault::open_in(&scheduler.root, key, hatchling_vault::Store::SCHEDULES)
         .map_err(|source| Error::Vault { source })
 }

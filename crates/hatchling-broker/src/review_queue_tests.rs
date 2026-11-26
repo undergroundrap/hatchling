@@ -18,7 +18,10 @@ impl Drop for Root {
 }
 
 fn store(name: &str) -> (Root, SchedulerConfig) {
-    let root = std::env::temp_dir().join(format!("hatchling-test-review-{name}-{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!(
+        "hatchling-test-review-{name}-{}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&root);
     let mut scheduler = SchedulerConfig::disabled();
     scheduler.root = root.clone();
@@ -54,8 +57,17 @@ fn proposals_wait_newest_first_sealed() {
     let (_root, scheduler) = store("wait");
     let key = MasterKey::generate().unwrap();
     let cited = evidence();
-    let first = queued(propose(&scheduler, &key, &proposal("tea, not coffee", &cited), at(T0)).unwrap());
-    let second = queued(propose(&scheduler, &key, &proposal("mornings", &cited), at(T0 + 60)).unwrap());
+    let first = queued(
+        propose(
+            &scheduler,
+            &key,
+            &proposal("tea, not coffee", &cited),
+            at(T0),
+        )
+        .unwrap(),
+    );
+    let second =
+        queued(propose(&scheduler, &key, &proposal("mornings", &cited), at(T0 + 60)).unwrap());
     assert_ne!(first, second);
     let items = list(&scheduler, &key).unwrap();
     let ids: Vec<&str> = items.iter().map(|item| item.item_id.as_str()).collect();
@@ -87,17 +99,31 @@ fn a_waiting_item_is_decided_once() {
         "{approved:?}"
     );
     let rejected = decide(&scheduler, &key, &no, false, at(T0 + 6)).unwrap();
-    assert!(matches!(&rejected, ReviewResult::Decided { item } if item.state == ReviewState::Rejected));
+    assert!(
+        matches!(&rejected, ReviewResult::Decided { item } if item.state == ReviewState::Rejected)
+    );
     assert_eq!(
         decide(&scheduler, &key, &yes, false, at(T0 + 7)).unwrap(),
         ReviewResult::NotWaiting {
             state: ReviewState::Approved
         }
     );
-    let states: Vec<ReviewState> = list(&scheduler, &key).unwrap().iter().map(|item| item.state).collect();
-    assert_eq!(states, [ReviewState::Rejected, ReviewState::Approved], "kept as decided");
+    let states: Vec<ReviewState> = list(&scheduler, &key)
+        .unwrap()
+        .iter()
+        .map(|item| item.state)
+        .collect();
+    assert_eq!(
+        states,
+        [ReviewState::Rejected, ReviewState::Approved],
+        "kept as decided"
+    );
     for id in ["", "deadbeef", "../review-index", &"a".repeat(65)] {
-        assert_eq!(decide(&scheduler, &key, id, true, at(T0)).unwrap(), ReviewResult::NotFound, "{id:?}");
+        assert_eq!(
+            decide(&scheduler, &key, id, true, at(T0)).unwrap(),
+            ReviewResult::NotFound,
+            "{id:?}"
+        );
     }
 }
 
@@ -118,19 +144,53 @@ fn what_breaks_a_bound_is_refused() {
         ("blank", proposal("  ", &cited)),
         ("evidence", proposal("c", &many)),
         ("no evidence", proposal("c", &none)),
-        ("why", Proposal { why: &why, ..proposal("c", &cited) }),
-        ("loop", Proposal { proposed_by: "", ..proposal("c", &cited) }),
-        ("target", Proposal { target: Some(""), ..proposal("c", &cited) }),
+        (
+            "why",
+            Proposal {
+                why: &why,
+                ..proposal("c", &cited)
+            },
+        ),
+        (
+            "loop",
+            Proposal {
+                proposed_by: "",
+                ..proposal("c", &cited)
+            },
+        ),
+        (
+            "target",
+            Proposal {
+                target: Some(""),
+                ..proposal("c", &cited)
+            },
+        ),
     ] {
         assert!(
-            matches!(propose(&scheduler, &key, &bad, at(T0)).unwrap(), Proposed::Refused(_)),
+            matches!(
+                propose(&scheduler, &key, &bad, at(T0)).unwrap(),
+                Proposed::Refused(_)
+            ),
             "{what}"
         );
     }
-    assert!(list(&scheduler, &key).unwrap_or_default().is_empty(), "nothing kept");
-    assert!(matches!(propose(&scheduler, &key, &proposal(&fits, &enough), at(T0)).unwrap(), Proposed::Queued(_)));
-    let untargeted = Proposal { target: None, kind: ReviewKind::Guidance, ..proposal("c", &cited) };
-    assert!(matches!(propose(&scheduler, &key, &untargeted, at(T0)).unwrap(), Proposed::Queued(_)));
+    assert!(
+        list(&scheduler, &key).unwrap_or_default().is_empty(),
+        "nothing kept"
+    );
+    assert!(matches!(
+        propose(&scheduler, &key, &proposal(&fits, &enough), at(T0)).unwrap(),
+        Proposed::Queued(_)
+    ));
+    let untargeted = Proposal {
+        target: None,
+        kind: ReviewKind::Guidance,
+        ..proposal("c", &cited)
+    };
+    assert!(matches!(
+        propose(&scheduler, &key, &untargeted, at(T0)).unwrap(),
+        Proposed::Queued(_)
+    ));
 }
 
 /// Full, the oldest decided item gives way; a waiting one never does, and
@@ -143,7 +203,9 @@ fn a_full_queue_lets_only_a_decided_item_go() {
     let mut ids = Vec::new();
     for n in 0..MAX_ITEMS {
         let change = format!("change {n}");
-        ids.push(queued(propose(&scheduler, &key, &proposal(&change, &cited), at(T0)).unwrap()));
+        ids.push(queued(
+            propose(&scheduler, &key, &proposal(&change, &cited), at(T0)).unwrap(),
+        ));
     }
     assert_eq!(
         propose(&scheduler, &key, &proposal("one more", &cited), at(T0)).unwrap(),
@@ -155,9 +217,19 @@ fn a_full_queue_lets_only_a_decided_item_go() {
     let newest = queued(propose(&scheduler, &key, &proposal("one more", &cited), at(T0)).unwrap());
     let kept = list(&scheduler, &key).unwrap();
     assert_eq!(kept.len(), MAX_ITEMS);
-    assert!(kept.iter().all(|item| item.item_id != *second), "the decided one went");
-    assert!(kept.iter().any(|item| item.item_id == *ids.first().unwrap()), "the oldest waiting one stays");
-    assert_eq!(kept.first().map(|item| item.item_id.as_str()), Some(newest.as_str()));
+    assert!(
+        kept.iter().all(|item| item.item_id != *second),
+        "the decided one went"
+    );
+    assert!(
+        kept.iter()
+            .any(|item| item.item_id == *ids.first().unwrap()),
+        "the oldest waiting one stays"
+    );
+    assert_eq!(
+        kept.first().map(|item| item.item_id.as_str()),
+        Some(newest.as_str())
+    );
 }
 
 /// The owner's operations, answered: off with no store.
@@ -168,7 +240,10 @@ fn the_owners_operations_are_answered() {
     let mut config = crate::api_auth::tests::owner_config(None);
     assert_eq!(handle(&config, &key, &ReviewOp::List), ReviewResult::Off);
     config.scheduler.root = scheduler.root.clone();
-    assert_eq!(handle(&config, &key, &ReviewOp::List), ReviewResult::Listed { items: Vec::new() });
+    assert_eq!(
+        handle(&config, &key, &ReviewOp::List),
+        ReviewResult::Listed { items: Vec::new() }
+    );
     let cited = evidence();
     let id = queued(propose(&scheduler, &key, &proposal("one", &cited), at(T0)).unwrap());
     assert!(matches!(
@@ -176,5 +251,8 @@ fn the_owners_operations_are_answered() {
         ReviewResult::Decided { item } if item.state == ReviewState::Approved
     ));
     let other = MasterKey::generate().unwrap();
-    assert_eq!(handle(&config, &other, &ReviewOp::List), ReviewResult::Failed);
+    assert_eq!(
+        handle(&config, &other, &ReviewOp::List),
+        ReviewResult::Failed
+    );
 }
