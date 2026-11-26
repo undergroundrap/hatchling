@@ -42,7 +42,8 @@ use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
     Decision, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal, FileOutRefusal, FolderEntry,
     GoalOp, GrantOp, Handoff, InboxFile, KeptOp, LibraryFile, LibraryFolder, LibraryStanding,
-    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SkillsOp, SuggestionOp, UiAction,
+    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SkillsOp, StoppedView, SuggestionOp,
+    UiAction,
     UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -105,8 +106,28 @@ fn status_detail(text: &str) -> String {
 /// The activity thread every API call is recorded on.
 pub const API_RUN_ID: &str = "api";
 
+/// Whether Hatchling is kept running (WO-054): what Windows said, and the
+/// latest stretch it wasn't running.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Running {
+    keep_running: Option<bool>,
+    stopped: Option<StoppedView>,
+}
+
+impl Running {
+    /// As this broker knows it now.
+    fn here(config: &Config, key: &dyn OpensStores) -> Self {
+        Self {
+            keep_running: crate::windows_setup::keep_running(std::path::Path::new(
+                crate::windows_setup::KEEP_RUNNING,
+            )),
+            stopped: crate::background_ops::last_stop(&config.scheduler, key),
+        }
+    }
+}
+
 /// What's set up on this machine, for the owner alone.
-fn read_setup(owns: bool) -> (UiActionResult, ApiOutcome) {
+fn read_setup(owns: bool, running: impl FnOnce() -> Running) -> (UiActionResult, ApiOutcome) {
     if !owns {
         return (
             UiActionResult::Refused {
@@ -123,6 +144,7 @@ fn read_setup(owns: bool) -> (UiActionResult, ApiOutcome) {
             crate::environment::HATCHLING_CELL_CGROUP.name,
         ))
         .is_none(),
+        running(),
     )
 }
 
@@ -136,6 +158,7 @@ fn setup_answer(
     last_backup: Option<u64>,
     room: RoomDiskView,
     process_limits_only: bool,
+    running: Running,
 ) -> (UiActionResult, ApiOutcome) {
     let unavailable = || {
         (
@@ -154,6 +177,8 @@ fn setup_answer(
                     windows_setup: crate::windows_setup::installed(),
                     room_disk: Some(room),
                     process_limits_only,
+                    keep_running: running.keep_running,
+                    stopped: running.stopped,
                 },
             },
             ApiOutcome::Served,
@@ -300,7 +325,7 @@ impl<'a> Ops<'a> {
                 }
                 self.read_model()
             }
-            UiAction::ReadSetup {} => read_setup(owns),
+            UiAction::ReadSetup {} => read_setup(owns, || Running::here(self.config, self.key)),
             UiAction::SetModel { name } => {
                 if !owns {
                     return refused(ActionRefusal::NotGranted);
@@ -3132,7 +3157,7 @@ mod tests {
         // says it on its security page; cells with one go without saying.
         for limits_only in [false, true] {
             assert_eq!(
-                setup_answer(Some(Ok(vault)), Some(7), room, limits_only),
+                setup_answer(Some(Ok(vault)), Some(7), room, limits_only, Running::default()),
                 (
                     UiActionResult::Setup {
                         setup: SetupState {
@@ -3141,12 +3166,28 @@ mod tests {
                             windows_setup: crate::windows_setup::installed(),
                             room_disk: Some(room),
                             process_limits_only: limits_only,
+                            keep_running: None,
+                            stopped: None,
                         }
                     },
                     ApiOutcome::Served
                 )
             );
         }
+        // Whether Hatchling is kept running, and when it wasn't, are said
+        // as the broker knows them (WO-054).
+        let running = Running {
+            keep_running: Some(false),
+            stopped: Some(StoppedView { from: 10, to: 70 }),
+        };
+        let (said, _) = setup_answer(Some(Ok(vault)), None, room, false, running);
+        let UiActionResult::Setup { setup } = said else {
+            panic!("{said:?}");
+        };
+        assert_eq!(
+            (setup.keep_running, setup.stopped),
+            (running.keep_running, running.stopped)
+        );
         assert_eq!(
             room.off,
             Some(hatchling_core::ui::RoomDiskOff::NotHere),
@@ -3156,12 +3197,15 @@ mod tests {
             reason: String::from("no"),
         };
         assert_eq!(
-            setup_answer(Some(Err(failed)), Some(7), room, false),
+            setup_answer(Some(Err(failed)), Some(7), room, false, Running::default()),
             unavailable
         );
-        assert_eq!(setup_answer(None, Some(7), room, false), unavailable);
         assert_eq!(
-            read_setup(false),
+            setup_answer(None, Some(7), room, false, Running::default()),
+            unavailable
+        );
+        assert_eq!(
+            read_setup(false, Running::default),
             (
                 UiActionResult::Refused {
                     reason: ActionRefusal::NotGranted
@@ -3171,7 +3215,7 @@ mod tests {
             "someone other than the owner read what's set up"
         );
         assert_eq!(
-            read_setup(true),
+            read_setup(true, Running::default),
             unavailable,
             "the owner, with no keeper here"
         );
