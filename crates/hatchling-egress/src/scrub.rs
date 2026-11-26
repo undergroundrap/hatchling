@@ -342,12 +342,18 @@ mod tests {
         let plain = Forms::of(KEY);
         assert_eq!(plain.forms.len(), 1);
         assert_eq!(plain.longest(), KEY.len());
-        assert_eq!(Forms::of(b"a.b~c").forms.len(), 1, "unreserved bytes aren't rewritten");
+        assert_eq!(
+            Forms::of(b"a.b~c").forms.len(),
+            1,
+            "unreserved bytes aren't rewritten"
+        );
         assert_eq!(Forms::of(b"").longest(), 0);
         // JSON's own escapes for a quote, a backslash and a control byte.
         let json = Forms::of(b"a\"b\\c\x01d");
         assert!(
-            json.forms.iter().any(|form| form.as_slice() == b"a\\\"b\\\\c\\u0001d"),
+            json.forms
+                .iter()
+                .any(|form| form.as_slice() == b"a\\\"b\\\\c\\u0001d"),
             "JSON-escaped"
         );
     }
@@ -358,7 +364,11 @@ mod tests {
         for echo in ECHOES {
             let mut bytes = [b"{\"error\":\"", echo, b"\"}"].concat();
             let length = bytes.len();
-            assert!(scrub(&mut bytes, TOKEN), "{}", String::from_utf8_lossy(echo));
+            assert!(
+                scrub(&mut bytes, TOKEN),
+                "{}",
+                String::from_utf8_lossy(echo)
+            );
             assert_eq!(bytes.len(), length);
             let masked = [b"{\"error\":\"".as_slice(), &vec![MASK; echo.len()], b"\"}"].concat();
             assert_eq!(bytes, masked, "{}", String::from_utf8_lossy(echo));
@@ -395,7 +405,11 @@ mod tests {
         let mut out = Vec::new();
         for piece in stream.chunks(3) {
             out.extend(scrubber.push(piece));
-            assert_eq!(scrubber.held.capacity(), scrubber.held.len(), "held exactly");
+            assert_eq!(
+                scrubber.held.capacity(),
+                scrubber.held.len(),
+                "held exactly"
+            );
             assert!(scrubber.held.len() < ECHOES[2].len());
         }
         out.extend(scrubber.finish());
@@ -404,6 +418,7 @@ mod tests {
 
     /// Whether `out` shows a masked echo where the token's `\u` form was.
     fn scrubber_found_in(out: &[u8]) -> bool {
-        out.windows(ECHOES[2].len()).any(|window| window.iter().all(|&byte| byte == MASK))
+        out.windows(ECHOES[2].len())
+            .any(|window| window.iter().all(|&byte| byte == MASK))
     }
 }
