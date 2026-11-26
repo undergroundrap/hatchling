@@ -978,7 +978,8 @@ pub(crate) mod tests {
         let took = started.elapsed();
         assert!(took < Duration::from_secs(2), "read for {took:?}");
         // In its time, an answer is read whole.
-        let whole = std::io::Cursor::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec());
+        let whole =
+            std::io::Cursor::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec());
         let reply = read_response(within(whole, Duration::from_secs(5))).unwrap();
         assert_eq!((reply.status, reply.body.as_slice()), (200, &b"ok"[..]));
         // A time already past reads nothing.
