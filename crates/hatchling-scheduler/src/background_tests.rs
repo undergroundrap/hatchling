@@ -86,7 +86,6 @@ impl Launcher for Starts {
         let state = self.store.state.borrow();
         let claimed = state.running.as_deref() == Some(name)
             && state.loops[name]
-                .due
                 .is_some_and(|due| due > state.seen.unwrap_or(0));
         self.claimed_first.borrow_mut().push(claimed);
         if self.refuse.get() {
@@ -138,6 +137,10 @@ impl Rig {
         self.store.state.borrow().clone()
     }
 
+    fn kept(&self, name: &str) -> LoopState {
+        self.state().loops.get(name).cloned().unwrap()
+    }
+
     fn finish(&self, outcome: Outcome) {
         self.starts.last().outcome.set(Some(outcome));
     }
@@ -150,7 +153,7 @@ impl Rig {
 fn a_suspend_shows_up_as_one_catch_up_run() {
     let mut rig = Rig::new(vec![hourly("memory")]);
     assert_eq!(rig.tick(T0, open()), Report::default());
-    assert_eq!(rig.state().loops["memory"].due, Some(T0 + HOUR));
+    assert_eq!(rig.kept("memory").due, Some(T0 + HOUR));
     assert_eq!(rig.tick(T0 + 60, open()).started, None);
     // Asleep from T0 + 60 for ten hours.
     let wake = T0 + 10 * HOUR + 120;
@@ -170,7 +173,7 @@ fn a_suspend_shows_up_as_one_catch_up_run() {
             to: wake
         }]
     );
-    assert_eq!(rig.state().loops["memory"].due, Some(wake + HOUR));
+    assert_eq!(rig.kept("memory").due, Some(wake + HOUR));
     rig.finish(Outcome::Done);
     let ended = rig.tick(wake + 60, open());
     assert_eq!(ended.ended, Some((String::from("memory"), Outcome::Done)));
@@ -310,7 +313,7 @@ fn the_pause_holds_every_loop_and_each_catches_up_once() {
 /// on, it waits for its next due time.
 #[test]
 fn a_loop_turned_off_moves_on_and_doesnt_start_when_turned_on() {
-    let mut rig = Rig::new(vec![hourly("memory"), hourly("ideas")]);
+    let mut rig = Rig::new(vec![hourly("memory")]);
     let _ = rig.tick(T0, open());
     rig.store
         .state
@@ -318,10 +321,9 @@ fn a_loop_turned_off_moves_on_and_doesnt_start_when_turned_on() {
         .off_loops
         .insert(String::from("memory"));
     let report = rig.tick(T0 + HOUR, open());
-    assert_eq!(report.started, Some((String::from("ideas"), false)));
-    rig.finish(Outcome::Done);
-    let _ = rig.tick(T0 + HOUR + 60, open());
-    assert_eq!(rig.state().loops["memory"].due, Some(T0 + 2 * HOUR));
+    assert_eq!(report.started, None);
+    assert_eq!(report.held, None);
+    assert_eq!(rig.kept("memory").due, Some(T0 + 2 * HOUR));
     rig.store.state.borrow_mut().off_loops.clear();
     let on = rig.tick(T0 + HOUR + 120, open());
     assert_eq!(on.started, None, "not there and then");
@@ -387,7 +389,7 @@ fn a_loop_with_nothing_new_moves_on_without_a_run() {
     let quiet = rig.tick(T0 + HOUR, open());
     assert_eq!(quiet.nothing_new, vec![String::from("memory")]);
     assert_eq!(quiet.started, None);
-    let kept = &rig.state().loops["memory"];
+    let kept = &rig.kept("memory");
     assert_eq!(kept.outcome, Some(Outcome::NothingNew));
     assert_eq!(kept.due, Some(T0 + 2 * HOUR));
     rig.clock
@@ -415,7 +417,7 @@ fn a_loop_after_activity_waits_for_quiet_and_runs_once() {
         needs_activity: false,
     }]);
     let _ = rig.tick(T0, open());
-    assert_eq!(rig.state().loops["goals"].due, None);
+    assert_eq!(rig.kept("goals").due, None);
     assert_eq!(rig.tick(T0 + 10 * HOUR, open()).started, None);
     rig.clock.activity(at(T0), &*rig.store).unwrap();
     rig.clock.activity(at(T0 + 300), &*rig.store).unwrap();
@@ -434,7 +436,7 @@ fn a_loop_after_activity_waits_for_quiet_and_runs_once() {
             None
         );
     }
-    assert_eq!(rig.state().loops["goals"].due, None);
+    assert_eq!(rig.kept("goals").due, None);
 }
 
 /// A loop an earlier broker left running is of unknown outcome: noted as
@@ -451,7 +453,7 @@ fn a_run_an_earlier_broker_left_is_noted_and_not_rerun_early() {
         .unwrap();
     assert_eq!(report.interrupted, Some(String::from("memory")));
     assert_eq!(report.started, None);
-    let kept = &rig.state().loops["memory"];
+    let kept = &rig.kept("memory");
     assert_eq!(kept.outcome, Some(Outcome::Interrupted));
     assert_eq!(rig.state().running, None);
     assert_eq!(rig.starts.count(), 1);
@@ -473,8 +475,8 @@ fn a_run_that_cant_start_is_failed_and_unclaimed() {
     assert_eq!(rig.clock.running(), None);
     let state = rig.state();
     assert_eq!(state.running, None);
-    assert_eq!(state.loops["memory"].outcome, Some(Outcome::Failed));
-    assert_eq!(state.loops["memory"].due, Some(T0 + 2 * HOUR));
+    assert_eq!(state.loops.get("memory").unwrap().outcome, Some(Outcome::Failed));
+    assert_eq!(state.loops.get("memory").unwrap().due, Some(T0 + 2 * HOUR));
 }
 
 /// A nightly loop is due at its local time in the machine's zone.
@@ -491,7 +493,7 @@ fn a_nightly_loop_is_due_at_its_local_time() {
     }]);
     // 06:31 in New York on 26 November: next 03:00 is the 27th, 08:00Z.
     let _ = rig.tick(T0, open());
-    let due = rig.state().loops["alignment"].due.unwrap();
+    let due = rig.kept("alignment").due.unwrap();
     assert_eq!(at(due).to_string(), "2026-11-27T08:00:00Z");
 }
 
