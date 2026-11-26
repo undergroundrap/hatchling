@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn the_backend_views_and_supervises_through_its_modules() {
         use crate::Supervised as _;
-        let mut child = std::process::Command::new("/bin/true").spawn().unwrap();
+        let child = std::process::Command::new("/bin/true").spawn().unwrap();
         let process = Linux.supervise(child).unwrap();
         let exit = process
             .wait_deadline(std::time::Duration::from_secs(10))
