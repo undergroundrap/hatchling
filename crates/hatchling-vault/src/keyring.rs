@@ -54,7 +54,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use crate::Error;
 use crate::acting::{give, owner_in};
 use crate::seal::MasterKey;
-use crate::vault::ensure_owner_only_dir;
+use crate::vault::{check_owner_only_dir, ensure_owner_only_dir, open_nofollow};
 
 /// The keyring format this build writes.
 const FORMAT: u32 = 3;
@@ -505,7 +505,13 @@ impl Keyring {
             path: path.to_path_buf(),
             source,
         };
-        let metadata = std::fs::symlink_metadata(path).map_err(load)?;
+        // Opened without following a symlink, its directory checked, and
+        // judged by the descriptor, not the path (#686).
+        let file = open_nofollow(path).map_err(load)?;
+        if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+            check_owner_only_dir(parent, owner)?;
+        }
+        let metadata = file.metadata().map_err(load)?;
         if !metadata.file_type().is_file()
             || metadata.mode() & 0o777 != KEYRING_MODE
             || metadata.uid() != owner
@@ -518,9 +524,7 @@ impl Keyring {
         // what it holds; wiped when dropped, as it holds a TOTP seed.
         let size = usize::try_from(metadata.len().min(MAX_KEYRING_BYTES)).unwrap_or(0);
         let mut text = Zeroizing::new(String::with_capacity(size + 1));
-        std::fs::File::open(path)
-            .map_err(load)?
-            .take(MAX_KEYRING_BYTES + 1)
+        file.take(MAX_KEYRING_BYTES + 1)
             .read_to_string(&mut text)
             .map_err(load)?;
         let format = |detail: &str| Error::KeyringFormat {
@@ -813,7 +817,7 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 /// small block at a time through a buffer wiped after: the file holds a
 /// TOTP seed, and a whole copy of it would be freed unwiped.
 fn digest_file(path: &Path) -> std::io::Result<Option<[u8; 32]>> {
-    let mut file = match std::fs::File::open(path) {
+    let mut file = match open_nofollow(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),

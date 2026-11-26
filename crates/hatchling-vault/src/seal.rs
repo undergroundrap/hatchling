@@ -58,7 +58,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::acting::{give, owner_in};
-use crate::vault::{Vault, ensure_owner_only_dir};
+use crate::vault::{Vault, check_owner_only_dir, ensure_owner_only_dir, open_nofollow};
 use crate::{Error, Secret, SecretName};
 use hatchling_core::MAX_SECRET_BYTES;
 
@@ -770,7 +770,7 @@ impl FileKey {
             ),
         })?;
         ensure_owner_only_dir(parent, owner)?;
-        match std::fs::File::open(&self.path) {
+        match open_nofollow(&self.path) {
             Ok(file) => Self::read_key(&self.path, &file, owner),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => self.create_key(owner),
             Err(source) => Err(Error::KeyLoad {
@@ -780,13 +780,14 @@ impl FileKey {
         }
     }
 
-    /// Reads and validates an existing key file: a regular file (never
-    /// a symlink), mode `0600`, owned by `owner`, holding exactly 32
+    /// Reads and validates an existing key file, opened by
+    /// [`open_nofollow`] so a symlink was never followed: what was opened
+    /// is a regular file, mode `0600`, owned by `owner`, holding exactly 32
     /// bytes. Anything else fails closed.
     fn read_key(path: &Path, file: &std::fs::File, owner: u32) -> Result<MasterKey, Error> {
-        // `symlink_metadata`: a symlink key file is never accepted,
-        // even one pointing at a well-formed key.
-        let metadata = std::fs::symlink_metadata(path).map_err(|source| Error::KeyLoad {
+        // The descriptor's, not the path's (#686): a file swapped in at the
+        // path after the open is not what's read.
+        let metadata = file.metadata().map_err(|source| Error::KeyLoad {
             path: path.to_path_buf(),
             source,
         })?;
@@ -862,7 +863,7 @@ impl FileKey {
             Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Lost the creation race: the winner's key is the key.
                 // `key` drops here, zeroized by the derive.
-                let file = std::fs::File::open(&self.path).map_err(|source| Error::KeyLoad {
+                let file = open_nofollow(&self.path).map_err(|source| Error::KeyLoad {
                     path: self.path.clone(),
                     source,
                 })?;
@@ -894,11 +895,22 @@ impl FileKey {
             .map_or_else(|| rustix::process::getuid().as_raw(), owner_in)
     }
 
+    /// The key file's, opened without following a symlink, its directory
+    /// checked as a load or create checks it (#686), and judged by what was
+    /// opened.
     fn load_as(&self, owner: u32) -> Result<MasterKey, Error> {
-        let file = std::fs::File::open(&self.path).map_err(|source| Error::KeyLoad {
+        let file = open_nofollow(&self.path).map_err(|source| Error::KeyLoad {
             path: self.path.clone(),
             source,
         })?;
+        let parent = self.path.parent().ok_or_else(|| Error::KeyLoad {
+            path: self.path.clone(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "key path has no parent directory",
+            ),
+        })?;
+        check_owner_only_dir(parent, owner)?;
         Self::read_key(&self.path, &file, owner)
     }
 }

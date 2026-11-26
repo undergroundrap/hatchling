@@ -45,6 +45,37 @@ pub(crate) fn ensure_owner_only_dir(path: &Path, owner: u32) -> Result<(), Error
             source: std::io::Error::other(source),
         })?;
     }
+    check_owner_only_dir(path, owner)
+}
+
+/// Opens the file at `path` to read, never following a symlink and never
+/// waiting on a FIFO (#686): `O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC`. What's
+/// opened is then judged by its descriptor, not by the path, which may have
+/// changed in between. `O_NONBLOCK` stays: Linux ignores it on a regular
+/// file, the only kind a caller goes on to read.
+///
+/// # Errors
+///
+/// The open's own: a symlink at `path` is `ELOOP`.
+pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use rustix::fs::{Mode, OFlags};
+    rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map(std::fs::File::from)
+    .map_err(|errno| std::io::Error::from_raw_os_error(errno.raw_os_error()))
+}
+
+/// Checks that `path` is a directory, not a symlink, mode `0700` and owned
+/// by `owner`, making nothing: for a load, which must never create (#686).
+///
+/// # Errors
+///
+/// [`Error::Io`] when it can't be looked at, [`Error::NotADirectory`] or
+/// [`Error::InsecurePermissions`] when it isn't such a directory.
+pub(crate) fn check_owner_only_dir(path: &Path, owner: u32) -> Result<(), Error> {
     // `symlink_metadata`: a symlink is never accepted, even one
     // pointing at a directory.
     let metadata = std::fs::symlink_metadata(path).map_err(|source| Error::Io { source })?;
