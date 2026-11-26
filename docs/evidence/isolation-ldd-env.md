@@ -29,4 +29,15 @@ In `hatchling-isolation`:
 
 ## The gate
 
-RESULTS
+On the sandbox, with `HATCHLING_REQUIRE_CELL=1`:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4597 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by the isolation tests:
+  - the environment not cleared;
+  - nothing others may write counted;
+  - a sticky directory not excepted;
+  - a link's mode counted.
+- **Mutation** on the changed lines of `hatchling-isolation`: 25 mutants, 23 caught, 2 unviable, none missed.
+  - The first pass missed `ldd_identity` returning nothing, since these tests don't run as root.
+  - It now takes the effective uid, and a test asks it as root would on a directory of the test's own user.
