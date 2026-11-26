@@ -178,7 +178,9 @@ pub fn unix_stream_quiet(socket: BorrowedFd<'_>) -> std::io::Result<bool> {
 /// `AF_UNIX` stream socket above stderr. It is marked close-on-exec
 /// again, so nothing the program starts inherits it.
 ///
-/// Call it once for a descriptor: the stream it returns owns it.
+/// It must not be close-on-exec already (#704): one that is wasn't
+/// inherited, or was adopted before and is owned already. A second
+/// adoption is refused, so two owners can never close it twice.
 ///
 /// # Errors
 ///
@@ -194,8 +196,12 @@ pub fn inherited_unix_stream(fd: i32) -> Result<std::os::unix::net::UnixStream, 
     if fd <= 2 {
         return Err(refused("stdio is not a connection"));
     }
-    if crate::fd_flags(fd).is_none() {
-        return Err(refused("the descriptor is not open"));
+    match crate::fd_flags(fd) {
+        None => return Err(refused("the descriptor is not open")),
+        Some(flags) if flags & libc::FD_CLOEXEC != 0 => {
+            return Err(refused(crate::fds::INHERITED_ONLY));
+        }
+        Some(_) => {}
     }
     // SAFETY: `fd` is open (checked above), and the borrow ends before
     // anything closes it.
@@ -304,6 +310,13 @@ mod tests {
         crate::keep_across_exec(unsafe { BorrowedFd::borrow_raw(fd) }).unwrap();
         let mut adopted = inherited_unix_stream(fd).unwrap();
         assert_eq!(crate::fd_flags(fd), Some(libc::FD_CLOEXEC));
+        // Adopted once: a second adoption, while it's owned, is refused, and
+        // so is an end never handed across exec (#704).
+        assert!(
+            inherited_unix_stream(fd).is_err_and(|error| error.to_string().contains("adopted already"))
+        );
+        let (_one, fresh) = UnixStream::pair().unwrap();
+        assert!(inherited_unix_stream(std::os::fd::AsRawFd::as_raw_fd(&fresh)).is_err());
         (&ours).write_all(b"hi").unwrap();
         let mut got = [0u8; 2];
         adopted.read_exact(&mut got).unwrap();

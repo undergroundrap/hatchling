@@ -133,7 +133,10 @@ pub fn keep_across_exec(fd: BorrowedFd<'_>) -> Result<(), Error> {
 /// not (WO-017: the vault keeper's security keys). It must be above
 /// stderr and a character device, and is marked close-on-exec again.
 ///
-/// Call it once for a descriptor: the file it returns owns it.
+/// It must not be close-on-exec already (#704): one that is wasn't
+/// inherited, since it couldn't have crossed `exec`, or was adopted before
+/// and is owned already. A second adoption of a descriptor is refused, so
+/// two owners can never close it twice.
 ///
 /// # Errors
 ///
@@ -147,8 +150,12 @@ pub fn inherited_device(fd: i32) -> Result<std::fs::File, Error> {
     if fd <= 2 {
         return Err(refused("stdio is not a device"));
     }
-    if fd_flags(fd).is_none() {
-        return Err(refused("the descriptor is not open"));
+    match fd_flags(fd) {
+        None => return Err(refused("the descriptor is not open")),
+        Some(flags) if flags & libc::FD_CLOEXEC != 0 => {
+            return Err(refused(INHERITED_ONLY));
+        }
+        Some(_) => {}
     }
     // SAFETY: `fd` is open (checked above), and the borrow ends before
     // anything closes it.
@@ -170,6 +177,10 @@ pub fn inherited_device(fd: i32) -> Result<std::fs::File, Error> {
     let owned = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
     Ok(std::fs::File::from(owned))
 }
+
+/// Why a close-on-exec descriptor isn't adopted.
+pub(crate) const INHERITED_ONLY: &str =
+    "the descriptor is close-on-exec: it wasn't inherited, or it's adopted already";
 
 /// What a descriptor handed to a cell as its stdio is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -630,6 +641,13 @@ mod tests {
         assert!(inherited_device(read.as_raw_fd()).is_err());
         assert!(fd_flags(read.as_raw_fd()).is_some(), "left as it was");
         assert!(inherited_device(2).is_err());
+        // Adopted once: a second adoption, while it's owned, is refused, and
+        // so is a device opened here, which no exec carried (#704).
+        let twice = inherited_device(raw).map(|_| ()).map_err(|error| error.to_string());
+        assert!(twice.is_err_and(|error| error.contains("adopted already")));
+        let fresh = std::fs::File::open("/dev/null").unwrap();
+        assert!(inherited_device(fresh.as_raw_fd()).is_err());
+        assert!(fd_flags(fresh.as_raw_fd()).is_some(), "left as it was");
         drop(adopted);
         assert!(inherited_device(raw).is_err(), "no longer open");
     }

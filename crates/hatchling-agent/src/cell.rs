@@ -745,6 +745,14 @@ mod tests {
 
     use super::*;
     use crate::{CellId, LogLevel, PeerUid, SocketPath};
+
+    /// `end` as a launcher hands it across `exec`: its raw descriptor, not
+    /// close-on-exec, which is the only kind a cell adopts (#704).
+    fn handed(end: UnixStream) -> i32 {
+        use std::os::fd::{AsFd as _, IntoRawFd as _};
+        hatchling_sys::keep_across_exec(end.as_fd()).unwrap();
+        end.into_raw_fd()
+    }
     use std::io::ErrorKind;
     use std::os::unix::net::UnixListener;
     use std::path::Path;
@@ -807,7 +815,7 @@ mod tests {
         use std::os::fd::IntoRawFd as _;
         let (_broker, agent) = UnixStream::pair().unwrap();
         let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
-        config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+        config.broker = BrokerAddress::Connection(handed(agent));
         // The broker made the pair here, so the kernel names this process.
         config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
         let authorized = Cell::new(config)
@@ -840,7 +848,7 @@ mod tests {
         let adopted = |vault: Option<i32>| {
             let (broker, agent) = UnixStream::pair().unwrap();
             let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
-            config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+            config.broker = BrokerAddress::Connection(handed(agent));
             config.vault_fd = vault;
             config.broker_uid = me;
             let cell = Cell::new(config)
@@ -858,7 +866,7 @@ mod tests {
         keeper
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
-        let (broker, cell) = adopted(Some(vault.into_raw_fd()));
+        let (broker, cell) = adopted(Some(handed(vault)));
         // Held while the broker's end is read: a dropped cell is its end.
         let cell = cell.unwrap();
         said(&cell);
@@ -895,7 +903,7 @@ mod tests {
         use std::os::fd::IntoRawFd as _;
         let (broker, agent) = UnixStream::pair().unwrap();
         let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
-        config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+        config.broker = BrokerAddress::Connection(handed(agent));
         config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
         config.run_chat = true;
         config.run_history = vec![hatchling_core::conversation::ChatExchange {
@@ -1018,7 +1026,7 @@ mod tests {
         let run = |chat: bool| {
             let (broker, agent) = UnixStream::pair().unwrap();
             let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
-            config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+            config.broker = BrokerAddress::Connection(handed(agent));
             config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
             config.run_chat = chat;
             // The broker welcomes the cell, then answers each asking: the
@@ -1104,7 +1112,7 @@ mod tests {
         use std::os::fd::IntoRawFd as _;
         let (broker, agent) = UnixStream::pair().unwrap();
         let mut config = config_with_socket("/no/such/dir-xyz/broker.sock");
-        config.broker = BrokerAddress::Connection(agent.into_raw_fd());
+        config.broker = BrokerAddress::Connection(handed(agent));
         config.broker_uid = PeerUid::from_kernel(rustix::process::getuid().as_raw());
         config.run_chat = true;
         let serve = room_serving(broker);

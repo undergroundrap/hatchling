@@ -1270,6 +1270,14 @@ pub fn drop_to(uid: u32, gid: u32) -> Result<(), Error> {
             source: io::Error::from(io::ErrorKind::InvalidInput),
         });
     }
+    // Root's group would leave what root's group may read and write in
+    // reach (#704).
+    if gid == 0 {
+        return Err(Error::Process {
+            operation: "drop to root's group",
+            source: io::Error::from(io::ErrorKind::InvalidInput),
+        });
+    }
     clear_groups()?;
     // SAFETY: setresgid only changes this process's group ids; failure
     // is reported, never assumed.
@@ -2129,6 +2137,14 @@ mod tests {
             drop_to(0, 4242),
             Err(Error::Process {
                 operation: "drop to root",
+                ..
+            })
+        ));
+        // Nor to root's group (#704), refused before anything changes.
+        assert!(matches!(
+            drop_to(4242, 0),
+            Err(Error::Process {
+                operation: "drop to root's group",
                 ..
             })
         ));
