@@ -26,6 +26,47 @@ pub const MAX_TEXT_BYTES: usize = 400;
 pub const MAX_NAME_BYTES: usize = 256;
 /// What a string that held a secret is kept as.
 pub const WITHHELD: &str = "[withheld: it held a secret]";
+/// The most records a run is given of the runs it continues: the run it
+/// follows, and those that one continued.
+pub const MAX_CARRIED: usize = 3;
+
+/// The bytes of records a run may be given beside a history of
+/// `history_bytes`: half of it, taken out of the history's room.
+#[must_use]
+pub const fn carried_budget(history_bytes: usize) -> usize {
+    history_bytes / 2
+}
+
+/// `records`, oldest first, fitted to `budget` bytes of entries in all.
+///
+/// At most [`MAX_CARRIED`], the newest first to be given room. The newest
+/// is always given, cut to what's left if it must be; an older one only
+/// while it keeps an entry, and none once one doesn't.
+#[must_use]
+pub fn fitted(records: &[RunRecord], budget: usize) -> Vec<RunRecord> {
+    let mut left = budget;
+    let mut given = Vec::new();
+    for record in records.iter().rev().take(MAX_CARRIED) {
+        let mut cut = record.clone();
+        cut.cut_to(left);
+        if !given.is_empty() && cut.entries.is_empty() && !record.entries.is_empty() {
+            break;
+        }
+        left = left.saturating_sub(cut.bytes());
+        given.push(cut);
+    }
+    given.reverse();
+    given
+}
+
+/// The bytes `records` take, as [`fitted`] counts them.
+#[must_use]
+pub fn carried_bytes(records: &[RunRecord]) -> usize {
+    records
+        .iter()
+        .map(RunRecord::bytes)
+        .fold(0, usize::saturating_add)
+}
 
 /// How a message the run sent ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +307,18 @@ impl RunRecord {
             .iter()
             .map(entry_bytes)
             .fold(0, usize::saturating_add)
+    }
+
+    /// Cut to at most `bytes` of entries: the first kept, each one let go
+    /// counted by its kind in [`Self::more`], as one past the bounds is.
+    pub fn cut_to(&mut self, bytes: usize) {
+        while self.bytes() > bytes {
+            let Some(entry) = self.entries.pop() else {
+                break;
+            };
+            let count = self.more.entry(entry.effect.kind().to_owned()).or_default();
+            *count = count.saturating_add(1);
+        }
     }
 
     /// Whether it holds no effect at all, kept or counted.
@@ -628,6 +681,103 @@ mod tests {
             },
         );
         assert_eq!(record.texts(), "local\nhello\nlocal\na.md\nb.md\nc.md\nd");
+    }
+
+    #[test]
+    fn a_record_is_cut_from_its_end_and_counts_what_went() {
+        let mut record = RunRecord::new("run-abc");
+        record.note(0, sent("one"));
+        record.note(1, wrote("two.md"));
+        record.note(2, wrote("three.md"));
+        let whole = record.bytes();
+        let mut uncut = record.clone();
+        uncut.cut_to(whole);
+        assert_eq!(uncut, record, "a record within the bytes is left as it is");
+        let first = entry_bytes(&Entry {
+            at: 0,
+            effect: sent("one"),
+        });
+        record.cut_to(first);
+        assert_eq!(effects(&record), [sent("one")]);
+        assert_eq!(
+            record.more,
+            BTreeMap::from([(String::from("room_wrote"), 2)])
+        );
+        record.cut_to(0);
+        assert!(record.entries.is_empty());
+        assert_eq!(
+            record.more,
+            BTreeMap::from([
+                (String::from("message_sent"), 1),
+                (String::from("room_wrote"), 2)
+            ])
+        );
+        assert!(!record.is_empty(), "what went is still counted");
+    }
+
+    fn of(run: &str, names: &[&str]) -> RunRecord {
+        let mut record = RunRecord::new(run);
+        for name in names {
+            record.note(0, wrote(name));
+        }
+        record
+    }
+
+    #[test]
+    fn a_chain_is_fitted_newest_first_and_at_most_three() {
+        let chain = [
+            of("run-1", &["a.md"]),
+            of("run-2", &["b.md"]),
+            of("run-3", &["c.md"]),
+            of("run-4", &["d.md"]),
+        ];
+        let roomy = fitted(&chain, MAX_RECORD_BYTES * 4);
+        assert_eq!(
+            roomy
+                .iter()
+                .map(|record| record.run.as_str())
+                .collect::<Vec<_>>(),
+            ["run-2", "run-3", "run-4"],
+            "the three newest, oldest first"
+        );
+        assert_eq!(roomy.last(), chain.last());
+        assert_eq!(
+            carried_bytes(&roomy),
+            roomy.iter().map(RunRecord::bytes).sum::<usize>()
+        );
+        // Room for one entry: the newest whole, and no older one.
+        let one = of("run-4", &["d.md"]).bytes();
+        assert_eq!(fitted(&chain, one), [of("run-4", &["d.md"])]);
+        // No room at all: the newest is still given, cut, its effects counted.
+        let none = fitted(&chain, 0);
+        assert_eq!(none.len(), 1);
+        assert_eq!(
+            none.first().map(|record| record.run.as_str()),
+            Some("run-4")
+        );
+        assert_eq!(none.first().map(|record| record.entries.len()), Some(0));
+        assert_eq!(
+            none.first()
+                .and_then(|record| record.more.get("room_wrote").copied()),
+            Some(1)
+        );
+        // An older one is given in part while it keeps an entry.
+        let big = of("run-3", &["x.md", "y.md", "z.md"]);
+        let partly = fitted(&[big, of("run-4", &["d.md"])], one * 3);
+        assert_eq!(partly.len(), 2);
+        assert_eq!(partly.first().map(|record| record.entries.len()), Some(2));
+        assert!(carried_bytes(&partly) <= one * 3);
+        // An older empty record, with nothing to cut, is given as it is.
+        let empty = fitted(&[RunRecord::new("run-0"), of("run-4", &["d.md"])], one);
+        assert_eq!(empty.len(), 2);
+        assert_eq!(fitted(&[], 100), []);
+    }
+
+    #[test]
+    fn the_budget_is_half_the_historys_room() {
+        assert_eq!(carried_budget(24 * 1024), 12 * 1024);
+        assert_eq!(carried_budget(0), 0);
+        assert_eq!(carried_budget(3), 1);
     }
 
     #[test]

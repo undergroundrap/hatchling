@@ -694,6 +694,11 @@
           "type": "string"
         },
         {
+          "const": "keep_going",
+          "description": "[`UiAction::KeepGoing`].",
+          "type": "string"
+        },
+        {
           "const": "decide",
           "description": "[`UiAction::Decide`].",
           "type": "string"
@@ -13465,6 +13470,24 @@
           "type": "object"
         },
         {
+          "description": "Have the next run carry on from the last, which stopped before it\nwas done (WO-053): the owner's alone. It's a message from them,\nshown as theirs, and its run is given the broker's record of the\nruns it continues. Answered `nothing_to_continue` when the last run\nanswered, or none stopped in this conversation.",
+          "properties": {
+            "action": {
+              "const": "keep_going",
+              "type": "string"
+            },
+            "chat_id": {
+              "description": "The chat.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action",
+            "chat_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Approve or deny a confirmation, at the revision and the action\ndigest the user saw.",
           "properties": {
             "action": {
@@ -15029,6 +15052,24 @@
             },
             "result": {
               "const": "nothing_to_stop",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "chat_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The chat's last run answered, or none stopped in its conversation:\nthere's nothing to keep going from (v12).",
+          "properties": {
+            "chat_id": {
+              "description": "The chat.",
+              "type": "string"
+            },
+            "result": {
+              "const": "nothing_to_continue",
               "type": "string"
             }
           },
@@ -16671,7 +16712,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 34,
-    "ui_schema_version": 11
+    "ui_schema_version": 12
   },
   "x-roots": {
     "ActivityEvent": {

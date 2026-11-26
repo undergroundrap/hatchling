@@ -5242,6 +5242,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
                 chat: false,
                 history: Vec::new(),
                 earlier: Vec::new(),
+                records: Vec::new(),
                 builders: std::collections::BTreeMap::new(),
                 tools: None,
             });
@@ -5294,6 +5295,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         });
@@ -5363,6 +5365,7 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         });

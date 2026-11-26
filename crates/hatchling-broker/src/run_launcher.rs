@@ -995,14 +995,24 @@ fn run_token() -> Result<String, String> {
 fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
     let model = crate::model_choice::server(&config.scheduler);
     // What the run is given of the conversation, within the bounds of the
-    // window it's told (#595): those its agent reads it by.
+    // window it's told (#595): those its agent reads it by. The records of
+    // the runs it continues (WO-053) are fitted first, to their share of
+    // the history's room, and the history is given what they leave.
+    let bounds = hatchling_core::conversation::Bounds::for_window(model.context_window);
+    let records = hatchling_core::run_record::fitted(
+        &request.records,
+        hatchling_core::run_record::carried_budget(bounds.history_bytes),
+    );
     let given = hatchling_core::conversation::Conversation {
         earlier: request.earlier.clone(),
         exchanges: request.history.clone(),
     }
-    .within(&hatchling_core::conversation::Bounds::for_window(
-        model.context_window,
-    ));
+    .within(&hatchling_core::conversation::Bounds {
+        history_bytes: bounds
+            .history_bytes
+            .saturating_sub(hatchling_core::run_record::carried_bytes(&records)),
+        ..bounds
+    });
     ScheduledRun {
         // A run for the owner's Feed page writes a post from their prompt.
         task: if request.channel == crate::feed_page::FEED_PAGE {
@@ -1027,6 +1037,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         chat: request.chat,
         history: given.exchanges,
         earlier: given.earlier,
+        records,
         builders: run_artifacts(config, request).builders,
         tools: Some(run_tools(
             config,
@@ -1512,6 +1523,7 @@ mod tests {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
         }
     }
 
@@ -1587,6 +1599,76 @@ mod tests {
             let earlier = serde_json::to_string(&run.earlier).unwrap();
             assert_eq!(parse_earlier(&earlier, &bounds).unwrap(), run.earlier);
         }
+    }
+
+    /// WO-053: a chat run's cell is given the records of the runs it
+    /// continues fitted to their share of the window, at most three, and
+    /// the history gives up the room they take: fewer exchanges than the
+    /// same run without them, within what's left.
+    #[test]
+    fn a_chat_runs_records_are_fitted_and_taken_out_of_the_historys_room() {
+        use hatchling_core::conversation::{Bounds, ChatExchange};
+        use hatchling_core::run_record::{
+            Effect, MAX_CARRIED, RunRecord, carried_budget, carried_bytes, fitted,
+        };
+        let mut asked = request(Vec::new());
+        asked.chat = true;
+        asked.history = (0..30)
+            .map(|n| ChatExchange {
+                user: format!("q{n} {}", "x".repeat(1400)),
+                assistant: format!("a{n} {}", "y".repeat(1400)),
+            })
+            .collect();
+        let record = |n: usize| {
+            let mut record = RunRecord::new(&format!("run-{n}"));
+            for at in 0..20 {
+                record.note(
+                    at,
+                    Effect::RoomWrote {
+                        path: format!("notes/{n}/{at}-{}.md", "p".repeat(150)),
+                        bytes: 1,
+                        replaced: false,
+                    },
+                );
+            }
+            record
+        };
+        asked.records = (0..5).map(record).collect();
+        // Exchanges this large meet the history's bytes before its count.
+        let config = config();
+        let budget = carried_budget(Bounds::LEAST.history_bytes);
+        let run = scheduled_run(&config, &asked);
+        assert_eq!(run.records, fitted(&asked.records, budget));
+        assert!(run.records.len() <= MAX_CARRIED);
+        assert!(!run.records.is_empty());
+        assert!(carried_bytes(&run.records) <= budget);
+        assert_eq!(
+            run.records.last().map(|record| record.run.as_str()),
+            Some("run-4"),
+            "the newest is given"
+        );
+        // Without records, more of the history fits.
+        let mut plain = asked.clone();
+        plain.records.clear();
+        let without = scheduled_run(&config, &plain);
+        assert!(without.records.is_empty());
+        assert!(
+            run.history.len() < without.history.len(),
+            "{} given beside the records, {} without",
+            run.history.len(),
+            without.history.len()
+        );
+        assert_eq!(run.history.last(), asked.history.last(), "the newest kept");
+        // What's given beside them fits what they leave.
+        let left = Bounds {
+            history_bytes: Bounds::LEAST.history_bytes - carried_bytes(&run.records),
+            ..Bounds::LEAST
+        };
+        let history = serde_json::to_string(&run.history).unwrap();
+        assert_eq!(
+            hatchling_core::conversation::parse_history(&history, &left).unwrap(),
+            run.history
+        );
     }
 
     /// A run is told the tool groups the operator turned on, so its
@@ -2111,6 +2193,7 @@ mod tests {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         };
@@ -2610,6 +2693,7 @@ echo the answer
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         });
@@ -2646,6 +2730,7 @@ echo the answer
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         });

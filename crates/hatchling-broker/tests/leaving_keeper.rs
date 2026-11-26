@@ -361,6 +361,7 @@ fn request(task: String) -> RunRequest {
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     }
 }
 
@@ -1523,6 +1524,7 @@ fn a_hit_kills_the_brokers_long_lived_cell_and_its_vault_channel() -> Result<(),
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
         builders: std::collections::BTreeMap::new(),
         tools: None,
     };

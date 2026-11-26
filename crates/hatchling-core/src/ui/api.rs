@@ -61,6 +61,8 @@ pub enum ApiRequest {
     NewConversation,
     /// [`UiAction::StopRun`].
     StopRun,
+    /// [`UiAction::KeepGoing`].
+    KeepGoing,
     /// [`UiAction::Decide`].
     Decide,
     /// [`UiAction::ManageSchedule`].
@@ -163,6 +165,7 @@ impl ApiRequest {
             UiAction::SendMessage { .. } => Self::SendMessage,
             UiAction::NewConversation { .. } => Self::NewConversation,
             UiAction::StopRun { .. } => Self::StopRun,
+            UiAction::KeepGoing { .. } => Self::KeepGoing,
             UiAction::Decide { .. } => Self::Decide,
             UiAction::ManageSchedule { .. } => Self::ManageSchedule,
             UiAction::ManageGrants { .. } => Self::ManageGrants,
@@ -350,6 +353,10 @@ mod tests {
             (
                 action(UiAction::StopRun { chat_id: id() }),
                 ApiRequest::StopRun,
+            ),
+            (
+                action(UiAction::KeepGoing { chat_id: id() }),
+                ApiRequest::KeepGoing,
             ),
             (
                 action(UiAction::BrowserInput {

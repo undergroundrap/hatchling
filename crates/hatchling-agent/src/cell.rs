@@ -661,6 +661,7 @@ impl Cell<Ready> {
             .with_earlier(hatchling_core::conversation::render_earlier(
                 &self.config().run_earlier,
             ))
+            .with_records(carried(&self.config().run_records).as_deref())
             .run(model, request);
         // The orphan rule: no child outlives the run that spawned it.
         let _ = children.reap(self.connection(), hatchling_core::subagent::ORPHANED);
@@ -720,8 +721,26 @@ impl Cell<Ready> {
     }
 }
 
+/// The broker's records of the runs a chat turn continues, as the JSON the
+/// loop puts in their envelope (WO-053): none when it continues none.
+fn carried(records: &[hatchling_core::run_record::RunRecord]) -> Option<String> {
+    if records.is_empty() {
+        return None;
+    }
+    serde_json::to_string(records).ok()
+}
+
 #[cfg(test)]
 mod tests {
+    /// The records reach the loop as their JSON, and none adds nothing.
+    #[test]
+    fn carried_records_are_given_as_their_json() {
+        assert_eq!(carried(&[]), None);
+        let record = hatchling_core::run_record::RunRecord::new("run-1");
+        let given = carried(std::slice::from_ref(&record)).unwrap();
+        assert_eq!(given, serde_json::to_string(&[record]).unwrap());
+    }
+
     use super::*;
     use crate::{CellId, LogLevel, PeerUid, SocketPath};
     use std::io::ErrorKind;
@@ -746,6 +765,7 @@ mod tests {
             run_chat: false,
             run_history: Vec::new(),
             run_earlier: Vec::new(),
+            run_records: Vec::new(),
             run_builders: std::collections::BTreeMap::new(),
             run_tools: None,
             run_deadline: None,
