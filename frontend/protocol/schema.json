@@ -839,6 +839,11 @@
           "type": "string"
         },
         {
+          "const": "manage_review",
+          "description": "[`UiAction::ManageReview`].",
+          "type": "string"
+        },
+        {
           "const": "give_code",
           "description": "[`UiAction::GiveCode`].",
           "type": "string"
@@ -6922,6 +6927,270 @@
             "result"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "ReviewItem": {
+      "description": "What a background loop may not apply itself, waiting for the owner on\ntheir Review page (WO-054): proposed by the loop, never applied by it.",
+      "properties": {
+        "change": {
+          "description": "What would change, as the loop proposed it.",
+          "type": "string"
+        },
+        "decided_at": {
+          "description": "When the owner decided, RFC 3339, once they have.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence": {
+          "description": "Where it came from: the handles it cites.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "item_id": {
+          "description": "Its id.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ReviewKind",
+          "description": "What kind of change it is."
+        },
+        "proposed_at": {
+          "description": "When it was proposed, RFC 3339.",
+          "type": "string"
+        },
+        "proposed_by": {
+          "description": "The loop that proposed it, such as `memory`.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/ReviewState",
+          "description": "Where it stands."
+        },
+        "target": {
+          "description": "The record it would change, by its handle (`memory:<id>`), when it\nchanges one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "why": {
+          "description": "Why, as the loop said it.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "item_id",
+        "proposed_by",
+        "kind",
+        "change",
+        "why",
+        "evidence",
+        "proposed_at",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ReviewKind": {
+      "description": "What kind of change a review item is: each one a loop may not make\non its own (WO-054).",
+      "oneOf": [
+        {
+          "const": "replace",
+          "description": "Replace one of the owner's preferences, boundaries or commitments.",
+          "type": "string"
+        },
+        {
+          "const": "remove",
+          "description": "Remove one of them.",
+          "type": "string"
+        },
+        {
+          "const": "identity",
+          "description": "A fact about who the owner is.",
+          "type": "string"
+        },
+        {
+          "const": "unresolved",
+          "description": "Something its checks couldn't resolve.",
+          "type": "string"
+        },
+        {
+          "const": "guidance",
+          "description": "Install new guidance: what changes how the agent works.",
+          "type": "string"
+        }
+      ]
+    },
+    "ReviewOp": {
+      "description": "An operation on the owner's Review page (WO-054).",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "List the items, the newest first.",
+          "properties": {
+            "op": {
+              "const": "list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "Approve one waiting item, or reject it.",
+          "properties": {
+            "approve": {
+              "description": "Approve, or reject.",
+              "type": "boolean"
+            },
+            "item_id": {
+              "description": "It, as listed.",
+              "type": "string"
+            },
+            "op": {
+              "const": "decide",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "item_id",
+            "approve"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ReviewResult": {
+      "description": "The result of a [`ReviewOp`].",
+      "oneOf": [
+        {
+          "description": "The items, the newest first.",
+          "properties": {
+            "items": {
+              "description": "They.",
+              "items": {
+                "$ref": "#/$defs/ReviewItem"
+              },
+              "type": "array"
+            },
+            "result": {
+              "const": "listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "items"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It was decided: as it now stands.",
+          "properties": {
+            "item": {
+              "$ref": "#/$defs/ReviewItem",
+              "description": "It."
+            },
+            "result": {
+              "const": "decided",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "item"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "No item has the id.",
+          "properties": {
+            "result": {
+              "const": "not_found",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It isn't waiting: decided already, or stale.",
+          "properties": {
+            "result": {
+              "const": "not_waiting",
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/$defs/ReviewState",
+              "description": "Where it stands."
+            }
+          },
+          "required": [
+            "result",
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker keeps no Review page: scheduled work is off.",
+          "properties": {
+            "result": {
+              "const": "off",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The broker couldn't read or change the page; its log says why.",
+          "properties": {
+            "result": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ReviewState": {
+      "description": "Where a review item stands.",
+      "oneOf": [
+        {
+          "const": "waiting",
+          "description": "It waits for the owner.",
+          "type": "string"
+        },
+        {
+          "const": "approved",
+          "description": "The owner approved it: its loop applies it, checking its target\nhasn't changed.",
+          "type": "string"
+        },
+        {
+          "const": "rejected",
+          "description": "The owner rejected it: nothing changes.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "Its target changed after it was proposed: approving it does\nnothing.",
+          "type": "string"
         }
       ]
     },
@@ -14076,6 +14345,24 @@
           "type": "object"
         },
         {
+          "description": "List or decide what background work waits for the owner on their\nReview page (WO-054, v13): the owner's alone.",
+          "properties": {
+            "action": {
+              "const": "manage_review",
+              "type": "string"
+            },
+            "op": {
+              "$ref": "#/$defs/ReviewOp",
+              "description": "The operation."
+            }
+          },
+          "required": [
+            "action",
+            "op"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Give the one-time code a browser session's page asks for (WO-030):\ntyped into the page by the broker, used once and not kept.",
           "properties": {
             "action": {
@@ -14938,6 +15225,24 @@
             },
             "result": {
               "const": "suggestions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "outcome"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A Review page operation's result (WO-054).",
+          "properties": {
+            "outcome": {
+              "$ref": "#/$defs/ReviewResult",
+              "description": "The result."
+            },
+            "result": {
+              "const": "review",
               "type": "string"
             }
           },
@@ -16752,7 +17057,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 34,
-    "ui_schema_version": 12
+    "ui_schema_version": 13
   },
   "x-roots": {
     "ActivityEvent": {

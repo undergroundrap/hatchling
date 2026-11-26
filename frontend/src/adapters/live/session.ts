@@ -106,6 +106,7 @@ export class LiveChatSession implements ChatSessionPort {
             case 'model':
             case 'feed':
             case 'suggestions':
+            case 'review':
             case 'goals':
             case 'memory':
             case 'skills':

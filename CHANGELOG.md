@@ -8,6 +8,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **The review queue, through the local API** ([WO-054](docs/workorders/workorder-054-background-runs.md), slice 4a). What a background loop may not apply on its own now has a place to wait for the owner: replacing or removing a preference, boundary or commitment, a fact about who they are, anything a loop couldn't resolve, and new guidance. `manage_review` lists the items and approves or rejects one. A decision is recorded and applied by the loop that proposed it, never by the queue. The app's Review page follows.
+
 - **The app says whether Hatchling is kept running, and when it wasn't** ([WO-054](docs/workorders/workorder-054-background-runs.md), slice 2b). On a Windows install, the setup checklist has a **Keep Hatchling running** step: done when Windows keeps it running, or off as you chose in Setup, saying that scheduled and background work then runs only while Hatchling is open, and how to turn it on. For a week after Hatchling wasn't running (stopped, or the PC asleep), the checklist says from when to when, so anything scheduled for then didn't run on time.
 
 - **Doctor says whether Windows keeps Hatchling running** ([WO-054](docs/workorders/workorder-054-background-runs.md), slice 2a). On Windows, Hatchling stops soon after its last window closes unless Setup's Startup shortcut keeps it up, and nothing said when it didn't. Now Setup, and each Open Hatchling, tell Hatchling whether the shortcut is there. `hatchling-broker doctor` says **keep running** is on, or that it's off and background work runs only while Hatchling is open, with how to turn it on.
