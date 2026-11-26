@@ -36,9 +36,10 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const IO_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The most a forward to a local model takes in all, however its upstream
-/// trickles (#684): room for a long answer, under a chat run's 30 minutes,
-/// whose end cuts it anyway. A run with nobody there has 10, which end it
-/// first.
+/// trickles (#684).
+///
+/// It leaves room for a long answer, under a chat run's 30 minutes, whose
+/// end cuts it anyway. A run with nobody there has 10, which end it first.
 pub const FORWARD_TIME: Duration = Duration::from_secs(20 * 60);
 
 /// A reader that stops at a time: a read once it's past fails, so an
