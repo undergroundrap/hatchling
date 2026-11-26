@@ -197,13 +197,8 @@ impl Config {
             "HATCHLING_RUN_CHAT",
         )?;
         let model_max_steps = set_max_steps.unwrap_or_else(|| default_steps(run_chat));
-        let (run_history, run_earlier, run_records) = parse_run_conversation(
-            get(env::HATCHLING_RUN_HISTORY.name).as_deref(),
-            get(env::HATCHLING_RUN_EARLIER.name).as_deref(),
-            get(env::HATCHLING_RUN_RECORD.name).as_deref(),
-            run_chat,
-            model_context_window,
-        )?;
+        let (run_history, run_earlier, run_records) =
+            parse_run_conversation(&get, run_chat, model_context_window)?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
         let run_deadline = number(
@@ -274,22 +269,19 @@ type RunConversation = (
 );
 
 /// `HATCHLING_RUN_HISTORY`, `HATCHLING_RUN_EARLIER` and
-/// `HATCHLING_RUN_RECORD`, `history`, `earlier` and `records`: a chat
-/// turn's conversation, held to the bounds of the window the run was told
-/// (#595), as the broker sized what it sent, and the records of the runs it
-/// continues (WO-053).
+/// `HATCHLING_RUN_RECORD`, as `get` reads them: a chat turn's conversation,
+/// held to the bounds of the window the run was told (#595), as the broker
+/// sized what it sent, and the records of the runs it continues (WO-053).
 fn parse_run_conversation(
-    history: Option<&str>,
-    earlier: Option<&str>,
-    records: Option<&str>,
+    get: &impl Fn(&str) -> Option<String>,
     run_chat: bool,
     window: Option<u32>,
 ) -> Result<RunConversation, Error> {
     let bounds = hatchling_core::conversation::Bounds::for_window(window);
     Ok((
-        parse_run_history(history, run_chat, &bounds)?,
-        parse_run_earlier(earlier, run_chat, &bounds)?,
-        parse_run_records(records, run_chat, window)?,
+        parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat, &bounds)?,
+        parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat, &bounds)?,
+        parse_run_records(get(env::HATCHLING_RUN_RECORD.name).as_deref(), run_chat, window)?,
     ))
 }
 
