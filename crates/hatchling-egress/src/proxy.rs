@@ -396,6 +396,17 @@ fn validate_request(request: &EgressRequest) -> Result<()> {
         // No path traversal via double slashes.
         return Err(Error::InvalidSurrogate);
     }
+    // No percent-encoding and no `.` or `..` segment: the request policy
+    // reads the path a server routes on, not one it decodes into another
+    // (#681). No API path Hatchling forwards needs them.
+    if request.path.contains('%')
+        || request
+            .path
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(Error::InvalidSurrogate);
+    }
 
     // Headers: Authorization is forbidden (swap-only). Host is
     // forbidden (comes from the destination).
@@ -881,6 +892,38 @@ mod tests {
             surrogate_b64: String::from("unused"),
         };
         assert!(validate_request(&request).is_ok());
+    }
+
+    /// #681: a path that a server would decode or resolve into another is
+    /// refused: percent-encoding, and a `.` or `..` segment. A dot inside
+    /// a name is a name.
+    #[test]
+    fn validate_request_refuses_a_path_a_server_would_rewrite() {
+        let with_path = |path: &str| EgressRequest {
+            method: String::from("POST"),
+            destination: String::from("localhost:11434"),
+            path: path.to_owned(),
+            headers: vec![],
+            body: vec![],
+            surrogate_b64: String::from("unused"),
+        };
+        for refused in [
+            "/v1/chat/completion%73",
+            "/v1/chat/%2e%2e/completions",
+            "/v1/foo/../chat/completions",
+            "/v1/chat/completions/.",
+            "/v1/./chat/completions",
+            "/..",
+        ] {
+            assert!(validate_request(&with_path(refused)).is_err(), "{refused}");
+        }
+        for accepted in [
+            "/v1/chat/completions",
+            "/v1/models/gemma4:12b",
+            "/v1/a.b/c..d",
+        ] {
+            assert!(validate_request(&with_path(accepted)).is_ok(), "{accepted}");
+        }
     }
 
     /// `validate_request` rejects unknown methods. Pins the `!`
