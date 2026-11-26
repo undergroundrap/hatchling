@@ -12,6 +12,7 @@
 
 use std::sync::{Mutex, PoisonError};
 
+use hatchling_channel::LocalHub;
 use hatchling_scheduler::Timestamp;
 use hatchling_scheduler::background::{
     Clock, Gate, Launcher, Loop, Outcome, Report, Run, State, Store,
@@ -101,18 +102,20 @@ impl Launcher for NoLoops {
     }
 }
 
-/// What holds background work back now: a chat run in flight. The
-/// owner's pause (#673) joins it when it's built.
+/// What holds background work back now: a run in flight for the chat
+/// whose messages wait in `hub`. With no hub, there's no chat to wait for.
+/// The owner's pause (#673) joins it when it's built.
 #[must_use]
-pub fn gate() -> Gate {
+pub fn gate(hub: Option<&LocalHub>) -> Gate {
     Gate {
         paused: false,
-        chat_active: crate::follow_ups::any_in_flight(),
+        chat_active: hub.is_some_and(crate::follow_ups::in_flight_for),
     }
 }
 
-/// One tick of `clock` at `now`, against the broker's store; nothing when
-/// the broker has no schedule store.
+/// One tick of `clock` at `now`, against the broker's store, held back while
+/// the chat in `hub` has a run in flight; nothing when the broker has no
+/// schedule store.
 ///
 /// # Errors
 ///
@@ -121,6 +124,7 @@ pub fn tick_once<L: Launcher>(
     clock: &mut Clock<L::Run>,
     scheduler: &SchedulerConfig,
     key: &dyn OpensStores,
+    hub: Option<&LocalHub>,
     launcher: &L,
     now: Timestamp,
 ) -> Result<Report, Error> {
@@ -128,7 +132,7 @@ pub fn tick_once<L: Launcher>(
         return Ok(Report::default());
     }
     let store = SealedBackgroundStore::new(&scheduler.root, key);
-    clock.tick(now, gate(), &store, launcher)
+    clock.tick(now, gate(hub), &store, launcher)
 }
 
 /// Turns background runs on or off as a whole, as the owner says; the
@@ -204,11 +208,11 @@ mod tests {
         let key = MasterKey::generate().unwrap();
         let config = config(&root);
         let mut first = Clock::new(loops());
-        let report = tick_once(&mut first, &config, &key, &NoLoops, at(T0)).unwrap();
+        let report = tick_once(&mut first, &config, &key, None, &NoLoops, at(T0)).unwrap();
         assert_eq!(report.gap, None);
         let later = T0 + GAP_SECS + 600;
         let mut second = Clock::new(loops());
-        let report = tick_once(&mut second, &config, &key, &NoLoops, at(later)).unwrap();
+        let report = tick_once(&mut second, &config, &key, None, &NoLoops, at(later)).unwrap();
         let kept = SealedBackgroundStore::new(&root, &key).read();
         let other = MasterKey::generate().unwrap();
         let sealed = SealedBackgroundStore::new(&root, &other).read();
@@ -252,9 +256,28 @@ mod tests {
         config.root = std::path::PathBuf::new();
         let mut clock = Clock::new(loops());
         assert_eq!(
-            tick_once(&mut clock, &config, &key, &NoLoops, at(T0)).unwrap(),
+            tick_once(&mut clock, &config, &key, None, &NoLoops, at(T0)).unwrap(),
             Report::default()
         );
+    }
+
+    /// A run in flight for the broker's chat holds background work back;
+    /// another chat's doesn't, and with no hub there's no chat to wait for.
+    #[test]
+    fn a_run_in_flight_for_the_chat_holds_background_work() {
+        let fresh = || LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let (mine, theirs) = (fresh(), fresh());
+        assert_eq!(gate(Some(&mine)), Gate::default());
+        crate::follow_ups::began("cell-holding-background", &mine, mine.conversation());
+        let held = gate(Some(&mine));
+        let other = gate(Some(&theirs));
+        let none = gate(None);
+        let _ = crate::follow_ups::ended("cell-holding-background");
+        assert!(held.chat_active);
+        assert!(!held.paused);
+        assert_eq!(other, Gate::default());
+        assert_eq!(none, Gate::default());
+        assert_eq!(gate(Some(&mine)), Gate::default());
     }
 
     /// No loop can start yet.

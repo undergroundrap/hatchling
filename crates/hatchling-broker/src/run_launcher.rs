@@ -1316,6 +1316,7 @@ pub fn dispatch_forever<'scope, 'env>(
             &mut background,
             &config.scheduler,
             key,
+            hub,
             &crate::background_ops::NoLoops,
             Timestamp::now(),
         ) {

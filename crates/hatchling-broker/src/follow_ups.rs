@@ -120,12 +120,6 @@ impl FollowUps {
             .map(|flight| flight.sent_in == flight.hub.conversation())
     }
 
-    /// Whether any chat run is in flight.
-    #[must_use]
-    pub fn any(&self) -> bool {
-        !self.flights.is_empty()
-    }
-
     /// The cells of the runs in flight for the chat whose messages wait in
     /// `hub`.
     fn cells_of(&self, hub: &LocalHub) -> Vec<String> {
@@ -189,11 +183,11 @@ pub fn stop(hub: &LocalHub) -> bool {
     stopped > 0
 }
 
-/// [`FollowUps::any`], of the broker's own: background work waits while
-/// this is so (WO-054).
+/// Whether a run is in flight for the chat whose messages wait in `hub`:
+/// background work waits while one is (WO-054).
 #[must_use]
-pub fn any_in_flight() -> bool {
-    shared().any()
+pub fn in_flight_for(hub: &LocalHub) -> bool {
+    !shared().cells_of(hub).is_empty()
 }
 
 /// [`FollowUps::ended`], of the broker's own.
@@ -232,9 +226,7 @@ mod tests {
         let hub = hub();
         let mut flights = FollowUps::new();
         assert_eq!(flights.open_for("cell-a"), None);
-        assert!(!flights.any());
         flights.began("cell-a", &hub, hub.conversation());
-        assert!(flights.any());
         assert_eq!(flights.open_for("cell-a"), Some(true));
         assert_eq!(flights.open_for("cell-b"), None);
         hub.new_conversation();
@@ -243,9 +235,19 @@ mod tests {
         assert_eq!(flights.open_for("cell-b"), Some(true));
         let _ = flights.ended("cell-a");
         assert_eq!(flights.open_for("cell-a"), None);
-        assert!(flights.any(), "cell-b is still in flight");
-        let _ = flights.ended("cell-b");
-        assert!(!flights.any());
+    }
+
+    /// The broker's own says whether a run is in flight for a chat: one
+    /// began on its hub, until it ends, and never another hub's.
+    #[test]
+    fn the_brokers_own_says_whether_a_chat_has_a_run_in_flight() {
+        let (mine, theirs) = (hub(), hub());
+        assert!(!in_flight_for(&mine));
+        began("cell-in-flight-for-mine", &mine, mine.conversation());
+        assert!(in_flight_for(&mine));
+        assert!(!in_flight_for(&theirs));
+        let _ = ended("cell-in-flight-for-mine");
+        assert!(!in_flight_for(&mine));
     }
 
     /// A chat's runs in flight are its own: another hub's, or one ended,
