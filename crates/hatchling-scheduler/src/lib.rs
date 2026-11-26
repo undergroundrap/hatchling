@@ -23,6 +23,8 @@
 //!   hooks on broker-asserted events through the same path.
 //! - [`hook`]: hooks, validated against a closed set of event
 //!   sources the broker can authenticate.
+//! - [`background`]: the clock that wakes Hatchling's own background
+//!   loops (WO-054): catch up once, chat first, the pause, and off.
 //!
 //! Follow-ups are one-shot schedules a run asks for, bounded by
 //! [`MAX_FOLLOWUP_DEPTH`] and by the run's own grants
@@ -31,6 +33,7 @@
 //! The broker owns the store, the session ops, and the real launcher
 //! and delivery path; the cell never sees any of it.
 
+pub mod background;
 pub mod clock;
 pub mod cron;
 pub mod dispatcher;

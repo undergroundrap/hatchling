@@ -183,6 +183,13 @@ pub fn stop(hub: &LocalHub) -> bool {
     stopped > 0
 }
 
+/// Whether a run is in flight for the chat whose messages wait in `hub`:
+/// background work waits while one is (WO-054).
+#[must_use]
+pub fn in_flight_for(hub: &LocalHub) -> bool {
+    !shared().cells_of(hub).is_empty()
+}
+
 /// [`FollowUps::ended`], of the broker's own.
 #[must_use]
 pub fn ended(cell: &str) -> Vec<String> {
@@ -228,6 +235,19 @@ mod tests {
         assert_eq!(flights.open_for("cell-b"), Some(true));
         let _ = flights.ended("cell-a");
         assert_eq!(flights.open_for("cell-a"), None);
+    }
+
+    /// The broker's own says whether a run is in flight for a chat: one
+    /// began on its hub, until it ends, and never another hub's.
+    #[test]
+    fn the_brokers_own_says_whether_a_chat_has_a_run_in_flight() {
+        let (mine, theirs) = (hub(), hub());
+        assert!(!in_flight_for(&mine));
+        began("cell-in-flight-for-mine", &mine, mine.conversation());
+        assert!(in_flight_for(&mine));
+        assert!(!in_flight_for(&theirs));
+        let _ = ended("cell-in-flight-for-mine");
+        assert!(!in_flight_for(&mine));
     }
 
     /// A chat's runs in flight are its own: another hub's, or one ended,

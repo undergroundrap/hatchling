@@ -1291,6 +1291,10 @@ pub fn dispatch_forever<'scope, 'env>(
     // retries it, and none is run again on its own (WO-025). A hold that
     // fails leaves them claimed or running, which the dispatcher skips.
     hold_in_flight(config, key);
+    // Hatchling's own background loops (WO-054), after the owner's
+    // schedules on each tick. None is registered yet: the first comes with
+    // the seat runner, and until then the clock records the broker's uptime.
+    let mut background = hatchling_scheduler::background::Clock::new(Vec::new());
     loop {
         std::thread::sleep(until_next_tick(Timestamp::now()));
         match dispatch_once(
@@ -1307,6 +1311,17 @@ pub fn dispatch_forever<'scope, 'env>(
                 tracing::debug!(?report, "scheduler tick");
             }
             Err(error) => tracing::error!(%error, "scheduler tick failed"),
+        }
+        match crate::background_ops::tick_once(
+            &mut background,
+            &config.scheduler,
+            key,
+            hub,
+            &crate::background_ops::NoLoops,
+            Timestamp::now(),
+        ) {
+            Ok(report) => tracing::debug!(?report, "background tick"),
+            Err(error) => tracing::error!(%error, "background tick failed"),
         }
     }
 }

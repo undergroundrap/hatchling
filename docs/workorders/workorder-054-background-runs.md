@@ -1,6 +1,6 @@
 # WO-054: Background runs: seats that propose, code that applies, and a clock that wakes them
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (the background clock, the seat runner, the apply steps, the review queue), `crates/hatchling-core` (a seat's packet, handles, finish output and the queue's types), `crates/hatchling-agent` (the finish tool and a seat's read tools), `crates/hatchling-prompt` (each loop's kind, routing its waiting sections), `installer/windows` (keeping the distro up)
 **Issue:** [#718](https://github.com/undergroundrap/hatchling/issues/718)
 **Trust boundary:** yes
@@ -106,7 +106,7 @@ In order, each its own pull request with its gate. The loops themselves get thei
 - [ ] A record changed between snapshot and apply is skipped and counted.
 - [ ] A destructive memory change reaches the queue and is never applied without the owner's approval; a test tries each kind.
 - [ ] A claim sourced only from outside content is never applied.
-- [ ] The clock runs a missed loop once after a gap of many periods, and never while a chat run is active.
+- [x] The clock runs a missed loop once after a gap of many periods, and never while a chat run is active ([slice 1](../evidence/wo054-background-clock.md)).
 - [ ] The pause stops the next run and the next step.
 - [ ] The app says when each loop last ran, when keep-running is off, and when Hatchling was stopped while a loop came due.
 
@@ -117,6 +117,8 @@ The usual: fmt, clippy on both toolchains, the whole workspace's tests, the audi
 ## Evidence
 
 Each slice commits its evidence under `docs/evidence/`.
+
+- Slice 1, the background clock: [wo054-background-clock.md](../evidence/wo054-background-clock.md).
 
 ## Notes
 
