@@ -77,8 +77,8 @@ pub use ownership::{
 };
 pub use peercred::{RawPeerCred, socket_peercred};
 pub use process::{
-    Child, ChildPid, ForkResult, Limit, ParentWatch, PreparedExec, become_cell_user, child_exit_code,
-    clear_groups, drop_capabilities, drop_to, egid, euid, exec, exit_child, fork,
+    Child, ChildPid, ForkResult, Limit, ParentWatch, PreparedExec, become_cell_user,
+    child_exit_code, clear_groups, drop_capabilities, drop_to, egid, euid, exec, exit_child, fork,
     hold_core_dumps_off, hold_to, pid_alive, reap_as_init, reap_as_init_with_owner, self_pidfd,
     set_host_name, set_no_new_privs, set_not_dumpable, set_pdeathsig, stop_pidfd_and_confirm_exit,
     supplementary_groups, uid, watch_parent,

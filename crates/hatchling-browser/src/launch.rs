@@ -136,7 +136,8 @@ pub fn launch(launch: &Launch) -> Result<Browser, LaunchError> {
         .iter()
         .map(|(key, value)| (key.as_str(), value.as_str()))
         .collect();
-    let browser = hatchling_sys::PreparedExec::new(&program, &argv, &env).map_err(LaunchError::Start)?;
+    let browser =
+        hatchling_sys::PreparedExec::new(&program, &argv, &env).map_err(LaunchError::Start)?;
     match hatchling_sys::fork().map_err(LaunchError::Start)? {
         ForkResult::Child => {
             let placed = hatchling_sys::cloexec_fds_above_stderr().and_then(|()| {

@@ -313,12 +313,12 @@ pub fn place_across_exec(fds: &[BorrowedFd<'_>], first: i32) -> Result<(), Error
     }
     let mut copies: [Option<OwnedFd>; MAX_PLACED] = [const { None }; MAX_PLACED];
     for (slot, fd) in copies.iter_mut().zip(fds) {
-        *slot = Some(rustix::io::fcntl_dupfd_cloexec(fd, above).map_err(|source| {
-            Error::Process {
+        *slot = Some(
+            rustix::io::fcntl_dupfd_cloexec(fd, above).map_err(|source| Error::Process {
                 operation: "fcntl(F_DUPFD_CLOEXEC)",
                 source: std::io::Error::from_raw_os_error(source.raw_os_error()),
-            }
-        })?);
+            })?,
+        );
     }
     for (target, copy) in (first..above).zip(copies.iter().flatten()) {
         // SAFETY: dup2 onto a descriptor number. It closes whatever was

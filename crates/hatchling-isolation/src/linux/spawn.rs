@@ -1041,7 +1041,9 @@ fn fail_cell(child_to_parent: &mut ChildToParent, reason: &str) -> ! {
 fn run_as_init(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: Ends) -> ! {
     // The program's exec and filter, made here, before its fork: the
     // program allocates nothing before its exec (#704).
-    let filter = match seccomp_profile(spec.filter).and_then(|profile| hatchling_sys::seccomp::prepare(&profile)) {
+    let filter = match seccomp_profile(spec.filter)
+        .and_then(|profile| hatchling_sys::seccomp::prepare(&profile))
+    {
         Ok(filter) => filter,
         Err(source) => fail_cell(&mut child_to_parent, &format!("seccomp profile: {source}")),
     };
@@ -1051,7 +1053,9 @@ fn run_as_init(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: Ends) 
         Err(source) => fail_cell(&mut child_to_parent, &format!("exec agent: {source}")),
     };
     let program = match hatchling_sys::fork() {
-        Ok(ForkResult::Child) => exec_cell_program(spec, child_to_parent, ends, (&filter, &prepared)),
+        Ok(ForkResult::Child) => {
+            exec_cell_program(spec, child_to_parent, ends, (&filter, &prepared))
+        }
         Ok(ForkResult::Parent { child }) => {
             // The channels are the program's: the init keeps no end, and
             // drops them before the close below can close them under their

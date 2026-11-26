@@ -82,7 +82,10 @@ fn a_prepared_exec_allocates_nothing_after_the_fork() {
         let code = in_child(|| {
             let _ = truth.exec(|| Ok(()));
         });
-        assert_eq!(code, 0, "round {round}: the child allocated, or its exec failed");
+        assert_eq!(
+            code, 0,
+            "round {round}: the child allocated, or its exec failed"
+        );
     }
     busy.store(false, Ordering::Relaxed);
     allocating.join().unwrap();
