@@ -892,6 +892,14 @@ mod tests {
             place_across_exec(&[std::io::stdout().as_fd()], i32::MAX),
             Err(Error::InvalidExecArg { .. })
         ));
+        // At most MAX_PLACED at once, in a fixed array (#704): one more is
+        // refused, before anything is copied.
+        let many = vec![std::io::stdout().as_fd(); MAX_PLACED + 1];
+        assert!(matches!(
+            place_across_exec(&many, 3),
+            Err(Error::InvalidExecArg { reason }) if reason.contains("too many")
+        ));
+        assert_eq!(MAX_PLACED, 8);
         let code = in_child(|| {
             let Ok((a, a_end)) = std::os::unix::net::UnixStream::pair() else {
                 return 2;
