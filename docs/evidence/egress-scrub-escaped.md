@@ -29,7 +29,7 @@ In `scrub::tests`:
   - `tok+en/abc==`'s six forms, in order, with the longest one's length;
   - a plain key has itself alone;
   - unreserved bytes aren't rewritten;
-  - JSON's quote, backslash and control escapes.
+  - JSON's quote, backslash and control escapes, and a space left as it is.
 - `each_escaped_echo_is_masked`: each form inside a JSON error is masked whole and its length kept, in bytes and in text.
 - `each_escaped_echo_split_anywhere_is_found`: each form, split at every point across two pieces.
 - `what_is_held_is_never_grown`: after every piece, what's held has exactly its own size, never a grown buffer's.
@@ -37,4 +37,16 @@ In `scrub::tests`:
 
 ## The gate
 
-RESULTS
+On the sandbox:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4599 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by `scrub::tests`:
+  - no escaped forms;
+  - only the verbatim form's length held back;
+  - what's held reused and grown;
+  - one hex case only;
+  - no `\/`.
+- **Mutation** on the changed lines of `scrub.rs`: 36 mutants, 31 caught, 5 unviable, none missed.
+  - The first pass missed one: a control byte's test, `< 0x20`, as `<= 0x20`, which would write a space as `\u0020`.
+  - A test now pins that a space stays a space in the JSON form.
