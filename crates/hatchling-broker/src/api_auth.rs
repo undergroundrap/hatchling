@@ -405,7 +405,8 @@ pub fn ui_token_path(socket: &SocketPath) -> PathBuf {
 /// [`Error::SocketSetup`] if the old token can't be removed or the new
 /// one can't be made or written.
 pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
-    mint_ui_token_as(path, hatchling_sys::euid())
+    let me = hatchling_sys::euid();
+    mint_ui_token_as(path, me, me)
 }
 
 /// [`mint_ui_token`] for `owner`, who is given the token.
@@ -419,19 +420,45 @@ pub fn mint_ui_token(path: &Path) -> Result<ApiToken, Error> {
 /// As [`mint_ui_token`], and [`Error::SocketSetup`] when the token can't
 /// be given to the owner.
 pub fn mint_ui_token_for(path: &Path, owner: u32) -> Result<ApiToken, Error> {
+    let me = hatchling_sys::euid();
+    // As root or not: a directory another user can write is one where
+    // they could replace the token, or a root broker be led to give
+    // their file away (#691).
+    if let Some(dir) = path.parent() {
+        check_token_dir(dir, me)?;
+    }
     let earlier = std::fs::symlink_metadata(path).ok().map_or(owner, |meta| {
-        if meta.uid() == hatchling_sys::euid() {
-            meta.uid()
-        } else {
-            owner
-        }
+        if meta.uid() == me { meta.uid() } else { owner }
     });
-    let token = mint_ui_token_as(path, earlier)?;
-    let file = std::fs::File::open(path).map_err(|source| Error::SocketSetup { source })?;
-    hatchling_sys::give_to(&file, owner).map_err(|source| Error::SocketSetup {
-        source: std::io::Error::other(source),
-    })?;
-    Ok(token)
+    mint_ui_token_as(path, earlier, owner)
+}
+
+/// Refuses `dir` as a token's directory for the broker `broker`: one
+/// someone else could put another file in. It must be root's or the
+/// broker's, and not writable by group or others unless it's sticky,
+/// where nobody can replace a file that isn't theirs (#691).
+///
+/// # Errors
+///
+/// [`Error::SocketSetup`] saying why.
+fn check_token_dir(dir: &Path, broker: u32) -> Result<(), Error> {
+    let meta = std::fs::metadata(dir).map_err(|source| Error::SocketSetup { source })?;
+    let owned = meta.uid() == 0 || meta.uid() == broker;
+    let loose = meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0;
+    if owned && !loose {
+        Ok(())
+    } else {
+        Err(Error::SocketSetup {
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "the UI token's directory {} isn't root's or the broker's alone: \
+                     another user could replace the token there",
+                    dir.display()
+                ),
+            ),
+        })
+    }
 }
 
 /// Whether `metadata` is a regular file's, by its file type.
@@ -475,8 +502,11 @@ fn clear_old_token(path: &Path, owner: u32) -> Result<(), Error> {
     std::fs::remove_file(path).map_err(|source| Error::SocketSetup { source })
 }
 
-/// [`mint_ui_token`], with `owner` the uid an earlier token must have.
-fn mint_ui_token_as(path: &Path, owner: u32) -> Result<ApiToken, Error> {
+/// [`mint_ui_token`], with `owner` the uid an earlier token must have,
+/// the new one given to `give`. The file `create_new` made is the one
+/// handed over and written: the path is never opened again, so nothing
+/// put there since is given or written (#691).
+fn mint_ui_token_as(path: &Path, owner: u32, give: u32) -> Result<ApiToken, Error> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
     let setup = |source| Error::SocketSetup { source };
@@ -488,6 +518,9 @@ fn mint_ui_token_as(path: &Path, owner: u32) -> Result<ApiToken, Error> {
         .mode(0o600)
         .open(path)
         .map_err(setup)?;
+    hatchling_sys::give_to(&file, give).map_err(|source| Error::SocketSetup {
+        source: std::io::Error::other(source),
+    })?;
     file.write_all(token.as_bytes()).map_err(setup)?;
     Ok(ApiToken::new(token))
 }
@@ -697,7 +730,7 @@ pub(crate) mod tests {
             Err(Error::TokenPathNotOurs { .. })
         ));
         assert_eq!(std::fs::read(&path).unwrap(), b"old");
-        assert!(mint_ui_token_as(&path, owner.wrapping_add(1)).is_err());
+        assert!(mint_ui_token_as(&path, owner.wrapping_add(1), owner).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"old");
         // A symlink to a file of ours: refused, and neither it nor its
         // target goes.
@@ -737,8 +770,65 @@ pub(crate) mod tests {
             mint_ui_token_for(&path, other).unwrap();
             assert_eq!(std::fs::symlink_metadata(&path).unwrap().uid(), other);
         } else {
-            assert!(mint_ui_token_for(&path, other).is_err());
+            // The earlier token is the broker's own, so it's cleared; what
+            // fails is handing the new one to a user this one can't give
+            // files to, not the earlier token's owner.
+            let refused = mint_ui_token_for(&path, other);
+            assert!(
+                matches!(refused, Err(Error::SocketSetup { .. })),
+                "{refused:?}"
+            );
         }
+    }
+
+    /// #691: a token's directory must be root's or the broker's, and not
+    /// writable by others unless it's sticky.
+    #[test]
+    fn a_token_directory_another_user_could_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("token-dir");
+        let me = hatchling_sys::euid();
+        let mode = |bits: u32| {
+            std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(bits)).unwrap();
+        };
+        for (bits, refused) in [
+            (0o700, false),
+            (0o755, false),
+            (0o1777, false),
+            (0o777, true),
+            (0o775, true),
+        ] {
+            mode(bits);
+            assert_eq!(check_token_dir(&dir.0, me).is_err(), refused, "{bits:o}");
+        }
+        mode(0o700);
+        if me != 0 {
+            // Owned by this user, who is neither root nor the broker named.
+            let refused = check_token_dir(&dir.0, me.wrapping_add(1)).unwrap_err();
+            assert!(
+                refused.to_string().contains("root's or the broker's"),
+                "{refused}"
+            );
+        }
+    }
+
+    /// #691: a token isn't minted for the owner into a directory another
+    /// user could write, and nothing is left there.
+    #[test]
+    fn a_ui_token_is_not_minted_where_another_user_could_replace_it() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = scratch("loose-token-dir");
+        let path = dir.0.join("ui.sock.token");
+        let me = hatchling_sys::euid();
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let refused = mint_ui_token_for(&path, me).unwrap_err();
+        assert!(
+            refused.to_string().contains("another user could replace"),
+            "{refused}"
+        );
+        assert!(std::fs::symlink_metadata(&path).is_err(), "nothing minted");
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        mint_ui_token_for(&path, me).unwrap();
     }
 
     #[test]
