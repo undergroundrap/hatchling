@@ -39,6 +39,15 @@ export interface SetupView {
     readonly roomDisk: RoomDiskView | null;
     /** Whether the agent's rooms are held by process limits alone, with no cgroup of their own. */
     readonly processLimitsOnly: boolean;
+    /** Whether Windows keeps Hatchling running while the owner is logged in: none off Windows, or before it said. */
+    readonly keepRunning: boolean | null;
+    /** The latest stretch Hatchling wasn't running: none when there's been none. */
+    readonly stopped: StoppedView | null;
+}
+/** A stretch Hatchling wasn't running, stopped or with the machine asleep, in Unix seconds. */
+export interface StoppedView {
+    readonly from: number;
+    readonly to: number;
 }
 /** What's set up, as last read. */
 export type SetupState = {
@@ -60,7 +69,7 @@ export interface SetupPort {
 }
 export type StepStatus = 'done' | 'next' | 'skipped';
 export interface SetupStep {
-    readonly id: 'model' | 'vault' | 'backup';
+    readonly id: 'model' | 'vault' | 'backup' | 'running';
     readonly title: string;
     readonly status: StepStatus;
     readonly said: string;
@@ -118,6 +127,27 @@ function backupStep(setup: SetupView, now: number): SetupStep {
         return { ...base, status: 'next', said: 'One sealed file with everything Hatchling knows. It opens with what opens your vault.', commands: [BACKUP_COMMAND] };
     return { ...base, status: 'done', said: `Your last backup was made ${ago(setup.lastBackup, now)}.`, commands: NONE };
 }
+/** On a Windows install that said, whether Windows keeps Hatchling running: done, or off as the owner chose in Setup. */
+function keepRunningStep(setup: SetupView): SetupStep | null {
+    if (!setup.windowsSetup || typeof setup.keepRunning !== 'boolean')
+        return null;
+    const base = { id: 'running', title: 'Keep Hatchling running', optional: true, commands: NONE } as const;
+    if (setup.keepRunning)
+        return { ...base, status: 'done', said: 'Windows keeps Hatchling running while you’re logged in, so scheduled and background work wakes on time.' };
+    return { ...base, status: 'skipped', said: 'Off: Hatchling stops soon after its last window closes, so scheduled and background work runs only while it’s open. To turn it on, run Hatchling Setup again and keep “Keep Hatchling running while I’m logged in” ticked.' };
+}
+/** How long after it ended a stop is still said: a week. */
+export const STOP_SAID_FOR = 7 * 86400;
+/** When `seconds` was, as this browser says a moment. */
+export function whenSaid(seconds: number): string {
+    return new Date(seconds * 1000).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+/** What the app says of the latest stretch Hatchling wasn't running, at `now`, while it ended within the last week. */
+export function stoppedNote(stopped: StoppedView | null, now: number, when: (seconds: number) => string = whenSaid): string | null {
+    if (stopped === null || now - stopped.to > STOP_SAID_FOR)
+        return null;
+    return `Hatchling wasn’t running from ${when(stopped.from)} to ${when(stopped.to)}, so anything scheduled for then didn’t run on time.`;
+}
 /** Where each step is on a Windows install: the Start menu, with no command to type. */
 const START_MENU: Readonly<Partial<Record<SetupStep['id'], string>>> = {
     vault: 'Open the Start menu and type Protect your vault.',
@@ -131,7 +161,8 @@ function onWindowsStep(step: SetupStep): SetupStep {
 }
 /** The steps, in order, with `noKey` when the owner chose to go without a key. */
 export function setupSteps(model: ModelView, setup: SetupView, noKey: boolean, now: number): readonly SetupStep[] {
-    const steps = [modelStep(model), vaultStep(setup, noKey), backupStep(setup, now)];
+    const running = keepRunningStep(setup);
+    const steps = [modelStep(model), vaultStep(setup, noKey), backupStep(setup, now), ...(running === null ? [] : [running])];
     return setup.windowsSetup ? steps.map(onWindowsStep) : steps;
 }
 /** Whether nothing's left to do. */

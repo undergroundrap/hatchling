@@ -11186,6 +11186,13 @@
     "SetupState": {
       "description": "What's set up on this machine, for the app's checklist.",
       "properties": {
+        "keep_running": {
+          "description": "Whether Windows keeps Hatchling running while the owner is logged\nin (WO-054), as it last said: none off Windows, or before it said.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
         "last_backup": {
           "description": "When the last backup was made, in Unix seconds, as of this start of\nthe broker: making one restarts it. None when there's been none.",
           "format": "uint64",
@@ -11209,6 +11216,17 @@
             }
           ],
           "description": "The agent's room disk, its encrypted computer: none from a broker\nfrom before there was one."
+        },
+        "stopped": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StoppedView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The latest stretch Hatchling wasn't running, as its background clock\nsaw it (WO-054): none when there's been none."
         },
         "vault": {
           "$ref": "#/$defs/VaultProtection",
@@ -12568,6 +12586,28 @@
         "scope",
         "made_at",
         "state"
+      ],
+      "type": "object"
+    },
+    "StoppedView": {
+      "description": "A stretch Hatchling wasn't running, stopped or with the machine asleep,\nin Unix seconds: its last tick before, and its first after.",
+      "properties": {
+        "from": {
+          "description": "When it was last seen running.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "to": {
+          "description": "When it was seen running again.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "from",
+        "to"
       ],
       "type": "object"
     },

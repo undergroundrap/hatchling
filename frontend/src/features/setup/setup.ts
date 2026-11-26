@@ -9,7 +9,7 @@ import { icon } from '../../components/icons.js';
 import { button, emptyState } from '../../components/ui.js';
 import { connectionBanner } from '../chat/reliability-ui.js';
 import { commandLine, commandRow } from '../settings/live-data.js';
-import { setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS } from '../../session/setup.js';
+import { setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS, stoppedNote } from '../../session/setup.js';
 import type { SetupStep } from '../../session/setup.js';
 const INTRO = 'Run each command in a terminal you opened yourself. Anything secret you type goes there, and never through this app.';
 const RESTARTS = 'Each one restarts Hatchling, so this page goes offline for a moment. The command says what to run next, and the address it gives brings you back, with that step ticked.';
@@ -83,6 +83,9 @@ export function renderSetup(ctx: AppContext): HTMLElement {
     const finished = setupFinished(steps);
     const windows = setup.setup.windowsSetup;
     const notes = finished ? ['You’re all set. This page stays in Settings, under General.'] : [`${setupProgress(steps)}. ${windows ? INTRO_WINDOWS : INTRO}`, windows ? RESTARTS_WINDOWS : RESTARTS];
+    const stopped = stoppedNote(setup.setup.stopped, nowSeconds());
+    if (stopped !== null)
+        notes.push(stopped);
     page.append(heading(...notes), h('div', { class: 'setup-steps' }, ...steps.map((step, at) => stepCard(ctx, step, at + 1))), closing(ctx, finished));
     return page;
 }

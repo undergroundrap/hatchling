@@ -4599,6 +4599,11 @@ export type SessionSocket = 'api' | 'ui';
  */
 export type SetupState = {
     /**
+     * Whether Windows keeps Hatchling running while the owner is logged
+     * in (WO-054), as it last said: none off Windows, or before it said.
+     */
+    readonly keep_running?: boolean | null;
+    /**
      * When the last backup was made, in Unix seconds, as of this start of
      * the broker: making one restarts it. None when there's been none.
      */
@@ -4614,6 +4619,11 @@ export type SetupState = {
      * from before there was one.
      */
     readonly room_disk?: RoomDiskView | null;
+    /**
+     * The latest stretch Hatchling wasn't running, as its background clock
+     * saw it (WO-054): none when there's been none.
+     */
+    readonly stopped?: StoppedView | null;
     /**
      * Who can open the vault.
      */
@@ -5148,6 +5158,20 @@ export type StandingGrant = {
      * What it allows it on: for a site, `https://host[:port]`.
      */
     readonly target: string;
+};
+/**
+ * A stretch Hatchling wasn't running, stopped or with the machine asleep,
+ * in Unix seconds: its last tick before, and its first after.
+ */
+export type StoppedView = {
+    /**
+     * When it was last seen running.
+     */
+    readonly from: number;
+    /**
+     * When it was seen running again.
+     */
+    readonly to: number;
 };
 /**
  * Why a subagent op was refused.
