@@ -31,4 +31,25 @@ Part of [#718](https://github.com/undergroundrap/hatchling/issues/718), [WO-054]
 
 ## The gate
 
-RESULTS
+On the sandbox, at the tree under test:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4572 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- `hatchling-dev protocol-schema --write`, then `npm run protocol:generate`: `schema.json`, `generated.ts` and `wire.ts` together.
+- Rust hand-breaks, each caught:
+  - the broker not telling the app what Windows said;
+  - the oldest stop instead of the newest;
+  - an unknown stop put on the wire as `null`.
+- Rust mutation on the changed lines of `api_ops.rs` and `background_ops.rs`: 7 mutants, 3 caught, 4 unviable.
+
+On Windows, in `frontend/`:
+
+- `npm run check`, with bash as npm's script shell so the coverage gates' globs expand: typecheck, lint, design, actions, protocol and seam checks, and format all clean.
+  - Unit tests: 622 of 622, with coverage over the floors.
+  - Live coverage: 266 of 266, at 100%.
+  - Operator coverage: 16 of 16, at 100%.
+- Frontend hand-breaks, each caught by `live-setup.test.mjs` with the build clean:
+  - off said as done;
+  - a stop said for two weeks;
+  - the step shown off Windows;
+  - the broker's word dropped.
