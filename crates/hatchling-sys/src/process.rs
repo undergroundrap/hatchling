@@ -1831,10 +1831,15 @@ mod tests {
                         let started = Instant::now();
                         let busy = prepared.exec(|| Ok(()));
                         let waited = started.elapsed();
-                        if !matches!(&busy, Error::Process { source, .. } if source.raw_os_error() == Some(libc::ETXTBSY)) {
+                        if !matches!(&busy, Error::Process { source, .. } if source.raw_os_error() == Some(libc::ETXTBSY))
+                        {
                             exit_child(1);
                         }
-                        exit_child(if waited >= Duration::from_millis(900) { 0 } else { 3 });
+                        exit_child(if waited >= Duration::from_millis(900) {
+                            0
+                        } else {
+                            3
+                        });
                     }
                     Err(_) => exit_child(2),
                 }
@@ -1853,7 +1858,10 @@ mod tests {
         )
         .unwrap();
         let said = format!("{prepared:?}");
-        assert!(said.starts_with("PreparedExec { path: \"/bin/true\", argv: [\"true\", \"x\"], env: 1"), "{said}");
+        assert!(
+            said.starts_with("PreparedExec { path: \"/bin/true\", argv: [\"true\", \"x\"], env: 1"),
+            "{said}"
+        );
         assert!(!said.contains("secret-value"), "{said}");
         assert!(matches!(
             PreparedExec::new(std::path::Path::new("/bin/true"), &["a\0b"], &[]),
