@@ -35,6 +35,41 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// for minutes. Still a bound, so the session is never held forever.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// The most a forward to a local model takes in all, however its upstream
+/// trickles (#684): room for a long answer, under a chat run's 30 minutes,
+/// whose end cuts it anyway. A run with nobody there has 10, which end it
+/// first.
+pub const FORWARD_TIME: Duration = Duration::from_secs(20 * 60);
+
+/// A reader that stops at a time: a read once it's past fails, so an
+/// upstream trickling a byte at a time can't hold a forward open past it.
+/// One read can overshoot it by its own timeout, which bounds a read.
+pub(crate) struct Within<R> {
+    inner: R,
+    at: std::time::Instant,
+}
+
+impl<R: Read> Read for Within<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if std::time::Instant::now() >= self.at {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "past the forward's time",
+            ));
+        }
+        self.inner.read(buffer)
+    }
+}
+
+/// `inner`, read for at most `time` from now.
+pub(crate) fn within<R: Read>(inner: R, time: Duration) -> Within<R> {
+    let now = std::time::Instant::now();
+    Within {
+        inner,
+        at: now.checked_add(time).unwrap_or(now),
+    }
+}
+
 /// The longest status, header, or chunk-size line accepted.
 pub const MAX_LINE_BYTES: usize = 8 * 1024;
 
@@ -75,7 +110,7 @@ pub(crate) fn forward(
         return Err(Error::DestinationDenied);
     }
     let bytes = request_bytes(request, credential)?;
-    let mut stream = connect(pinned)?;
+    let mut stream = connect(pinned, cut)?;
     // Held for a cut before a byte is sent: whoever asked may go (#657).
     cut.hold(&stream)?;
     stream
@@ -85,13 +120,17 @@ pub(crate) fn forward(
     stream
         .write_all(&bytes)
         .map_err(|_| Error::UpstreamFailed)?;
-    read_response(stream)
+    read_response(within(stream, FORWARD_TIME))
 }
 
 /// Connects to the first pinned address that answers, then verifies
-/// the connection's actual peer before handing it back.
-pub(crate) fn connect(pinned: &[SocketAddr]) -> Result<TcpStream> {
+/// the connection's actual peer before handing it back. A cut, before any
+/// address or between them, opens nothing more (#684).
+pub(crate) fn connect(pinned: &[SocketAddr], cut: &crate::Cut) -> Result<TcpStream> {
     for addr in pinned {
+        if cut.is_cut() {
+            return Err(Error::UpstreamFailed);
+        }
         let Ok(stream) = TcpStream::connect_timeout(addr, CONNECT_TIMEOUT) else {
             continue;
         };
@@ -885,9 +924,66 @@ pub(crate) mod tests {
             Err(Error::InvalidSurrogate)
         ));
         assert_eq!(
-            (CONNECT_TIMEOUT, IO_TIMEOUT),
-            (Duration::from_secs(5), Duration::from_secs(300))
+            (CONNECT_TIMEOUT, IO_TIMEOUT, FORWARD_TIME),
+            (
+                Duration::from_secs(5),
+                Duration::from_secs(300),
+                Duration::from_secs(1200)
+            )
         );
+    }
+
+    /// A forward cut before it connects opens no connection: the
+    /// upstream never sees one come (#684).
+    #[test]
+    fn a_forward_cut_before_it_connects_opens_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cut = crate::Cut::default();
+        cut.cut();
+        assert!(matches!(
+            super::forward(&[addr], &request("GET", &[], b""), None, &cut),
+            Err(Error::UpstreamFailed)
+        ));
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "it connected all the same"
+        );
+    }
+
+    /// An upstream that trickles its answer a byte at a time is read no
+    /// longer than the forward's time (#684).
+    #[test]
+    fn a_trickling_answer_ends_at_the_forwards_time() {
+        struct Trickle(std::iter::Cycle<std::slice::Iter<'static, u8>>);
+        impl Read for Trickle {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                std::thread::sleep(Duration::from_millis(20));
+                match (buffer.first_mut(), self.0.next()) {
+                    (Some(slot), Some(&byte)) => {
+                        *slot = byte;
+                        Ok(1)
+                    }
+                    _ => Ok(0),
+                }
+            }
+        }
+        let started = std::time::Instant::now();
+        let trickle = Trickle(b"HTTP/1.1 200 OK\r\nX-A: b\r\n".iter().cycle());
+        assert!(matches!(
+            read_response(within(trickle, Duration::from_millis(300))),
+            Err(Error::UpstreamFailed)
+        ));
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(2), "read for {took:?}");
+        // In its time, an answer is read whole.
+        let whole = std::io::Cursor::new(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_vec());
+        let reply = read_response(within(whole, Duration::from_secs(5))).unwrap();
+        assert_eq!((reply.status, reply.body.as_slice()), (200, &b"ok"[..]));
+        // A time already past reads nothing.
+        let none = std::io::Cursor::new(b"HTTP/1.1 200 OK\r\n\r\n".to_vec());
+        assert!(read_response(within(none, Duration::ZERO)).is_err());
     }
 
     /// `is_field_value`, called directly: no control character but tab.
