@@ -1209,3 +1209,7 @@ jobs:
       - name: compact.ps1's tests
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File installer\windows\tests\compact.tests.ps1
+
+      - name: common.ps1's tests
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File installer\windows\tests\common.tests.ps1

@@ -11,6 +11,8 @@ $ErrorActionPreference = 'Continue'
 if (-not (Wait-Broker $Distro)) {
     Stop-Setup "Hatchling didn't start. To see why, in PowerShell: wsl -d $Distro -u root -- hatchling-broker doctor"
 }
+# The owner may have changed it since: the broker says so in the app.
+Set-KeepRunningMark $Distro
 $locked = Get-FromWsl $Distro @('curl', '-s', '-m', '3', 'http://127.0.0.1:7340/hatchling-locked')
 if ($locked -match '"locked":true') {
     & wsl.exe -d $Distro -u root --exec hatchling-broker unlock

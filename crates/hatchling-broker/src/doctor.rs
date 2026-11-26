@@ -190,6 +190,13 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             ])),
         ),
         ("windows seal", wsl_seal_said(WslSeal::here())),
+        (
+            "keep running",
+            keep_running_said(
+                crate::windows_setup::installed(),
+                crate::windows_setup::keep_running(Path::new(crate::windows_setup::KEEP_RUNNING)),
+            ),
+        ),
         ("memory", check_memory(crate::model_window::memory())),
     ];
     report(&label, &checks)
@@ -660,6 +667,35 @@ fn wsl_seal_said(seal: WslSeal) -> Finding {
         }
     }
 }
+
+/// What doctor says of Windows keeping Hatchling running (WO-054): WSL
+/// stops the distro soon after its last window closes, and background work
+/// with it, unless the Startup shortcut holds it up. Off Windows, the
+/// service keeps the broker up.
+fn keep_running_said(windows: bool, on: Option<bool>) -> Finding {
+    match (windows, on) {
+        (false, _) => Finding::Unchecked(String::from(
+            "not a Windows install: the broker's service keeps it running",
+        )),
+        (true, Some(true)) => Finding::Fine(String::from(
+            "on: Windows keeps Hatchling running while you're logged in, so background work wakes on time",
+        )),
+        (true, Some(false)) => Finding::Note {
+            what: String::from(
+                "off: Hatchling stops soon after its last window closes, so background work runs only while it's open",
+            ),
+            fix: String::from(KEEP_RUNNING_FIX),
+        },
+        (true, None) => Finding::Note {
+            what: String::from("Windows hasn't said whether it keeps Hatchling running"),
+            fix: String::from("Open Hatchling from the Start menu: it says, each time"),
+        },
+    }
+}
+
+/// How the owner turns keeping Hatchling running on.
+const KEEP_RUNNING_FIX: &str =
+    "Run Hatchling Setup again, and keep “Keep Hatchling running while I'm logged in” ticked";
 
 /// What the owner can do about a vault anyone with the disk can open.
 const WEAKER_VAULT_FIX: &str =
@@ -2141,6 +2177,35 @@ mod tests {
         }));
         assert!(
             words.contains("(/mnt/c), and it can start Windows programs"),
+            "{words}"
+        );
+    }
+
+    /// Whether Windows keeps Hatchling running is said as Windows said it,
+    /// and off Windows it isn't checked (WO-054).
+    #[test]
+    fn keeping_hatchling_running_is_said_as_windows_said_it() {
+        for on in [None, Some(true), Some(false)] {
+            assert_eq!(said(&keep_running_said(false, on)).0, "unchecked", "{on:?}");
+        }
+        let (kind, words) = said(&keep_running_said(true, Some(true)));
+        assert_eq!(kind, "fine");
+        assert!(
+            words.starts_with("on: ") && words.contains("wakes on time"),
+            "{words}"
+        );
+        let (kind, words) = said(&keep_running_said(true, Some(false)));
+        assert_eq!(kind, "note");
+        assert!(
+            words.starts_with("off: ")
+                && words.contains("only while it's open")
+                && words.contains(KEEP_RUNNING_FIX),
+            "{words}"
+        );
+        let (kind, words) = said(&keep_running_said(true, None));
+        assert_eq!(kind, "note");
+        assert!(
+            words.contains("hasn't said") && words.contains("Open Hatchling"),
             "{words}"
         );
     }
