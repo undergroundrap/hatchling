@@ -45,6 +45,9 @@ The record is new information given to a run, and new content kept at rest. Both
 | "What it did" misleads by omission: a file a Room command wrote isn't in it | The card says what it counts. The broker sees each Room write and edit, so they're listed. A file a command wrote is not, and the command is listed instead (#599), so the card never claims a complete list of files. |
 | The record grows without bound, or outlives the conversation the owner deleted | It's bounded per run and per conversation, and goes with New conversation. It survives a restart, sealed. |
 | A stale record misleads: the owner changed things since | Each entry says when, and the record is given "as of" the end of its run. What the owner said since comes after it. |
+| The run's last result carries an instruction: a page's text, or a test's output written to look like the owner | It's given exactly as the run was given it: fenced as tool output, untrusted data, never instructions, in the agent's role. It's bounded, and it's what the run already read, so it adds nothing a run couldn't already be shown |
+| A continuation sends the same message again: it ignored the journal, or was told to | The broker refuses a message identical to one the chain already sent on the same channel, until the owner approves it. Being told it was sent is the agent's to heed. The refusal is the broker's |
+| A continuation builds on what the record says the files were, after the owner or a command changed them | It's told to check the record's claims against its computer before it builds on them. The record says "as of" its run's end, and the Room's listing since then (#568) is the current word |
 
 ## Scope
 
@@ -58,6 +61,12 @@ The record is new information given to a run, and new content kept at rest. Both
   - the plan.
 
   A child run's record is part of its parent's.
+- **The run's last result.** The last tool result the run was given, as it was given: bounded (4 KiB), fenced as untrusted tool output. A run stopped mid-task usually stopped on it: a failing test, an error, a page.
+- **What's still open when it ends:**
+  - each Room job still running, by name (its record is WO-044's);
+  - each approval it asked for that the owner hasn't answered.
+
+  A continuation is told of them, so it waits on them or asks after them rather than starting them again.
 - **The journal.** One entry per effect, recorded at the broker's choke point as it happens:
 
   | Effect | Kept |
@@ -75,10 +84,13 @@ The record is new information given to a run, and new content kept at rest. Both
   - the conversation, as any chat run is;
   - the records of the runs it continues (that run, and the ones it continued, up to 3);
   - a fixed task saying the owner asked it to keep going.
+  - in that task, an instruction to check the record's claims against its computer before building on them: the files it says were written are there and as described, a job it says is running still is.
 
   In the app, **Keep going** comes first and **Keep for later** second, worded as a goal or idea to come back to. The answer says plainly why it stopped (turns, time or tokens), never that the task can't be done.
 - **The next message after a Stop or a limit.** Its run is given the record of the run that stopped, so an email the stopped run had already sent shows as sent, with or without Keep going.
 - **Continue on its own.** An owner setting, off by default: up to N continuations in a row (at most 5). Each is shown in the chat ("Kept going, 2 of 3"), and Stop ends the chain.
+- **No message sent twice by a chain.** A continuation, by Keep going or on its own, is refused a message identical to one an earlier run in its chain sent on the same channel. It goes only once the owner approves it, on the rail, as any send that isn't a reply does.
+- **The agent can look itself up.** A read-only tool gives the run its own record so far and its chain's: what it sent, wrote and asked, by the broker's account. It's how an agent checks "did I already do this?" before acting, across runs and after the context guard trimmed the start of a long one. It's given as the record is, fenced as data, and it writes nothing.
 - **What it did, on each answer.** A line under the answer, from the journal alone: files written, and where; messages sent; approvals used; tokens spent. "Did: wrote 29 files in notes/, sent 1 message, used 1 approval." It's never compared with the answer by a model. The answer is what it says, the line is what the broker saw, and the owner reads both.
 - **The plan.** A tool the agent can call to set its list of steps: up to 24, each up to 160 bytes, each pending, in progress or done. The broker keeps the latest in the record, and the output gate scans it before it's shown. The app shows it while the run works and on the answer. A continuation is given it under its own header, as the agent's own.
 - **Activity** links each run record to its Activity summary.
@@ -105,6 +117,11 @@ The record is new information given to a run, and new content kept at rest. Both
 - [ ] What it did, under an answer, counts what the journal holds and no more. A test has a model claim 30 files and write 29, and reads the line.
 - [ ] The plan is bounded, gate-scanned, shown to the owner and given to a continuation under its own header, in the agent's role. Tests cover each.
 - [ ] A subagent's effects are in its parent's record, marked as the child's. A test spawns one that writes a file.
+- [ ] A record keeps its run's last tool result, bounded and fenced, and a continuation is given it in the agent's role. A test stops a run after a failing command and reads what the continuation was given.
+- [ ] A record names each Room job still running and each approval still unanswered when its run ended, and a continuation is told of them. Tests leave one of each.
+- [ ] The continuation's task tells it to check the record against its computer. A test reads the task.
+- [ ] A continuation is refused a message identical to one its chain already sent on that channel, and it goes once the owner approves. A test sends one, continues, sends it again.
+- [ ] The record tool returns the run's record and its chain's as the broker holds them, fenced, and no op writes through it. A test sends a message, calls the tool, and finds the send.
 - [ ] The record reaches the model fenced, in the agent's role. A test reads the request sent. An injected line in a file name or a plan step coming back as an instruction is measured by WO-045's behaviour battery.
 - [ ] Each new guard fails its test when removed.
 
@@ -133,6 +150,7 @@ Filled in at close.
 - **Why sealed, when Activity isn't:** Activity is kept in the clear because it holds counts and kinds, never content. The record holds paths, recipients and message text, so it's held to the rule for content: vault-checked, sealed, bounded, gone with its conversation.
 - **Why approvals don't carry over:** an approval answers one request from one run. A continuation is a new run with the same task, and the owner was asked about the old one's request, not this one's. Asking again costs a click. Carrying it over would let a run inherit a yes it never asked for.
 - **Why no model judges "says" against "did":** a judge is a model reading the answer, and a planted answer could talk it round. The broker's count is a fact, the answer is a claim, and the owner sees both side by side.
+- **Amended 2026-11-26, by the maintainer's decision:** the last result, what's still open, checking the record against the disk, no message sent twice, and a tool to look the record up. Each comes from where a continuing agent most often goes wrong: resuming mid-debug without the error it stopped on, starting again what's still running, trusting its own account over the files, and repeating a send. The broker refuses a repeated send whatever the model does; the tool lets a model that checks find out first.
 - **One record serves later work:**
   - #664's waiting run resumes from it;
   - #666 counts repeats from it;
