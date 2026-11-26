@@ -161,10 +161,9 @@ pub fn propose(
             let _ = vault.remove(&name);
         }
     }
-    let id = crate::approval::random_hex("review-")
-        .map_err(|source| Error::Io { source })?
-        .trim_start_matches("review-")
-        .to_owned();
+    let id = crate::approval::random_hex("").map_err(|error| Error::ScheduleStore {
+        reason: format!("no id for a review item: {error}"),
+    })?;
     let item = ReviewItem {
         item_id: id.clone(),
         proposed_by: proposal.proposed_by.to_owned(),
