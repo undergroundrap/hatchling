@@ -39,4 +39,17 @@ In `hatchling-vault`:
 
 ## The gate
 
-RESULTS
+On the sandbox, at the tree under test:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4576 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by the vault's tests:
+  - the path's metadata again, not the descriptor's;
+  - the unlock path skipping its directory;
+  - a link followed (no `O_NOFOLLOW`);
+  - a FIFO waited on (no `O_NONBLOCK`);
+  - the keyring skipping its directory.
+- **Mutation** on the changed lines of `vault.rs`, `seal.rs` and `keyring.rs`: 19 mutants, 12 caught, 7 unviable, none missed.
+  - The first pass missed three: `|` to `^` between the open's flags.
+  - Those bits are disjoint, so the two are the same flags.
+  - The flags are now a `union`, as `hatchling-sys` writes them.
