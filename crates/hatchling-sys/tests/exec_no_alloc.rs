@@ -4,6 +4,11 @@
 //! allocates while it's told not to, so an allocation there is an exit
 //! code, not a hope.
 
+#![allow(
+    unsafe_code,
+    reason = "a global allocator that watches the child is an unsafe impl, and hatchling-sys is the single sanctioned unsafe crate; every unsafe block carries a SAFETY comment"
+)]
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};

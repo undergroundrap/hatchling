@@ -778,8 +778,9 @@ pub fn set_no_new_privs() -> Result<bool, Error> {
 const BUSY_TRIES: u32 = 100;
 const BUSY_WAIT_MS: i32 = 10;
 
-/// Everything `execve` needs, made before a fork (#704): the binary's
-/// path, its argv and its environment as C strings, and their
+/// Everything `execve` needs, made before a fork (#704).
+///
+/// The binary's path, its argv and its environment as C strings, and their
 /// NULL-terminated pointer arrays. [`exec`](Self::exec) then allocates
 /// nothing, so a child forked from a process with other threads makes raw
 /// syscalls alone until the image is replaced.
@@ -791,8 +792,8 @@ pub struct PreparedExec {
     path: CString,
     // Owned so the pointers below stay valid: each `CString`'s bytes live
     // on the heap, where a move of this struct leaves them.
-    _argv: Vec<CString>,
-    _env: Vec<CString>,
+    argv: Vec<CString>,
+    env: Vec<CString>,
     argv_ptrs: Vec<*const libc::c_char>,
     env_ptrs: Vec<*const libc::c_char>,
 }
@@ -801,8 +802,8 @@ impl std::fmt::Debug for PreparedExec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PreparedExec")
             .field("path", &self.path)
-            .field("argv", &self._argv)
-            .field("env", &self._env.len())
+            .field("argv", &self.argv)
+            .field("env", &self.env.len())
             .finish_non_exhaustive()
     }
 }
@@ -840,8 +841,8 @@ impl PreparedExec {
             argv_ptrs: pointers(&argv),
             env_ptrs: pointers(&env),
             path,
-            _argv: argv,
-            _env: env,
+            argv,
+            env,
         })
     }
 
