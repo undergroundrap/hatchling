@@ -128,6 +128,15 @@ pub fn launch(launch: &Launch) -> Result<Browser, LaunchError> {
     let argv: Vec<String> = std::iter::once(program.display().to_string())
         .chain(launch.args.iter().cloned())
         .collect();
+    // Made before the fork: the child allocates nothing before its exec
+    // (#704).
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let env: Vec<(&str, &str)> = launch
+        .env
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    let browser = hatchling_sys::PreparedExec::new(&program, &argv, &env).map_err(LaunchError::Start)?;
     match hatchling_sys::fork().map_err(LaunchError::Start)? {
         ForkResult::Child => {
             let placed = hatchling_sys::cloexec_fds_above_stderr().and_then(|()| {
@@ -139,13 +148,7 @@ pub fn launch(launch: &Launch) -> Result<Browser, LaunchError> {
             if placed.is_err() {
                 hatchling_sys::exit_child(EXEC_FAILED);
             }
-            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
-            let env: Vec<(&str, &str)> = launch
-                .env
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.as_str()))
-                .collect();
-            let _ = hatchling_sys::exec(&program, &argv, &env, || Ok(()));
+            let _ = browser.exec(|| Ok(()));
             hatchling_sys::exit_child(EXEC_FAILED)
         }
         ForkResult::Parent { child } => {

@@ -276,6 +276,9 @@ pub fn stdio_kind(fd: BorrowedFd<'_>) -> Result<StdioKind, Error> {
     }
 }
 
+/// The most descriptors [`place_across_exec`] places at once.
+pub const MAX_PLACED: usize = 8;
+
 /// Puts `fds` on the descriptor numbers `first`, `first + 1`, and so on,
 /// in order, each open across the next exec.
 ///
@@ -303,16 +306,21 @@ pub fn place_across_exec(fds: &[BorrowedFd<'_>], first: i32) -> Result<(), Error
         .ok()
         .and_then(|count| first.checked_add(count))
         .ok_or_else(|| invalid("too many descriptors to place"))?;
-    let copies = fds
-        .iter()
-        .map(|fd| {
-            rustix::io::fcntl_dupfd_cloexec(fd, above).map_err(|source| Error::Process {
+    // In a fixed array, not a growing one: a forked child allocates
+    // nothing before its exec (#704).
+    if fds.len() > MAX_PLACED {
+        return Err(invalid("too many descriptors to place"));
+    }
+    let mut copies: [Option<OwnedFd>; MAX_PLACED] = [const { None }; MAX_PLACED];
+    for (slot, fd) in copies.iter_mut().zip(fds) {
+        *slot = Some(rustix::io::fcntl_dupfd_cloexec(fd, above).map_err(|source| {
+            Error::Process {
                 operation: "fcntl(F_DUPFD_CLOEXEC)",
                 source: std::io::Error::from_raw_os_error(source.raw_os_error()),
-            })
-        })
-        .collect::<Result<Vec<OwnedFd>, Error>>()?;
-    for (target, copy) in (first..above).zip(&copies) {
+            }
+        })?);
+    }
+    for (target, copy) in (first..above).zip(copies.iter().flatten()) {
         // SAFETY: dup2 onto a descriptor number. It closes whatever was
         // open there, which the caller's contract covers, and the new
         // descriptor is left to the exec; no memory is touched.

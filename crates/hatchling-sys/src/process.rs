@@ -51,8 +51,13 @@ pub enum ForkResult {
 /// # Safety contract (caller)
 ///
 /// In the child, only async-signal-safe operations are sound until
-/// `exec` replaces the image. In practice the spawner forks before any
-/// other thread exists and the child performs only raw syscalls.
+/// `exec` replaces the image: no allocation, and no lock another thread
+/// may have held at the fork. A process may fork while it has other
+/// threads (the broker does), so a child that execs builds nothing after
+/// the fork (#704): what `execve` needs is a [`PreparedExec`], and a
+/// seccomp filter a [`PreparedFilter`](crate::seccomp::PreparedFilter),
+/// both made before it. A child of a process with no other thread, such
+/// as a cell's init, may do more.
 pub fn fork() -> Result<ForkResult, Error> {
     // Every child is born supervised (see `arm_pdeathsig_in_child`);
     // registered once per process, before the first fork.
@@ -773,33 +778,141 @@ pub fn set_no_new_privs() -> Result<bool, Error> {
 const BUSY_TRIES: u32 = 100;
 const BUSY_WAIT_MS: i32 = 10;
 
-/// Replaces the process image.
+/// Everything `execve` needs, made before a fork (#704): the binary's
+/// path, its argv and its environment as C strings, and their
+/// NULL-terminated pointer arrays. [`exec`](Self::exec) then allocates
+/// nothing, so a child forked from a process with other threads makes raw
+/// syscalls alone until the image is replaced.
 ///
-/// `path` is the in-cell absolute path of the binary, `argv` its
-/// argument vector (by convention `argv[0]` names the binary), and `env`
-/// the explicit environment — nothing is inherited implicitly.
+/// `path` is the in-cell absolute path of the binary, `argv` its argument
+/// vector (by convention `argv[0]` names the binary), and `env` the
+/// explicit environment: nothing is inherited implicitly.
+pub struct PreparedExec {
+    path: CString,
+    // Owned so the pointers below stay valid: each `CString`'s bytes live
+    // on the heap, where a move of this struct leaves them.
+    _argv: Vec<CString>,
+    _env: Vec<CString>,
+    argv_ptrs: Vec<*const libc::c_char>,
+    env_ptrs: Vec<*const libc::c_char>,
+}
+
+impl std::fmt::Debug for PreparedExec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedExec")
+            .field("path", &self.path)
+            .field("argv", &self._argv)
+            .field("env", &self._env.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl PreparedExec {
+    /// What `execve` needs to run `path` with `argv` and `env`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidExecArg`] if any of them holds an interior NUL.
+    pub fn new(path: &std::path::Path, argv: &[&str], env: &[(&str, &str)]) -> Result<Self, Error> {
+        let invalid = |reason: &str| Error::InvalidExecArg {
+            reason: reason.to_owned(),
+        };
+        let path = CString::new(path.as_os_str().as_bytes())
+            .map_err(|_| invalid("binary path contains an interior NUL"))?;
+        let argv = argv
+            .iter()
+            .map(|arg| CString::new(*arg))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| invalid("argv entry contains an interior NUL"))?;
+        let env = env
+            .iter()
+            .map(|(key, value)| CString::new(format!("{key}={value}")))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| invalid("env entry contains an interior NUL"))?;
+        let pointers = |strings: &[CString]| -> Vec<*const libc::c_char> {
+            strings
+                .iter()
+                .map(|string| string.as_ptr())
+                .chain(std::iter::once(std::ptr::null()))
+                .collect()
+        };
+        Ok(Self {
+            argv_ptrs: pointers(&argv),
+            env_ptrs: pointers(&env),
+            path,
+            _argv: argv,
+            _env: env,
+        })
+    }
+
+    /// Replaces the process image, allocating nothing.
+    ///
+    /// `last` runs just before `execve`: [`hold_to`] an address space smaller
+    /// than the one this process was forked with would leave it nothing to
+    /// allocate with, and a seccomp filter goes on last. It must allocate
+    /// nothing itself in a child of a process with other threads.
+    ///
+    /// This never returns successfully: it yields the error when `execve`
+    /// fails.
+    ///
+    /// A program another process holds open for writing (`ETXTBSY`) is tried
+    /// again, for up to a second. The broker writes each skill's verified
+    /// copy, then a cell runs it; a process forked meanwhile by another of
+    /// the broker's threads holds the copy's descriptor until its own exec,
+    /// and the kernel runs no file that's open for writing anywhere. It's
+    /// the race golang/go#22315 describes, and the holder lets go in
+    /// moments. The wait is a `poll` on no descriptors, which a cell's filter
+    /// allows on `x86_64` where it allows no sleep call.
+    ///
+    /// # Errors
+    ///
+    /// `last`'s own error without the `execve`, or [`Error::Process`] if
+    /// `execve` itself fails.
+    #[must_use]
+    pub fn exec(&self, last: impl FnOnce() -> Result<(), Error>) -> Error {
+        if let Err(error) = last() {
+            return error;
+        }
+        let (c_path, argv_ptrs, env_ptrs) = (&self.path, &self.argv_ptrs, &self.env_ptrs);
+        let mut tries = 0;
+        loop {
+            // SAFETY: the pointer arrays are NUL-terminated, borrow live
+            // CStrings for the duration of the call, and execve only returns on
+            // error. argv/env aliasing rules for execve are satisfied.
+            unsafe {
+                libc::execve(
+                    c_path.as_ptr(),
+                    argv_ptrs.as_ptr().cast_mut(),
+                    env_ptrs.as_ptr().cast_mut(),
+                );
+            }
+            let source = io::Error::last_os_error();
+            tries += 1;
+            if source.raw_os_error() != Some(libc::ETXTBSY) || tries >= BUSY_TRIES {
+                return Error::Process {
+                    operation: "execve",
+                    source,
+                };
+            }
+            // SAFETY: poll on no descriptors (a null array, of length 0) only
+            // waits out its timeout; nothing is read or written.
+            unsafe {
+                libc::poll(std::ptr::null_mut(), 0, BUSY_WAIT_MS);
+            }
+        }
+    }
+}
+
+/// Replaces the process image: [`PreparedExec::new`], then its
+/// [`exec`](PreparedExec::exec).
 ///
-/// `last` runs just before `execve`, after the last allocation:
-/// [`hold_to`] an address space smaller than the one this process was
-/// forked with would leave it nothing to allocate with.
-///
-/// This function never returns successfully: it yields the error when
-/// `execve` fails.
-///
-/// A program another process holds open for writing (`ETXTBSY`) is tried
-/// again, for up to a second. The broker writes each skill's verified
-/// copy, then a cell runs it; a process forked meanwhile by another of the
-/// broker's threads holds the copy's descriptor until its own exec, and
-/// the kernel runs no file that's open for writing anywhere. It's the
-/// race golang/go#22315 describes, and the holder lets go in moments. The
-/// wait is a `poll` on no descriptors, which a cell's filter allows on
-/// `x86_64` where it allows no sleep call.
+/// It allocates, so it's for a process with no other thread, or one that
+/// isn't a fork's child at all. A child forked from a process with other
+/// threads prepares before the fork instead (#704).
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidExecArg`] if an argument contains an interior
-/// NUL, `last`'s own error without the `execve`, or [`Error::Process`] if
-/// `execve` itself fails.
+/// As [`PreparedExec::new`] and [`PreparedExec::exec`].
 #[must_use]
 pub fn exec(
     path: &std::path::Path,
@@ -807,69 +920,9 @@ pub fn exec(
     env: &[(&str, &str)],
     last: impl FnOnce() -> Result<(), Error>,
 ) -> Error {
-    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
-        return Error::InvalidExecArg {
-            reason: String::from("binary path contains an interior NUL"),
-        };
-    };
-    let mut c_argv: Vec<CString> = Vec::with_capacity(argv.len());
-    for a in argv {
-        let Ok(s) = CString::new(*a) else {
-            return Error::InvalidExecArg {
-                reason: String::from("argv entry contains an interior NUL"),
-            };
-        };
-        c_argv.push(s);
-    }
-    let mut c_env: Vec<CString> = Vec::with_capacity(env.len());
-    for (k, v) in env {
-        match CString::new(format!("{k}={v}")) {
-            Ok(s) => c_env.push(s),
-            Err(_) => {
-                return Error::InvalidExecArg {
-                    reason: String::from("env entry contains an interior NUL"),
-                };
-            }
-        }
-    }
-    let argv_ptrs: Vec<*const libc::c_char> = c_argv
-        .iter()
-        .map(|s| s.as_ptr())
-        .chain(std::iter::once(std::ptr::null()))
-        .collect();
-    let env_ptrs: Vec<*const libc::c_char> = c_env
-        .iter()
-        .map(|s| s.as_ptr())
-        .chain(std::iter::once(std::ptr::null()))
-        .collect();
-    if let Err(error) = last() {
-        return error;
-    }
-    let mut tries = 0;
-    loop {
-        // SAFETY: the pointer arrays are NUL-terminated, borrow live
-        // CStrings for the duration of the call, and execve only returns on
-        // error. argv/env aliasing rules for execve are satisfied.
-        unsafe {
-            libc::execve(
-                c_path.as_ptr(),
-                argv_ptrs.as_ptr().cast_mut(),
-                env_ptrs.as_ptr().cast_mut(),
-            );
-        }
-        let source = io::Error::last_os_error();
-        tries += 1;
-        if source.raw_os_error() != Some(libc::ETXTBSY) || tries >= BUSY_TRIES {
-            return Error::Process {
-                operation: "execve",
-                source,
-            };
-        }
-        // SAFETY: poll on no descriptors (a null array, of length 0) only
-        // waits out its timeout; nothing is read or written.
-        unsafe {
-            libc::poll(std::ptr::null_mut(), 0, BUSY_WAIT_MS);
-        }
+    match PreparedExec::new(path, argv, env) {
+        Ok(prepared) => prepared.exec(last),
+        Err(error) => error,
     }
 }
 

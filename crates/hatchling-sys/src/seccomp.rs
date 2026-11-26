@@ -1361,16 +1361,44 @@ fn jump_distance(at: usize, target: usize) -> Option<u32> {
         .and_then(|distance| u32::try_from(distance).ok())
 }
 
-/// Installs a compiled profile on the current process.
+/// Installs a compiled profile on the current process: [`prepare`], then
+/// its [`install`](PreparedFilter::install).
 ///
 /// Irreversible: once installed, the filter applies to the process and
 /// all its future children. The caller must hold `NoNewPrivs` or
-/// `CAP_SYS_ADMIN`, and typically installs immediately before `exec`.
+/// `CAP_SYS_ADMIN`, and typically installs immediately before `exec`. It
+/// allocates: a child forked from a process with other threads prepares
+/// the filter before the fork instead (#704).
 ///
 /// # Errors
 ///
-/// Returns [`Error::SeccompInstall`] if the `prctl` fails.
+/// As [`prepare`], and [`Error::SeccompInstall`] if the `prctl` fails.
 pub fn install(profile: &SeccompProfile) -> Result<(), Error> {
+    prepare(profile)?.install()
+}
+
+/// A compiled profile, ready to install allocating nothing (#704): made
+/// before a fork, installed in the child.
+pub struct PreparedFilter {
+    raw: Vec<libc::sock_filter>,
+    len: u16,
+}
+
+impl std::fmt::Debug for PreparedFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedFilter")
+            .field("instructions", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+
+/// `profile`, compiled for [`PreparedFilter::install`].
+///
+/// # Errors
+///
+/// [`Error`] if the profile doesn't compile, or [`Error::SeccompInstall`]
+/// if its program is longer than the kernel takes.
+pub fn prepare(profile: &SeccompProfile) -> Result<PreparedFilter, Error> {
     let prog = profile.build()?;
     let len = u16::try_from(prog.len()).map_err(|_| Error::SeccompInstall {
         source: std::io::Error::new(
@@ -1389,6 +1417,23 @@ pub fn install(profile: &SeccompProfile) -> Result<(), Error> {
             k: ins.k,
         })
         .collect();
+    Ok(PreparedFilter { raw, len })
+}
+
+impl PreparedFilter {
+    /// Installs it on the current process, allocating nothing: as
+    /// [`install`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::SeccompInstall`] if the `prctl` fails.
+    pub fn install(&self) -> Result<(), Error> {
+        install_raw(&self.raw, self.len)
+    }
+}
+
+/// The `prctl` that installs `raw`, `len` instructions long.
+fn install_raw(raw: &[libc::sock_filter], len: u16) -> Result<(), Error> {
     // SAFETY: sock_fprog borrows the converted program for the duration
     // of the prctl call; the kernel copies it. All pointers are valid
     // and the layout matches struct sock_fprog.
