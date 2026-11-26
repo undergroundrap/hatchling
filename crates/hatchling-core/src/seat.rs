@@ -28,8 +28,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 /// The longest a handle is.
 pub const MAX_HANDLE_BYTES: usize = 512;
@@ -45,6 +45,15 @@ pub const MAX_QUOTE_BYTES: usize = 1024;
 
 /// The most reasons a refusal says, so the repair turn stays small.
 pub const MAX_REASONS: usize = 16;
+
+/// The most records a seat is given.
+pub const MAX_RECORDS: usize = 256;
+
+/// The longest a record's text is.
+pub const MAX_RECORD_BYTES: usize = 16_384;
+
+/// The longest a seat's prompt or assignment is.
+pub const MAX_BRIEF_BYTES: usize = 32_768;
 
 /// Where a claim came from: a record the step was given.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -131,7 +140,8 @@ impl fmt::Display for Handle {
 }
 
 /// Whose words a record is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Origin {
     /// The owner's own words.
     Owner,
@@ -182,6 +192,11 @@ impl Snapshot {
         Ok(Self { records: kept })
     }
 
+    /// Every record, by handle.
+    pub fn records(&self) -> impl Iterator<Item = &Record> {
+        self.records.values()
+    }
+
     /// The record under `handle`, if the step was given it.
     #[must_use]
     pub fn get(&self, handle: &Handle) -> Option<&Record> {
@@ -208,6 +223,86 @@ impl Snapshot {
             }
         }
         Ok(record.origin)
+    }
+}
+
+/// What the broker hands a seat's cell: its prompt, its assignment, and
+/// the records it may read. Nothing else reaches it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Packet {
+    /// The step's system prompt: the seat's rules and its loop's sections.
+    pub prompt: String,
+    /// What this step is to do, and the shape of its claims.
+    pub assignment: String,
+    /// The records it may read.
+    pub records: Vec<PacketRecord>,
+}
+
+/// One record as a packet carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PacketRecord {
+    /// Its handle, as text.
+    pub handle: String,
+    /// Its fingerprint.
+    pub fingerprint: String,
+    /// Whose words it is.
+    pub origin: Origin,
+    /// What it says.
+    pub text: String,
+}
+
+/// Why a packet can't be a seat's.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PacketError {
+    /// Over a bound.
+    #[error("over a bound: {0}")]
+    TooBig(&'static str),
+    /// A record's handle isn't one.
+    #[error("{handle:?} isn't a handle: {error}")]
+    Handle {
+        /// What it said.
+        handle: String,
+        /// Why.
+        error: HandleError,
+    },
+    /// Two records under one handle.
+    #[error(transparent)]
+    Duplicate(#[from] Duplicate),
+}
+
+impl Packet {
+    /// The snapshot its records make.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError`] when it breaks a bound, a handle isn't one, or two
+    /// records share one.
+    pub fn snapshot(&self) -> Result<Snapshot, PacketError> {
+        if self.prompt.len() > MAX_BRIEF_BYTES || self.assignment.len() > MAX_BRIEF_BYTES {
+            return Err(PacketError::TooBig("the prompt or the assignment"));
+        }
+        if self.records.len() > MAX_RECORDS {
+            return Err(PacketError::TooBig("the records"));
+        }
+        let mut records = Vec::with_capacity(self.records.len());
+        for record in &self.records {
+            if record.text.len() > MAX_RECORD_BYTES {
+                return Err(PacketError::TooBig("a record's text"));
+            }
+            let handle = record.handle.parse().map_err(|error| PacketError::Handle {
+                handle: record.handle.clone(),
+                error,
+            })?;
+            records.push(Record {
+                handle,
+                fingerprint: record.fingerprint.clone(),
+                origin: record.origin,
+                text: record.text.clone(),
+            });
+        }
+        Ok(Snapshot::new(records)?)
     }
 }
 
