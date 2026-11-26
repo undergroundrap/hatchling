@@ -685,7 +685,10 @@ pub(crate) mod tests {
             head.recv_timeout(Duration::from_millis(300)).is_err(),
             "the live server was never dialed"
         );
-        assert!(matches!(connect(&[], &crate::Cut::default()), Err(Error::UpstreamFailed)));
+        assert!(matches!(
+            connect(&[], &crate::Cut::default()),
+            Err(Error::UpstreamFailed)
+        ));
         assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(5));
         assert_eq!(IO_TIMEOUT, Duration::from_secs(30));
         assert_eq!(FORWARD_TIME, Duration::from_secs(600));
