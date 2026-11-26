@@ -93,13 +93,15 @@ pub fn run(
     max_steps: u32,
 ) -> Ending {
     let progress = Mutex::new(Progress::default());
-    let tools = registry(snapshot, check, &progress);
-    let ran = Loop::new(&tools, hatchling_loop::PromptKind::Worker)
-        .with_system_prompt(packet.prompt.clone())
-        .with_budget(LoopBudget { max_steps })
-        .run(model, packet.assignment.clone());
-    if let Err(error) = ran {
-        tracing::debug!(%error, "a seat's loop ended without an answer");
+    {
+        let tools = registry(snapshot, check, &progress);
+        let ran = Loop::new(&tools, hatchling_loop::PromptKind::Worker)
+            .with_system_prompt(packet.prompt.clone())
+            .with_budget(LoopBudget { max_steps })
+            .run(model, packet.assignment.clone());
+        if let Err(error) = ran {
+            tracing::debug!(%error, "a seat's loop ended without an answer");
+        }
     }
     progress
         .into_inner()
