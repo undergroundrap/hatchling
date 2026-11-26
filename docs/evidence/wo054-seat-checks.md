@@ -31,4 +31,13 @@ Part of [#718](https://github.com/undergroundrap/hatchling/issues/718), [WO-054]
 
 ## The gate
 
-RESULTS
+On the sandbox, at the tree under test:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4578 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by the seat's tests:
+  - a quote taken on trust;
+  - outside content grounding a claim;
+  - a handle that doesn't resolve let through;
+  - repairs without end.
+- **Mutation** on `seat.rs`: 49 mutants, 36 caught, 13 unviable, none missed.
