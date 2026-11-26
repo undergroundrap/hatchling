@@ -42,7 +42,7 @@ use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
     Decision, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal, FileOutRefusal, FolderEntry,
     GoalOp, GrantOp, Handoff, InboxFile, KeptOp, LibraryFile, LibraryFolder, LibraryStanding,
-    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SkillsOp, StoppedView,
+    ProfileOp, ProfileResult, ReviewOp, RoomDiskView, SetupState, SignInOp, SkillsOp, StoppedView,
     SuggestionOp, UiAction, UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
@@ -80,6 +80,8 @@ enum Owned<'a> {
     Feed,
     /// Their Ideas page.
     Suggestions(&'a SuggestionOp),
+    /// What background work waits for them on their Review page (WO-054).
+    Review(&'a ReviewOp),
     /// The skills they enable (WO-046).
     Skills(&'a SkillsOp),
 }
@@ -344,6 +346,7 @@ impl<'a> Ops<'a> {
             UiAction::ListCovered {} => self.owned(owns, Owned::Covered),
             UiAction::ReadFeed {} => self.owned(owns, Owned::Feed),
             UiAction::ManageSuggestions { op } => self.owned(owns, Owned::Suggestions(op)),
+            UiAction::ManageReview { op } => self.owned(owns, Owned::Review(op)),
             UiAction::Decide {
                 confirmation_id,
                 revision,
@@ -474,6 +477,9 @@ impl<'a> Ops<'a> {
                     | SuggestionOp::Dismiss { .. }
                     | SuggestionOp::Restore { .. }) => crate::suggestions::handle(self.config, op),
                 },
+            },
+            Owned::Review(op) => UiActionResult::Review {
+                outcome: crate::review_queue::handle(self.config, self.key, op),
             },
             Owned::Feed => UiActionResult::Feed {
                 posts: if self.config.scheduler.enabled() {
