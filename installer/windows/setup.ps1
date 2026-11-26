@@ -192,6 +192,7 @@ finally {
 
 Say 'Keeping it running after this window closes'
 Start-KeepRunning $Distro
+Set-KeepRunningMark $Distro
 Write-Host ''
 Write-Host 'Done. Open Hatchling from the Start menu.' -ForegroundColor Green
 if ((Get-FromWsl $Distro @('sh', '-c', 'hatchling-broker vault-keyring status 2>/dev/null | grep -c "tier hardware key"')) -ne '0') {

@@ -102,6 +102,23 @@ function Wait-Broker([string] $Distro) {
     return $false
 }
 
+# Whether Windows keeps Hatchling running while the owner is logged in, as the
+# broker reads it: 'on' when the Startup shortcut Setup makes is in $Startup.
+function Get-KeepRunningSaid([string] $Startup = [Environment]::GetFolderPath('Startup')) {
+    if (Test-Path -LiteralPath (Join-Path $Startup 'Hatchling.lnk')) { return 'on' }
+    return 'off'
+}
+
+# Tells the broker whether Windows keeps it running (WO-054), so the owner
+# can be told when background work only runs while Hatchling is open. Written
+# as root, where nothing in the distro but root can change it. A failure only
+# leaves the last word in place.
+function Set-KeepRunningMark([string] $Distro) {
+    $said = Get-KeepRunningSaid
+    & wsl.exe -d $Distro -u root --exec sh -c "mkdir -p /etc/hatchling && echo $said > /etc/hatchling/windows-keep-running"
+    if ($LASTEXITCODE -ne 0) { Write-Warning "Couldn't tell Hatchling whether Windows keeps it running." }
+}
+
 # One idle process in WSL, with no window: without one, WSL stops the distro
 # about 30 seconds after the last terminal closes, and Hatchling with it.
 function Start-KeepRunning([string] $Distro) {
