@@ -795,7 +795,11 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&moved);
         assert_eq!(flags, own, "the opened directory's own mount");
         assert!(proc.contains(Mf::NOEXEC));
-        assert_eq!(flags.contains(Mf::NOEXEC), temp_noexec, "not /proc's, through the link");
+        assert_eq!(
+            flags.contains(Mf::NOEXEC),
+            temp_noexec,
+            "not /proc's, through the link"
+        );
     }
 
     /// A device bind is judged on the opened fd too: a character device
@@ -821,7 +825,14 @@ pub(crate) mod tests {
                 vec![bind("/etc/passwd", target, false)],
             )
         };
-        for target in ["old", "old/x", "old/x/y", "proc", "proc/self", "proc/1/root"] {
+        for target in [
+            "old",
+            "old/x",
+            "old/x/y",
+            "proc",
+            "proc/self",
+            "proc/1/root",
+        ] {
             assert!(
                 matches!(plan(target), Err(Error::InvalidMountPlan { reason }) if reason.contains("plan's own place")),
                 "{target}"
@@ -833,10 +844,16 @@ pub(crate) mod tests {
         let size = NonZeroU64::new(1 << 20).unwrap();
         for target in ["scratch/x", "scratch/x/y"] {
             assert!(
-                matches!(plan(target).unwrap().with_scratch(size), Err(Error::InvalidMountPlan { .. })),
+                matches!(
+                    plan(target).unwrap().with_scratch(size),
+                    Err(Error::InvalidMountPlan { .. })
+                ),
                 "{target}, under the tmpfs"
             );
-            assert!(plan(target).is_ok(), "{target}, with no tmpfs, is a bind of its own");
+            assert!(
+                plan(target).is_ok(),
+                "{target}, with no tmpfs, is a bind of its own"
+            );
         }
         assert!(plan("scratchy").unwrap().with_scratch(size).is_ok());
     }
@@ -857,9 +874,10 @@ pub(crate) mod tests {
                 if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
                     exit_child(99);
                 }
-                let (Ok(map), Ok(group_map)) =
-                    (crate::idmap::IdMap::new(euid, 1), crate::idmap::IdMap::new(own_gid, 1))
-                else {
+                let (Ok(map), Ok(group_map)) = (
+                    crate::idmap::IdMap::new(euid, 1),
+                    crate::idmap::IdMap::new(own_gid, 1),
+                ) else {
                     exit_child(99)
                 };
                 // SAFETY: getpid takes no args.
@@ -907,7 +925,8 @@ pub(crate) mod tests {
     /// regular file was bound over it (#680).
     #[test]
     fn a_device_bind_swapped_after_the_plan_is_refused_at_the_mount() {
-        let base = std::env::temp_dir().join(format!("hatchling-mount-swap-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("hatchling-mount-swap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("root")).unwrap();
         std::fs::write(base.join("file"), b"not a device").unwrap();
@@ -940,14 +959,21 @@ pub(crate) mod tests {
                 return 99;
             }
             match plan.apply() {
-                Err(Error::InvalidMountPlan { reason }) if reason.contains("no longer a character device") => 0,
+                Err(Error::InvalidMountPlan { reason })
+                    if reason.contains("no longer a character device") =>
+                {
+                    0
+                }
                 Err(_) => 5,
                 Ok(()) => 6,
             }
         });
         let _ = std::fs::remove_dir_all(&base);
         if let Some(code) = code {
-            assert_eq!(code, 0, "a swapped device source must be refused at the mount (exit {code})");
+            assert_eq!(
+                code, 0,
+                "a swapped device source must be refused at the mount (exit {code})"
+            );
         }
     }
 
