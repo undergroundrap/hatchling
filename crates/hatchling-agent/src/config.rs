@@ -279,9 +279,21 @@ fn parse_run_conversation(
 ) -> Result<RunConversation, Error> {
     let bounds = hatchling_core::conversation::Bounds::for_window(window);
     Ok((
-        parse_run_history(get(env::HATCHLING_RUN_HISTORY.name).as_deref(), run_chat, &bounds)?,
-        parse_run_earlier(get(env::HATCHLING_RUN_EARLIER.name).as_deref(), run_chat, &bounds)?,
-        parse_run_records(get(env::HATCHLING_RUN_RECORD.name).as_deref(), run_chat, window)?,
+        parse_run_history(
+            get(env::HATCHLING_RUN_HISTORY.name).as_deref(),
+            run_chat,
+            &bounds,
+        )?,
+        parse_run_earlier(
+            get(env::HATCHLING_RUN_EARLIER.name).as_deref(),
+            run_chat,
+            &bounds,
+        )?,
+        parse_run_records(
+            get(env::HATCHLING_RUN_RECORD.name).as_deref(),
+            run_chat,
+            window,
+        )?,
     ))
 }
 
