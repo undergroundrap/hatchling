@@ -121,6 +121,8 @@ pub enum ApiRequest {
     ReadFeed,
     /// [`UiAction::ManageSuggestions`].
     ManageSuggestions,
+    /// [`UiAction::ManageReview`].
+    ManageReview,
     /// [`UiAction::GiveCode`].
     GiveCode,
     /// [`UiAction::DeclineCode`].
@@ -194,6 +196,7 @@ impl ApiRequest {
             UiAction::SwitchModelServer { .. } => Self::SwitchModelServer,
             UiAction::ReadFeed {} => Self::ReadFeed,
             UiAction::ManageSuggestions { .. } => Self::ManageSuggestions,
+            UiAction::ManageReview { .. } => Self::ManageReview,
             UiAction::GiveCode { .. } => Self::GiveCode,
             UiAction::DeclineCode { .. } => Self::DeclineCode,
             UiAction::BeginFileIn { .. } => Self::BeginFileIn,
@@ -427,6 +430,12 @@ mod tests {
                     op: crate::ui::SuggestionOp::List,
                 }),
                 ApiRequest::ManageSuggestions,
+            ),
+            (
+                action(UiAction::ManageReview {
+                    op: crate::ui::ReviewOp::List,
+                }),
+                ApiRequest::ManageReview,
             ),
             (
                 action(UiAction::GiveCode {
