@@ -85,7 +85,10 @@ impl Launcher for Starts {
     fn start(&self, name: &str, missed: bool) -> Result<Fake, String> {
         let state = self.store.state.borrow();
         let claimed = state.running.as_deref() == Some(name)
-            && state.loops[name]
+            && state
+                .loops
+                .get(name)
+                .and_then(|kept| kept.due)
                 .is_some_and(|due| due > state.seen.unwrap_or(0));
         self.claimed_first.borrow_mut().push(claimed);
         if self.refuse.get() {
@@ -475,7 +478,10 @@ fn a_run_that_cant_start_is_failed_and_unclaimed() {
     assert_eq!(rig.clock.running(), None);
     let state = rig.state();
     assert_eq!(state.running, None);
-    assert_eq!(state.loops.get("memory").unwrap().outcome, Some(Outcome::Failed));
+    assert_eq!(
+        state.loops.get("memory").unwrap().outcome,
+        Some(Outcome::Failed)
+    );
     assert_eq!(state.loops.get("memory").unwrap().due, Some(T0 + 2 * HOUR));
 }
 

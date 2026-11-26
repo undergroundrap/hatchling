@@ -69,7 +69,7 @@ impl Cadence {
     fn next_after(&self, now: Timestamp) -> Option<i64> {
         match self {
             Self::Every { secs } => Some(now.as_second().saturating_add(*secs)),
-            Self::At { cron, zone } => cron.next_after(now, zone).map(|at| at.as_second()),
+            Self::At { cron, zone } => cron.next_after(now, zone).map(Timestamp::as_second),
             Self::AfterActivity { .. } => None,
         }
     }
