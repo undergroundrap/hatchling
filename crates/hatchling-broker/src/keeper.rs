@@ -3173,10 +3173,18 @@ mod tests {
             };
             let before = allowed();
             let (asked, answering) = UnixStream::pair().unwrap();
-            asked.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
+            asked
+                .set_read_timeout(Some(Duration::from_secs(20)))
+                .unwrap();
             std::thread::scope(|scope| {
                 let filling = scope.spawn(|| {
-                    answer_fill(&answering, &kept, &work.id, "browser-5", "https://a.example")
+                    answer_fill(
+                        &answering,
+                        &kept,
+                        &work.id,
+                        "browser-5",
+                        "https://a.example",
+                    )
                 });
                 // Recorded, so it's past deciding and writing to the stalled cell.
                 assert!(until(&|| allowed() > before), "the fill was decided");
@@ -3196,7 +3204,10 @@ mod tests {
                 matches!(&reply, Reply::Refused { reason } if reason.contains("broke")),
                 "{reply:?}"
             );
-            assert!(!held("browser-5"), "a channel a fill timed out on is dropped");
+            assert!(
+                !held("browser-5"),
+                "a channel a fill timed out on is dropped"
+            );
             drop(stalled);
         }
         // A keeper whose configuration keeps no sign-ins fills none.
@@ -3546,7 +3557,9 @@ mod tests {
         assert!(reply.starts_with(r#"{"reply":"refused""#), "{reply}");
         // On the record the owner reads, by its purpose (#689).
         let (log, _) = crate::vault_access::read_log(&kept.config.vault.root).unwrap();
-        let refused = log.last().map(|access| (access.caller.clone(), access.action.clone(), access.outcome));
+        let refused = log
+            .last()
+            .map(|access| (access.caller.clone(), access.action.clone(), access.outcome));
         assert_eq!(
             refused,
             Some((
