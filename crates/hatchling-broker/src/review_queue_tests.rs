@@ -32,7 +32,7 @@ fn evidence() -> Vec<String> {
     vec![String::from("message:c1/m1")]
 }
 
-fn proposal<'a>(change: &'a str, evidence: &'a [String]) -> Proposal<'a> {
+const fn proposal<'a>(change: &'a str, evidence: &'a [String]) -> Proposal<'a> {
     Proposal {
         proposed_by: "memory",
         kind: ReviewKind::Replace,
@@ -255,4 +255,26 @@ fn the_owners_operations_are_answered() {
         handle(&config, &other, &ReviewOp::List),
         ReviewResult::Failed
     );
+}
+
+/// Within every bound, an item whose text JSON escapes past one sealed
+/// entry is refused, never failed on; and a full index fits one.
+#[test]
+fn what_cant_be_kept_whole_is_refused_and_the_index_fits() {
+    let (_root, scheduler) = store("escaped");
+    let key = MasterKey::generate().unwrap();
+    let control = |bytes: usize| "\u{1}".repeat(bytes);
+    let change = control(MAX_CHANGE_BYTES);
+    let why = control(MAX_WHY_BYTES);
+    let cited = vec![control(MAX_NAME_BYTES); MAX_EVIDENCE];
+    let escaped = Proposal {
+        why: &why,
+        ..proposal(&change, &cited)
+    };
+    assert_eq!(
+        propose(&scheduler, &key, &escaped, at(T0)).unwrap(),
+        Proposed::Refused("too long to keep, written out")
+    );
+    let ids = vec!["f".repeat(64); MAX_ITEMS];
+    assert!(serde_json::to_vec(&ids).unwrap().len() <= hatchling_core::MAX_SECRET_BYTES);
 }

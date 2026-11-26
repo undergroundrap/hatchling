@@ -36,8 +36,8 @@ use crate::{Config, Error, SchedulerConfig};
 /// The index of the items, oldest first.
 const INDEX: &str = "review-index";
 
-/// The most items kept.
-pub const MAX_ITEMS: usize = 512;
+/// The most items kept: their index, one id each, fits one sealed entry.
+pub const MAX_ITEMS: usize = 256;
 
 /// The longest a change is said.
 pub const MAX_CHANGE_BYTES: usize = 2048;
@@ -176,6 +176,11 @@ pub fn propose(
         state: ReviewState::Waiting,
         decided_at: None,
     };
+    // Within its bounds, its text may still be escaped past what one
+    // sealed entry holds: refused, never failed on.
+    if serde_json::to_vec(&item).map_or(true, |bytes| bytes.len() > hatchling_core::MAX_SECRET_BYTES) {
+        return Ok(Proposed::Refused("too long to keep, written out"));
+    }
     write_json(&vault, &entry(&id), &item)?;
     index.push(id.clone());
     write_json(&vault, INDEX, &index)?;
