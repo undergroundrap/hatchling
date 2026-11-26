@@ -11,10 +11,11 @@ use std::sync::OnceLock;
 /// What the Windows setup leaves: the version it installed.
 const MARKER: &str = "/etc/hatchling/windows-setup-version";
 
-/// Where Windows says whether it keeps Hatchling running while the owner is
-/// logged in (WO-054): `on` or `off`, from whether the Startup shortcut is
-/// there. Setup writes it, and so does each Open Hatchling, as root: nothing
-/// in the distro but root can change it.
+/// Where Windows says whether it keeps Hatchling running (WO-054).
+///
+/// It holds `on` or `off`, from whether the Startup shortcut is there. Setup
+/// writes it, and so does each Open Hatchling, as root: nothing in the distro
+/// but root can change it.
 pub const KEEP_RUNNING: &str = "/etc/hatchling/windows-keep-running";
 
 /// What's said on a Linux shell, and what's said for it on Windows: the most
