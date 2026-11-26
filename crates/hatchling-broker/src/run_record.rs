@@ -1,7 +1,8 @@
-//! The run record's journal (WO-053): each effect a run has outside
-//! itself, noted by the broker as the session serves it, never by the
-//! agent, and handed on when the session ends for the chat to keep with
-//! the exchange the run answered.
+//! The run record's journal (WO-053).
+//!
+//! Each effect a run has outside itself is noted by the broker as the
+//! session serves it, never by the agent, and handed on when the session
+//! ends, for the chat to keep with the exchange the run answered.
 //!
 //! The session loop notes each request's answer ([`Journal::note`]). What
 //! the journal needs of the request is taken before the request is handled
@@ -21,9 +22,11 @@ use hatchling_core::subagent::ToolUse;
 
 use crate::run_trail::{Ending, ending_of};
 
-/// The most records held for the chat to take. A chat run's is taken as
-/// its exchange is kept, moments after its session ends; one never taken
-/// (a run whose answer wasn't kept) is let go once this many came after.
+/// The most records held for the chat to take.
+///
+/// A chat run's is taken as its exchange is kept, moments after its session
+/// ends; one never taken (a run whose answer wasn't kept) is let go once
+/// this many came after.
 pub const MAX_HELD: usize = 16;
 
 /// The records of sessions that ended, oldest first, until the chat takes

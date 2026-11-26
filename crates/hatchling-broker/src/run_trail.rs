@@ -258,9 +258,6 @@ impl Trail {
         }
     }
 
-    /// Notes a use of `tool`, the tool a request used ([`tool_of`]), if
-    /// it used one, answered with `response`: by how it ended. A model
-    /// call is noted apart ([`Self::model_call`]).
     /// What the session spent on its model so far (WO-053).
     #[must_use]
     pub const fn spend(&self) -> hatchling_core::run_record::Spend {
@@ -271,6 +268,9 @@ impl Trail {
         }
     }
 
+    /// Notes a use of `tool`, the tool a request used ([`tool_of`]), if
+    /// it used one, answered with `response`: by how it ended. A model
+    /// call is noted apart ([`Self::model_call`]).
     pub fn note(&mut self, tool: Option<ToolUse>, response: &SessionResponse) {
         let Some(tool) = tool else {
             return;
