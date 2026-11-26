@@ -995,14 +995,24 @@ fn run_token() -> Result<String, String> {
 fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
     let model = crate::model_choice::server(&config.scheduler);
     // What the run is given of the conversation, within the bounds of the
-    // window it's told (#595): those its agent reads it by.
+    // window it's told (#595): those its agent reads it by. The records of
+    // the runs it continues (WO-053) are fitted first, to their share of
+    // the history's room, and the history is given what they leave.
+    let bounds = hatchling_core::conversation::Bounds::for_window(model.context_window);
+    let records = hatchling_core::run_record::fitted(
+        &request.records,
+        hatchling_core::run_record::carried_budget(bounds.history_bytes),
+    );
     let given = hatchling_core::conversation::Conversation {
         earlier: request.earlier.clone(),
         exchanges: request.history.clone(),
     }
-    .within(&hatchling_core::conversation::Bounds::for_window(
-        model.context_window,
-    ));
+    .within(&hatchling_core::conversation::Bounds {
+        history_bytes: bounds
+            .history_bytes
+            .saturating_sub(hatchling_core::run_record::carried_bytes(&records)),
+        ..bounds
+    });
     ScheduledRun {
         // A run for the owner's Feed page writes a post from their prompt.
         task: if request.channel == crate::feed_page::FEED_PAGE {
@@ -1027,6 +1037,7 @@ fn scheduled_run(config: &Config, request: &RunRequest) -> ScheduledRun {
         chat: request.chat,
         history: given.exchanges,
         earlier: given.earlier,
+        records,
         builders: run_artifacts(config, request).builders,
         tools: Some(run_tools(
             config,
@@ -1512,6 +1523,7 @@ mod tests {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
         }
     }
 
@@ -2111,6 +2123,7 @@ mod tests {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         };
@@ -2610,6 +2623,7 @@ echo the answer
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         });
@@ -2646,6 +2660,7 @@ echo the answer
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         });

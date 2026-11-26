@@ -94,7 +94,10 @@ pub use surfaces::{
 /// and disable one.
 /// 11: Stop (WO-051): `stop_run`, the owner's, to end a chat's run in
 /// flight, answered `run_stopped` or `nothing_to_stop`.
-pub const UI_SCHEMA_VERSION: u16 = 11;
+/// 12: Keep going (WO-053): `keep_going`, the owner's, to have the next
+/// run carry on from one that stopped before it was done, answered
+/// `message_accepted` or `nothing_to_continue`.
+pub const UI_SCHEMA_VERSION: u16 = 12;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -1690,6 +1693,15 @@ pub enum UiAction {
         /// The chat.
         chat_id: String,
     },
+    /// Have the next run carry on from the last, which stopped before it
+    /// was done (WO-053): the owner's alone. It's a message from them,
+    /// shown as theirs, and its run is given the broker's record of the
+    /// runs it continues. Answered `nothing_to_continue` when the last run
+    /// answered, or none stopped in this conversation.
+    KeepGoing {
+        /// The chat.
+        chat_id: String,
+    },
     /// Approve or deny a confirmation, at the revision and the action
     /// digest the user saw.
     Decide {
@@ -2163,6 +2175,12 @@ pub enum UiActionResult {
     },
     /// The chat had no run in flight to stop: it had ended (v11).
     NothingToStop {
+        /// The chat.
+        chat_id: String,
+    },
+    /// The chat's last run answered, or none stopped in its conversation:
+    /// there's nothing to keep going from (v12).
+    NothingToContinue {
         /// The chat.
         chat_id: String,
     },

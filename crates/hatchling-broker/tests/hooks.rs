@@ -223,6 +223,7 @@ fn run_request(grants: Vec<ScheduleGrant>, depth: u32) -> RunRequest {
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     }
 }
 

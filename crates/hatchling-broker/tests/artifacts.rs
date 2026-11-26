@@ -762,6 +762,7 @@ fn artifacts_are_denied_without_a_store_and_in_a_run_session() {
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     let run = hatchling_broker::scoped_config(
         &world.config,
@@ -1867,6 +1868,7 @@ fn an_idea_a_chat_run_rewrites_is_no_longer_labelled_the_owners() {
         chat: true,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     let socket = "/tmp/hatchling-test-artifacts-refine.sock".parse().unwrap();
     world.config = hatchling_broker::scoped_config(&world.config, &chat, "run-c", socket);
@@ -1907,6 +1909,7 @@ fn a_chat_runs_proposal_reaches_the_owner_and_builds_nothing_on_its_own() {
         chat,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     let socket = || "/tmp/hatchling-test-artifacts-chat.sock".parse().unwrap();
     world.config = hatchling_broker::scoped_config(&broker, &run(false), "run-s", socket());

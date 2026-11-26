@@ -125,6 +125,11 @@ pub struct RunRequest {
     /// history's bounds, oldest first (WO-026): the broker's record too.
     /// Empty for every other run.
     pub earlier: Vec<String>,
+    /// For a chat run, the broker's records of the runs it continues,
+    /// oldest first (WO-053): what they did outside themselves, never a
+    /// run's own account. Empty for every other run, and for a chat run
+    /// that follows one that answered.
+    pub records: Vec<hatchling_core::run_record::RunRecord>,
 }
 
 /// A result that could not be delivered, kept for the user.
@@ -880,6 +885,7 @@ impl<R: Run> Dispatcher<R> {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
         };
         let launched = services.launcher.launch(request);
         let (run, ended) = match launched {

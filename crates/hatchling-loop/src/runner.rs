@@ -124,6 +124,7 @@ pub struct Loop<'t, 'r, 'm> {
     ledger: Option<Arc<StepLedger>>,
     prior_turns: Vec<(String, String)>,
     earlier: Option<String>,
+    record: Option<String>,
     unfinished: Option<Unfinished<'m>>,
     more: Option<More<'m>>,
     last_step: Option<String>,
@@ -141,6 +142,7 @@ impl std::fmt::Debug for Loop<'_, '_, '_> {
             .field("memory_provider", &self.memory_provider.is_some())
             .field("prior_turns", &self.prior_turns.len())
             .field("earlier", &self.earlier.is_some())
+            .field("record", &self.record.is_some())
             .field("unfinished", &self.unfinished.is_some())
             .field("more", &self.more.is_some())
             .field("last_step", &self.last_step.is_some())
@@ -169,6 +171,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             ledger: None,
             prior_turns: Vec::new(),
             earlier: None,
+            record: None,
             unfinished: None,
             more: None,
             last_step: None,
@@ -382,6 +385,17 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         self
     }
 
+    /// The broker's record of the runs this one continues (WO-053), in its
+    /// envelope (`hatchling_prompt::carried_records`): one
+    /// [`Message::Assistant`] after the prior turns and before the request.
+    /// It's in the agent's role, never the person's: what earlier runs did,
+    /// not what anyone asked.
+    #[must_use]
+    pub fn with_record(mut self, record: Option<String>) -> Self {
+        self.record = record;
+        self
+    }
+
     /// Spend model turns from `ledger` instead of the budget:
     /// the same ledger the run's delegating tools allocate children's
     /// budgets from, so everything a child does counts against the run.
@@ -488,6 +502,7 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
             history.push(Message::User(user.clone()));
             history.push(Message::Assistant(assistant.clone()));
         }
+        history.extend(self.record.clone().map(Message::Assistant));
         history.push(Message::User(request));
         history
     }
@@ -912,6 +927,32 @@ mod tests {
         assert!(matches!(history.get(4), Some(Message::User(text)) if text == "Thanks."));
         // Without any, nothing is added.
         let plain = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_earlier(None);
+        let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
+        plain.run(&model, "Thanks.".to_owned()).unwrap();
+        assert_eq!(model.seen_histories().first().map(Vec::len), Some(2));
+    }
+
+    /// The record of the runs a run continues comes after the prior turns,
+    /// in the agent's role, just before the request (WO-053).
+    #[test]
+    fn a_carried_record_comes_after_the_prior_turns_in_the_agents_role() {
+        let registry = empty_registry();
+        let agent_loop = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_earlier(Some("Earlier: call me Sam.".to_owned()))
+            .with_prior_turns(vec![("Hi.".to_owned(), "Hello, Sam.".to_owned())])
+            .with_record(Some("<run_record>[]</run_record>".to_owned()));
+        let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
+        agent_loop.run(&model, "Keep going.".to_owned()).unwrap();
+        let seen = model.seen_histories();
+        let history = seen.first().expect("model saw one history");
+        assert_eq!(history.len(), 6, "{history:?}");
+        assert!(matches!(history.get(3), Some(Message::Assistant(text)) if text == "Hello, Sam."));
+        assert!(
+            matches!(history.get(4), Some(Message::Assistant(text)) if text == "<run_record>[]</run_record>")
+        );
+        assert!(matches!(history.get(5), Some(Message::User(text)) if text == "Keep going."));
+        // Without one, nothing is added.
+        let plain = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_record(None);
         let model = FakeModel::new(vec![ModelAction::Text("Sure.".to_owned())]);
         plain.run(&model, "Thanks.".to_owned()).unwrap();
         assert_eq!(model.seen_histories().first().map(Vec::len), Some(2));

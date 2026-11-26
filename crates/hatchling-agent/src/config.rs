@@ -95,6 +95,11 @@ pub struct Config {
     /// messages in exchanges past the history's bounds, oldest first,
     /// bounded. Empty for every other run.
     pub run_earlier: Vec<String>,
+    /// The broker's records of the runs a chat turn continues
+    /// (`HATCHLING_RUN_RECORD`, WO-053): what they did outside themselves,
+    /// oldest first, at most three, within the window's budget for them.
+    /// Empty for every other run.
+    pub run_records: Vec<hatchling_core::run_record::RunRecord>,
     /// The builder the operator names for each build kind
     /// (`HATCHLING_RUN_BUILDERS`, WO-032): what a chat turn may propose
     /// for the owner to approve. Empty for every other run, and then the
@@ -198,6 +203,11 @@ impl Config {
             run_chat,
             model_context_window,
         )?;
+        let run_records = parse_run_records(
+            get(env::HATCHLING_RUN_RECORD.name).as_deref(),
+            run_chat,
+            model_context_window,
+        )?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
         let run_deadline = number(
@@ -233,6 +243,7 @@ impl Config {
             run_chat,
             run_history,
             run_earlier,
+            run_records,
             run_builders,
             run_tools,
             run_deadline,
@@ -296,6 +307,44 @@ fn parse_run_history(
             reason,
         }
     })
+}
+
+/// `HATCHLING_RUN_RECORD`: the broker's records of the runs a chat turn
+/// continues (WO-053), which only a chat turn may be given: at most
+/// [`MAX_CARRIED`](hatchling_core::run_record::MAX_CARRIED), within the
+/// budget the broker sized them to for the window the run was told.
+fn parse_run_records(
+    value: Option<&str>,
+    run_chat: bool,
+    window: Option<u32>,
+) -> Result<Vec<hatchling_core::run_record::RunRecord>, Error> {
+    use hatchling_core::run_record::{MAX_CARRIED, carried_budget, carried_bytes};
+    let refused = |reason: String| Error::InvalidConfig {
+        key: "HATCHLING_RUN_RECORD",
+        reason,
+    };
+    let Some(raw) = value else {
+        return Ok(Vec::new());
+    };
+    if !run_chat {
+        return Err(refused(String::from(
+            "only a chat run (HATCHLING_RUN_CHAT=1) continues another",
+        )));
+    }
+    let records: Vec<hatchling_core::run_record::RunRecord> =
+        serde_json::from_str(raw).map_err(|error| refused(format!("not run records: {error}")))?;
+    if records.len() > MAX_CARRIED {
+        return Err(refused(format!("more than {MAX_CARRIED} records")));
+    }
+    let budget = carried_budget(
+        hatchling_core::conversation::Bounds::for_window(window).history_bytes,
+    );
+    if carried_bytes(&records) > budget {
+        return Err(refused(format!(
+            "past the {budget} bytes the window has room for"
+        )));
+    }
+    Ok(records)
 }
 
 /// `HATCHLING_RUN_EARLIER`: what the owner said earlier in a chat turn's
@@ -704,6 +753,50 @@ mod tests {
             )
             .unwrap()
             .is_empty()
+        );
+    }
+
+    /// WO-053: a chat run reads the records of the runs it continues, at
+    /// most three and within its window's budget, and nothing else does.
+    #[test]
+    fn a_chat_run_reads_the_records_it_continues_within_their_bounds() {
+        use hatchling_core::run_record::{Effect, MAX_CARRIED, RunRecord, carried_budget};
+        let record = |n: usize| {
+            let mut record = RunRecord::new(&format!("run-{n}"));
+            record.note(0, Effect::LibraryItem { name: String::from("a.md"), bytes: 1 });
+            record
+        };
+        let json = |records: &[RunRecord]| serde_json::to_string(records).unwrap();
+        assert!(parse_run_records(None, false, None).unwrap().is_empty());
+        let one = [record(1)];
+        assert_eq!(parse_run_records(Some(&json(&one)), true, None).unwrap(), one);
+        let refused = |value: &str, chat: bool, window: Option<u32>| {
+            matches!(
+                parse_run_records(Some(value), chat, window),
+                Err(Error::InvalidConfig { key: "HATCHLING_RUN_RECORD", .. })
+            )
+        };
+        assert!(refused(&json(&one), false, None), "only a chat run");
+        assert!(refused("not json", true, None));
+        assert!(refused(r#"[{"run":"run-1","said":"x"}]"#, true, None));
+        let many: Vec<RunRecord> = (0..=MAX_CARRIED).map(record).collect();
+        assert!(refused(&json(&many), true, None));
+        let three: Vec<RunRecord> = (0..MAX_CARRIED).map(record).collect();
+        assert_eq!(parse_run_records(Some(&json(&three)), true, None).unwrap(), three);
+        // Past the budget the window leaves: the least window's, here.
+        let least = carried_budget(hatchling_core::conversation::Bounds::LEAST.history_bytes);
+        let mut big = RunRecord::new("run-big");
+        while big.bytes() <= least {
+            big.entries.push(hatchling_core::run_record::Entry {
+                at: 0,
+                effect: Effect::LibraryItem { name: "x".repeat(200), bytes: 1 },
+            });
+        }
+        assert!(refused(&json(&[big.clone()]), true, None));
+        // A larger window has room for it.
+        assert_eq!(
+            parse_run_records(Some(&json(&[big.clone()])), true, Some(1_000_000)).unwrap(),
+            [big]
         );
     }
 

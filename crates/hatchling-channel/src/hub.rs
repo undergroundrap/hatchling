@@ -94,6 +94,9 @@ struct HubState {
     /// What the owner may keep for later from the conversation open now,
     /// the oldest first.
     offers: VecDeque<Offer>,
+    /// The conversation whose last run stopped before it was done, so the
+    /// owner may ask the next to keep going (WO-053): set by the chat.
+    continuing: Option<u64>,
     /// The broker's own notes for the next run that answers the owner,
     /// each by a key it can be forgotten by, the oldest first.
     notes: VecDeque<(String, String)>,
@@ -220,6 +223,7 @@ impl LocalHub {
         state.conversation = state.conversation.wrapping_add(1);
         state.started_for = None;
         state.offers.clear();
+        state.continuing = None;
     }
 
     /// Keeps `line`, a note of the broker's own, for the next run that
@@ -278,6 +282,29 @@ impl LocalHub {
         state.conversation = state.conversation.wrapping_add(1);
         state.started_for = Some(what);
         state.offers.clear();
+        state.continuing = None;
+    }
+
+    /// Says whether the conversation numbered `conversation` has a run to
+    /// keep going from (WO-053): the chat says so when a run stops before
+    /// it's done, and that it hasn't once one answers. Held for that
+    /// conversation alone: a new one withdraws it.
+    pub fn may_keep_going(&self, conversation: u64, may: bool) {
+        let mut state = self.state();
+        if may {
+            if state.conversation == conversation {
+                state.continuing = Some(conversation);
+            }
+        } else if state.continuing == Some(conversation) {
+            state.continuing = None;
+        }
+    }
+
+    /// Whether the conversation open now has a run to keep going from.
+    #[must_use]
+    pub fn keeps_going(&self) -> bool {
+        let state = self.state();
+        state.continuing == Some(state.conversation)
     }
 
     /// Offers the owner to keep for later what they asked in the run
@@ -445,6 +472,31 @@ impl LocalHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The conversation may keep going once the chat says so, until it
+    /// says it may not or a new conversation starts; one said of a
+    /// conversation no longer open is ignored (WO-053).
+    #[test]
+    fn a_conversation_may_keep_going_while_the_chat_says_so() {
+        let hub = LocalHub::new(OutputGate::disabled());
+        assert!(!hub.keeps_going());
+        let now = hub.conversation();
+        hub.may_keep_going(now, true);
+        assert!(hub.keeps_going());
+        hub.may_keep_going(now.wrapping_add(7), false);
+        assert!(hub.keeps_going(), "another conversation's word changes nothing");
+        hub.may_keep_going(now, false);
+        assert!(!hub.keeps_going());
+        hub.may_keep_going(now.wrapping_add(1), true);
+        assert!(!hub.keeps_going(), "a conversation not open isn't held");
+        hub.may_keep_going(now, true);
+        hub.new_conversation();
+        assert!(!hub.keeps_going());
+        let next = hub.conversation();
+        hub.may_keep_going(next, true);
+        hub.new_conversation_for(String::from("an idea"));
+        assert!(!hub.keeps_going());
+    }
     use crate::{ChannelId, SenderId};
 
     /// A hub is itself and its clones, never another hub like it.

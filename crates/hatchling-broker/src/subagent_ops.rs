@@ -165,6 +165,7 @@ pub fn child_config(
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     let mut child = scoped_config(parent, &request, token, socket);
     child.scheduler = SchedulerConfig {
@@ -463,6 +464,7 @@ impl<'scope, 'env> Subagents<'scope, 'env> {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: BTreeMap::new(),
             // A subagent has no person there: it gets no computer.
             tools: Some(crate::run_launcher::run_tools(

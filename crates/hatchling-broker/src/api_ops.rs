@@ -274,6 +274,12 @@ impl<'a> Ops<'a> {
                 }
                 self.send(chat_id, text, replies)
             }
+            UiAction::KeepGoing { chat_id } => {
+                if !owns {
+                    return refused(ActionRefusal::NotGranted);
+                }
+                self.keep_going(chat_id, replies)
+            }
             UiAction::NewConversation { chat_id, idea } => {
                 if !owns {
                     return refused(ActionRefusal::NotGranted);
@@ -783,6 +789,50 @@ impl<'a> Ops<'a> {
         text: &str,
         replies: &mut Replies<'a>,
     ) -> (UiActionResult, ApiOutcome) {
+        self.send_as("api", chat_id, text, replies)
+    }
+
+    /// Keep going (WO-053): when the conversation's last run stopped
+    /// before it was done, sends the owner's [`KEEP_GOING_TEXT`] as theirs,
+    /// from [`KEEP_GOING_SENDER`], so its run is given the fixed task and
+    /// the broker's record of the runs it continues. Otherwise there's
+    /// nothing to continue.
+    ///
+    /// [`KEEP_GOING_TEXT`]: crate::chat_run::KEEP_GOING_TEXT
+    /// [`KEEP_GOING_SENDER`]: crate::chat_run::KEEP_GOING_SENDER
+    fn keep_going(&self, chat_id: &str, replies: &mut Replies<'a>) -> (UiActionResult, ApiOutcome) {
+        if chat_id != LOCAL_CHAT {
+            return (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::BadRequest,
+                },
+                ApiOutcome::Refused,
+            );
+        }
+        if !self.hub.is_some_and(LocalHub::keeps_going) {
+            return (
+                UiActionResult::NothingToContinue {
+                    chat_id: chat_id.to_owned(),
+                },
+                ApiOutcome::Served,
+            );
+        }
+        self.send_as(
+            crate::chat_run::KEEP_GOING_SENDER,
+            chat_id,
+            crate::chat_run::KEEP_GOING_TEXT,
+            replies,
+        )
+    }
+
+    /// As [`Self::send`], the message from `sender`.
+    fn send_as(
+        &self,
+        sender: &str,
+        chat_id: &str,
+        text: &str,
+        replies: &mut Replies<'a>,
+    ) -> (UiActionResult, ApiOutcome) {
         let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
         if chat_id != LOCAL_CHAT || text.len() > MAX_INGRESS_TEXT_BYTES {
             return refused(ActionRefusal::BadRequest);
@@ -795,7 +845,7 @@ impl<'a> Ops<'a> {
         };
         replies.route(hub, &self.bus);
         let message = Message {
-            sender: SenderId(String::from("api")),
+            sender: SenderId(sender.to_owned()),
             channel: ChannelId::local(),
             text: text.to_owned(),
         };

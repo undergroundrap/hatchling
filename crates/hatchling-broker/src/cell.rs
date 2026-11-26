@@ -613,6 +613,10 @@ pub struct ScheduledRun {
     /// history's bounds, oldest first (WO-026): the broker's record too.
     #[serde(default)]
     pub earlier: Vec<String>,
+    /// For a chat run, the broker's records of the runs it continues,
+    /// oldest first, fitted to the window it's told (WO-053).
+    #[serde(default)]
+    pub records: Vec<hatchling_core::run_record::RunRecord>,
     /// For a chat run, the builder the operator names for each kind
     /// (WO-032): what its agent may propose with. Empty for every other
     /// run.
@@ -664,6 +668,11 @@ impl ScheduledRun {
             if !self.earlier.is_empty() {
                 if let Ok(earlier) = serde_json::to_string(&self.earlier) {
                     env.push(("HATCHLING_RUN_EARLIER", earlier));
+                }
+            }
+            if !self.records.is_empty() {
+                if let Ok(records) = serde_json::to_string(&self.records) {
+                    env.push(("HATCHLING_RUN_RECORD", records));
                 }
             }
             if !self.builders.is_empty() {
@@ -2655,6 +2664,7 @@ mod run_cell_tests {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         }
@@ -2835,6 +2845,7 @@ mod run_cell_tests {
             chat: true,
             history: history.clone(),
             earlier: earlier.clone(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
             ..run()

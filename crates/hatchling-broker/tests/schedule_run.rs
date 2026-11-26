@@ -454,6 +454,7 @@ fn the_owners_stop_ends_a_chat_run_in_its_cell_at_once() {
         chat,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -572,6 +573,7 @@ fn run_to_end(launcher: &CellLauncher<'_, '_>, task: &str) -> Result<String, Str
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
         })
         .unwrap();
     let deadline = Instant::now() + RUN_DEADLINE;
@@ -860,6 +862,7 @@ fn one_run_cannot_reach_another_run_s_socket() {
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -1073,6 +1076,7 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -1148,6 +1152,7 @@ fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
                 chat: false,
                 history: Vec::new(),
                 earlier: Vec::new(),
+                records: Vec::new(),
             })
             .unwrap();
         assert_eq!(run_dirs(&config.scheduler.run_root()).len(), 1);

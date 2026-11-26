@@ -696,6 +696,7 @@ mod tests {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
             builders: std::collections::BTreeMap::new(),
             tools: None,
         };
@@ -713,6 +714,7 @@ mod tests {
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
         };
         (run, request)
     }
