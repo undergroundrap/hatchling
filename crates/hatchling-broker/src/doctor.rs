@@ -2190,7 +2190,10 @@ mod tests {
         }
         let (kind, words) = said(&keep_running_said(true, Some(true)));
         assert_eq!(kind, "fine");
-        assert!(words.starts_with("on: ") && words.contains("wakes on time"), "{words}");
+        assert!(
+            words.starts_with("on: ") && words.contains("wakes on time"),
+            "{words}"
+        );
         let (kind, words) = said(&keep_running_said(true, Some(false)));
         assert_eq!(kind, "note");
         assert!(
@@ -2201,7 +2204,10 @@ mod tests {
         );
         let (kind, words) = said(&keep_running_said(true, None));
         assert_eq!(kind, "note");
-        assert!(words.contains("hasn't said") && words.contains("Open Hatchling"), "{words}");
+        assert!(
+            words.contains("hasn't said") && words.contains("Open Hatchling"),
+            "{words}"
+        );
     }
 
     /// What a finding says, by its kind and words.
