@@ -495,6 +495,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "keep_going",
+                "type": "string"
+            },
+            {
                 "const": "decide",
                 "type": "string"
             },
@@ -5412,6 +5416,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "keep_going",
+                        "type": "string"
+                    },
+                    "chat_id": {
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "action",
+                    "chat_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "decide",
                         "type": "string"
                     },
@@ -6778,6 +6798,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "result": {
                         "const": "nothing_to_stop",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "chat_id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "chat_id": {
+                        "type": "string"
+                    },
+                    "result": {
+                        "const": "nothing_to_continue",
                         "type": "string"
                     }
                 },

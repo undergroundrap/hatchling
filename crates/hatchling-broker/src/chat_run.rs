@@ -43,6 +43,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use hatchling_core::conversation::{Bounds, ChatExchange, Compacted, Conversation};
+use hatchling_core::run_record::{MAX_CARRIED, RunRecord};
 
 use hatchling_channel::{ChannelId, LocalHub, Message};
 use hatchling_core::ScheduleGrant;
@@ -260,22 +261,39 @@ pub enum Step {
 pub trait Keeps {
     /// Keeps `kept`, the conversation `sent_in` as the chat holds it once
     /// its newest exchange, the last of `kept.exchanges` if any, is kept,
-    /// with the cell id of the `run` that answered it (WO-043).
-    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>);
+    /// with the cell id of the `run` that answered it (WO-043), and the
+    /// broker's `record` of that run (WO-053).
+    fn keep(
+        &self,
+        sent_in: u64,
+        kept: &Conversation,
+        run: Option<&str>,
+        record: Option<&RunRecord>,
+    );
 }
 
 /// Nowhere: the conversation lives in the broker's memory alone.
 impl Keeps for () {
-    fn keep(&self, _: u64, _: &Conversation, _: Option<&str>) {}
+    fn keep(&self, _: u64, _: &Conversation, _: Option<&str>, _: Option<&RunRecord>) {}
 }
 
 impl<K: Keeps> Keeps for Option<K> {
-    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>) {
+    fn keep(
+        &self,
+        sent_in: u64,
+        kept: &Conversation,
+        run: Option<&str>,
+        record: Option<&RunRecord>,
+    ) {
         if let Some(keeps) = self {
-            keeps.keep(sent_in, kept, run);
+            keeps.keep(sent_in, kept, run, record);
         }
     }
 }
+
+/// What the owner says when they ask a run to keep going (WO-053): the
+/// record it's given says what keeping going means.
+pub const KEEP_GOING_TEXT: &str = "Keep going.";
 
 /// The chat's one run in flight, and the conversation so far.
 #[derive(Debug)]
@@ -319,6 +337,11 @@ pub struct Chat<R, K = ()> {
     /// shown and which ran out of steps, until it is taken
     /// ([`Chat::take_offer`]).
     offer: Option<Offer>,
+    /// The broker's records of the runs the next one continues, oldest
+    /// first, at most [`MAX_CARRIED`] (WO-053): each run that stopped
+    /// before it was done, since the last that answered with steps to
+    /// spare, in the conversation open now.
+    carried: Vec<RunRecord>,
 }
 
 /// What the owner may keep for later from a run that ran out of steps.
@@ -373,6 +396,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             waiting: None,
             answered: None,
             offer: None,
+            carried: Vec::new(),
         }
     }
 
@@ -487,7 +511,13 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// Keeps the exchange of `user` and `answer`, the person having been
     /// shown `answer` as written; past the bounds, the oldest answers go,
     /// and what the owner said in them is kept as earlier.
-    fn keep(&mut self, user: String, answer: String, run: Option<&str>) -> Compacted {
+    fn keep(
+        &mut self,
+        user: String,
+        answer: String,
+        run: Option<&str>,
+        record: Option<&RunRecord>,
+    ) -> Compacted {
         let bounds = self.bounds();
         let compacted = self.kept.push(
             ChatExchange {
@@ -496,8 +526,35 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             },
             &bounds,
         );
-        self.keeps.keep(self.conversation, &self.kept, run);
+        self.keeps.keep(self.conversation, &self.kept, run, record);
         compacted
+    }
+
+    /// Carries `record`, of a run that stopped before it was done, to the
+    /// next run (WO-053): the oldest let go past [`MAX_CARRIED`], and the
+    /// owner may ask it to keep going.
+    fn carry(&mut self, record: Option<RunRecord>) {
+        if let Some(record) = record {
+            self.carried.push(record);
+            if self.carried.len() > MAX_CARRIED {
+                self.carried.remove(0);
+            }
+        }
+        self.say_continuing();
+    }
+
+    /// Lets go of what was carried: a run answered with steps to spare,
+    /// or the conversation changed.
+    fn settled(&mut self) {
+        self.carried.clear();
+        self.say_continuing();
+    }
+
+    /// Tells the hub whether the conversation open now may keep going.
+    fn say_continuing(&self) {
+        if let Some(hub) = &self.waiting {
+            hub.may_keep_going(self.conversation, !self.carried.is_empty());
+        }
     }
 
     /// One step at `now`, in the local channel's `conversation`: a
@@ -539,6 +596,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             self.conversation = conversation;
             self.kept = Conversation::default();
             self.told = Told::default();
+            self.settled();
         }
         if let Some((run, _, _, _)) = &mut self.running {
             let Some(outcome) = run.poll() else {
@@ -549,6 +607,11 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             let Some((_, user, sent_in, given)) = self.running.take() else {
                 return Step::Idle;
             };
+            // The broker's record of the run, as its session left it
+            // (WO-053): kept with its answer, and carried to the next run
+            // when it stopped before it was done.
+            let record = cell.as_deref().and_then(crate::run_record::take);
+            let current = sent_in == self.conversation;
             // What the run was given of the owner's further messages is
             // part of what they said in this exchange. The run is given no
             // more, however it ended.
@@ -563,6 +626,9 @@ impl<R: Run, K: Keeps> Chat<R, K> {
                 Ok(answer) => answer,
                 Err(reason) => {
                     tracing::warn!(reason = ?reason, "a chat run failed");
+                    if current {
+                        self.carry(record);
+                    }
                     // It may have failed before its model saw anything, as
                     // when the model was still loading: its notes go to the
                     // next run. One told twice is told of a file still there.
@@ -584,10 +650,15 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             let local = ChannelId::local().0;
             return match delivery.deliver_answer(&local, &answer, cell.as_deref(), spent) {
                 Ok(shown) => {
-                    if shown && sent_in == self.conversation {
+                    if shown && current {
                         let run = cell.clone();
                         self.ended(spent, cell, &user, &answer, sent_in);
-                        let compacted = self.keep(user, answer, run.as_deref());
+                        let compacted = self.keep(user, answer, run.as_deref(), record.as_ref());
+                        if spent {
+                            self.carry(record);
+                        } else {
+                            self.settled();
+                        }
                         if let Some(notice) = self.told.notice(compacted) {
                             if let Err(error) = delivery.deliver_notice(&local, notice) {
                                 tracing::warn!(error = ?error, "a compaction notice was not delivered");
@@ -638,6 +709,13 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         } else {
             format!("{}\n\n{}", crate::file_in::told(&given), message.text)
         };
+        // What the runs it continues did, as the broker recorded it, for a
+        // run in the conversation they were in.
+        let records = if sent_in == self.conversation {
+            self.carried.clone()
+        } else {
+            Vec::new()
+        };
         let request = RunRequest {
             schedule_id: String::from(CHAT_LABEL),
             task,
@@ -652,6 +730,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             chat: true,
             history,
             earlier,
+            records,
         };
         // The Room's copy of the skills the owner enabled, brought in line
         // before the run that may use it (WO-046).
@@ -1146,7 +1225,13 @@ mod tests {
     );
 
     impl Keeps for &Recorded {
-        fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>) {
+        fn keep(
+            &self,
+            sent_in: u64,
+            kept: &Conversation,
+            run: Option<&str>,
+            _record: Option<&RunRecord>,
+        ) {
             self.0.borrow_mut().push((sent_in, kept.clone()));
             self.1.borrow_mut().push(run.map(str::to_owned));
         }
@@ -1249,8 +1334,8 @@ mod tests {
         assert_eq!(given, Some((Vec::new(), Vec::new())));
         assert!(chat.earlier().is_empty());
         // Given no store, nothing is kept beyond memory.
-        None::<&Recorded>.keep(5, &after_q3, None);
-        Some(&recorded).keep(5, &after_q3, None);
+        None::<&Recorded>.keep(5, &after_q3, None, None);
+        Some(&recorded).keep(5, &after_q3, None, None);
         assert_eq!(recorded.0.borrow().len(), 3);
     }
 
@@ -1720,6 +1805,190 @@ mod tests {
                 Ok(runs.remove(0))
             }
         }
+    }
+
+    /// Launches each [`Spent`] run in turn, keeping each request.
+    #[derive(Default)]
+    struct SpentSeen {
+        runs: RefCell<Vec<Spent>>,
+        requests: RefCell<Vec<RunRequest>>,
+    }
+
+    impl Launcher for SpentSeen {
+        type Run = Spent;
+
+        fn launch(&self, request: RunRequest) -> Result<Spent, String> {
+            self.requests.borrow_mut().push(request);
+            let mut runs = self.runs.borrow_mut();
+            if runs.is_empty() {
+                Err(String::new())
+            } else {
+                Ok(runs.remove(0))
+            }
+        }
+    }
+
+    /// The broker's record of the run `cell`, left as its session leaves
+    /// one, holding one item named `name`.
+    fn left(cell: &str, name: &str) -> RunRecord {
+        let mut record = RunRecord::new(cell);
+        record.note(
+            0,
+            hatchling_core::run_record::Effect::LibraryItem {
+                name: name.to_owned(),
+                bytes: 1,
+            },
+        );
+        crate::run_record::publish(record.clone(), |_| Some(false));
+        record
+    }
+
+    /// Runs `run` to its end for the owner's `text`, in `conversation`.
+    fn run_through(
+        chat: &mut Chat<Spent>,
+        launches: &SpentSeen,
+        run: Spent,
+        text: &str,
+        conversation: u64,
+    ) {
+        launches.runs.borrow_mut().push(run);
+        let now = Timestamp::now();
+        let answers = Answers::default();
+        assert_eq!(
+            chat.step(
+                || Some((message(text), conversation)),
+                conversation,
+                launches,
+                &answers,
+                now
+            ),
+            Step::Started
+        );
+        assert_eq!(
+            chat.step(|| None, conversation, launches, &answers, now),
+            Step::Answered
+        );
+    }
+
+    /// WO-053: a run that stops before it's done (out of steps, or failed)
+    /// hands the broker's record of it to the next run, which may then be
+    /// asked to keep going; a run that answers with steps to spare settles
+    /// it, and the run after is given none.
+    #[test]
+    fn a_run_that_stopped_hands_its_record_to_the_next() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let mut chat: Chat<Spent> = Chat::new(vec![send_local()]).with_follow_ups(hub.clone());
+        let launches = SpentSeen::default();
+        let given = |at: usize| {
+            launches
+                .requests
+                .borrow()
+                .get(at)
+                .map(|request| request.records.clone())
+        };
+        let first = left("run-0000000000000000000000c1", "first.md");
+        run_through(
+            &mut chat,
+            &launches,
+            spent(Some(ran_out()), "run-0000000000000000000000c1"),
+            "make it",
+            0,
+        );
+        assert_eq!(given(0), Some(Vec::new()), "the first is given none");
+        assert!(hub.keeps_going(), "it ran out: the owner may keep going");
+        let second = left("run-0000000000000000000000c2", "second.md");
+        let failed = Spent {
+            outcome: Err(String::from("the run exited 1")),
+            ending: None,
+            cell: "run-0000000000000000000000c2",
+        };
+        run_through(&mut chat, &launches, failed, KEEP_GOING_TEXT, 0);
+        assert_eq!(given(1), Some(vec![first.clone()]));
+        assert!(hub.keeps_going(), "it failed: still not done");
+        let _third = left("run-0000000000000000000000c3", "third.md");
+        run_through(
+            &mut chat,
+            &launches,
+            spent(None, "run-0000000000000000000000c3"),
+            KEEP_GOING_TEXT,
+            0,
+        );
+        assert_eq!(
+            given(2),
+            Some(vec![first, second]),
+            "the chain, oldest first"
+        );
+        assert!(
+            !hub.keeps_going(),
+            "it answered: nothing to keep going from"
+        );
+        run_through(
+            &mut chat,
+            &launches,
+            spent(None, "run-0000000000000000000000c4"),
+            "thanks",
+            0,
+        );
+        assert_eq!(given(3), Some(Vec::new()), "an answer settles the chain");
+    }
+
+    /// WO-053: the chain holds the last three runs that stopped, and a new
+    /// conversation lets go of it.
+    #[test]
+    fn the_chain_is_the_last_three_and_goes_with_its_conversation() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let mut chat: Chat<Spent> = Chat::new(vec![send_local()]).with_follow_ups(hub.clone());
+        let launches = SpentSeen::default();
+        let cells = [
+            "run-0000000000000000000000d1",
+            "run-0000000000000000000000d2",
+            "run-0000000000000000000000d3",
+            "run-0000000000000000000000d4",
+        ];
+        let records: Vec<RunRecord> = cells.iter().map(|cell| left(cell, "x.md")).collect();
+        for cell in cells {
+            run_through(
+                &mut chat,
+                &launches,
+                spent(Some(ran_out()), cell),
+                KEEP_GOING_TEXT,
+                0,
+            );
+        }
+        run_through(
+            &mut chat,
+            &launches,
+            spent(Some(ran_out()), "run-0000000000000000000000d5"),
+            KEEP_GOING_TEXT,
+            0,
+        );
+        let fifth = launches
+            .requests
+            .borrow()
+            .get(4)
+            .map(|request| request.records.clone());
+        assert_eq!(
+            fifth,
+            Some(records.get(1..).unwrap_or_default().to_vec()),
+            "the last three"
+        );
+        assert!(hub.keeps_going());
+        hub.new_conversation();
+        let next = hub.conversation();
+        run_through(
+            &mut chat,
+            &launches,
+            spent(None, "run-0000000000000000000000d6"),
+            "a new thing",
+            next,
+        );
+        let sixth = launches
+            .requests
+            .borrow()
+            .get(5)
+            .map(|request| request.records.clone());
+        assert_eq!(sixth, Some(Vec::new()), "a new conversation is given none");
+        assert!(!hub.keeps_going());
     }
 
     /// The ending of a run whose agent answered as its steps ran out.

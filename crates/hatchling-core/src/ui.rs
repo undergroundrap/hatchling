@@ -94,7 +94,10 @@ pub use surfaces::{
 /// and disable one.
 /// 11: Stop (WO-051): `stop_run`, the owner's, to end a chat's run in
 /// flight, answered `run_stopped` or `nothing_to_stop`.
-pub const UI_SCHEMA_VERSION: u16 = 11;
+/// 12: Keep going (WO-053): `keep_going`, the owner's, to have the next
+/// run carry on from one that stopped before it was done, answered
+/// `message_accepted` or `nothing_to_continue`.
+pub const UI_SCHEMA_VERSION: u16 = 12;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -1690,6 +1693,15 @@ pub enum UiAction {
         /// The chat.
         chat_id: String,
     },
+    /// Have the next run carry on from the last, which stopped before it
+    /// was done (WO-053): the owner's alone. It's a message from them,
+    /// shown as theirs, and its run is given the broker's record of the
+    /// runs it continues. Answered `nothing_to_continue` when the last run
+    /// answered, or none stopped in this conversation.
+    KeepGoing {
+        /// The chat.
+        chat_id: String,
+    },
     /// Approve or deny a confirmation, at the revision and the action
     /// digest the user saw.
     Decide {
@@ -2166,6 +2178,12 @@ pub enum UiActionResult {
         /// The chat.
         chat_id: String,
     },
+    /// The chat's last run answered, or none stopped in its conversation:
+    /// there's nothing to keep going from (v12).
+    NothingToContinue {
+        /// The chat.
+        chat_id: String,
+    },
     /// A file may be sent: its parts follow (v5).
     FileInBegun {
         /// The file's id, for its parts and its end.
@@ -2575,7 +2593,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 11);
+        assert_eq!(UI_SCHEMA_VERSION, 12);
     }
 
     #[test]
@@ -3575,6 +3593,12 @@ mod tests {
                 json!({"action": "stop_run", "chat_id": "local"}),
             ),
             (
+                UiAction::KeepGoing {
+                    chat_id: s("local"),
+                },
+                json!({"action": "keep_going", "chat_id": "local"}),
+            ),
+            (
                 UiAction::KeepSignedIn {
                     session_id: s("w1"),
                 },
@@ -3679,6 +3703,12 @@ mod tests {
                     chat_id: s("local"),
                 },
                 json!({"result": "nothing_to_stop", "chat_id": "local"}),
+            ),
+            (
+                UiActionResult::NothingToContinue {
+                    chat_id: s("local"),
+                },
+                json!({"result": "nothing_to_continue", "chat_id": "local"}),
             ),
             (
                 UiActionResult::InputDone {

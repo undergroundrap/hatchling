@@ -351,6 +351,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     send_message: 'Sent a message',
     new_conversation: 'Started a new conversation',
     stop_run: 'Stopped the agent',
+    keep_going: 'Asked the agent to keep going',
     decide: 'Answered a request',
     manage_grants: 'Managed the standing grants',
     manage_schedule: 'Changed a schedule',

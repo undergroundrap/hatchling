@@ -142,6 +142,7 @@ fn ready_cell(socket: &Path) -> Result<hatchling_agent::Cell<hatchling_agent::Re
         run_history: Vec::new(),
         run_earlier: Vec::new(),
         run_now: None,
+        run_records: Vec::new(),
         run_builders: std::collections::BTreeMap::new(),
         run_tools: None,
         run_deadline: None,

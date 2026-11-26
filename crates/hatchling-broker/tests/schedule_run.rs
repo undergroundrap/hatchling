@@ -454,6 +454,7 @@ fn the_owners_stop_ends_a_chat_run_in_its_cell_at_once() {
         chat,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -572,6 +573,7 @@ fn run_to_end(launcher: &CellLauncher<'_, '_>, task: &str) -> Result<String, Str
             chat: false,
             history: Vec::new(),
             earlier: Vec::new(),
+            records: Vec::new(),
         })
         .unwrap();
     let deadline = Instant::now() + RUN_DEADLINE;
@@ -860,6 +862,7 @@ fn one_run_cannot_reach_another_run_s_socket() {
         chat: false,
         history: Vec::new(),
         earlier: Vec::new(),
+        records: Vec::new(),
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -1004,6 +1007,27 @@ fn a_run_asks_for_its_followup_through_its_own_connection_within_its_own_grants(
     assert!(run_dirs(&config.scheduler.run_root()).is_empty());
 }
 
+/// A scheduled run of `task` for the schedule `id`, due `due`, sending on
+/// the local channel and nothing else.
+fn scheduled(id: &str, task: String, due: Timestamp) -> RunRequest {
+    RunRequest {
+        schedule_id: id.to_owned(),
+        task,
+        grants: vec![send()],
+        due,
+        missed: false,
+        channel: String::from("local"),
+        depth: 0,
+        event: None,
+        space: None,
+        feed: None,
+        chat: false,
+        history: Vec::new(),
+        earlier: Vec::new(),
+        records: Vec::new(),
+    }
+}
+
 ///, in a real cell: a space task's run session is that task run,
 /// bound by the broker to its one space. Through its own socket it can
 /// join and read its space; another space, creating spaces, and grants
@@ -1060,19 +1084,8 @@ fn a_space_tasks_run_uses_its_own_space_and_nothing_outside_it() {
     let theirs = space_with("not for this run");
     let task = format!("space:{mine}:plan space:{theirs}:plan space-create vault-store:app-token");
     let request = |space: Option<String>| RunRequest {
-        schedule_id: String::from("sch-space"),
-        task: task.clone(),
-        grants: vec![send()],
-        due: now,
-        missed: false,
-        channel: String::from("local"),
-        depth: 0,
-        event: None,
         space,
-        feed: None,
-        chat: false,
-        history: Vec::new(),
-        earlier: Vec::new(),
+        ..scheduled("sch-space", task.clone(), now)
     };
     std::thread::scope(|scope| {
         let launcher = CellLauncher::new(scope, &config, &key, env(&config, RUN_DEADLINE));
@@ -1148,6 +1161,7 @@ fn dropping_a_running_cell_cancels_it_and_cleans_its_resources() {
                 chat: false,
                 history: Vec::new(),
                 earlier: Vec::new(),
+                records: Vec::new(),
             })
             .unwrap();
         assert_eq!(run_dirs(&config.scheduler.run_root()).len(), 1);

@@ -653,12 +653,15 @@ impl<'k> SealedConversation<'k> {
 }
 
 impl Keeps for SealedConversation<'_> {
-    fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>) {
+    fn keep(
+        &self,
+        sent_in: u64,
+        kept: &Conversation,
+        run: Option<&str>,
+        record: Option<&RunRecord>,
+    ) {
         let current = || self.hub.conversation() == sent_in;
-        // The run's record, taken however the keep goes: it's held for
-        // this exchange alone (WO-053).
-        let record = run.and_then(crate::run_record::take);
-        if let Err(error) = self.store.keep_if(current, kept, run, record.as_ref()) {
+        if let Err(error) = self.store.keep_if(current, kept, run, record) {
             tracing::warn!(%error, "the conversation can't be kept");
         }
     }
@@ -1180,16 +1183,18 @@ mod tests {
         let (config, _scratch, key) = kept("hub");
         let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
         let sealed = SealedConversation::new(ConversationStore::of(&config, &key).unwrap(), &hub);
-        sealed.keep(0, &holding(&[exchange("q0", "a0")]), None);
+        sealed.keep(0, &holding(&[exchange("q0", "a0")]), None, None);
         hub.new_conversation();
         sealed.keep(
             0,
             &holding(&[exchange("q0", "a0"), exchange("q1", "a1")]),
             None,
+            None,
         );
         sealed.keep(
             1,
             &holding(&[exchange("q0", "a0"), exchange("q2", "a2")]),
+            None,
             None,
         );
         assert_eq!(
@@ -1510,26 +1515,26 @@ mod tests {
         assert_eq!(store.resume().unwrap(), first);
     }
 
-    /// The chat's keep takes its run's record from what the sessions left,
-    /// and keeps it with the exchange; one for a conversation no longer the
-    /// hub's is taken and not kept.
+    /// The chat's keep keeps the record of the run it's given with the
+    /// exchange; one for a conversation no longer the hub's isn't kept.
     #[test]
-    fn the_chats_keep_takes_its_runs_record() {
+    fn the_chats_keep_keeps_its_runs_record() {
         let (config, _scratch, key) = kept("records-chat");
         let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
         let sealed = SealedConversation::new(ConversationStore::of(&config, &key).unwrap(), &hub);
         let record = record_of(21, "from-the-session.md");
-        crate::run_record::publish(record.clone(), |_| Some(false));
         let first = holding(&[exchange("q0", "a0")]);
-        sealed.keep(hub.conversation(), &first, Some(&run(21)));
+        sealed.keep(hub.conversation(), &first, Some(&run(21)), Some(&record));
         let store = ConversationStore::of(&config, &key).unwrap();
         assert_eq!(store.records().unwrap(), [Some(record)]);
-        assert_eq!(crate::run_record::take(&run(21)), None, "taken once");
-        // Sent in an earlier conversation: taken, and not kept.
-        crate::run_record::publish(record_of(22, "late.md"), |_| Some(false));
+        // Sent in an earlier conversation: not kept.
         let both = holding(&[exchange("q0", "a0"), exchange("q1", "a1")]);
-        sealed.keep(hub.conversation().wrapping_add(1), &both, Some(&run(22)));
-        assert_eq!(crate::run_record::take(&run(22)), None);
+        sealed.keep(
+            hub.conversation().wrapping_add(1),
+            &both,
+            Some(&run(22)),
+            Some(&record_of(22, "late.md")),
+        );
         assert_eq!(store.records().unwrap().len(), 1);
     }
 }
