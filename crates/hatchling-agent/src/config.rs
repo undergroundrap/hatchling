@@ -197,13 +197,9 @@ impl Config {
             "HATCHLING_RUN_CHAT",
         )?;
         let model_max_steps = set_max_steps.unwrap_or_else(|| default_steps(run_chat));
-        let (run_history, run_earlier) = parse_run_conversation(
+        let (run_history, run_earlier, run_records) = parse_run_conversation(
             get(env::HATCHLING_RUN_HISTORY.name).as_deref(),
             get(env::HATCHLING_RUN_EARLIER.name).as_deref(),
-            run_chat,
-            model_context_window,
-        )?;
-        let run_records = parse_run_records(
             get(env::HATCHLING_RUN_RECORD.name).as_deref(),
             run_chat,
             model_context_window,
@@ -269,19 +265,31 @@ fn number<T: std::str::FromStr>(
         .transpose()
 }
 
-/// `HATCHLING_RUN_HISTORY` and `HATCHLING_RUN_EARLIER`, `history` and
-/// `earlier`: a chat turn's conversation, held to the bounds of the window
-/// the run was told (#595), as the broker sized what it sent.
+/// What a chat turn's conversation was given in full: its exchanges, what
+/// the owner said earlier, and the records of the runs it continues.
+type RunConversation = (
+    Vec<hatchling_core::conversation::ChatExchange>,
+    Vec<String>,
+    Vec<hatchling_core::run_record::RunRecord>,
+);
+
+/// `HATCHLING_RUN_HISTORY`, `HATCHLING_RUN_EARLIER` and
+/// `HATCHLING_RUN_RECORD`, `history`, `earlier` and `records`: a chat
+/// turn's conversation, held to the bounds of the window the run was told
+/// (#595), as the broker sized what it sent, and the records of the runs it
+/// continues (WO-053).
 fn parse_run_conversation(
     history: Option<&str>,
     earlier: Option<&str>,
+    records: Option<&str>,
     run_chat: bool,
     window: Option<u32>,
-) -> Result<(Vec<hatchling_core::conversation::ChatExchange>, Vec<String>), Error> {
+) -> Result<RunConversation, Error> {
     let bounds = hatchling_core::conversation::Bounds::for_window(window);
     Ok((
         parse_run_history(history, run_chat, &bounds)?,
         parse_run_earlier(earlier, run_chat, &bounds)?,
+        parse_run_records(records, run_chat, window)?,
     ))
 }
 

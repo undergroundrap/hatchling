@@ -274,24 +274,14 @@ impl<'a> Ops<'a> {
                 }
                 self.send(chat_id, text, replies)
             }
-            UiAction::KeepGoing { chat_id } => {
-                if !owns {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                self.keep_going(chat_id, replies)
-            }
+            UiAction::KeepGoing { chat_id } => self.keep_going(owns, chat_id, replies),
             UiAction::NewConversation { chat_id, idea } => {
                 if !owns {
                     return refused(ActionRefusal::NotGranted);
                 }
                 self.new_conversation(chat_id, idea.as_deref())
             }
-            UiAction::StopRun { chat_id } => {
-                if !owns {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                self.stop_run(chat_id)
-            }
+            UiAction::StopRun { chat_id } => self.stop_run(owns, chat_id),
             UiAction::InvokeSkill { op } => self.skill(owns, op),
             UiAction::ManageSchedule { op } => self.schedule(caller, owns, &owner, op),
             UiAction::ManageGrants { op } => self.owned(owns, Owned::Grants(op)),
@@ -798,14 +788,18 @@ impl<'a> Ops<'a> {
     /// Otherwise there's nothing to continue.
     ///
     /// [`KEEP_GOING_TEXT`]: crate::chat_run::KEEP_GOING_TEXT
-    fn keep_going(&self, chat_id: &str, replies: &mut Replies<'a>) -> (UiActionResult, ApiOutcome) {
+    fn keep_going(
+        &self,
+        owns: bool,
+        chat_id: &str,
+        replies: &mut Replies<'a>,
+    ) -> (UiActionResult, ApiOutcome) {
+        let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        if !owns {
+            return refused(ActionRefusal::NotGranted);
+        }
         if chat_id != LOCAL_CHAT {
-            return (
-                UiActionResult::Refused {
-                    reason: ActionRefusal::BadRequest,
-                },
-                ApiOutcome::Refused,
-            );
+            return refused(ActionRefusal::BadRequest);
         }
         if !self.hub.is_some_and(LocalHub::keeps_going) {
             return (
@@ -882,8 +876,11 @@ impl Ops<'_> {
     /// new conversation like any.
     /// The owner's Stop (WO-051): the chat's run in flight, its whole
     /// tree, ends at once. The chat says so as the run's end is taken.
-    fn stop_run(&self, chat_id: &str) -> (UiActionResult, ApiOutcome) {
+    fn stop_run(&self, owns: bool, chat_id: &str) -> (UiActionResult, ApiOutcome) {
         let refused = |reason| (UiActionResult::Refused { reason }, ApiOutcome::Refused);
+        if !owns {
+            return refused(ActionRefusal::NotGranted);
+        }
         if chat_id != LOCAL_CHAT {
             return refused(ActionRefusal::BadRequest);
         }
