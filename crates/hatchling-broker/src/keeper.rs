@@ -2045,7 +2045,11 @@ mod tests {
             (String::from("hidraw4"), four),
         ];
         assert_eq!(keys_env(&keys), expected);
-        let raw = null().into_raw_fd();
+        // Handed over as the keeper's launcher hands a key: kept across
+        // exec, the only kind a process adopts (#704).
+        let key = null();
+        hatchling_sys::keep_across_exec(std::os::fd::AsFd::as_fd(&key)).unwrap();
+        let raw = key.into_raw_fd();
         let (pipe, _write) = hatchling_sys::pipe().unwrap();
         let adopted = handed_keys(&format!(
             "hidraw2={raw},nonsense,hidraw3=x,hidraw5={},",
