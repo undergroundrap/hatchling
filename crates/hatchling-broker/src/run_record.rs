@@ -13,7 +13,9 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, PoisonError};
 
-use hatchling_core::messages::{ChannelOp, ChannelResult, RoomResult, SessionRequest, SessionResponse};
+use hatchling_core::messages::{
+    ChannelOp, ChannelResult, RoomResult, SessionRequest, SessionResponse,
+};
 use hatchling_core::run_record::{Effect, RunRecord, Sent, Spend};
 use hatchling_core::subagent::ToolUse;
 
@@ -204,7 +206,13 @@ impl Journal {
 
     /// Notes what a request, `asked` of it and used as `tool`, did once
     /// answered with `response`, at `at`.
-    pub fn note(&mut self, asked: Asked, tool: Option<ToolUse>, response: &SessionResponse, at: i64) {
+    pub fn note(
+        &mut self,
+        asked: Asked,
+        tool: Option<ToolUse>,
+        response: &SessionResponse,
+        at: i64,
+    ) {
         for effect in effects(asked, tool, response) {
             self.record.note(at, effect);
         }
@@ -342,20 +350,27 @@ mod tests {
             [message(Sent::Redacted, None)]
         );
         assert_eq!(
-            noted_for(&send("hello", None), &SessionResponse::Channel(ChannelResult::Denied)),
+            noted_for(
+                &send("hello", None),
+                &SessionResponse::Channel(ChannelResult::Denied)
+            ),
             [Effect::Refused {
                 tool: ToolUse::MessageSend
             }]
         );
-        for nothing in [ChannelResult::ChannelError, ChannelResult::NoMessage, ChannelResult::UnknownAccount] {
-            assert_eq!(noted_for(&send("hello", None), &SessionResponse::Channel(nothing)), []);
+        for nothing in [
+            ChannelResult::ChannelError,
+            ChannelResult::NoMessage,
+            ChannelResult::UnknownAccount,
+        ] {
+            assert_eq!(
+                noted_for(&send("hello", None), &SessionResponse::Channel(nothing)),
+                []
+            );
         }
         // A message is noted only from a send: a send's answer without the
         // send asked of it says nothing was sent.
-        assert_eq!(
-            noted(Asked::Other, Some(ToolUse::MessageSend), &sent),
-            []
-        );
+        assert_eq!(noted(Asked::Other, Some(ToolUse::MessageSend), &sent), []);
     }
 
     #[test]
@@ -412,7 +427,11 @@ mod tests {
         ];
         for (result, effect) in cases {
             assert_eq!(
-                noted(Asked::Other, Some(ToolUse::Room), &SessionResponse::Room(result)),
+                noted(
+                    Asked::Other,
+                    Some(ToolUse::Room),
+                    &SessionResponse::Room(result)
+                ),
                 [effect]
             );
         }
@@ -551,7 +570,9 @@ mod tests {
     #[test]
     fn a_published_record_is_checked_then_taken_by_its_run() {
         let run = "run-cccccccccccccccccccccc01";
-        publish(record(run, &["hunter2.md"]), |text| Some(text.contains("hunter2")));
+        publish(record(run, &["hunter2.md"]), |text| {
+            Some(text.contains("hunter2"))
+        });
         assert_eq!(take(run), Some(record(run, &[WITHHELD])));
         assert_eq!(take(run), None);
     }

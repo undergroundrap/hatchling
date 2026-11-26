@@ -140,7 +140,9 @@ impl Effect {
                 texts
             }
             Self::RoomWrote { path, .. } | Self::RoomEdited { path, .. } => vec![path.as_str()],
-            Self::LibraryItem { name, .. } | Self::LibraryFolder { name, .. } => vec![name.as_str()],
+            Self::LibraryItem { name, .. } | Self::LibraryFolder { name, .. } => {
+                vec![name.as_str()]
+            }
             Self::ApprovalAsked { .. } | Self::ApprovalUsed { .. } | Self::Refused { .. } => {
                 Vec::new()
             }
@@ -252,10 +254,7 @@ impl RunRecord {
         if fits {
             self.entries.push(entry);
         } else {
-            let count = self
-                .more
-                .entry(entry.effect.kind().to_owned())
-                .or_default();
+            let count = self.more.entry(entry.effect.kind().to_owned()).or_default();
             *count = count.saturating_add(1);
         }
     }
@@ -322,7 +321,11 @@ mod tests {
     }
 
     fn effects(record: &RunRecord) -> Vec<Effect> {
-        record.entries.iter().map(|entry| entry.effect.clone()).collect()
+        record
+            .entries
+            .iter()
+            .map(|entry| entry.effect.clone())
+            .collect()
     }
 
     #[test]
@@ -333,8 +336,14 @@ mod tests {
         assert_eq!(
             record.entries,
             [
-                Entry { at: 1, effect: sent("hello") },
-                Entry { at: 2, effect: wrote("notes/a.md") },
+                Entry {
+                    at: 1,
+                    effect: sent("hello")
+                },
+                Entry {
+                    at: 2,
+                    effect: wrote("notes/a.md")
+                },
             ]
         );
         assert!(record.more.is_empty());
@@ -389,17 +398,35 @@ mod tests {
     fn past_its_entries_an_effect_is_counted_by_kind() {
         let mut record = RunRecord::new("run-abc");
         for at in 0..MAX_ENTRIES {
-            record.note(i64::try_from(at).unwrap(), Effect::Refused { tool: ToolUse::Network });
+            record.note(
+                i64::try_from(at).unwrap(),
+                Effect::Refused {
+                    tool: ToolUse::Network,
+                },
+            );
         }
         assert_eq!(record.entries.len(), MAX_ENTRIES);
         assert!(record.more.is_empty());
-        record.note(99, Effect::Refused { tool: ToolUse::Network });
-        record.note(99, Effect::Refused { tool: ToolUse::Network });
+        record.note(
+            99,
+            Effect::Refused {
+                tool: ToolUse::Network,
+            },
+        );
+        record.note(
+            99,
+            Effect::Refused {
+                tool: ToolUse::Network,
+            },
+        );
         record.note(99, sent("past"));
         assert_eq!(record.entries.len(), MAX_ENTRIES);
         assert_eq!(
             record.more,
-            BTreeMap::from([(String::from("message_sent"), 1), (String::from("refused"), 2)])
+            BTreeMap::from([
+                (String::from("message_sent"), 1),
+                (String::from("refused"), 2)
+            ])
         );
         // The first kept are the first that happened.
         assert_eq!(record.entries.first().map(|entry| entry.at), Some(0));
@@ -410,7 +437,10 @@ mod tests {
     fn past_its_bytes_an_effect_is_counted_by_kind() {
         let mut record = RunRecord::new("run-abc");
         let text = "x".repeat(MAX_TEXT_BYTES);
-        let one = entry_bytes(&Entry { at: 0, effect: sent(&text) });
+        let one = entry_bytes(&Entry {
+            at: 0,
+            effect: sent(&text),
+        });
         let fit = MAX_RECORD_BYTES / one;
         assert!(fit < MAX_ENTRIES, "the byte bound is reached first");
         for _ in 0..fit {
@@ -422,9 +452,19 @@ mod tests {
         assert_eq!(record.more.get("message_sent"), Some(&1));
         assert_eq!(record.bytes(), fit * one);
         // One that still fits is kept after one that didn't.
-        let small = Entry { at: 0, effect: Effect::Refused { tool: ToolUse::Vault } };
+        let small = Entry {
+            at: 0,
+            effect: Effect::Refused {
+                tool: ToolUse::Vault,
+            },
+        };
         assert!(record.bytes() + entry_bytes(&small) <= MAX_RECORD_BYTES);
-        record.note(0, Effect::Refused { tool: ToolUse::Vault });
+        record.note(
+            0,
+            Effect::Refused {
+                tool: ToolUse::Vault,
+            },
+        );
         assert_eq!(record.entries.len(), fit + 1);
     }
 
@@ -433,16 +473,35 @@ mod tests {
         let mut record = RunRecord::new("run-abc");
         record.note(0, sent("the key is hunter2"));
         record.note(0, wrote("hunter2.txt"));
-        record.note(0, Effect::LibraryItem { name: String::from("report.md"), bytes: 1 });
         record.note(
             0,
-            Effect::LibraryFolder { name: String::from("hunter2-folder"), files: 1, bytes: 1 },
+            Effect::LibraryItem {
+                name: String::from("report.md"),
+                bytes: 1,
+            },
         );
         record.note(
             0,
-            Effect::RoomEdited { path: String::from("edit.md"), bytes: 1, replaced: 1 },
+            Effect::LibraryFolder {
+                name: String::from("hunter2-folder"),
+                files: 1,
+                bytes: 1,
+            },
         );
-        record.note(0, Effect::ApprovalUsed { tool: ToolUse::MessageSend });
+        record.note(
+            0,
+            Effect::RoomEdited {
+                path: String::from("edit.md"),
+                bytes: 1,
+                replaced: 1,
+            },
+        );
+        record.note(
+            0,
+            Effect::ApprovalUsed {
+                tool: ToolUse::MessageSend,
+            },
+        );
         let mut asked = Vec::new();
         record.withhold(|text| {
             asked.push(text.to_owned());
@@ -450,7 +509,14 @@ mod tests {
         });
         assert_eq!(
             asked,
-            ["local", "the key is hunter2", "hunter2.txt", "report.md", "hunter2-folder", "edit.md"]
+            [
+                "local",
+                "the key is hunter2",
+                "hunter2.txt",
+                "report.md",
+                "hunter2-folder",
+                "edit.md"
+            ]
         );
         assert_eq!(
             effects(&record),
@@ -461,10 +527,23 @@ mod tests {
                     text: Some(WITHHELD.to_owned()),
                 },
                 wrote(WITHHELD),
-                Effect::LibraryItem { name: String::from("report.md"), bytes: 1 },
-                Effect::LibraryFolder { name: WITHHELD.to_owned(), files: 1, bytes: 1 },
-                Effect::RoomEdited { path: String::from("edit.md"), bytes: 1, replaced: 1 },
-                Effect::ApprovalUsed { tool: ToolUse::MessageSend },
+                Effect::LibraryItem {
+                    name: String::from("report.md"),
+                    bytes: 1
+                },
+                Effect::LibraryFolder {
+                    name: WITHHELD.to_owned(),
+                    files: 1,
+                    bytes: 1
+                },
+                Effect::RoomEdited {
+                    path: String::from("edit.md"),
+                    bytes: 1,
+                    replaced: 1
+                },
+                Effect::ApprovalUsed {
+                    tool: ToolUse::MessageSend
+                },
             ]
         );
     }
@@ -473,9 +552,23 @@ mod tests {
     fn it_reads_back_as_it_was_written_and_refuses_what_it_never_holds() {
         let mut record = RunRecord::new("run-abc");
         record.note(7, sent("hi"));
-        record.note(8, Effect::ApprovalAsked { tool: ToolUse::MemoryPropose });
-        record.note(9, Effect::ApprovalUsed { tool: ToolUse::MessageSend });
-        record.spend = Spend { model_calls: 3, input_tokens: 100, output_tokens: 20 };
+        record.note(
+            8,
+            Effect::ApprovalAsked {
+                tool: ToolUse::MemoryPropose,
+            },
+        );
+        record.note(
+            9,
+            Effect::ApprovalUsed {
+                tool: ToolUse::MessageSend,
+            },
+        );
+        record.spend = Spend {
+            model_calls: 3,
+            input_tokens: 100,
+            output_tokens: 20,
+        };
         let json = serde_json::to_string(&record).unwrap();
         assert!(json.contains(r#""kind":"message_sent""#), "{json}");
         assert_eq!(serde_json::from_str::<RunRecord>(&json).unwrap(), record);
@@ -484,7 +577,10 @@ mod tests {
             json.replace("message_sent", "money_moved"),
             json.replace(r#""at":7,"#, r#""at":7,"by":"agent","#),
         ] {
-            assert!(serde_json::from_str::<RunRecord>(&unknown).is_err(), "{unknown}");
+            assert!(
+                serde_json::from_str::<RunRecord>(&unknown).is_err(),
+                "{unknown}"
+            );
         }
     }
 
@@ -502,10 +598,35 @@ mod tests {
             },
         );
         record.note(0, wrote("a.md"));
-        record.note(0, Effect::RoomEdited { path: String::from("b.md"), bytes: 0, replaced: 1 });
-        record.note(0, Effect::LibraryItem { name: String::from("c.md"), bytes: 0 });
-        record.note(0, Effect::LibraryFolder { name: String::from("d"), files: 0, bytes: 0 });
-        record.note(0, Effect::Refused { tool: ToolUse::Network });
+        record.note(
+            0,
+            Effect::RoomEdited {
+                path: String::from("b.md"),
+                bytes: 0,
+                replaced: 1,
+            },
+        );
+        record.note(
+            0,
+            Effect::LibraryItem {
+                name: String::from("c.md"),
+                bytes: 0,
+            },
+        );
+        record.note(
+            0,
+            Effect::LibraryFolder {
+                name: String::from("d"),
+                files: 0,
+                bytes: 0,
+            },
+        );
+        record.note(
+            0,
+            Effect::Refused {
+                tool: ToolUse::Network,
+            },
+        );
         assert_eq!(record.texts(), "local\nhello\nlocal\na.md\nb.md\nc.md\nd");
     }
 
@@ -514,12 +635,35 @@ mod tests {
         let kinds = [
             sent("a").kind(),
             wrote("a").kind(),
-            Effect::RoomEdited { path: String::new(), bytes: 0, replaced: 0 }.kind(),
-            Effect::LibraryItem { name: String::new(), bytes: 0 }.kind(),
-            Effect::LibraryFolder { name: String::new(), files: 0, bytes: 0 }.kind(),
-            Effect::ApprovalAsked { tool: ToolUse::Vault }.kind(),
-            Effect::ApprovalUsed { tool: ToolUse::Vault }.kind(),
-            Effect::Refused { tool: ToolUse::Vault }.kind(),
+            Effect::RoomEdited {
+                path: String::new(),
+                bytes: 0,
+                replaced: 0,
+            }
+            .kind(),
+            Effect::LibraryItem {
+                name: String::new(),
+                bytes: 0,
+            }
+            .kind(),
+            Effect::LibraryFolder {
+                name: String::new(),
+                files: 0,
+                bytes: 0,
+            }
+            .kind(),
+            Effect::ApprovalAsked {
+                tool: ToolUse::Vault,
+            }
+            .kind(),
+            Effect::ApprovalUsed {
+                tool: ToolUse::Vault,
+            }
+            .kind(),
+            Effect::Refused {
+                tool: ToolUse::Vault,
+            }
+            .kind(),
         ];
         assert_eq!(
             kinds,

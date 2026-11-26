@@ -1056,7 +1056,11 @@ mod tests {
         let claimed: Vec<_> = (0..5)
             .map(|n| exchange(&format!("q{n}"), &format!("a{n}")))
             .collect();
-        assert!(store.keep_if(|| true, &holding(&claimed), None, None).unwrap());
+        assert!(
+            store
+                .keep_if(|| true, &holding(&claimed), None, None)
+                .unwrap()
+        );
         assert_eq!(store.resume().unwrap(), holding(&[exchange("q4", "a4")]));
     }
 
@@ -1390,9 +1394,11 @@ mod tests {
         let store = ConversationStore::of(&config, &key).unwrap();
         let first = holding(&[exchange("q0", "a0")]);
         let one = record_of(1, "first-plainword.md");
-        assert!(store
-            .keep_if(|| true, &first, Some(&run(1)), Some(&one))
-            .unwrap());
+        assert!(
+            store
+                .keep_if(|| true, &first, Some(&run(1)), Some(&one))
+                .unwrap()
+        );
         let both = holding(&[exchange("q0", "a0"), exchange("q1", "a1")]);
         assert!(store.keep_if(|| true, &both, Some(&run(2)), None).unwrap());
         let all = holding(&[
@@ -1401,18 +1407,19 @@ mod tests {
             exchange("q2", "a2"),
         ]);
         let three = record_of(3, "third-plainword.md");
-        assert!(store
-            .keep_if(|| true, &all, Some(&run(3)), Some(&three))
-            .unwrap());
-        let again = ConversationStore::of(&config, &key).unwrap();
-        assert_eq!(
-            again.records().unwrap(),
-            [Some(one), None, Some(three)]
+        assert!(
+            store
+                .keep_if(|| true, &all, Some(&run(3)), Some(&three))
+                .unwrap()
         );
+        let again = ConversationStore::of(&config, &key).unwrap();
+        assert_eq!(again.records().unwrap(), [Some(one), None, Some(three)]);
         // A keep that isn't the conversation's keeps no record either.
-        assert!(!store
-            .keep_if(|| false, &all, Some(&run(4)), Some(&record_of(4, "x")))
-            .unwrap());
+        assert!(
+            !store
+                .keep_if(|| false, &all, Some(&run(4)), Some(&record_of(4, "x")))
+                .unwrap()
+        );
         assert_eq!(again.records().unwrap().len(), 3);
         for file in std::fs::read_dir(&config.scheduler.conversation).unwrap() {
             let bytes = std::fs::read(file.unwrap().path()).unwrap();
@@ -1430,23 +1437,23 @@ mod tests {
     fn a_slot_never_holds_another_runs_record() {
         let (config, _scratch, key) = kept("records-slot");
         let store = ConversationStore::of(&config, &key).unwrap();
-        let vault =
-            SealedVault::open_in(&config.scheduler.conversation, &key, Store::CONVERSATION).unwrap();
+        let vault = SealedVault::open_in(&config.scheduler.conversation, &key, Store::CONVERSATION)
+            .unwrap();
         // A record left in slot 0, as a stopped keep would leave it.
         let stale = serde_json::to_vec(&record_of(8, "stale.md")).unwrap();
         ConversationStore::write(&vault, &ConversationStore::record_entry(0), stale).unwrap();
         let first = holding(&[exchange("q0", "a0")]);
         assert!(store.keep_if(|| true, &first, Some(&run(1)), None).unwrap());
         assert_eq!(store.records().unwrap(), [None]);
-        let has = |slot: u64| {
-            vault.exists(&ConversationStore::record_entry(slot).parse().unwrap())
-        };
+        let has = |slot: u64| vault.exists(&ConversationStore::record_entry(slot).parse().unwrap());
         assert!(!has(0));
         // Kept with one, then gone with New conversation.
         let both = holding(&[exchange("q0", "a0"), exchange("q1", "a1")]);
-        assert!(store
-            .keep_if(|| true, &both, Some(&run(2)), Some(&record_of(2, "b.md")))
-            .unwrap());
+        assert!(
+            store
+                .keep_if(|| true, &both, Some(&run(2)), Some(&record_of(2, "b.md")))
+                .unwrap()
+        );
         assert!(has(1));
         store.start_new(|| {}).unwrap();
         assert!(!has(1));
@@ -1459,9 +1466,11 @@ mod tests {
             exchanges.push(exchange(&format!("q{n}"), &format!("a{n}")));
             kept_so_far.exchanges.clone_from(&exchanges);
             let record = record_of(n + 10, &format!("item-{n}.md"));
-            assert!(store
-                .keep_if(|| true, &kept_so_far, Some(&run(n + 10)), Some(&record))
-                .unwrap());
+            assert!(
+                store
+                    .keep_if(|| true, &kept_so_far, Some(&run(n + 10)), Some(&record))
+                    .unwrap()
+            );
         }
         let records = store.records().unwrap();
         assert_eq!(
@@ -1483,13 +1492,19 @@ mod tests {
         let (config, _scratch, key) = kept("records-corrupt");
         let store = ConversationStore::of(&config, &key).unwrap();
         let first = holding(&[exchange("q0", "a0")]);
-        assert!(store
-            .keep_if(|| true, &first, Some(&run(1)), Some(&record_of(1, "a.md")))
-            .unwrap());
-        let vault =
-            SealedVault::open_in(&config.scheduler.conversation, &key, Store::CONVERSATION).unwrap();
-        ConversationStore::write(&vault, &ConversationStore::record_entry(0), b"not a record".to_vec())
+        assert!(
+            store
+                .keep_if(|| true, &first, Some(&run(1)), Some(&record_of(1, "a.md")))
+                .unwrap()
+        );
+        let vault = SealedVault::open_in(&config.scheduler.conversation, &key, Store::CONVERSATION)
             .unwrap();
+        ConversationStore::write(
+            &vault,
+            &ConversationStore::record_entry(0),
+            b"not a record".to_vec(),
+        )
+        .unwrap();
         let reason = store.records().unwrap_err();
         assert!(reason.contains("record-0 is corrupt"), "{reason}");
         assert_eq!(store.resume().unwrap(), first);
