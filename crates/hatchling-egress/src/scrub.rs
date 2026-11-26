@@ -359,7 +359,10 @@ mod tests {
         );
         // A space is no control byte: JSON leaves it as it is.
         let spaced = Forms::of(b"a b/c");
-        assert_eq!(spaced.forms.get(1).map(|form| form.as_slice()), Some(&b"a b\\/c"[..]));
+        assert_eq!(
+            spaced.forms.get(1).map(|form| form.as_slice()),
+            Some(&b"a b\\/c"[..])
+        );
     }
 
     /// Each escaped form is masked whole, its length kept.
