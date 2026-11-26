@@ -1783,6 +1783,88 @@ mod tests {
         }
     }
 
+    /// A program held open for writing for good is given up on, after its
+    /// tries and not before: the busy error, in about a second (#704).
+    #[test]
+    fn exec_gives_up_on_a_program_held_open_for_good() {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let dir = std::env::temp_dir().join(format!("hatchling-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let program = dir.join("true");
+        let code = std::fs::read("/bin/true").unwrap();
+        match fork().expect("fork") {
+            ForkResult::Parent { child } => {
+                let status = child.wait_deadline(REAP).expect("child");
+                std::fs::remove_dir_all(&dir).unwrap();
+                assert_eq!(
+                    child_exit_code(status),
+                    0,
+                    "1: not the busy error; 2: not written; 3: gave up too soon; 4: never gave up"
+                );
+            }
+            ForkResult::Child => {
+                let Ok(mut writer) = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o755)
+                    .open(&program)
+                else {
+                    exit_child(2)
+                };
+                if writer.write_all(&code).is_err() {
+                    exit_child(2);
+                }
+                let Ok(prepared) = PreparedExec::new(&program, &["true"], &[]) else {
+                    exit_child(2)
+                };
+                match fork() {
+                    Ok(ForkResult::Parent { child }) => {
+                        // The writer stays open here until the child is done.
+                        let ended = child.wait_deadline(Duration::from_secs(10));
+                        drop(writer);
+                        exit_child(ended.map_or(4, child_exit_code));
+                    }
+                    Ok(ForkResult::Child) => {
+                        drop(writer);
+                        let started = Instant::now();
+                        let busy = prepared.exec(|| Ok(()));
+                        let waited = started.elapsed();
+                        if !matches!(&busy, Error::Process { source, .. } if source.raw_os_error() == Some(libc::ETXTBSY)) {
+                            exit_child(1);
+                        }
+                        exit_child(if waited >= Duration::from_millis(900) { 0 } else { 3 });
+                    }
+                    Err(_) => exit_child(2),
+                }
+            }
+        }
+    }
+
+    /// A prepared exec says what it runs, and how many settings, never
+    /// their values.
+    #[test]
+    fn a_prepared_exec_says_what_it_runs() {
+        let prepared = PreparedExec::new(
+            std::path::Path::new("/bin/true"),
+            &["true", "x"],
+            &[("TOKEN", "secret-value")],
+        )
+        .unwrap();
+        let said = format!("{prepared:?}");
+        assert!(said.starts_with("PreparedExec { path: \"/bin/true\", argv: [\"true\", \"x\"], env: 1"), "{said}");
+        assert!(!said.contains("secret-value"), "{said}");
+        assert!(matches!(
+            PreparedExec::new(std::path::Path::new("/bin/true"), &["a\0b"], &[]),
+            Err(Error::InvalidExecArg { .. })
+        ));
+        assert!(matches!(
+            PreparedExec::new(std::path::Path::new("/bin/true"), &[], &[("K", "v\0")]),
+            Err(Error::InvalidExecArg { .. })
+        ));
+    }
+
     /// Writes `code` at `program`, runs it in a child while it's still
     /// open for writing here, and lets go 200 ms later: the child's exit
     /// code, 2 if the program couldn't be written.

@@ -1472,6 +1472,18 @@ fn install_raw(raw: &[libc::sock_filter], len: u16) -> Result<(), Error> {
 mod tests {
     use super::*;
 
+    /// A prepared filter says how long it is, and nothing else.
+    #[test]
+    fn a_prepared_filter_says_its_length() {
+        let profile = SeccompProfile::agent().unwrap();
+        let filter = prepare(&profile).unwrap();
+        let length = profile.build().unwrap().len();
+        assert_eq!(
+            format!("{filter:?}"),
+            format!("PreparedFilter {{ instructions: {length}, .. }}")
+        );
+    }
+
     #[test]
     fn unknown_syscall_names_are_rejected() {
         // The typo pin: "wriet" must fail here, not become a hole.

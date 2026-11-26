@@ -901,6 +901,13 @@ mod tests {
             Err(Error::InvalidExecArg { reason }) if reason.contains("too many")
         ));
         assert_eq!(MAX_PLACED, 8);
+        // Exactly that many are placed (in a child: they land on 3 up).
+        let all = in_child(|| {
+            let out = std::io::stdout();
+            let eight = vec![out.as_fd(); MAX_PLACED];
+            i32::from(place_across_exec(&eight, 3).is_err())
+        });
+        assert_eq!(all, 0, "MAX_PLACED descriptors are placed");
         let code = in_child(|| {
             let Ok((a, a_end)) = std::os::unix::net::UnixStream::pair() else {
                 return 2;
