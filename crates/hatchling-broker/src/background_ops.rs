@@ -228,6 +228,7 @@ mod tests {
         let kept = SealedBackgroundStore::new(&root, &key).read();
         let other = MasterKey::generate().unwrap();
         let sealed = SealedBackgroundStore::new(&root, &other).read();
+        let stop = last_stop(&config, &key);
         let _ = std::fs::remove_dir_all(&root);
         let gap = Gap {
             from: T0,
@@ -235,7 +236,7 @@ mod tests {
         };
         assert_eq!(report.gap, Some(gap));
         assert_eq!(
-            last_stop(&config, &key),
+            stop,
             Some(StoppedView {
                 from: u64::try_from(T0).unwrap(),
                 to: u64::try_from(later).unwrap(),
