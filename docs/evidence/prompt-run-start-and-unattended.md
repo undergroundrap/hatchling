@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Base | `main` at `59f83802` (#709) |
+| Base | `main` at `f8aa99a7` (#710) |
 | Date | 2026-11-26 (UTC) |
 | Tested in | the maintainer's sandbox (WSL2, Ubuntu, a real kernel, `HATCHLING_REQUIRE_CELL=1`), toolchains 1.98.1 and 1.85.0 |
 | Issue | [#711](https://github.com/undergroundrap/hatchling/issues/711), the first of its two pull requests |
@@ -38,7 +38,7 @@
 |---|---|
 | `cargo fmt --all --check` | pass |
 | clippy `-D warnings`, 1.98.1 and 1.85.0 | pass |
-| the whole workspace's tests | 4531 passed, 0 failed (tree `d4e071b5`; after it, one test's doc comment changed) |
+| the whole workspace's tests | 4545 passed, 0 failed (tree `b6a7eb80`, with `main` and Keep going, #710, merged in) |
 | `hatchling-dev audit` | all checks passed |
 
 New tests:
@@ -71,4 +71,4 @@ New tests:
 | `hatchling-agent` | 8 caught, 2 unviable |
 | `hatchling-broker` | 6 caught, 2 unviable |
 
-No mutant was missed and none timed out.
+No mutant was missed and none timed out. The hand-breaks and the mutation ran again on the merged tree, with the same results.
