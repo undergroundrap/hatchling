@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { LiveSetup, roomDiskOf, setupOf } from '../../dist/app/adapters/live/setup.js';
-import { ago, setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS } from '../../dist/app/session/setup.js';
+import { ago, setupFinished, setupProgress, setupReminder, setupSteps, STEP_STATUS, STOP_SAID_FOR, stoppedNote } from '../../dist/app/session/setup.js';
 const NOW = 2000000000;
 const DAY = 86400;
 const model = { endpoint: 'http://127.0.0.1:11434/v1', configured: 'qwen3.5:9b', chosen: null, available: null, window: null, size: null, onCpu: null, other: null, switched: false };
@@ -129,9 +129,12 @@ function live() {
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 test('the broker\'s word, in the app\'s', () => {
-    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null, windowsSetup: false, roomDisk: null, processLimitsOnly: false });
-    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7, windows_setup: true }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7, windowsSetup: true, roomDisk: null, processLimitsOnly: false });
+    assert.deepEqual(setupOf(wire), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: false, lastBackup: null, windowsSetup: false, roomDisk: null, processLimitsOnly: false, keepRunning: null, stopped: null });
+    assert.deepEqual(setupOf({ vault: { ...wire.vault, codes_unconfirmed: true }, last_backup: 7, windows_setup: true }), { tier: 'hardware_key', keys: 1, codes: 9, codesUnconfirmed: true, lastBackup: 7, windowsSetup: true, roomDisk: null, processLimitsOnly: false, keepRunning: null, stopped: null });
     assert.equal(setupOf({ ...wire, process_limits_only: true }).processLimitsOnly, true, 'rooms held by process limits alone are said');
+    const kept = setupOf({ ...wire, keep_running: false, stopped: { from: 10, to: 70 } });
+    assert.equal(kept.keepRunning, false, 'keeping Hatchling running is said as Windows said it');
+    assert.deepEqual(kept.stopped, { from: 10, to: 70 }, 'and when it wasn\'t running');
 });
 test('the agent\'s computer, in the app\'s words: numbers and a fixed reason, and nothing made up', () => {
     const disk = { state: 'open', cap: 10, used: 2, free: 8, on_disk: 3, host_free: 90 };
@@ -201,4 +204,29 @@ test('a choice lasts in the browser, and for the page where the browser keeps no
     assert.equal(closed.changes(), 1);
     assert.equal(live().port.remembers('closed'), false, 'and no longer');
     delete globalThis.window;
+});
+test('on Windows, keeping Hatchling running is a step: done, or off as Setup left it, and never nagged', () => {
+    const windows = { ...bare, lastBackup: NOW, windowsSetup: true };
+    const ids = (setup) => setupSteps(model, setup, true, NOW).map(found => found.id);
+    assert.deepEqual(ids({ ...windows, keepRunning: null }), ['model', 'vault', 'backup'], 'not said, no step');
+    assert.deepEqual(ids({ ...bare, keepRunning: false }), ['model', 'vault', 'backup'], 'off Windows, no step');
+    const on = setupSteps(model, { ...windows, keepRunning: true }, true, NOW)[3];
+    assert.equal(on.id, 'running');
+    assert.equal(on.status, 'done');
+    assert.match(on.said, /wakes on time/);
+    const off = setupSteps(model, { ...windows, keepRunning: false }, true, NOW);
+    assert.equal(off[3].status, 'skipped', 'the owner chose it in Setup');
+    assert.match(off[3].said, /only while it’s open/);
+    assert.match(off[3].said, /run Hatchling Setup again/);
+    assert.deepEqual(off[3].commands, []);
+    assert.ok(setupFinished(off), 'off doesn\'t keep the checklist open');
+});
+test('a stop is said for a week after it ended, and not after', () => {
+    const when = (seconds) => `t${seconds}`;
+    const stopped = { from: NOW - 7200, to: NOW - 3600 };
+    assert.equal(stoppedNote(stopped, NOW, when), `Hatchling wasn’t running from t${NOW - 7200} to t${NOW - 3600}, so anything scheduled for then didn’t run on time.`);
+    assert.notEqual(stoppedNote({ from: 0, to: NOW - STOP_SAID_FOR }, NOW, when), null, 'a week to the second is still said');
+    assert.equal(stoppedNote({ from: 0, to: NOW - STOP_SAID_FOR - 1 }, NOW, when), null);
+    assert.equal(stoppedNote(null, NOW, when), null);
+    assert.match(stoppedNote(stopped, NOW), /^Hatchling wasn’t running from .+ to .+, so/, 'the browser says the moments');
 });

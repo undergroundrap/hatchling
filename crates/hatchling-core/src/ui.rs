@@ -1077,6 +1077,25 @@ pub struct SetupState {
     /// security page says it of an install that has it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub process_limits_only: bool,
+    /// Whether Windows keeps Hatchling running while the owner is logged
+    /// in (WO-054), as it last said: none off Windows, or before it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_running: Option<bool>,
+    /// The latest stretch Hatchling wasn't running, as its background clock
+    /// saw it (WO-054): none when there's been none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<StoppedView>,
+}
+
+/// A stretch Hatchling wasn't running, stopped or with the machine asleep,
+/// in Unix seconds: its last tick before, and its first after.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct StoppedView {
+    /// When it was last seen running.
+    pub from: u64,
+    /// When it was seen running again.
+    pub to: u64,
 }
 
 /// The agent's room disk, as the app shows it: how it is, and its sizes in
@@ -2400,6 +2419,8 @@ mod tests {
             windows_setup: false,
             room_disk: None,
             process_limits_only,
+            keep_running: None,
+            stopped: None,
         };
         pinned(
             &setup(false),
@@ -2410,6 +2431,43 @@ mod tests {
             &json!({
                 "vault": {"tier": "file", "keys": 0, "codes": 0},
                 "process_limits_only": true,
+            }),
+        );
+    }
+
+    /// Keeping Hatchling running and when it wasn't are on the wire only
+    /// when the broker knows them (WO-054).
+    #[test]
+    fn keep_running_and_a_stop_are_on_the_wire_only_when_known() {
+        let bare = SetupState {
+            vault: VaultProtection {
+                tier: VaultTier::File,
+                keys: 0,
+                codes: 0,
+                codes_unconfirmed: false,
+            },
+            last_backup: None,
+            windows_setup: true,
+            room_disk: None,
+            process_limits_only: false,
+            keep_running: None,
+            stopped: None,
+        };
+        pinned(
+            &bare,
+            &json!({"vault": {"tier": "file", "keys": 0, "codes": 0}, "windows_setup": true}),
+        );
+        pinned(
+            &SetupState {
+                keep_running: Some(false),
+                stopped: Some(StoppedView { from: 10, to: 70 }),
+                ..bare
+            },
+            &json!({
+                "vault": {"tier": "file", "keys": 0, "codes": 0},
+                "windows_setup": true,
+                "keep_running": false,
+                "stopped": {"from": 10, "to": 70},
             }),
         );
     }
