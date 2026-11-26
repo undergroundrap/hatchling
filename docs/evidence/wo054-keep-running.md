@@ -25,4 +25,14 @@ On Windows, WSL stops Hatchling's distro about 30 seconds after its last window 
 
 ## The gate
 
-RESULTS
+On the sandbox:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4569 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- `common.tests.ps1` in Windows PowerShell: 3 passed.
+- **Hand-breaks**, each caught by the tests above:
+  - anything Windows writes read as on;
+  - off said as fine.
+- **Mutation** on the changed lines of `windows_setup.rs` and `doctor.rs`: 7 mutants, 6 caught, 1 unviable.
+  - The first pass missed three on the reader of the fixed file under `/etc`, which a test can't write, so on a test box `None` was equivalent.
+  - The reader now takes the file's path from its caller, and doctor passes `KEEP_RUNNING`.
