@@ -2081,14 +2081,7 @@ fn serve_connection(
             let changed = if direct {
                 own_trees(policy, op, &dirs, (principal, group))
             } else {
-                let dirs: Vec<&Path> = dirs.iter().map(PathBuf::as_path).collect();
-                let cell = CellIdentity {
-                    principal,
-                    group,
-                    count: 1,
-                    mapping: Mapping::Subordinate,
-                };
-                crate::harness_tree::change_trees(program, op, &dirs, cell)
+                subordinate_trees(policy, program, op, &dirs, (principal, group))
             };
             send(stream, &done_or_refused(changed))
         }
@@ -2765,22 +2758,67 @@ fn own_trees(
     dirs: &[PathBuf],
     cell: (u32, u32),
 ) -> Result<(), String> {
-    let configured = policy.skill.identity;
-    if cell != (configured.principal, configured.group) || configured.mapping != Mapping::Direct {
-        return Err(String::from(
-            "the trees' cell isn't the configured cell's identity",
-        ));
-    }
+    let trees = trees_for(policy, dirs, cell, Mapping::Direct)?;
     let (uid, gid) = match op {
         TreeOp::Give => cell,
         TreeOp::Reclaim => (policy.paths.owner, policy.paths.group),
     };
-    for dir in dirs {
-        let beneath = policy.paths.harness_tree(dir)?;
-        hatchling_sys::chown_tree_beneath(&policy.paths.temp, &beneath, uid, gid)
+    for (dir, beneath) in dirs.iter().zip(&trees) {
+        hatchling_sys::chown_tree_beneath(&policy.paths.temp, beneath, uid, gid)
             .map_err(|error| format!("{} {}: {error}", op.name(), dir.display()))?;
     }
     Ok(())
+}
+
+/// Gives the harness trees `dirs` to the cell `cell`, a cell on the
+/// owner's subordinate ids, or takes them back, through the tree helper:
+/// held to the policy as [`own_trees`] is (#690). A broker that asked for
+/// the subordinate path, on a spawner configured for direct ids, is
+/// refused; so are any ids but the configured cell's, and any directory
+/// but a harness's tree.
+///
+/// # Errors
+///
+/// Why not: refused by [`trees_for`], or the helper's failure.
+fn subordinate_trees(
+    policy: &Policy,
+    program: &Path,
+    op: TreeOp,
+    dirs: &[PathBuf],
+    cell: (u32, u32),
+) -> Result<(), String> {
+    let trees = trees_for(policy, dirs, cell, Mapping::Subordinate)?;
+    let trees: Vec<PathBuf> = trees
+        .iter()
+        .map(|beneath| policy.paths.temp.join(beneath))
+        .collect();
+    let trees: Vec<&Path> = trees.iter().map(PathBuf::as_path).collect();
+    crate::harness_tree::change_trees(program, op, &trees, policy.skill.identity)
+}
+
+/// The trees `dirs` a request may change for the cell `cell`, its ids
+/// mapped as `mapping`, each beneath the broker's temp directory: every
+/// one checked before any is changed. Only the configured cell's
+/// identity, and only its configured mapping; only a harness's tree.
+///
+/// # Errors
+///
+/// Why not, for the first refused.
+fn trees_for(
+    policy: &Policy,
+    dirs: &[PathBuf],
+    cell: (u32, u32),
+    mapping: Mapping,
+) -> Result<Vec<PathBuf>, String> {
+    let configured = policy.skill.identity;
+    if cell != (configured.principal, configured.group) || configured.mapping != mapping {
+        return Err(String::from(
+            "the trees' cell isn't the configured cell's identity",
+        ));
+    }
+    dirs.iter()
+        .map(|dir| policy.paths.harness_tree(dir))
+        .collect()
 }
 
 /// Why `stdio`, a helper's stdin, stdout and stderr, can't be its cell's,
@@ -4509,6 +4547,74 @@ sleep 30 </dev/null >/dev/null 2>&1 &
             etc.is_err_and(|why| why.contains("configured cell") || why.contains("harness's tree"))
         );
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// #690: a `Trees` request is held to the policy whichever path it
+    /// asks for. The subordinate path is refused on a spawner configured
+    /// for direct ids, and on any spawner for ids that aren't the
+    /// configured cell's or for a directory that isn't a harness's tree.
+    /// Nothing is started for a refused request.
+    #[test]
+    fn a_trees_request_is_held_to_the_policy_whichever_path_it_asks_for() {
+        let mut subordinate = policy();
+        subordinate.skill.identity.mapping = Mapping::Subordinate;
+        let ask = |policy: &Policy, direct: bool, dirs: Vec<String>, ids: (u32, u32)| {
+            let (broker, theirs) = UnixStream::pair().unwrap();
+            let request = serde_json::json!({
+                "request": "trees", "give": true, "dirs": dirs,
+                "principal": ids.0, "group": ids.1, "direct": direct,
+            });
+            write_frame(&broker, &serde_json::to_vec(&request).unwrap()).unwrap();
+            let sessions = Sessions::new(Arc::default(), |_| {
+                Err(std::io::Error::other("no session here"))
+            });
+            // A helper that would be started fails as no such program,
+            // which no refusal below says.
+            serve_connection(
+                &theirs,
+                Path::new("/nonexistent/hatchling-broker"),
+                policy,
+                None,
+                &sessions,
+            )
+            .unwrap();
+            // The spawner's end closed first: a reply that never came is
+            // the end of the stream, not a read that waits forever.
+            drop(theirs);
+            let reply = receive(&broker).unwrap();
+            // Anything but a refusal fails every assertion below, shown.
+            let shown = format!("not refused: {reply:?}");
+            let Reply::Refused { reason } = reply else {
+                return shown;
+            };
+            reason
+        };
+        let ids = |policy: &Policy| (policy.skill.identity.principal, policy.skill.identity.group);
+        let etc = vec![String::from("/etc")];
+        // The subordinate path, asked of a direct spawner: refused for its
+        // mapping, even with the configured ids.
+        let mut configured_direct = policy();
+        configured_direct.skill.identity.mapping = Mapping::Direct;
+        let refused = ask(
+            &configured_direct,
+            false,
+            etc.clone(),
+            ids(&configured_direct),
+        );
+        assert!(refused.contains("configured cell"), "{refused}");
+        // On a subordinate spawner: other ids, and a host directory.
+        let other = ask(
+            &subordinate,
+            false,
+            etc.clone(),
+            (ids(&subordinate).0 + 1, ids(&subordinate).1),
+        );
+        assert!(other.contains("configured cell"), "{other}");
+        let host = ask(&subordinate, false, etc.clone(), ids(&subordinate));
+        assert!(host.contains("harness's tree"), "{host}");
+        // The direct path, asked of a subordinate spawner: refused too.
+        let refused = ask(&subordinate, true, etc, ids(&subordinate));
+        assert!(refused.contains("configured cell"), "{refused}");
     }
 
     /// A run directory of the broker's own: named as one, owner-only, and
