@@ -4102,7 +4102,7 @@ mod tests {
             },
             &hatchling_core::conversation::Bounds::LEAST,
         );
-        assert!(store.keep_if(|| true, &kept, None).unwrap());
+        assert!(store.keep_if(|| true, &kept, None, None).unwrap());
         // Giving files is off for the conversation, and it has given some.
         let library = crate::library::Library::of(&config, &key).unwrap();
         library.keep("a.txt", b"x", "now").unwrap().unwrap();
