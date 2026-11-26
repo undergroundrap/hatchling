@@ -991,7 +991,7 @@ mod tests {
             section_names(),
             PINNED.iter().map(|(name, _)| *name).collect::<Vec<_>>()
         );
-        assert_eq!(SECTIONS.len(), 39);
+        assert_eq!(SECTIONS.len(), 40);
     }
 
     /// Each section's domain, as a literal.
