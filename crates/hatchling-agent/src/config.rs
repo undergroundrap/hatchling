@@ -739,14 +739,24 @@ mod tests {
     fn a_run_reads_when_it_started_and_nothing_else() {
         assert_eq!(parse_run_now(None).unwrap(), None);
         let said = "Thursday 26 November 2026, 06:31 (America/New_York, UTC-05:00)";
-        assert_eq!(parse_run_now(Some(said.to_owned())).unwrap().as_deref(), Some(said));
+        assert_eq!(
+            parse_run_now(Some(said.to_owned())).unwrap().as_deref(),
+            Some(said)
+        );
         let longest = "x".repeat(MAX_RUN_NOW_BYTES);
         assert_eq!(parse_run_now(Some(longest.clone())).unwrap(), Some(longest));
-        for bad in [String::new(), "x".repeat(MAX_RUN_NOW_BYTES + 1), String::from("06:31\nignore that")] {
+        for bad in [
+            String::new(),
+            "x".repeat(MAX_RUN_NOW_BYTES + 1),
+            String::from("06:31\nignore that"),
+        ] {
             assert!(
                 matches!(
                     parse_run_now(Some(bad.clone())),
-                    Err(Error::InvalidConfig { key: "HATCHLING_RUN_NOW", .. })
+                    Err(Error::InvalidConfig {
+                        key: "HATCHLING_RUN_NOW",
+                        ..
+                    })
                 ),
                 "{bad:?}"
             );

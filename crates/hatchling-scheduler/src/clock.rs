@@ -60,7 +60,10 @@ mod tests {
             stamp(at, &named("Pacific/Kiritimati")),
             "Friday 27 November 2026, 01:31 (Pacific/Kiritimati, UTC+14:00)"
         );
-        assert_eq!(stamp(at, &TimeZone::UTC), "Thursday 26 November 2026, 11:31 (UTC, UTC+00:00)");
+        assert_eq!(
+            stamp(at, &TimeZone::UTC),
+            "Thursday 26 November 2026, 11:31 (UTC, UTC+00:00)"
+        );
         let unnamed = TimeZone::fixed(jiff::tz::offset(2));
         assert_eq!(
             stamp(at, &unnamed),
