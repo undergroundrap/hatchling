@@ -1202,7 +1202,7 @@ mod tests {
     }
 
     /// When the run started, word for word, and a stamp can't break out of
-    /// its line (WO-053 follow-on, the prompt's gap #1).
+    /// its line (#711, gap 1).
     #[test]
     fn when_the_run_started_is_said_with_pinned_wording() {
         assert_eq!(
