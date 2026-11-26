@@ -802,10 +802,12 @@ fn agent_parent(
         // As root, the test's process isn't the agent's user: the agent
         // gets a connection made as that user, as a connected cell does.
         broker: if hatchling_sys::euid() == 0 {
-            use std::os::fd::IntoRawFd as _;
-            hatchling_agent::BrokerAddress::Connection(
-                common::connect_as_agent(&socket).unwrap().into_raw_fd(),
-            )
+            use std::os::fd::{AsFd as _, IntoRawFd as _};
+            // Handed over as a cell's launcher hands it: kept across exec,
+            // the only kind a process adopts (#704).
+            let connection = common::connect_as_agent(&socket).unwrap();
+            hatchling_sys::keep_across_exec(connection.as_fd()).unwrap();
+            hatchling_agent::BrokerAddress::Connection(connection.into_raw_fd())
         } else {
             hatchling_agent::BrokerAddress::Socket(socket.to_string_lossy().parse().unwrap())
         },
