@@ -61,7 +61,11 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     use rustix::fs::{Mode, OFlags};
     rustix::fs::open(
         path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        // `union`, not `|`: disjoint bits, so `|` and `^` are the same flags.
+        OFlags::RDONLY
+            .union(OFlags::NOFOLLOW)
+            .union(OFlags::NONBLOCK)
+            .union(OFlags::CLOEXEC),
         Mode::empty(),
     )
     .map(std::fs::File::from)
