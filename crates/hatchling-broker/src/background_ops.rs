@@ -6,8 +6,8 @@
 //! from every schedule's: a schedule op can't name it, and it holds no
 //! text, only due times, outcomes and gaps.
 //!
-//! No loop is registered yet ([`loops`]): the first, memory reconciliation,
-//! comes with the seat runner. Until then each tick records the broker's
+//! No loop is registered yet: the first, memory reconciliation, comes with
+//! the seat runner. Until then each tick records the broker's
 //! uptime, so a gap shows when Hatchling was stopped or the machine slept.
 
 use std::sync::{Mutex, PoisonError};
@@ -15,7 +15,7 @@ use std::sync::{Mutex, PoisonError};
 use hatchling_channel::LocalHub;
 use hatchling_scheduler::Timestamp;
 use hatchling_scheduler::background::{
-    Clock, Gate, Launcher, Loop, Outcome, Report, Run, State, Store,
+    Clock, Gate, Launcher, Outcome, Report, Run, State, Store,
 };
 use hatchling_vault::{OpensStores, SealedVault};
 
@@ -27,12 +27,6 @@ const BACKGROUND: &str = "background-state";
 
 /// One update to the clock's state at a time, within this broker.
 static UPDATE: Mutex<()> = Mutex::new(());
-
-/// The background loops the clock wakes: none yet.
-#[must_use]
-pub const fn loops() -> Vec<Loop> {
-    Vec::new()
-}
 
 /// The clock's state in the sealed schedule store at `root`.
 #[derive(Debug)]
@@ -207,11 +201,11 @@ mod tests {
         let root = root("gap");
         let key = MasterKey::generate().unwrap();
         let config = config(&root);
-        let mut first = Clock::new(loops());
+        let mut first = Clock::new(Vec::new());
         let report = tick_once(&mut first, &config, &key, None, &NoLoops, at(T0)).unwrap();
         assert_eq!(report.gap, None);
         let later = T0 + GAP_SECS + 600;
-        let mut second = Clock::new(loops());
+        let mut second = Clock::new(Vec::new());
         let report = tick_once(&mut second, &config, &key, None, &NoLoops, at(later)).unwrap();
         let kept = SealedBackgroundStore::new(&root, &key).read();
         let other = MasterKey::generate().unwrap();
@@ -254,7 +248,7 @@ mod tests {
         let key = MasterKey::generate().unwrap();
         let mut config = config(&root("none"));
         config.root = std::path::PathBuf::new();
-        let mut clock = Clock::new(loops());
+        let mut clock = Clock::new(Vec::new());
         assert_eq!(
             tick_once(&mut clock, &config, &key, None, &NoLoops, at(T0)).unwrap(),
             Report::default()
@@ -280,10 +274,12 @@ mod tests {
         assert_eq!(gate(Some(&mine)), Gate::default());
     }
 
-    /// No loop can start yet.
+    /// No loop can start yet, and a run that isn't one says it failed.
     #[test]
     fn no_loop_starts_yet() {
-        assert!(loops().is_empty());
         assert!(NoLoops.start("memory", false).is_err());
+        let mut none = NoRun;
+        none.stop();
+        assert_eq!(none.poll(), Some(Outcome::Failed));
     }
 }
