@@ -79,7 +79,7 @@ A background run reads the owner's most private material: the conversation, memo
 - **A background run is a list of steps.** Each is deterministic code in the broker or a model seat. The runner gives each step its input, takes its output, and writes the run's trail.
 - **A seat is a run in a cell, with its own kind** (`MemoryReconcile`, `GoalsEvaluate`, and so on), which routes its waiting sections. Its assignment is one message with named sections, fenced as data. Its tools are read tools over the run's snapshot, and `finish`, whose JSON schema is the step's output.
 - **One finish call.** Prose outside it is dropped. A `finish` whose output fails its schema is answered with the fields that failed, once; a second failure ends the step with nothing.
-- **Evidence handles.** Every claim cites a handle: `message:<conversation>/<id>`, `memory:<id>`, `goal:<id>`, `run:<id>`, `file:<path>`, or a quoted span of one. A handle that doesn't resolve fails the claim, not the step.
+- **Evidence handles.** Every claim cites a handle: `message:<conversation>/<id>`, `memory:<id>`, `goal:<id>`, `run:<id>`, `file:<path>`, or a quoted span of one. One that doesn't resolve refuses the whole output, as the threat model says, so an invented id applies nothing; the output gets the step's one repair (the maintainer, 2026-11-26).
 - **One bounded repair.** Where a check fails an artifact, its writer gets one repair turn with the exact reasons, then one re-check. A second failure is final for that artifact.
 - **`no_change` is a result,** counted like any other. Most runs should end there.
 - **The gate step** records what the run produced, rejected, repaired and spent, and how long it took. Its records are the evaluation harness's input.
@@ -121,6 +121,7 @@ Each slice commits its evidence under `docs/evidence/`.
 - Slice 1, the background clock: [wo054-background-clock.md](../evidence/wo054-background-clock.md).
 - Slice 2a, Windows saying whether it keeps Hatchling running: [wo054-keep-running.md](../evidence/wo054-keep-running.md).
 - Slice 2b, the app's notes: [wo054-app-notes.md](../evidence/wo054-app-notes.md).
+- Slice 3a, the seat's checks: [wo054-seat-checks.md](../evidence/wo054-seat-checks.md).
 
 ## Notes
 
