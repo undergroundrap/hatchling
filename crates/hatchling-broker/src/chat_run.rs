@@ -1334,8 +1334,8 @@ mod tests {
         assert_eq!(given, Some((Vec::new(), Vec::new())));
         assert!(chat.earlier().is_empty());
         // Given no store, nothing is kept beyond memory.
-        None::<&Recorded>.keep(5, &after_q3, None);
-        Some(&recorded).keep(5, &after_q3, None);
+        None::<&Recorded>.keep(5, &after_q3, None, None);
+        Some(&recorded).keep(5, &after_q3, None, None);
         assert_eq!(recorded.0.borrow().len(), 3);
     }
 

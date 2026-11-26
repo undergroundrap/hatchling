@@ -735,9 +735,9 @@ mod tests {
     /// The records reach the loop as their JSON, and none adds nothing.
     #[test]
     fn carried_records_are_given_as_their_json() {
-        assert_eq!(super::carried(&[]), None);
+        assert_eq!(carried(&[]), None);
         let record = hatchling_core::run_record::RunRecord::new("run-1");
-        let given = super::carried(std::slice::from_ref(&record)).unwrap();
+        let given = carried(std::slice::from_ref(&record)).unwrap();
         assert_eq!(given, serde_json::to_string(&[record]).unwrap());
     }
 
