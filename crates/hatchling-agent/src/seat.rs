@@ -215,38 +215,51 @@ impl Tool for Finish<'_> {
     }
 
     fn execute(&self, arguments: Value) -> Result<ToolOutput, hatchling_loop::Error> {
-        let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
-        if progress.ending.is_some() {
-            return Ok(ToolOutput::Err(String::from(
-                "this step has already ended: reply with one word, done",
-            )));
-        }
+        let lock = || self.progress.lock().unwrap_or_else(PoisonError::into_inner);
+        let attempt = {
+            let progress = lock();
+            if progress.ending.is_some() {
+                return Ok(ToolOutput::Err(String::from(
+                    "this step has already ended: reply with one word, done",
+                )));
+            }
+            progress.attempt
+        };
         let output = arguments.to_string();
-        match ((self.check)(&output, self.snapshot), progress.attempt) {
-            (Ok(()), attempt) => {
-                progress.ending = Some(Ending::Finished {
+        let (next, ending, reply) = match ((self.check)(&output, self.snapshot), attempt) {
+            (Ok(()), attempt) => (
+                attempt,
+                Some(Ending::Finished {
                     output,
                     repaired: attempt == Attempt::Repair,
-                });
-                Ok(ToolOutput::Ok(json!({
+                }),
+                ToolOutput::Ok(json!({
                     "finished": true,
                     "next": "reply with one word, done",
-                })))
-            }
-            (Err(Refused(reasons)), Attempt::First) => {
-                progress.attempt = Attempt::Repair;
-                Ok(ToolOutput::Err(format!(
+                })),
+            ),
+            (Err(Refused(reasons)), Attempt::First) => (
+                Attempt::Repair,
+                None,
+                ToolOutput::Err(format!(
                     "refused, for: {}. Fix each and call finish once more: a second refusal ends this step with nothing.",
                     reasons.join("; ")
-                )))
-            }
-            (Err(Refused(reasons)), Attempt::Repair) => {
-                progress.ending = Some(Ending::Failed(reasons));
-                Ok(ToolOutput::Err(String::from(
+                )),
+            ),
+            (Err(Refused(reasons)), Attempt::Repair) => (
+                Attempt::Repair,
+                Some(Ending::Failed(reasons)),
+                ToolOutput::Err(String::from(
                     "refused again: this step ends with nothing. Reply with one word, done.",
-                )))
-            }
+                )),
+            ),
+        };
+        {
+            let mut progress = lock();
+            progress.attempt = next;
+            progress.ending = ending;
         }
+        Ok(reply)
     }
 }
 

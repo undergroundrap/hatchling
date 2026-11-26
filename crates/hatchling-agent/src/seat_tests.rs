@@ -205,23 +205,14 @@ fn a_seat_that_never_finishes_hands_back_nothing() {
     assert_eq!(histories.len(), 3);
 }
 
-/// A seat that names a tool it wasn't given runs nothing, and its run ends
-/// there: the model broke the contract.
+/// A seat that names a tool it wasn't given runs nothing: it's told
+/// there's no such tool.
 #[test]
 fn a_tool_a_seat_wasnt_given_runs_nothing() {
-    for name in [
-        "memory_propose",
-        "egress_request",
-        "spawn_subagent",
-        "write",
-    ] {
+    for name in ["memory_propose", "egress_request", "spawn_subagent", "write"] {
         let (ending, histories) = seated(vec![call(name, json!({})), good(), done()], 10);
-        assert_eq!(ending, Ending::Unfinished, "{name}");
-        assert_eq!(histories.len(), 1, "{name}: nothing after it");
+        assert!(matches!(ending, Ending::Finished { .. }), "{name}: {ending:?}");
+        let said = told(&histories);
+        assert!(nth(&said, 0).starts_with("Err(") && nth(&said, 0).contains(name), "{name}: {said:?}");
     }
-    let (ending, _) = seated(vec![good(), call("memory_propose", json!({}))], 10);
-    assert!(
-        matches!(ending, Ending::Finished { .. }),
-        "what was finished stands: {ending:?}"
-    );
 }
