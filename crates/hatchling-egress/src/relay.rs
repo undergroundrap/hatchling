@@ -85,7 +85,7 @@ pub fn open(
         Ok(tcp)
     };
     if let Some(local) = allowlist.local(destination) {
-        return crate::local::connect(local.addrs())
+        return crate::local::connect(local.addrs(), &crate::Cut::default())
             .and_then(timed)
             .map(Upstream::Plain);
     }
@@ -97,7 +97,7 @@ pub fn open(
         .map(|(host, _)| host)
         .ok_or(Error::InvalidSurrogate)?;
     let name = ServerName::try_from(host.to_owned()).map_err(|_| Error::InvalidSurrogate)?;
-    let tcp = crate::https::connect(pinned).and_then(timed)?;
+    let tcp = crate::https::connect(pinned, &crate::Cut::default()).and_then(timed)?;
     let connection = tls.connection(name)?;
     Ok(Upstream::Tls(Box::new(StreamOwned::new(connection, tcp))))
 }
