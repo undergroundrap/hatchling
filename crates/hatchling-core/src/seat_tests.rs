@@ -159,7 +159,8 @@ fn an_output_that_isnt_the_steps_schema_is_refused() {
         let said = reasons(output);
         assert_eq!(said.len(), 1, "{output}");
         assert!(
-            said[0].starts_with("the output isn't the step's schema: "),
+            said.first()
+                .is_some_and(|said| said.starts_with("the output isn't the step's schema: ")),
             "{said:?}"
         );
     }
