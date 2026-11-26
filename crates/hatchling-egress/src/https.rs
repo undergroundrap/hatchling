@@ -35,6 +35,11 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long each read or write on an HTTPS connection may block.
 pub const IO_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The most an HTTPS forward takes in all, however its upstream trickles
+/// (#684): a hosted model's answer comes well within it, and a run's end
+/// cuts it sooner.
+pub const FORWARD_TIME: Duration = Duration::from_secs(10 * 60);
+
 /// The proxy's TLS client: its one root store, built once.
 #[derive(Clone)]
 pub struct TlsClient {
@@ -175,15 +180,12 @@ fn send_or_cut(
         .map(|(host, _)| host)
         .ok_or(Error::InvalidSurrogate)?;
     let name = ServerName::try_from(host.to_owned()).map_err(|_| Error::InvalidSurrogate)?;
-    let tcp = connect(pinned)?;
+    let tcp = connect(pinned, cut)?;
     cut.hold(&tcp)?;
     tcp.set_read_timeout(Some(IO_TIMEOUT))
         .and_then(|()| tcp.set_write_timeout(Some(IO_TIMEOUT)))
         .map_err(|_| Error::UpstreamFailed)?;
-    let connection = ClientConnection::new(Arc::clone(&tls.config), name).map_err(|error| {
-        tracing::warn!(%error, "egress TLS connection could not start");
-        Error::UpstreamFailed
-    })?;
+    let connection = tls.connection(name)?;
     let mut stream = StreamOwned::new(connection, tcp);
     stream
         .write_all(bytes)
@@ -192,13 +194,17 @@ fn send_or_cut(
             tracing::warn!(%error, %destination, "egress TLS request failed");
             Error::UpstreamFailed
         })?;
-    crate::local::read_response(stream)
+    crate::local::read_response(crate::local::within(stream, FORWARD_TIME))
 }
 
 /// Connects to the first pinned address that answers, then checks that
-/// the kernel connected to one of them before handing it back.
-pub(crate) fn connect(pinned: &[SocketAddr]) -> Result<TcpStream> {
+/// the kernel connected to one of them before handing it back. A cut,
+/// before any address or between them, opens nothing more (#684).
+pub(crate) fn connect(pinned: &[SocketAddr], cut: &crate::Cut) -> Result<TcpStream> {
     for addr in pinned {
+        if cut.is_cut() {
+            return Err(Error::UpstreamFailed);
+        }
         let Ok(stream) = TcpStream::connect_timeout(addr, CONNECT_TIMEOUT) else {
             continue;
         };
@@ -291,6 +297,33 @@ pub(crate) mod tests {
             "the upstream wasn't hung up on"
         );
         cutting.join().unwrap();
+    }
+
+    /// An HTTPS forward cut before it connects opens no connection (#684).
+    #[test]
+    fn an_https_forward_cut_before_it_connects_opens_nothing() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cut = crate::Cut::default();
+        cut.cut();
+        let request = EgressRequest {
+            method: String::from("GET"),
+            destination: format!("localhost:{}", addr.port()),
+            path: String::from("/"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::new(),
+        };
+        let client = TlsClient::bundled().unwrap();
+        assert!(matches!(
+            super::forward(&client, &[addr], &request, None, &cut),
+            Err(Error::UpstreamFailed)
+        ));
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "it connected all the same"
+        );
     }
 
     /// A throwaway CA, made fresh for this test, and a server certificate
@@ -652,9 +685,13 @@ pub(crate) mod tests {
             head.recv_timeout(Duration::from_millis(300)).is_err(),
             "the live server was never dialed"
         );
-        assert!(matches!(connect(&[]), Err(Error::UpstreamFailed)));
+        assert!(matches!(
+            connect(&[], &crate::Cut::default()),
+            Err(Error::UpstreamFailed)
+        ));
         assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(5));
         assert_eq!(IO_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(FORWARD_TIME, Duration::from_secs(600));
     }
 
     #[test]
