@@ -58,7 +58,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::acting::{give, owner_in};
-use crate::vault::{Vault, ensure_owner_only_dir};
+use crate::vault::{Vault, check_owner_only_dir, ensure_owner_only_dir, open_nofollow, was_a_link};
 use crate::{Error, Secret, SecretName};
 use hatchling_core::MAX_SECRET_BYTES;
 
@@ -770,9 +770,12 @@ impl FileKey {
             ),
         })?;
         ensure_owner_only_dir(parent, owner)?;
-        match std::fs::File::open(&self.path) {
+        match open_nofollow(&self.path) {
             Ok(file) => Self::read_key(&self.path, &file, owner),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => self.create_key(owner),
+            Err(source) if was_a_link(&source) => Err(Error::InsecureKeyFile {
+                path: self.path.clone(),
+            }),
             Err(source) => Err(Error::KeyLoad {
                 path: self.path.clone(),
                 source,
@@ -780,13 +783,14 @@ impl FileKey {
         }
     }
 
-    /// Reads and validates an existing key file: a regular file (never
-    /// a symlink), mode `0600`, owned by `owner`, holding exactly 32
+    /// Reads and validates an existing key file, opened by
+    /// [`open_nofollow`] so a symlink was never followed: what was opened
+    /// is a regular file, mode `0600`, owned by `owner`, holding exactly 32
     /// bytes. Anything else fails closed.
     fn read_key(path: &Path, file: &std::fs::File, owner: u32) -> Result<MasterKey, Error> {
-        // `symlink_metadata`: a symlink key file is never accepted,
-        // even one pointing at a well-formed key.
-        let metadata = std::fs::symlink_metadata(path).map_err(|source| Error::KeyLoad {
+        // The descriptor's, not the path's (#686): a file swapped in at the
+        // path after the open is not what's read.
+        let metadata = file.metadata().map_err(|source| Error::KeyLoad {
             path: path.to_path_buf(),
             source,
         })?;
@@ -862,10 +866,7 @@ impl FileKey {
             Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Lost the creation race: the winner's key is the key.
                 // `key` drops here, zeroized by the derive.
-                let file = std::fs::File::open(&self.path).map_err(|source| Error::KeyLoad {
-                    path: self.path.clone(),
-                    source,
-                })?;
+                let file = open_nofollow(&self.path).map_err(|source| self.unopened(source))?;
                 Self::read_key(&self.path, &file, owner)
             }
             Err(source) => Err(Error::Io { source }),
@@ -894,11 +895,34 @@ impl FileKey {
             .map_or_else(|| rustix::process::getuid().as_raw(), owner_in)
     }
 
+    /// Why the key file couldn't be opened: a symlink there is no sound key
+    /// file; anything else, the load's failure.
+    fn unopened(&self, source: std::io::Error) -> Error {
+        if was_a_link(&source) {
+            Error::InsecureKeyFile {
+                path: self.path.clone(),
+            }
+        } else {
+            Error::KeyLoad {
+                path: self.path.clone(),
+                source,
+            }
+        }
+    }
+
+    /// The key file's, opened without following a symlink, its directory
+    /// checked as a load or create checks it (#686), and judged by what was
+    /// opened.
     fn load_as(&self, owner: u32) -> Result<MasterKey, Error> {
-        let file = std::fs::File::open(&self.path).map_err(|source| Error::KeyLoad {
+        let file = open_nofollow(&self.path).map_err(|source| self.unopened(source))?;
+        let parent = self.path.parent().ok_or_else(|| Error::KeyLoad {
             path: self.path.clone(),
-            source,
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "key path has no parent directory",
+            ),
         })?;
+        check_owner_only_dir(parent, owner)?;
         Self::read_key(&self.path, &file, owner)
     }
 }
@@ -2334,6 +2358,8 @@ mod tests {
         );
     }
 
+    /// A key file that's a link, even to a sound key, is refused at the
+    /// open, by load and by create alike: it's never followed (#686).
     #[test]
     fn file_key_symlink_is_rejected() {
         let dir = test_dir("file-key-symlink");
@@ -2341,11 +2367,94 @@ mod tests {
         source.load_or_create_as(real_uid()).unwrap();
         let link = dir.join("vault-link.key");
         std::os::unix::fs::symlink(&path, &link).unwrap();
-        // `read_key` directly: the parent check is bypassed on purpose
-        // so this pins the symlink rejection itself, not the parent.
-        let file = std::fs::File::open(&link).unwrap();
-        let err = FileKey::read_key(&link, &file, real_uid()).unwrap_err();
+        let opened = open_nofollow(&link)
+            .map(|_| ())
+            .map_err(|error| error.raw_os_error());
+        assert_eq!(opened, Err(Some(rustix::io::Errno::LOOP.raw_os_error())));
+        let linked = FileKey::new(link);
+        for err in [
+            linked.load_as(real_uid()).unwrap_err(),
+            linked.load_or_create_as(real_uid()).unwrap_err(),
+        ] {
+            assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
+        }
+    }
+
+    /// A FIFO at the key's path is refused, and never waited on (#686).
+    #[test]
+    fn file_key_fifo_is_refused_without_blocking() {
+        let dir = test_dir("file-key-fifo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("vault.key");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &path,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::from_raw_mode(0o600),
+            0,
+        )
+        .unwrap();
+        let (sender, said) = std::sync::mpsc::channel();
+        let key = FileKey::new(path);
+        std::thread::spawn(move || {
+            let _ = sender.send((
+                key.load_as(real_uid()).map(|_| ()),
+                key.load_or_create_as(real_uid()).map(|_| ()),
+            ));
+        });
+        let said = said.recv_timeout(std::time::Duration::from_secs(10));
+        assert!(said.is_ok(), "a FIFO at the key's path blocked the load");
+        let (loaded, created) = said.unwrap();
+        for err in [loaded.unwrap_err(), created.unwrap_err()] {
+            assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
+        }
+    }
+
+    /// What's read is judged by its descriptor: a file swapped in at the
+    /// path after the open isn't what's checked, either way round (#686).
+    #[test]
+    fn file_key_is_judged_by_what_was_opened() {
+        let dir = test_dir("file-key-swap");
+        let (source, path) = key_file_in(&dir);
+        let key = source.load_or_create_as(real_uid()).unwrap();
+        let aside = dir.join("aside");
+        std::fs::write(&aside, [0x22u8; MASTER_KEY_LEN]).unwrap();
+        std::fs::set_permissions(&aside, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // The sound key opened, then a loose file renamed over its path.
+        let sound = open_nofollow(&path).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        let read = FileKey::read_key(&path, &sound, real_uid()).unwrap();
+        assert_same_key(&key, &read, &dir.join("vault"));
+
+        // The loose file opened, then a sound one renamed over its path.
+        let loose = open_nofollow(&path).unwrap();
+        std::fs::write(&aside, [0x33u8; MASTER_KEY_LEN]).unwrap();
+        std::fs::set_permissions(&aside, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::rename(&aside, &path).unwrap();
+        let err = FileKey::read_key(&path, &loose, real_uid()).unwrap_err();
         assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
+    }
+
+    /// Unlocking checks the key's directory, as creating it does: one
+    /// others may write in is refused (#686).
+    #[test]
+    fn loading_a_key_checks_its_directory() {
+        let dir = test_dir("file-key-load-dir");
+        let (source, _) = key_file_in(&dir);
+        let key = source.load_or_create_as(real_uid()).unwrap();
+        let loaded = source.load_as(real_uid()).unwrap();
+        assert_same_key(&key, &loaded, &dir.join("vault"));
+        for mode in [0o770, 0o777, 0o1777, 0o750] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            let err = source.load_as(real_uid()).unwrap_err();
+            assert!(
+                matches!(err, Error::InsecurePermissions { .. }),
+                "{mode:o}: got {err:?}"
+            );
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
@@ -2363,7 +2472,9 @@ mod tests {
         std::os::unix::fs::symlink(&link, &link).unwrap();
         let source = FileKey::new(link);
         let err = source.load_or_create_as(real_uid()).unwrap_err();
-        assert!(matches!(err, Error::KeyLoad { .. }), "got {err:?}");
+        // Refused at the open, never followed (#686): a link is no sound key
+        // file, and nothing is created in its place.
+        assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
     }
 
     #[test]
@@ -3194,9 +3305,10 @@ mod tests {
         let loaded = FileKey::new(path.clone()).load().unwrap();
         assert_same_key(&created, &loaded, &dir.join("vault"));
         let owner = rustix::process::getuid().as_raw();
+        // Not the directory's owner: refused at the directory, first.
         assert!(matches!(
             FileKey::new(path).load_as(owner + 1),
-            Err(Error::InsecureKeyFile { .. })
+            Err(Error::InsecurePermissions { .. })
         ));
     }
 

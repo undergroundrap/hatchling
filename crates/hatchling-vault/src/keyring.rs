@@ -54,7 +54,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use crate::Error;
 use crate::acting::{give, owner_in};
 use crate::seal::MasterKey;
-use crate::vault::ensure_owner_only_dir;
+use crate::vault::{check_owner_only_dir, ensure_owner_only_dir, open_nofollow, was_a_link};
 
 /// The keyring format this build writes.
 const FORMAT: u32 = 3;
@@ -505,7 +505,24 @@ impl Keyring {
             path: path.to_path_buf(),
             source,
         };
-        let metadata = std::fs::symlink_metadata(path).map_err(load)?;
+        // Opened without following a symlink, its directory checked, and
+        // judged by the descriptor, not the path (#686).
+        let file = open_nofollow(path).map_err(|source| {
+            if was_a_link(&source) {
+                Error::InsecureKeyFile {
+                    path: path.to_path_buf(),
+                }
+            } else {
+                load(source)
+            }
+        })?;
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            check_owner_only_dir(parent, owner)?;
+        }
+        let metadata = file.metadata().map_err(load)?;
         if !metadata.file_type().is_file()
             || metadata.mode() & 0o777 != KEYRING_MODE
             || metadata.uid() != owner
@@ -518,9 +535,7 @@ impl Keyring {
         // what it holds; wiped when dropped, as it holds a TOTP seed.
         let size = usize::try_from(metadata.len().min(MAX_KEYRING_BYTES)).unwrap_or(0);
         let mut text = Zeroizing::new(String::with_capacity(size + 1));
-        std::fs::File::open(path)
-            .map_err(load)?
-            .take(MAX_KEYRING_BYTES + 1)
+        file.take(MAX_KEYRING_BYTES + 1)
             .read_to_string(&mut text)
             .map_err(load)?;
         let format = |detail: &str| Error::KeyringFormat {
@@ -813,7 +828,7 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 /// small block at a time through a buffer wiped after: the file holds a
 /// TOTP seed, and a whole copy of it would be freed unwiped.
 fn digest_file(path: &Path) -> std::io::Result<Option<[u8; 32]>> {
-    let mut file = match std::fs::File::open(path) {
+    let mut file = match open_nofollow(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
@@ -933,6 +948,40 @@ mod tests {
     use super::*;
     use crate::testutil::test_dir;
     use crate::{SealedVault, Secret, SecretName};
+
+    /// A keyring that's a link is refused at the open, a loose directory
+    /// refuses it, and a change check never follows a link (#686).
+    #[test]
+    fn a_keyring_is_opened_as_itself_in_its_own_directory() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = test_dir("keyring-nofollow");
+        std::fs::create_dir_all(&*dir).unwrap();
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let real = dir.join("real");
+        std::fs::write(&real, b"{}").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let link = dir.join("keyring");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = Keyring::load_as(&link, own()).unwrap_err();
+        assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
+        assert!(
+            digest_file(&link).is_err(),
+            "a change check doesn't follow it"
+        );
+        assert!(digest_file(&real).unwrap().is_some());
+        let err = Keyring::load_as(&real, own()).unwrap_err();
+        assert!(
+            matches!(err, Error::KeyringFormat { .. }),
+            "its own directory, then its text: {err:?}"
+        );
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o770)).unwrap();
+        let err = Keyring::load_as(&real, own()).unwrap_err();
+        assert!(
+            matches!(err, Error::InsecurePermissions { .. }),
+            "got {err:?}"
+        );
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
 
     #[test]
     fn only_a_set_flag_is_written_to_the_file() {
@@ -1267,9 +1316,10 @@ mod tests {
             Err(Error::KeyringExists { .. })
         ));
         let owner = rustix::process::getuid().as_raw();
+        // Not the directory's owner: refused at the directory, first.
         assert!(matches!(
             Keyring::load_as(&path, owner + 1),
-            Err(Error::InsecureKeyFile { .. })
+            Err(Error::InsecurePermissions { .. })
         ));
         assert!(matches!(
             Keyring::load(&keys.join("missing")),
