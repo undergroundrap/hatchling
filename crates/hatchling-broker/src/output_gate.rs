@@ -407,19 +407,43 @@ impl Classifier for Rules<'_> {
     }
 }
 
-/// Whether `text` carries one of `secrets`: in any form the artifact gate
-/// checks, or, for a secret whose normalized form is long enough to be
-/// told apart from ordinary words, spaced or punctuated differently.
+/// Whether `text` carries one of `secrets`, read as written and with its
+/// `%` escapes undone, as a site reads a link ([`held_check::as_read`],
+/// #705):
+/// - in any form the artifact gate checks;
+/// - for a secret whose normalized form is long enough to be told apart
+///   from ordinary words, spaced or punctuated differently;
+/// - for one of at least [`MIN_BLOCK_CHARS`] bytes, as hex spaced or
+///   punctuated any way: `6e 69 67`, `6E:69:67`, or `%6e%69%67`.
+///
+/// [`held_check::as_read`]: crate::held_check::as_read
 fn holds_secret(text: &str, secrets: &[Zeroizing<Vec<u8>>]) -> bool {
-    if SecretSet::new(secrets.iter().cloned()).exposed_in(text.as_bytes()) {
+    let read = Zeroizing::new(crate::held_check::as_read(text));
+    if SecretSet::new(secrets.iter().cloned()).exposed_in(&read) {
         return true;
     }
-    let form = normalize(text);
-    secrets
-        .iter()
-        .filter_map(|secret| std::str::from_utf8(secret).ok())
-        .map(normalized_secret)
-        .any(|secret| secret.chars().count() >= MIN_BLOCK_CHARS && form.contains(secret.as_str()))
+    let form = Zeroizing::new(normalize(&String::from_utf8_lossy(&read)));
+    let found = |secret: &str| secret.chars().count() >= MIN_BLOCK_CHARS && form.contains(secret);
+    secrets.iter().any(|secret| {
+        std::str::from_utf8(secret).is_ok_and(|secret| found(&normalized_secret(secret)))
+            || (secret.len() >= MIN_BLOCK_CHARS && found(&hex_form(secret)))
+    })
+}
+
+/// `secret` as lower-case hex, the form [`normalize`] leaves of hex written
+/// any way, wiped when dropped. It is made at its final size, so no copy is
+/// left behind in a freed buffer.
+fn hex_form(secret: &[u8]) -> Zeroizing<String> {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut form = Zeroizing::new(String::with_capacity(secret.len().saturating_mul(2)));
+    for byte in secret {
+        for nibble in [byte >> 4, byte & 0x0f] {
+            if let Some(&digit) = DIGITS.get(usize::from(nibble)) {
+                form.push(char::from(digit));
+            }
+        }
+    }
+    form
 }
 
 /// [`normalize`] of a held secret, wiped when dropped. It is made at its
@@ -1077,6 +1101,52 @@ mod tests {
         );
         assert!(holds_secret("ab-cd-ef", &secrets));
         assert!(!holds_secret("plain text", &[]));
+    }
+
+    /// The ordinary ways to write a secret's bytes, which a site or a
+    /// person reads back as the secret: percent-encoded in a link, and hex
+    /// spaced or punctuated (#705).
+    #[test]
+    fn a_secret_is_found_percent_encoded_or_as_hex_written_any_way() {
+        let secrets = [HELD.as_bytes().to_vec(), vec![0xff, 0x00, 0x41, 0x7f, 0x80, 0x01, 0x02, 0x03]]
+            .map(Zeroizing::new);
+        let percent: String = HELD.bytes().map(|byte| format!("%{byte:02x}")).collect();
+        let upper: String = HELD.bytes().map(|byte| format!("%{byte:02X}")).collect();
+        let spaced: Vec<String> = HELD.bytes().map(|byte| format!("{byte:02x}")).collect();
+        let colons: Vec<String> = HELD.bytes().map(|byte| format!("{byte:02X}")).collect();
+        for text in [
+            format!("see https://example.com/?k={percent}"),
+            format!("see https://example.com/?k={upper}"),
+            spaced.join(" "),
+            colons.join(":"),
+            // Partly escaped, as a link's encoder leaves it.
+            String::from("https://example.com/?k=nightjar%2d7f3a91c2"),
+            // A binary secret, which has no letters of its own to fold.
+            String::from("ff 00 41 7f 80 01 02 03"),
+            String::from("%ff%00%41%7f%80%01%02%03"),
+        ] {
+            assert!(holds_secret(&text, &secrets), "{text:?}");
+        }
+        // Hex that isn't a held secret's passes.
+        assert!(!holds_secret("commit 6e6967687482a7f3 in 01 02 03 04", &secrets));
+        // A short secret's hex passes: too few bytes to tell apart from
+        // ordinary hex. Percent-decoded, it is the secret itself, which the
+        // gate finds raw at any length.
+        let short = [b"abc".to_vec()].map(Zeroizing::new);
+        assert!(!holds_secret("61 62 63 or 616263", &short));
+        assert!(holds_secret("see %61%62%63", &short));
+        assert!(holds_secret("abc", &short));
+    }
+
+    #[test]
+    fn a_secrets_hex_form_is_its_bytes_in_lower_case_at_its_final_size() {
+        assert_eq!(hex_form(&[0x00, 0x0f, 0xa0, 0xff]).as_str(), "000fa0ff");
+        assert_eq!(hex_form(b"").as_str(), "");
+        for secret in [b"".as_slice(), b"a", b"nightjar-7f3a91c2"] {
+            let form = hex_form(secret);
+            assert_eq!(form.len(), secret.len() * 2);
+            assert_eq!(form.capacity(), secret.len() * 2);
+        }
     }
 
     #[test]
