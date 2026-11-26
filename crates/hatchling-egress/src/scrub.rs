@@ -164,10 +164,11 @@ pub fn is_identity(content_encoding: &str) -> bool {
     content_encoding.trim().eq_ignore_ascii_case("identity")
 }
 
-/// Scrubs a stream that arrives in pieces. A credential split across two
-/// pieces is still found, in any of its [`Forms`]: up to the longest
-/// form's length less one is held back until the next piece shows it
-/// doesn't start one.
+/// Scrubs a stream that arrives in pieces.
+///
+/// A credential split across two pieces is still found, in any of its
+/// [`Forms`]: up to the longest form's length less one is held back until
+/// the next piece shows it doesn't start one.
 pub struct Scrubber {
     forms: Forms,
     held: Zeroizing<Vec<u8>>,
