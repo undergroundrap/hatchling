@@ -15,7 +15,7 @@ const MARKER: &str = "/etc/hatchling/windows-setup-version";
 /// logged in (WO-054): `on` or `off`, from whether the Startup shortcut is
 /// there. Setup writes it, and so does each Open Hatchling, as root: nothing
 /// in the distro but root can change it.
-const KEEP_RUNNING: &str = "/etc/hatchling/windows-keep-running";
+pub const KEEP_RUNNING: &str = "/etc/hatchling/windows-keep-running";
 
 /// What's said on a Linux shell, and what's said for it on Windows: the most
 /// particular first, as each replaces what the next would match.
@@ -51,15 +51,11 @@ pub fn installed() -> bool {
 }
 
 /// Whether Windows keeps Hatchling running while the owner is logged in, as
-/// it last said: `None` when it hasn't, as off Windows, or after a setup
-/// older than this. Read each time: the owner can change it.
+/// the file at `path` ([`KEEP_RUNNING`]) last said: `None` when it hasn't,
+/// as off Windows, or after a setup older than this. Read each time: the
+/// owner can change it.
 #[must_use]
-pub fn keep_running() -> Option<bool> {
-    keep_running_in(Path::new(KEEP_RUNNING))
-}
-
-/// What the file at `path` says of keeping Hatchling running.
-fn keep_running_in(path: &Path) -> Option<bool> {
+pub fn keep_running(path: &Path) -> Option<bool> {
     match std::fs::read_to_string(path).ok()?.trim() {
         "on" => Some(true),
         "off" => Some(false),
@@ -100,9 +96,9 @@ mod tests {
         let mut read = Vec::new();
         for said in ["on\r\n", "off\n", "on", "yes\n", ""] {
             std::fs::write(&file, said).unwrap();
-            read.push(keep_running_in(&file));
+            read.push(keep_running(&file));
         }
-        let missing = keep_running_in(&dir.join("none"));
+        let missing = keep_running(&dir.join("none"));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(read, [Some(true), Some(false), Some(true), None, None]);
         assert_eq!(missing, None);

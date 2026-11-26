@@ -194,7 +194,7 @@ pub fn doctor_main(args: &[String]) -> ExitCode {
             "keep running",
             keep_running_said(
                 crate::windows_setup::installed(),
-                crate::windows_setup::keep_running(),
+                crate::windows_setup::keep_running(Path::new(crate::windows_setup::KEEP_RUNNING)),
             ),
         ),
         ("memory", check_memory(crate::model_window::memory())),
