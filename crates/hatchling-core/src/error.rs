@@ -14,8 +14,8 @@ pub enum Error {
     #[error("invalid cell id: {0}")]
     InvalidCellId(String),
 
-    /// A socket path failed validation (it must be absolute).
-    #[error("invalid socket path (must be absolute): {0}")]
+    /// A socket path failed validation (it must be absolute, with no `..`).
+    #[error("invalid socket path (must be absolute, with no ..): {0}")]
     InvalidSocketPath(String),
 
     /// A capability name failed validation. The enclosed string says why.
