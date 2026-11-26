@@ -861,7 +861,7 @@ pub(crate) mod tests {
     /// In a child in user and mount namespaces of its own, runs `body` and
     /// exits with what it returns: 99 when the namespaces can't be made.
     /// Returns the child's exit code, or `None` where they can't (and
-    /// HATCHLING_REQUIRE_CELL isn't set).
+    /// `HATCHLING_REQUIRE_CELL` isn't set).
     fn in_namespaces(body: impl FnOnce() -> i32) -> Option<i32> {
         use crate::process::{ForkResult, child_exit_code, exit_child, fork};
         let child = match fork().expect("fork") {
