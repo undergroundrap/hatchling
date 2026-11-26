@@ -595,7 +595,7 @@ impl RoomDisk {
             command.stdin(Stdio::from(read));
             into = Some(write);
         }
-        let mut child = command
+        let child = command
             .spawn()
             .map_err(|error| format!("{} can't start: {error}", named()))?;
         // Its copies of the pipe's reading end and of its error output's
