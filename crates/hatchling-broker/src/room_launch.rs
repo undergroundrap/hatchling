@@ -445,6 +445,11 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
         spec.gid,
     )
     .map_err(|error| error.to_string())?;
+    // Made before the fork: the child allocates nothing before its exec
+    // (#704).
+    let supervisor = hatchling_sys::PreparedExec::new(Path::new(SUPERVISOR), &[SUPERVISOR], &[])
+        .map_err(|error| error.to_string())?;
+    let filter = hatchling_sys::seccomp::prepare(&profile).map_err(|error| error.to_string())?;
     match hatchling_sys::fork().map_err(|error| error.to_string())? {
         hatchling_sys::ForkResult::Parent { child } => {
             drop(endpoint);
@@ -470,12 +475,7 @@ fn enter_from_spawner(channel: UnixStream) -> Result<(), String> {
                 hatchling_sys::cloexec_fds_above_stderr()?;
                 hatchling_sys::place_across_exec(&[endpoint.as_fd()], SUPERVISOR_FD)?;
                 hatchling_sys::drop_to(spec.uid, spec.gid)?;
-                Err(hatchling_sys::exec(
-                    Path::new(SUPERVISOR),
-                    &[SUPERVISOR],
-                    &[],
-                    || hatchling_sys::seccomp::install(&profile),
-                ))
+                Err(supervisor.exec(|| filter.install()))
             })();
             if let Err(error) = result {
                 let _ = writeln!(io::stderr().lock(), "hatchling Room supervisor: {error}");

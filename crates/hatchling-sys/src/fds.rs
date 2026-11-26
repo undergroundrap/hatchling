@@ -287,6 +287,9 @@ pub fn stdio_kind(fd: BorrowedFd<'_>) -> Result<StdioKind, Error> {
     }
 }
 
+/// The most descriptors [`place_across_exec`] places at once.
+pub const MAX_PLACED: usize = 8;
+
 /// Puts `fds` on the descriptor numbers `first`, `first + 1`, and so on,
 /// in order, each open across the next exec.
 ///
@@ -314,16 +317,21 @@ pub fn place_across_exec(fds: &[BorrowedFd<'_>], first: i32) -> Result<(), Error
         .ok()
         .and_then(|count| first.checked_add(count))
         .ok_or_else(|| invalid("too many descriptors to place"))?;
-    let copies = fds
-        .iter()
-        .map(|fd| {
+    // In a fixed array, not a growing one: a forked child allocates
+    // nothing before its exec (#704).
+    if fds.len() > MAX_PLACED {
+        return Err(invalid("too many descriptors to place"));
+    }
+    let mut copies: [Option<OwnedFd>; MAX_PLACED] = [const { None }; MAX_PLACED];
+    for (slot, fd) in copies.iter_mut().zip(fds) {
+        *slot = Some(
             rustix::io::fcntl_dupfd_cloexec(fd, above).map_err(|source| Error::Process {
                 operation: "fcntl(F_DUPFD_CLOEXEC)",
                 source: std::io::Error::from_raw_os_error(source.raw_os_error()),
-            })
-        })
-        .collect::<Result<Vec<OwnedFd>, Error>>()?;
-    for (target, copy) in (first..above).zip(&copies) {
+            })?,
+        );
+    }
+    for (target, copy) in (first..above).zip(copies.iter().flatten()) {
         // SAFETY: dup2 onto a descriptor number. It closes whatever was
         // open there, which the caller's contract covers, and the new
         // descriptor is left to the exec; no memory is touched.
@@ -904,6 +912,22 @@ mod tests {
             place_across_exec(&[std::io::stdout().as_fd()], i32::MAX),
             Err(Error::InvalidExecArg { .. })
         ));
+        // At most MAX_PLACED at once, in a fixed array (#704): one more is
+        // refused, before anything is copied.
+        let out = std::io::stdout();
+        let many = vec![out.as_fd(); MAX_PLACED + 1];
+        assert!(matches!(
+            place_across_exec(&many, 3),
+            Err(Error::InvalidExecArg { reason }) if reason.contains("too many")
+        ));
+        assert_eq!(MAX_PLACED, 8);
+        // Exactly that many are placed (in a child: they land on 3 up).
+        let all = in_child(|| {
+            let out = std::io::stdout();
+            let eight = vec![out.as_fd(); MAX_PLACED];
+            i32::from(place_across_exec(&eight, 3).is_err())
+        });
+        assert_eq!(all, 0, "MAX_PLACED descriptors are placed");
         let code = in_child(|| {
             let Ok((a, a_end)) = std::os::unix::net::UnixStream::pair() else {
                 return 2;

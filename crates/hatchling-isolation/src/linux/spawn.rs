@@ -1039,8 +1039,23 @@ fn fail_cell(child_to_parent: &mut ChildToParent, reason: &str) -> ! {
 /// can't be dumped or traced by the program it shares a uid with, and
 /// runs under `no_new_privs`.
 fn run_as_init(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: Ends) -> ! {
+    // The program's exec and filter, made here, before its fork: the
+    // program allocates nothing before its exec (#704).
+    let filter = match seccomp_profile(spec.filter)
+        .and_then(|profile| hatchling_sys::seccomp::prepare(&profile))
+    {
+        Ok(filter) => filter,
+        Err(source) => fail_cell(&mut child_to_parent, &format!("seccomp profile: {source}")),
+    };
+    let raw = |channel: &Option<UnixStream>| channel.as_ref().map(std::os::fd::AsRawFd::as_raw_fd);
+    let prepared = match prepare_program(spec, raw(&ends.connection), raw(&ends.vault)) {
+        Ok(prepared) => prepared,
+        Err(source) => fail_cell(&mut child_to_parent, &format!("exec agent: {source}")),
+    };
     let program = match hatchling_sys::fork() {
-        Ok(ForkResult::Child) => exec_cell_program(spec, child_to_parent, ends),
+        Ok(ForkResult::Child) => {
+            exec_cell_program(spec, child_to_parent, ends, (&filter, &prepared))
+        }
         Ok(ForkResult::Parent { child }) => {
             // The channels are the program's: the init keeps no end, and
             // drops them before the close below can close them under their
@@ -1078,7 +1093,12 @@ fn run_as_init(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: Ends) 
 /// The cell's program, pid 2: capabilities dropped, every fd but stdio
 /// closed on exec, `no_new_privs`, its working directory, its seccomp
 /// filter, then the exec. Setup failures are reported on the pipe.
-fn exec_cell_program(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: Ends) -> ! {
+fn exec_cell_program(
+    spec: &CellSpec,
+    mut child_to_parent: ChildToParent,
+    ends: Ends,
+    (filter, prepared): (&hatchling_sys::PreparedFilter, &hatchling_sys::PreparedExec),
+) -> ! {
     let fail = |child_to_parent: &mut ChildToParent, reason: String| -> ! {
         fail_cell(child_to_parent, &reason)
     };
@@ -1101,8 +1121,9 @@ fn exec_cell_program(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: 
         }
         std::os::fd::IntoRawFd::into_raw_fd(channel)
     };
-    let connection = ends.connection.map(|channel| keep(channel, "connection"));
-    let vault = ends.vault.map(|channel| keep(channel, "vault channel"));
+    // Their numbers are the ones the prepared exec names.
+    let _ = ends.connection.map(|channel| keep(channel, "connection"));
+    let _ = ends.vault.map(|channel| keep(channel, "vault channel"));
     if let Err(source) = hatchling_sys::set_no_new_privs() {
         fail(&mut child_to_parent, format!("no_new_privs: {source}"));
     }
@@ -1112,14 +1133,10 @@ fn exec_cell_program(spec: &CellSpec, mut child_to_parent: ChildToParent, ends: 
             fail(&mut child_to_parent, format!("chdir({dir}): {source}"));
         }
     }
-    let profile = match seccomp_profile(spec.filter) {
-        Ok(profile) => profile,
-        Err(source) => fail(&mut child_to_parent, format!("seccomp profile: {source}")),
-    };
-    if let Err(source) = hatchling_sys::seccomp::install(&profile) {
+    if let Err(source) = filter.install() {
         fail(&mut child_to_parent, format!("seccomp install: {source}"));
     }
-    let err = exec_program(spec, connection, vault);
+    let err = prepared.exec(|| hold_to_limits(&spec.limits, spec.cgroup.is_some()));
     fail(&mut child_to_parent, format!("exec agent: {err}"));
 }
 
@@ -1135,21 +1152,33 @@ fn seccomp_profile(filter: Filter) -> Result<SeccompProfile, hatchling_sys::Erro
     }
 }
 
-/// Execs the spec's program at [`PROGRAM`] with exactly its argv and
-/// environment, held to its limits from just before the exec. Returns
-/// only on failure.
+/// The spec's program at [`PROGRAM`], with exactly its argv and
+/// environment, its channels at `connection` and `vault`: made before the
+/// program's fork.
+fn prepare_program(
+    spec: &CellSpec,
+    connection: Option<RawFd>,
+    vault: Option<RawFd>,
+) -> Result<hatchling_sys::PreparedExec, hatchling_sys::Error> {
+    let argv: Vec<&str> = spec.argv.iter().map(String::as_str).collect();
+    let connection = connection.map(|fd| fd.to_string());
+    let vault = vault.map(|fd| fd.to_string());
+    let env = program_env(&spec.env, connection.as_deref(), vault.as_deref());
+    hatchling_sys::PreparedExec::new(Path::new(PROGRAM), &argv, &env)
+}
+
+/// Execs the spec's program, held to its limits from just before the exec.
+/// Returns only on failure.
+#[cfg(test)]
 fn exec_program(
     spec: &CellSpec,
     connection: Option<RawFd>,
     vault: Option<RawFd>,
 ) -> hatchling_sys::Error {
-    let argv: Vec<&str> = spec.argv.iter().map(String::as_str).collect();
-    let connection = connection.map(|fd| fd.to_string());
-    let vault = vault.map(|fd| fd.to_string());
-    let env = program_env(&spec.env, connection.as_deref(), vault.as_deref());
-    hatchling_sys::exec(Path::new(PROGRAM), &argv, &env, || {
-        hold_to_limits(&spec.limits, spec.cgroup.is_some())
-    })
+    match prepare_program(spec, connection, vault) {
+        Ok(prepared) => prepared.exec(|| hold_to_limits(&spec.limits, spec.cgroup.is_some())),
+        Err(error) => error,
+    }
 }
 
 /// The program's environment: the spec's, with [`CONNECTION_FD_VAR`]
