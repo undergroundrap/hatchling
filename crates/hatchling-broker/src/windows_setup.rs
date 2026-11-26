@@ -50,10 +50,11 @@ pub fn installed() -> bool {
     *INSTALLED.get_or_init(|| Path::new(MARKER).exists())
 }
 
-/// Whether Windows keeps Hatchling running while the owner is logged in, as
-/// the file at `path` ([`KEEP_RUNNING`]) last said: `None` when it hasn't,
-/// as off Windows, or after a setup older than this. Read each time: the
-/// owner can change it.
+/// Whether Windows keeps Hatchling running, as the file at `path` says.
+///
+/// `path` is [`KEEP_RUNNING`]. `None` when Windows hasn't said, as off
+/// Windows, or after a setup older than this. Read each time: the owner can
+/// change it.
 #[must_use]
 pub fn keep_running(path: &Path) -> Option<bool> {
     match std::fs::read_to_string(path).ok()?.trim() {
