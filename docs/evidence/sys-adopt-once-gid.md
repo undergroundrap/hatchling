@@ -12,7 +12,7 @@ Part of [#704](https://github.com/undergroundrap/hatchling/issues/704), from an 
    - No count or set is kept, so a descriptor number reused later is judged as itself.
 2. **`drop_to` refuses gid 0,** as it refuses uid 0, before anything changes. A misconfigured gid 0 would have left the dropped process in root's group, with what root's group may read and write in reach.
 
-**What callers see:** every real adoption is of a descriptor that crossed `exec`, which is never close-on-exec, so none changes. Two sets of tests handed over descriptors made in-process, which are close-on-exec. They now hand them over as a launcher does, clearing the flag first: the agent's ends of a `UnixStream::pair` (with `handed`), and the keeper's test security key.
+**What callers see:** every real adoption is of a descriptor that crossed `exec`, which is never close-on-exec, so none changes. Three sets of tests handed over descriptors made in-process, which are close-on-exec. They now hand them over as a launcher does, clearing the flag first: the agent's ends of a `UnixStream::pair` (with `handed`), the keeper's test security key, and the broker's root-only subagent tests' agent connection, which CI's cells-as-root job found. The broker's own launchers (the spawner's, the egress authority's and the keeper's) already clear it on what they hand over, and `dup2`, which places the Room's and the browser's descriptors, clears it itself.
 
 ## Tests
 
