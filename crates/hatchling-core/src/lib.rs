@@ -26,6 +26,7 @@ pub mod model_reasoning;
 pub mod peer;
 pub mod room;
 pub mod run_failure;
+pub mod run_record;
 pub mod run_tools;
 pub mod secret;
 pub mod skill_text;
