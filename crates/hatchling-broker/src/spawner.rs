@@ -1883,7 +1883,7 @@ pub(crate) fn start_helper(
         // the helper's exit is each pipe's end.
         drop(command);
         let process = hatchling_isolation::platform()
-            .supervise(&mut std_child)
+            .supervise(std_child)
             .map_err(|error| format!("cannot supervise the helper: {error}"))?;
         Process::Local(process)
     };
