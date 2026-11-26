@@ -209,10 +209,21 @@ fn a_seat_that_never_finishes_hands_back_nothing() {
 /// there's no such tool.
 #[test]
 fn a_tool_a_seat_wasnt_given_runs_nothing() {
-    for name in ["memory_propose", "egress_request", "spawn_subagent", "write"] {
+    for name in [
+        "memory_propose",
+        "egress_request",
+        "spawn_subagent",
+        "write",
+    ] {
         let (ending, histories) = seated(vec![call(name, json!({})), good(), done()], 10);
-        assert!(matches!(ending, Ending::Finished { .. }), "{name}: {ending:?}");
+        assert!(
+            matches!(ending, Ending::Finished { .. }),
+            "{name}: {ending:?}"
+        );
         let said = told(&histories);
-        assert!(nth(&said, 0).starts_with("Err(") && nth(&said, 0).contains(name), "{name}: {said:?}");
+        assert!(
+            nth(&said, 0).starts_with("Err(") && nth(&said, 0).contains(name),
+            "{name}: {said:?}"
+        );
     }
 }
