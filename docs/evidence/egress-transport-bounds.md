@@ -29,4 +29,12 @@ In `hatchling-egress`:
 
 ## The gate
 
-RESULTS
+On the sandbox:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4598 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by the egress tests:
+  - the local `connect` without its cut check;
+  - the HTTPS `connect` without its cut check;
+  - `within` without its time.
+- **Mutation** on the changed lines of `local.rs`, `https.rs` and `relay.rs`: 16 mutants, 7 caught, 9 unviable, none missed.
