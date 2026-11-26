@@ -714,15 +714,24 @@ pub(super) mod tests {
             ..entry
         };
         // Root's alone, nobody else may write: as root.
-        assert_eq!(changer([root(0o755, false), root(0o755, true), root(0o755, true)]), None);
+        assert_eq!(
+            changer([root(0o755, false), root(0o755, true), root(0o755, true)]),
+            None
+        );
         assert_eq!(changer([]), None);
         // The binary writable by its group, or by anyone.
         assert_eq!(changer([root(0o775, false)]), Some(NOBODY));
         assert_eq!(changer([root(0o757, false)]), Some(NOBODY));
         // A directory above it writable by its group (the issue's case), or
         // by anyone, without the sticky bit.
-        assert_eq!(changer([root(0o755, false), root(0o775, true)]), Some(NOBODY));
-        assert_eq!(changer([root(0o755, false), root(0o777, true)]), Some(NOBODY));
+        assert_eq!(
+            changer([root(0o755, false), root(0o775, true)]),
+            Some(NOBODY)
+        );
+        assert_eq!(
+            changer([root(0o755, false), root(0o777, true)]),
+            Some(NOBODY)
+        );
         // A sticky directory, as `/tmp`, lets nobody replace root's file.
         assert_eq!(changer([root(0o755, false), root(0o1777, true)]), None);
         // The sticky bit on a file isn't a sticky directory's.
@@ -735,8 +744,14 @@ pub(super) mod tests {
         assert_eq!(changer([link]), None);
         assert_eq!(changer([theirs(link)]), Some((4242, 4343)));
         // The first entry that could be changed says who.
-        assert_eq!(changer([theirs(root(0o755, false)), root(0o777, true)]), Some((4242, 4343)));
-        assert_eq!(changer([root(0o775, false), theirs(root(0o755, true))]), Some(NOBODY));
+        assert_eq!(
+            changer([theirs(root(0o755, false)), root(0o777, true)]),
+            Some((4242, 4343))
+        );
+        assert_eq!(
+            changer([root(0o775, false), theirs(root(0o755, true))]),
+            Some(NOBODY)
+        );
         assert_eq!(NOBODY, (65_534, 65_534));
     }
 
@@ -745,7 +760,10 @@ pub(super) mod tests {
     #[test]
     fn ldd_runs_with_a_clean_environment() {
         let mut command = Command::new("/usr/bin/env");
-        let output = clean_env(&mut command).stdin(Stdio::null()).output().unwrap();
+        let output = clean_env(&mut command)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
         let said = String::from_utf8(output.stdout).unwrap();
         let mut lines: Vec<&str> = said.lines().collect();
         lines.sort_unstable();
