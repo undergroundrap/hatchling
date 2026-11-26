@@ -136,7 +136,7 @@ You don't have to keep track of it. **Hatchling** in the Start menu gets the cur
 
 WSL stops a distro about 30 seconds after its last window closes, which would stop your agent too. So the setup adds **Keep Hatchling running while I'm logged in**, ticked unless you untick it: one idle process, with no window, from a shortcut in your own Startup folder.
 
-Hatchling's background work wakes on time only while it's running. Setup, and each time you open Hatchling, tell it whether the shortcut is there, and `hatchling-broker doctor` says so under **keep running**. To turn it on later, run Setup again and keep the box ticked.
+Hatchling's background work wakes on time only while it's running. Setup, and each time you open Hatchling, tell it whether the shortcut is there, and the app's setup checklist and `hatchling-broker doctor` say whether it's on. For a week after Hatchling wasn't running, the checklist also says from when to when. To turn it on later, run Setup again and keep the box ticked.
 
 Nothing runs while you're logged out or your computer is off. If you use a security key, Hatchling is locked after each restart of Windows until you unlock it.
 

@@ -13,6 +13,7 @@
 use std::sync::{Mutex, PoisonError};
 
 use hatchling_channel::LocalHub;
+use hatchling_core::ui::StoppedView;
 use hatchling_scheduler::Timestamp;
 use hatchling_scheduler::background::{Clock, Gate, Launcher, Outcome, Report, Run, State, Store};
 use hatchling_vault::{OpensStores, SealedVault};
@@ -127,6 +128,25 @@ pub fn tick_once<L: Launcher>(
     clock.tick(now, gate(hub), &store, launcher)
 }
 
+/// The latest stretch the broker wasn't running, as the clock saw it, for
+/// the owner's app: none when there's been none, no schedule store, or the
+/// state can't be read.
+#[must_use]
+pub fn last_stop(scheduler: &SchedulerConfig, key: &dyn OpensStores) -> Option<StoppedView> {
+    if !scheduler.enabled() {
+        return None;
+    }
+    let state = SealedBackgroundStore::new(&scheduler.root, key)
+        .read()
+        .map_err(|error| tracing::warn!(%error, "the background clock's state couldn't be read"))
+        .ok()?;
+    let gap = state.gaps.last()?;
+    Some(StoppedView {
+        from: u64::try_from(gap.from).ok()?,
+        to: u64::try_from(gap.to).ok()?,
+    })
+}
+
 /// Turns background runs on or off as a whole, as the owner says; the
 /// state as written.
 ///
@@ -208,12 +228,32 @@ mod tests {
         let kept = SealedBackgroundStore::new(&root, &key).read();
         let other = MasterKey::generate().unwrap();
         let sealed = SealedBackgroundStore::new(&root, &other).read();
+        let stop = last_stop(&config, &key);
+        // Another gap after it: the last stop is the newest.
+        let latest = later + GAP_SECS + 60;
+        let mut third = Clock::new(Vec::new());
+        let _ = tick_once(&mut third, &config, &key, None, &NoLoops, at(latest)).unwrap();
+        let newest = last_stop(&config, &key);
         let _ = std::fs::remove_dir_all(&root);
         let gap = Gap {
             from: T0,
             to: later,
         };
         assert_eq!(report.gap, Some(gap));
+        assert_eq!(
+            stop,
+            Some(StoppedView {
+                from: u64::try_from(T0).unwrap(),
+                to: u64::try_from(later).unwrap(),
+            })
+        );
+        assert_eq!(
+            newest,
+            Some(StoppedView {
+                from: u64::try_from(later).unwrap(),
+                to: u64::try_from(latest).unwrap(),
+            })
+        );
         let kept = kept.unwrap();
         assert_eq!(kept.gaps, vec![gap]);
         assert_eq!(kept.seen, Some(later));
@@ -251,6 +291,7 @@ mod tests {
             tick_once(&mut clock, &config, &key, None, &NoLoops, at(T0)).unwrap(),
             Report::default()
         );
+        assert_eq!(last_stop(&config, &key), None);
     }
 
     /// A run in flight for the broker's chat holds background work back;
