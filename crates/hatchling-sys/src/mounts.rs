@@ -57,11 +57,17 @@ const PROC_FLAGS: rustix::mount::MountFlags = rustix::mount::MountFlags::from_bi
 /// writable one. A statvfs failure falls back to `base` alone — the
 /// remount then either succeeds (no locked flags) or fails loudly with
 /// EPERM, never silently.
-fn remount_flags_for(source: &Path, base: rustix::mount::MountFlags) -> rustix::mount::MountFlags {
+///
+/// Read from `source`, the opened file, not its path (#680): the path may
+/// name another mount by the time it's read again.
+fn remount_flags_for(
+    source: impl rustix::fd::AsFd,
+    base: rustix::mount::MountFlags,
+) -> rustix::mount::MountFlags {
     use rustix::fs::StatVfsMountFlags as Vf;
     use rustix::mount::MountFlags;
     let mut flags = base;
-    if let Ok(vfs) = rustix::fs::statvfs(source) {
+    if let Ok(vfs) = rustix::fs::fstatvfs(source) {
         // (statvfs flag, mount flag): each ST_* bit with an MS_*
         // counterpart is retained from the source mount. RDONLY needs
         // no mapping — the remount enforces it unconditionally.
@@ -172,6 +178,14 @@ impl MountPlan {
                     ),
                 });
             }
+            if is_reserved(&bind.target) {
+                return Err(Error::InvalidMountPlan {
+                    reason: format!(
+                        "bind target is the plan's own place: {:?} (old, proc, or under them)",
+                        bind.target
+                    ),
+                });
+            }
             if bind.device && !is_char_device(&bind.source) {
                 return Err(Error::InvalidMountPlan {
                     reason: format!(
@@ -223,7 +237,7 @@ impl MountPlan {
     /// [`Error::InvalidMountPlan`] if a bind is already planned at
     /// [`SCRATCH`]: the place is the `tmpfs`'s alone.
     pub fn with_scratch(mut self, bytes: NonZeroU64) -> Result<Self, Error> {
-        if self.binds.iter().any(|bind| bind.target == SCRATCH) {
+        if self.binds.iter().any(|bind| under(&bind.target, SCRATCH)) {
             return Err(Error::InvalidMountPlan {
                 reason: format!("{SCRATCH} is bound already; it can't also be the scratch tmpfs"),
             });
@@ -312,6 +326,16 @@ impl MountPlan {
                     .union(rustix::fs::ResolveFlags::NO_MAGICLINKS),
             )
             .map_err(mount_err("open(bind source)"))?;
+            // What's mounted is judged, not its path (#680): a device bind
+            // is writable with no NODEV, so it must be what the plan saw.
+            if bind.device && !opened_char_device(&source) {
+                return Err(Error::InvalidMountPlan {
+                    reason: format!(
+                        "a device bind's source is no longer a character device: {}",
+                        bind.source.display()
+                    ),
+                });
+            }
             // A plain bind inherits the source's writability; the
             // remount makes it read-only in the cell (or, for a writable
             // bind, NOSUID|NODEV; for a device, NOSUID), retaining the
@@ -323,10 +347,22 @@ impl MountPlan {
             } else {
                 REMOUNT_READONLY_FLAGS
             };
-            sources.push((source, remount_flags_for(&bind.source, base)));
+            let flags = remount_flags_for(&source, base);
+            sources.push((source, flags));
         }
-        // The root goes read-only last, retaining the tmpfs's NOSUID|NODEV.
-        let root_flags = remount_flags_for(&self.new_root, REMOUNT_READONLY_FLAGS);
+        // The root goes read-only last, retaining the tmpfs's NOSUID|NODEV,
+        // its flags read from the root opened, as each source's are.
+        let root = rustix::fs::openat2(
+            rustix::fs::CWD,
+            &self.new_root,
+            rustix::fs::OFlags::PATH
+                .union(rustix::fs::OFlags::DIRECTORY)
+                .union(rustix::fs::OFlags::CLOEXEC),
+            rustix::fs::Mode::empty(),
+            rustix::fs::ResolveFlags::NO_SYMLINKS.union(rustix::fs::ResolveFlags::NO_MAGICLINKS),
+        )
+        .map_err(mount_err("open(new root)"))?;
+        let root_flags = remount_flags_for(&root, REMOUNT_READONLY_FLAGS);
         std::env::set_current_dir(&self.new_root).map_err(|source| Error::Mount {
             operation: "chdir(new root)",
             source,
@@ -454,6 +490,25 @@ fn mount_err(operation: &'static str) -> impl Fn(rustix::io::Errno) -> Error {
 }
 
 /// Whether `path` is a character device (not following a final symlink).
+/// Whether `fd`, as opened, is a character device.
+fn opened_char_device(fd: impl rustix::fd::AsFd) -> bool {
+    rustix::fs::fstat(fd).is_ok_and(|stat| {
+        rustix::fs::FileType::from_raw_mode(stat.st_mode) == rustix::fs::FileType::CharacterDevice
+    })
+}
+
+/// Whether `target` is `place` or under it.
+fn under(target: &str, place: &str) -> bool {
+    Path::new(target).components().next() == Some(Component::Normal(place.as_ref()))
+}
+
+/// Whether `target` is the plan's own: the pivot's put-old directory, where
+/// the procfs goes, or under either (#680). Bound there, it would fail late
+/// or be hidden; it's refused before any mount.
+fn is_reserved(target: &str) -> bool {
+    under(target, "old") || under(target, "proc")
+}
+
 fn is_char_device(path: &Path) -> bool {
     use std::os::unix::fs::FileTypeExt as _;
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_char_device())
@@ -705,6 +760,223 @@ pub(crate) mod tests {
         assert!(beside.with_scratch(size).is_ok());
     }
 
+    /// `path`, opened `O_PATH` as `stage` opens a bind's source.
+    fn opened(path: &Path) -> rustix::fd::OwnedFd {
+        rustix::fs::open(
+            path,
+            rustix::fs::OFlags::PATH.union(rustix::fs::OFlags::CLOEXEC),
+            rustix::fs::Mode::empty(),
+        )
+        .unwrap()
+    }
+
+    /// The flags come from what was opened, not its path: a directory
+    /// opened, then moved and a link to `/proc` left in its place, keeps
+    /// its own mount's flags (#680).
+    #[test]
+    fn remount_flags_come_from_what_was_opened() {
+        use rustix::mount::MountFlags as Mf;
+        let dir = std::env::temp_dir().join(format!("hatchling-flags-{}", std::process::id()));
+        let moved = dir.with_extension("moved");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&moved);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fd = opened(&dir);
+        std::fs::rename(&dir, &moved).unwrap();
+        std::os::unix::fs::symlink("/proc", &dir).unwrap();
+        let flags = remount_flags_for(&fd, REMOUNT_WRITABLE_FLAGS);
+        let own = remount_flags_for(opened(&moved), REMOUNT_WRITABLE_FLAGS);
+        let proc = remount_flags_for(opened(Path::new("/proc")), REMOUNT_WRITABLE_FLAGS);
+        let temp_noexec = rustix::fs::statvfs(&moved)
+            .unwrap()
+            .f_flag
+            .contains(rustix::fs::StatVfsMountFlags::NOEXEC);
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_dir_all(&moved);
+        assert_eq!(flags, own, "the opened directory's own mount");
+        assert!(proc.contains(Mf::NOEXEC));
+        assert_eq!(
+            flags.contains(Mf::NOEXEC),
+            temp_noexec,
+            "not /proc's, through the link"
+        );
+    }
+
+    /// A device bind is judged on the opened fd too: a character device
+    /// is one, a file or a directory isn't (#680).
+    #[test]
+    fn an_opened_source_is_a_character_device_or_not() {
+        assert!(opened_char_device(opened(Path::new("/dev/null"))));
+        assert!(!opened_char_device(opened(Path::new("/etc/passwd"))));
+        assert!(!opened_char_device(opened(Path::new("/dev"))));
+    }
+
+    /// The plan's own places are refused before any mount: the pivot's
+    /// put-old directory, the procfs's, and anything under either; under
+    /// the scratch tmpfs, when there is one. Names that only start the
+    /// same are fine (#680).
+    #[test]
+    fn the_plans_own_places_are_refused_as_targets() {
+        let allowed = allowlist(&["/etc/passwd"]);
+        let plan = |target: &str| {
+            MountPlan::new(
+                PathBuf::from("/tmp/root"),
+                &allowed,
+                vec![bind("/etc/passwd", target, false)],
+            )
+        };
+        for target in [
+            "old",
+            "old/x",
+            "old/x/y",
+            "proc",
+            "proc/self",
+            "proc/1/root",
+        ] {
+            assert!(
+                matches!(plan(target), Err(Error::InvalidMountPlan { reason }) if reason.contains("plan's own place")),
+                "{target}"
+            );
+        }
+        for target in ["oldest", "processes", "etc/old", "usr/proc", "scratchy"] {
+            assert!(plan(target).is_ok(), "{target}");
+        }
+        let size = NonZeroU64::new(1 << 20).unwrap();
+        for target in ["scratch/x", "scratch/x/y"] {
+            assert!(
+                matches!(
+                    plan(target).unwrap().with_scratch(size),
+                    Err(Error::InvalidMountPlan { .. })
+                ),
+                "{target}, under the tmpfs"
+            );
+            assert!(
+                plan(target).is_ok(),
+                "{target}, with no tmpfs, is a bind of its own"
+            );
+        }
+        assert!(plan("scratchy").unwrap().with_scratch(size).is_ok());
+    }
+
+    /// In a child in user and mount namespaces of its own, runs `body` and
+    /// exits with what it returns: 99 when the namespaces can't be made.
+    /// Returns the child's exit code, or `None` where they can't (and
+    /// `HATCHLING_REQUIRE_CELL` isn't set).
+    fn in_namespaces(body: impl FnOnce() -> i32) -> Option<i32> {
+        use crate::process::{ForkResult, child_exit_code, exit_child, fork};
+        let child = match fork().expect("fork") {
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => {
+                // SAFETY: geteuid takes no args.
+                let euid = unsafe { libc::geteuid() };
+                let own_gid = crate::process::egid();
+                // SAFETY: unshare(CLONE_NEWUSER) in the single-threaded child.
+                if unsafe { libc::unshare(libc::CLONE_NEWUSER) } != 0 {
+                    exit_child(99);
+                }
+                let (Ok(map), Ok(group_map)) = (
+                    crate::idmap::IdMap::new(euid, 1),
+                    crate::idmap::IdMap::new(own_gid, 1),
+                ) else {
+                    exit_child(99)
+                };
+                // SAFETY: getpid takes no args.
+                let self_pid = unsafe { libc::getpid() };
+                if crate::idmap::write_maps(self_pid, &map, &group_map).is_err() {
+                    exit_child(99);
+                }
+                // SAFETY: unshare(CLONE_NEWNS) in the single-threaded child.
+                if unsafe { libc::unshare(libc::CLONE_NEWNS) } != 0 {
+                    exit_child(99);
+                }
+                // SAFETY: propagation made private in our own namespace.
+                if unsafe {
+                    libc::mount(
+                        std::ptr::null(),
+                        c"/".as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_PRIVATE | libc::MS_REC,
+                        std::ptr::null(),
+                    )
+                } != 0
+                {
+                    exit_child(99);
+                }
+                exit_child(body());
+            }
+        };
+        let status = child
+            .wait_deadline(std::time::Duration::from_secs(30))
+            .expect("bounded wait");
+        let code = child_exit_code(status);
+        if code == 99 {
+            let required = std::env::var("HATCHLING_REQUIRE_CELL").is_ok_and(|v| v == "1");
+            assert!(
+                !required,
+                "HATCHLING_REQUIRE_CELL=1 but namespaces are unavailable: refusing to skip"
+            );
+            return None;
+        }
+        Some(code)
+    }
+
+    /// A device bind whose source is no character device by the time it's
+    /// mounted is refused at the mount: the plan saw `/dev/null`, then a
+    /// regular file was bound over it (#680).
+    #[test]
+    fn a_device_bind_swapped_after_the_plan_is_refused_at_the_mount() {
+        let base =
+            std::env::temp_dir().join(format!("hatchling-mount-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("root")).unwrap();
+        std::fs::write(base.join("file"), b"not a device").unwrap();
+        let (stage, file) = (base.join("root"), base.join("file"));
+        let code = in_namespaces(|| {
+            let allowed = allowlist(&["/dev/null"]);
+            let device = BindMount {
+                device: true,
+                writable: true,
+                ..bind("/dev/null", "dev/null", false)
+            };
+            let Ok(plan) = MountPlan::new(stage.clone(), &allowed, vec![device]) else {
+                return 2;
+            };
+            let Ok(file) = std::ffi::CString::new(file.as_os_str().as_encoded_bytes()) else {
+                return 3;
+            };
+            // SAFETY: a bind of our own file over /dev/null, in our own
+            // mount namespace.
+            if unsafe {
+                libc::mount(
+                    file.as_ptr(),
+                    c"/dev/null".as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                )
+            } != 0
+            {
+                return 99;
+            }
+            match plan.apply() {
+                Err(Error::InvalidMountPlan { reason })
+                    if reason.contains("no longer a character device") =>
+                {
+                    0
+                }
+                Err(_) => 5,
+                Ok(()) => 6,
+            }
+        });
+        let _ = std::fs::remove_dir_all(&base);
+        if let Some(code) = code {
+            assert_eq!(
+                code, 0,
+                "a swapped device source must be refused at the mount (exit {code})"
+            );
+        }
+    }
+
     #[test]
     fn remount_flags_retain_source_mount_flags() {
         // The mapping is verified against the live filesystem:
@@ -716,9 +988,9 @@ pub(crate) mod tests {
         use rustix::fs::StatVfsMountFlags as Vf;
         use rustix::mount::MountFlags as Mf;
         let dir = std::env::temp_dir();
-        let flags = remount_flags_for(&dir, REMOUNT_READONLY_FLAGS);
+        let flags = remount_flags_for(opened(&dir), REMOUNT_READONLY_FLAGS);
         assert!(flags.contains(Mf::BIND | Mf::RDONLY));
-        let writable = remount_flags_for(&dir, REMOUNT_WRITABLE_FLAGS);
+        let writable = remount_flags_for(opened(&dir), REMOUNT_WRITABLE_FLAGS);
         assert!(writable.contains(Mf::BIND | Mf::NOSUID | Mf::NODEV));
         assert!(
             !writable.contains(Mf::RDONLY),
@@ -749,7 +1021,7 @@ pub(crate) mod tests {
         // mount actually sets flags — on a bare ext4 TMPDIR it never
         // runs, and a mutant breaking the retention (`|=` -> `&=`)
         // is missed.
-        let proc_flags = remount_flags_for(Path::new("/proc"), REMOUNT_READONLY_FLAGS);
+        let proc_flags = remount_flags_for(opened(Path::new("/proc")), REMOUNT_READONLY_FLAGS);
         assert!(
             proc_flags.contains(Mf::BIND | Mf::RDONLY),
             "remount must always add BIND|RDONLY"
