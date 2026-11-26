@@ -491,13 +491,13 @@ mod tests {
 
     /// `/bin/sh -c script`, supervised as a helper is.
     fn helper(script: &str) -> Arc<Process> {
-        let mut started = std::process::Command::new("/bin/sh")
+        let started = std::process::Command::new("/bin/sh")
             .args(["-c", script])
             .spawn()
             .unwrap();
         let process = hatchling_isolation::IsolationBackend::supervise(
             &hatchling_isolation::platform(),
-            &mut started,
+            started,
         )
         .unwrap();
         Arc::new(Process::Local(process))

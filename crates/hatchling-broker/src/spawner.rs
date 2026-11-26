@@ -1872,18 +1872,16 @@ pub(crate) fn start_helper(
             .stdin(Stdio::from(their_in))
             .stdout(Stdio::from(their_out))
             .stderr(Stdio::from(their_err));
-        let mut std_child =
-            crate::skill_run::retry_while_busy(|| command.spawn(), std::thread::sleep).map_err(
-                |error| {
-                    forget_spec(run_dir);
-                    format!("cannot start {}: {error}", program.display())
-                },
-            )?;
+        let std_child = crate::skill_run::retry_while_busy(|| command.spawn(), std::thread::sleep)
+            .map_err(|error| {
+                forget_spec(run_dir);
+                format!("cannot start {}: {error}", program.display())
+            })?;
         // The command holds the helper's ends until it's dropped: then
         // the helper's exit is each pipe's end.
         drop(command);
         let process = hatchling_isolation::platform()
-            .supervise(&mut std_child)
+            .supervise(std_child)
             .map_err(|error| format!("cannot supervise the helper: {error}"))?;
         Process::Local(process)
     };

@@ -452,7 +452,7 @@ mod tests {
             Ok(FakeCell(wanted + self.code))
         }
 
-        fn supervise(&self, _: &mut std::process::Child) -> Result<FakeProcess, SuperviseError> {
+        fn supervise(&self, _: std::process::Child) -> Result<FakeProcess, SuperviseError> {
             Ok(FakeProcess)
         }
     }

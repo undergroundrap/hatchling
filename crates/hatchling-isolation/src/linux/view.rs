@@ -202,23 +202,77 @@ fn ldd() -> std::io::Result<&'static Path> {
 /// Where `ldd` may be, in order.
 const LDD: [&str; 2] = ["/usr/bin/ldd", "/bin/ldd"];
 
-/// Who `ldd` runs as on `binary`, when this process is root: whoever
-/// could change what that path names, the first owner other than root
-/// of the binary or a directory above it (WO-017). The dynamic loader
-/// then never parses, as root, an ELF that another user wrote, such as
-/// the browser in the broker's snapshot: a loader bug would be root's.
-/// None, to run as this process, when it isn't root or root owns them
-/// all; one that can't be looked at is left to `ldd` to fail on.
-fn ldd_identity(binary: &Path) -> Option<(u32, u32)> {
+/// Who `ldd` runs as on `binary`, when this process (`euid`) is root: whoever
+/// could change what that path names ([`changer`], WO-017, #688). The
+/// dynamic loader then never parses, as root, an ELF that another user
+/// wrote, such as the browser in the broker's snapshot: a loader bug would
+/// be root's. None, to run as this process, when it isn't root or root
+/// alone could change it; one that can't be looked at is left to `ldd` to
+/// fail on.
+fn ldd_identity(euid: u32, binary: &Path) -> Option<(u32, u32)> {
     use std::os::unix::fs::MetadataExt as _;
-    if hatchling_sys::euid() != 0 {
+    if euid != 0 {
         return None;
     }
-    binary
-        .ancestors()
-        .filter_map(|entry| std::fs::symlink_metadata(entry).ok())
-        .find(|meta| meta.uid() != 0)
-        .map(|meta| (meta.uid(), meta.gid()))
+    changer(
+        binary
+            .ancestors()
+            .filter_map(|entry| std::fs::symlink_metadata(entry).ok())
+            .map(|meta| Entry {
+                uid: meta.uid(),
+                gid: meta.gid(),
+                mode: meta.mode(),
+                dir: meta.is_dir(),
+                link: meta.is_symlink(),
+            }),
+    )
+}
+
+/// The user `ldd` runs as when someone it can't name could change the
+/// binary: `nobody`.
+const NOBODY: (u32, u32) = (65_534, 65_534);
+
+/// One entry on the way to a binary, the binary first: its owner, its
+/// mode, and what it is.
+#[derive(Debug, Clone, Copy)]
+struct Entry {
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    dir: bool,
+    link: bool,
+}
+
+/// Who could change what a path names, from `entries`, the binary and
+/// each directory above it: the first owner other than root, or
+/// [`NOBODY`] for the first that others may write, a group- or
+/// world-writable file, or such a directory without the sticky bit (#688).
+/// A link's mode means nothing, so only its owner counts. None when root
+/// alone could.
+fn changer(entries: impl IntoIterator<Item = Entry>) -> Option<(u32, u32)> {
+    entries.into_iter().find_map(|entry| {
+        let others_write = entry.mode & 0o022 != 0;
+        let sticky = entry.dir && entry.mode & 0o1000 != 0;
+        if entry.uid != 0 {
+            Some((entry.uid, entry.gid))
+        } else if !entry.link && others_write && !sticky {
+            Some(NOBODY)
+        } else {
+            None
+        }
+    })
+}
+
+/// `command`'s environment, cleared to the two `ldd` needs (#688): a fixed
+/// `PATH` for the script's own tools, and the C locale, so its messages
+/// ("not found" among them) read as they're parsed. Nothing of whoever
+/// started the broker reaches it, `LD_LIBRARY_PATH` and `LD_PRELOAD`
+/// included, so what it resolves, and every cell holds, is this host's.
+fn clean_env(command: &mut Command) -> &mut Command {
+    command
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LC_ALL", "C")
 }
 
 /// Runs `ldd` on the agent binary with a hard timeout: `ldd` only
@@ -236,12 +290,12 @@ fn ldd_output(agent_bin: &Path) -> Result<std::process::Output, Error> {
         reason: format!("cannot run ldd on {}: {source}", agent_bin.display()),
     };
     let mut command = Command::new(ldd().map_err(spawn_err)?);
-    command
+    clean_env(&mut command)
         .arg(agent_bin)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if let Some((uid, gid)) = ldd_identity(agent_bin) {
+    if let Some((uid, gid)) = ldd_identity(hatchling_sys::euid(), agent_bin) {
         // Root setting another uid also drops every supplementary group.
         std::os::unix::process::CommandExt::uid(&mut command, uid);
         std::os::unix::process::CommandExt::gid(&mut command, gid);
@@ -607,7 +661,8 @@ pub(super) mod tests {
     #[test]
     fn ldd_runs_as_whoever_could_change_the_binary() {
         use std::os::unix::fs::PermissionsExt as _;
-        assert_eq!(ldd_identity(Path::new("/bin/true")), None);
+        let euid = hatchling_sys::euid();
+        assert_eq!(ldd_identity(euid, Path::new("/bin/true")), None);
         let dir = std::env::temp_dir().join(format!("hatchling-ldd-owner-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir(&dir).unwrap();
@@ -616,17 +671,22 @@ pub(super) mod tests {
         std::fs::copy("/bin/true", &binary).unwrap();
         if hatchling_sys::euid() != 0 {
             // Not root: as this process, even on its own file.
-            assert_eq!(ldd_identity(&binary), None);
+            assert_eq!(ldd_identity(euid, &binary), None);
+            // As root would see it: this user's own directory is theirs to
+            // swap, so root runs ldd as them.
+            let meta = std::fs::metadata(&binary).unwrap();
+            let own = std::os::unix::fs::MetadataExt::gid(&meta);
+            assert_eq!(ldd_identity(0, &binary), Some((euid, own)));
             std::fs::remove_dir_all(&dir).unwrap();
             return;
         }
         // Root's file, in another user's directory: that user's to swap.
         std::os::unix::fs::chown(&dir, Some(4242), Some(4343)).unwrap();
-        assert_eq!(ldd_identity(&binary), Some((4242, 4343)));
+        assert_eq!(ldd_identity(euid, &binary), Some((4242, 4343)));
         // That user's file, in root's directory: that user's to rewrite.
         std::os::unix::fs::chown(&dir, Some(0), Some(0)).unwrap();
         std::os::unix::fs::chown(&binary, Some(4444), Some(4545)).unwrap();
-        assert_eq!(ldd_identity(&binary), Some((4444, 4545)));
+        assert_eq!(ldd_identity(euid, &binary), Some((4444, 4545)));
         // And ldd, run as that user, still reads it and its libraries.
         let owned = binary.clone();
         let output = within_watchdog("ldd_output", move || ldd_output(&owned)).unwrap();
@@ -640,6 +700,80 @@ pub(super) mod tests {
         let output = within_watchdog("ldd_output", move || ldd_output(&binary)).unwrap();
         assert!(!output.status.success(), "{output:?}");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Who could change a binary is read from each entry on its way, the
+    /// binary first: another owner, or anything others may write that
+    /// isn't a sticky directory (#688).
+    #[test]
+    fn who_could_change_a_binary_is_read_from_each_entry() {
+        let root = |mode, dir| Entry {
+            uid: 0,
+            gid: 0,
+            mode,
+            dir,
+            link: false,
+        };
+        let theirs = |entry: Entry| Entry {
+            uid: 4242,
+            gid: 4343,
+            ..entry
+        };
+        // Root's alone, nobody else may write: as root.
+        assert_eq!(
+            changer([root(0o755, false), root(0o755, true), root(0o755, true)]),
+            None
+        );
+        assert_eq!(changer([]), None);
+        // The binary writable by its group, or by anyone.
+        assert_eq!(changer([root(0o775, false)]), Some(NOBODY));
+        assert_eq!(changer([root(0o757, false)]), Some(NOBODY));
+        // A directory above it writable by its group (the issue's case), or
+        // by anyone, without the sticky bit.
+        assert_eq!(
+            changer([root(0o755, false), root(0o775, true)]),
+            Some(NOBODY)
+        );
+        assert_eq!(
+            changer([root(0o755, false), root(0o777, true)]),
+            Some(NOBODY)
+        );
+        // A sticky directory, as `/tmp`, lets nobody replace root's file.
+        assert_eq!(changer([root(0o755, false), root(0o1777, true)]), None);
+        // The sticky bit on a file isn't a sticky directory's.
+        assert_eq!(changer([root(0o1777, false)]), Some(NOBODY));
+        // A link's mode means nothing: only its owner counts.
+        let link = Entry {
+            link: true,
+            ..root(0o777, false)
+        };
+        assert_eq!(changer([link]), None);
+        assert_eq!(changer([theirs(link)]), Some((4242, 4343)));
+        // The first entry that could be changed says who.
+        assert_eq!(
+            changer([theirs(root(0o755, false)), root(0o777, true)]),
+            Some((4242, 4343))
+        );
+        assert_eq!(
+            changer([root(0o775, false), theirs(root(0o755, true))]),
+            Some(NOBODY)
+        );
+        assert_eq!(NOBODY, (65_534, 65_534));
+    }
+
+    /// `ldd` is given the two settings it needs, and nothing of the
+    /// broker's own environment (#688).
+    #[test]
+    fn ldd_runs_with_a_clean_environment() {
+        let mut command = Command::new("/usr/bin/env");
+        let output = clean_env(&mut command)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let said = String::from_utf8(output.stdout).unwrap();
+        let mut lines: Vec<&str> = said.lines().collect();
+        lines.sort_unstable();
+        assert_eq!(lines, ["LC_ALL=C", "PATH=/usr/bin:/bin"]);
     }
 
     #[test]

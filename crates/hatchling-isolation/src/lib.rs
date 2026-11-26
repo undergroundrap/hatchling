@@ -151,14 +151,15 @@ pub trait IsolationBackend {
     /// program runs in a half-built cell.
     fn isolate(&self, spec: &CellSpec) -> Result<Self::Cell, Error>;
 
-    /// Takes supervision of a helper process the broker just started.
-    /// On failure the helper is killed and reaped first: it is never
-    /// left unsupervised.
+    /// Takes supervision of a helper process the broker just started,
+    /// and the process with it: once supervised, nothing else can wait on
+    /// it or signal it by pid (#688). On failure the helper is killed and
+    /// reaped first: it is never left unsupervised.
     ///
     /// # Errors
     ///
     /// Returns [`SuperviseError`] if the helper cannot be supervised.
-    fn supervise(&self, child: &mut std::process::Child) -> Result<Self::Process, SuperviseError>;
+    fn supervise(&self, child: std::process::Child) -> Result<Self::Process, SuperviseError>;
 }
 
 /// A running cell. Dropping it without [`wait`](Self::wait)ing ends the

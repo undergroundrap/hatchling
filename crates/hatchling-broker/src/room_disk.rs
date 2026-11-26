@@ -595,7 +595,7 @@ impl RoomDisk {
             command.stdin(Stdio::from(read));
             into = Some(write);
         }
-        let mut child = command
+        let child = command
             .spawn()
             .map_err(|error| format!("{} can't start: {error}", named()))?;
         // Its copies of the pipe's reading end and of its error output's
@@ -607,9 +607,8 @@ impl RoomDisk {
             (second.write, second.key)
         });
         let supervised = hatchling_isolation::platform()
-            .supervise(&mut child)
+            .supervise(child)
             .map_err(|error| format!("{} can't be supervised: {error}", named()))?;
-        drop(child);
         if let (Some(write), Some(key)) = (into, key) {
             let handed = match key {
                 KeyFrom::Keeper(keeper, image, purpose) => ask_key(keeper, image, purpose, write),

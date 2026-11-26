@@ -161,9 +161,8 @@ pub(crate) fn change_trees(
     // unreaped child, so the pid can't name another.
     let pid = i32::try_from(std_child.id()).map_err(|_| String::from("the tree helper's pid"))?;
     let child = hatchling_isolation::platform()
-        .supervise(&mut std_child)
+        .supervise(std_child)
         .map_err(|e| format!("cannot supervise the tree helper: {e}"))?;
-    drop(std_child);
     let mut made = [0_u8; 1];
     let ready = stdout.read_exact(&mut made).is_ok() && made == *b"u";
     let mapped = ready
