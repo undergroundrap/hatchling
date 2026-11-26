@@ -1862,14 +1862,13 @@ fn answer_fill(
     let Some(fill) = decided else {
         return Ok(());
     };
-    let sent = fill.channel.lock().map_or_else(
-        |_| Err(std::io::Error::other("an earlier fill panicked")),
-        |channel| {
-            write_frame(&channel, &fill.header)
-                .and_then(|()| write_frame(&channel, fill.sign_in.username.expose().as_bytes()))
-                .and_then(|()| write_frame(&channel, fill.sign_in.password.expose().as_bytes()))
-        },
-    );
+    let sent = match fill.channel.lock() {
+        Ok(channel) => write_frame(&channel, &fill.header)
+            .and_then(|()| write_frame(&channel, fill.sign_in.username.expose().as_bytes()))
+            .and_then(|()| write_frame(&channel, fill.sign_in.password.expose().as_bytes()))
+            .map_err(|error| error.to_string()),
+        Err(_) => Err(String::from("an earlier fill to it panicked")),
+    };
     if let Err(error) = sent {
         tracing::warn!(cell, %error, "a fill couldn't be sent: the browser's channel is dropped");
         if let Ok(channel) = fill.channel.lock() {
@@ -3133,7 +3132,7 @@ mod tests {
         assert!(refused.is_err_and(|error| error.to_string().contains("second channel")));
         // A channel a fill can't be written to is dropped.
         std::fs::remove_dir(config.vault.root.join(crate::vault_access::ACCESS_LOG)).unwrap();
-        let hold = |cell: &str, end: UnixStream| {
+        let keep_channel = |cell: &str, end: UnixStream| {
             kept.lock().unwrap().browsers.insert(
                 cell.to_owned(),
                 BrowserChannel {
@@ -3144,7 +3143,7 @@ mod tests {
         };
         let (gone, end) = UnixStream::pair().unwrap();
         drop(gone);
-        hold("browser-3", end);
+        keep_channel("browser-3", end);
         let (ours, theirs) = UnixStream::pair().unwrap();
         answer_fill(&theirs, &kept, &work.id, "browser-3", "https://a.example").unwrap();
         assert!(!held("browser-3"), "kept");
@@ -3162,7 +3161,7 @@ mod tests {
             while (&end).write(&[0u8; 65_536]).is_ok() {}
             end.set_nonblocking(false).unwrap();
             end.set_write_timeout(Some(FILL_TIMEOUT)).unwrap();
-            hold("browser-5", end);
+            keep_channel("browser-5", end);
             let allowed = || {
                 crate::vault_access::read_log(&config.vault.root)
                     .unwrap()
