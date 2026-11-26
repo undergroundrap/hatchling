@@ -912,10 +912,9 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        DOMAINS, NEUTRALIZED_RUN_RECORD_TAG, NEUTRALIZED_SOURCE_TAG,
-        NEUTRALIZED_STANDING_FILE_TAG, PromptKind, SECTIONS, TOOL_SECTIONS, carried_records,
-        now_note, section, section_names, sections_for, standing_file, system_prompt_for,
-        wrap_source, wrap_tool_result,
+        DOMAINS, NEUTRALIZED_RUN_RECORD_TAG, NEUTRALIZED_SOURCE_TAG, NEUTRALIZED_STANDING_FILE_TAG,
+        PromptKind, SECTIONS, TOOL_SECTIONS, carried_records, now_note, section, section_names,
+        sections_for, standing_file, system_prompt_for, wrap_source, wrap_tool_result,
     };
 
     /// Every section's text, as a literal: the change detector's
