@@ -67,6 +67,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **A cut run opens nothing more, and a forward has a time of its own** ([#684](https://github.com/undergroundrap/hatchling/issues/684)). A run cut while egress was connecting waited up to 5 seconds for each pinned address before the cut took hold. And an upstream trickling a byte at a time could hold a forward open until the run's own clock ended it. Now a cut is checked before each address, so a cut run connects to nothing. A forward reads for at most 10 minutes to a hosted model, and 20 to a local one.
+
 - **A credential an upstream echoes escaped is scrubbed too** ([#683](https://github.com/undergroundrap/hatchling/issues/683)). Egress masked only a verbatim echo of the credential it adds. A secret holding `+`, `/` or `=` (a base64 token, a Basic credential) echoed JSON-escaped or percent-encoded reached the cell. Now each of those forms is masked too, whole or split across pieces. The stream's held bytes are never grown, so no copy of an echo is freed unwiped. Keys of letters, digits, `-` and `_` are scanned as before.
 
 - **A cell's mounts are judged by what's mounted** ([#680](https://github.com/undergroundrap/hatchling/issues/680)). A device bind's source was checked by its path at plan time, and each bind's locked flags were read by path, after the source was opened by its descriptor. Now both are read from the descriptor that's mounted. A bind that would land on the plan's own places (`old`, `proc`, or under them, or under the scratch tmpfs) is refused before any mount, instead of failing late.
