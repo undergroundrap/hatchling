@@ -54,7 +54,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 use crate::Error;
 use crate::acting::{give, owner_in};
 use crate::seal::MasterKey;
-use crate::vault::{check_owner_only_dir, ensure_owner_only_dir, open_nofollow};
+use crate::vault::{check_owner_only_dir, ensure_owner_only_dir, open_nofollow, was_a_link};
 
 /// The keyring format this build writes.
 const FORMAT: u32 = 3;
@@ -507,7 +507,15 @@ impl Keyring {
         };
         // Opened without following a symlink, its directory checked, and
         // judged by the descriptor, not the path (#686).
-        let file = open_nofollow(path).map_err(load)?;
+        let file = open_nofollow(path).map_err(|source| {
+            if was_a_link(&source) {
+                Error::InsecureKeyFile {
+                    path: path.to_path_buf(),
+                }
+            } else {
+                load(source)
+            }
+        })?;
         if let Some(parent) = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
@@ -955,7 +963,7 @@ mod tests {
         let link = dir.join("keyring");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let err = Keyring::load_as(&link, own()).unwrap_err();
-        assert!(matches!(err, Error::KeyringLoad { .. }), "got {err:?}");
+        assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
         assert!(
             digest_file(&link).is_err(),
             "a change check doesn't follow it"

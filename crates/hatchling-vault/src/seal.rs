@@ -58,7 +58,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::acting::{give, owner_in};
-use crate::vault::{Vault, check_owner_only_dir, ensure_owner_only_dir, open_nofollow};
+use crate::vault::{Vault, check_owner_only_dir, ensure_owner_only_dir, open_nofollow, was_a_link};
 use crate::{Error, Secret, SecretName};
 use hatchling_core::MAX_SECRET_BYTES;
 
@@ -773,6 +773,9 @@ impl FileKey {
         match open_nofollow(&self.path) {
             Ok(file) => Self::read_key(&self.path, &file, owner),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => self.create_key(owner),
+            Err(source) if was_a_link(&source) => Err(Error::InsecureKeyFile {
+                path: self.path.clone(),
+            }),
             Err(source) => Err(Error::KeyLoad {
                 path: self.path.clone(),
                 source,
@@ -863,10 +866,7 @@ impl FileKey {
             Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
                 // Lost the creation race: the winner's key is the key.
                 // `key` drops here, zeroized by the derive.
-                let file = open_nofollow(&self.path).map_err(|source| Error::KeyLoad {
-                    path: self.path.clone(),
-                    source,
-                })?;
+                let file = open_nofollow(&self.path).map_err(|source| self.unopened(source))?;
                 Self::read_key(&self.path, &file, owner)
             }
             Err(source) => Err(Error::Io { source }),
@@ -895,14 +895,26 @@ impl FileKey {
             .map_or_else(|| rustix::process::getuid().as_raw(), owner_in)
     }
 
+    /// Why the key file couldn't be opened: a symlink there is no sound key
+    /// file; anything else, the load's failure.
+    fn unopened(&self, source: std::io::Error) -> Error {
+        if was_a_link(&source) {
+            Error::InsecureKeyFile {
+                path: self.path.clone(),
+            }
+        } else {
+            Error::KeyLoad {
+                path: self.path.clone(),
+                source,
+            }
+        }
+    }
+
     /// The key file's, opened without following a symlink, its directory
     /// checked as a load or create checks it (#686), and judged by what was
     /// opened.
     fn load_as(&self, owner: u32) -> Result<MasterKey, Error> {
-        let file = open_nofollow(&self.path).map_err(|source| Error::KeyLoad {
-            path: self.path.clone(),
-            source,
-        })?;
+        let file = open_nofollow(&self.path).map_err(|source| self.unopened(source))?;
         let parent = self.path.parent().ok_or_else(|| Error::KeyLoad {
             path: self.path.clone(),
             source: std::io::Error::new(
@@ -2364,7 +2376,7 @@ mod tests {
             linked.load_as(real_uid()).unwrap_err(),
             linked.load_or_create_as(real_uid()).unwrap_err(),
         ] {
-            assert!(matches!(err, Error::KeyLoad { .. }), "got {err:?}");
+            assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
         }
     }
 
@@ -2460,7 +2472,9 @@ mod tests {
         std::os::unix::fs::symlink(&link, &link).unwrap();
         let source = FileKey::new(link);
         let err = source.load_or_create_as(real_uid()).unwrap_err();
-        assert!(matches!(err, Error::KeyLoad { .. }), "got {err:?}");
+        // Refused at the open, never followed (#686): a link is no sound key
+        // file, and nothing is created in its place.
+        assert!(matches!(err, Error::InsecureKeyFile { .. }), "got {err:?}");
     }
 
     #[test]

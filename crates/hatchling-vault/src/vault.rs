@@ -68,6 +68,12 @@ pub(crate) fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     .map_err(|errno| std::io::Error::from_raw_os_error(errno.raw_os_error()))
 }
 
+/// Whether `error`, from [`open_nofollow`], says a symlink was at the path:
+/// what's there is then no sound file, and is said as such.
+pub(crate) fn was_a_link(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())
+}
+
 /// Checks that `path` is a directory, not a symlink, mode `0700` and owned
 /// by `owner`, making nothing: for a load, which must never create (#686).
 ///
