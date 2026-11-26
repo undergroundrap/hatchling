@@ -1293,9 +1293,8 @@ pub fn dispatch_forever<'scope, 'env>(
     hold_in_flight(config, key);
     // Hatchling's own background loops (WO-054), after the owner's
     // schedules on each tick.
-    let mut background = hatchling_scheduler::background::Clock::new(
-        crate::background_ops::loops(),
-    );
+    let mut background =
+        hatchling_scheduler::background::Clock::new(crate::background_ops::loops());
     loop {
         std::thread::sleep(until_next_tick(Timestamp::now()));
         match dispatch_once(

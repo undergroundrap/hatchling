@@ -76,18 +76,17 @@ impl Store for SealedBackgroundStore<'_> {
     }
 }
 
-/// No run: there's no loop to start yet.
+/// No run: there's no loop to start yet, and [`NoLoops`] makes none. Were
+/// one ever polled, it would say it failed.
 #[derive(Debug)]
-pub enum NoRun {}
+pub struct NoRun;
 
 impl Run for NoRun {
     fn poll(&mut self) -> Option<Outcome> {
-        match *self {}
+        Some(Outcome::Failed)
     }
 
-    fn stop(&mut self) {
-        match *self {}
-    }
+    fn stop(&mut self) {}
 }
 
 /// Starts no loop: none is registered yet.
@@ -138,7 +137,11 @@ pub fn tick_once<L: Launcher>(
 /// # Errors
 ///
 /// Returns [`Error`] on a backend failure.
-pub fn set_on(scheduler: &SchedulerConfig, key: &dyn OpensStores, on: bool) -> Result<State, Error> {
+pub fn set_on(
+    scheduler: &SchedulerConfig,
+    key: &dyn OpensStores,
+    on: bool,
+) -> Result<State, Error> {
     SealedBackgroundStore::new(&scheduler.root, key).update(&mut |state| state.off = !on)
 }
 
