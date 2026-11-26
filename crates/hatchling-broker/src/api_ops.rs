@@ -42,9 +42,8 @@ use hatchling_core::ui::{
     ActionRefusal, AgentState, ApiOutcome, ApiRequest, ChatAuthor, ChatMessage, ControlRefusal,
     Decision, FILE_IN_PART_BYTES, FOLDER_PAGE, FileIn, FileInRefusal, FileOutRefusal, FolderEntry,
     GoalOp, GrantOp, Handoff, InboxFile, KeptOp, LibraryFile, LibraryFolder, LibraryStanding,
-    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SkillsOp, StoppedView, SuggestionOp,
-    UiAction,
-    UiActionResult, UiEventBody, VaultProtection,
+    ProfileOp, ProfileResult, RoomDiskView, SetupState, SignInOp, SkillsOp, StoppedView,
+    SuggestionOp, UiAction, UiActionResult, UiEventBody, VaultProtection,
 };
 use hatchling_scheduler::{Creator, Timestamp};
 use hatchling_vault::OpensStores;
@@ -3157,7 +3156,13 @@ mod tests {
         // says it on its security page; cells with one go without saying.
         for limits_only in [false, true] {
             assert_eq!(
-                setup_answer(Some(Ok(vault)), Some(7), room, limits_only, Running::default()),
+                setup_answer(
+                    Some(Ok(vault)),
+                    Some(7),
+                    room,
+                    limits_only,
+                    Running::default()
+                ),
                 (
                     UiActionResult::Setup {
                         setup: SetupState {
