@@ -1615,8 +1615,8 @@ mod tests {
         asked.chat = true;
         asked.history = (0..30)
             .map(|n| ChatExchange {
-                user: format!("q{n} {}", "x".repeat(300)),
-                assistant: format!("a{n} {}", "y".repeat(300)),
+                user: format!("q{n} {}", "x".repeat(1400)),
+                assistant: format!("a{n} {}", "y".repeat(1400)),
             })
             .collect();
         let record = |n: usize| {
@@ -1634,6 +1634,7 @@ mod tests {
             record
         };
         asked.records = (0..5).map(record).collect();
+        // Exchanges this large meet the history's bytes before its count.
         let config = config();
         let budget = carried_budget(Bounds::LEAST.history_bytes);
         let run = scheduled_run(&config, &asked);
