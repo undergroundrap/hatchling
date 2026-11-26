@@ -313,7 +313,8 @@ mod tests {
         // Adopted once: a second adoption, while it's owned, is refused, and
         // so is an end never handed across exec (#704).
         assert!(
-            inherited_unix_stream(fd).is_err_and(|error| error.to_string().contains("adopted already"))
+            inherited_unix_stream(fd)
+                .is_err_and(|error| error.to_string().contains("adopted already"))
         );
         let (_one, fresh) = UnixStream::pair().unwrap();
         assert!(inherited_unix_stream(std::os::fd::AsRawFd::as_raw_fd(&fresh)).is_err());

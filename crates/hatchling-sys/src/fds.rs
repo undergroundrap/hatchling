@@ -643,7 +643,9 @@ mod tests {
         assert!(inherited_device(2).is_err());
         // Adopted once: a second adoption, while it's owned, is refused, and
         // so is a device opened here, which no exec carried (#704).
-        let twice = inherited_device(raw).map(|_| ()).map_err(|error| error.to_string());
+        let twice = inherited_device(raw)
+            .map(|_| ())
+            .map_err(|error| error.to_string());
         assert!(twice.is_err_and(|error| error.contains("adopted already")));
         let fresh = std::fs::File::open("/dev/null").unwrap();
         assert!(inherited_device(fresh.as_raw_fd()).is_err());
