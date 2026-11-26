@@ -85,7 +85,9 @@ impl Launcher for Starts {
     fn start(&self, name: &str, missed: bool) -> Result<Fake, String> {
         let state = self.store.state.borrow();
         let claimed = state.running.as_deref() == Some(name)
-            && state.loops[name].due.is_some_and(|due| due > state.seen.unwrap_or(0));
+            && state.loops[name]
+                .due
+                .is_some_and(|due| due > state.seen.unwrap_or(0));
         self.claimed_first.borrow_mut().push(claimed);
         if self.refuse.get() {
             return Err(String::from("no cell"));
@@ -161,7 +163,13 @@ fn a_suspend_shows_up_as_one_catch_up_run() {
             to: wake
         })
     );
-    assert_eq!(rig.state().gaps, vec![Gap { from: T0 + 60, to: wake }]);
+    assert_eq!(
+        rig.state().gaps,
+        vec![Gap {
+            from: T0 + 60,
+            to: wake
+        }]
+    );
     assert_eq!(rig.state().loops["memory"].due, Some(wake + HOUR));
     rig.finish(Outcome::Done);
     let ended = rig.tick(wake + 60, open());
@@ -188,7 +196,11 @@ fn a_run_is_missed_past_the_grace_and_not_before() {
         let mut rig = Rig::new(vec![hourly("memory")]);
         let _ = rig.tick(T0, open());
         let report = rig.tick(T0 + HOUR + late, open());
-        assert_eq!(report.started, Some((String::from("memory"), missed)), "{late}");
+        assert_eq!(
+            report.started,
+            Some((String::from("memory"), missed)),
+            "{late}"
+        );
     }
 }
 
@@ -253,7 +265,10 @@ fn a_chat_run_stops_the_run_in_flight_once_and_it_runs_again_after() {
     assert_eq!(rig.starts.last().stops.get(), 1);
     rig.finish(Outcome::Stopped);
     let ended = rig.tick(T0 + HOUR + 180, chatting);
-    assert_eq!(ended.ended, Some((String::from("memory"), Outcome::Stopped)));
+    assert_eq!(
+        ended.ended,
+        Some((String::from("memory"), Outcome::Stopped))
+    );
     assert_eq!(ended.started, None, "not while the chat runs");
     assert_eq!(
         rig.tick(T0 + HOUR + 240, open()).started,
@@ -404,13 +419,18 @@ fn a_loop_after_activity_waits_for_quiet_and_runs_once() {
     assert_eq!(rig.tick(T0 + 10 * HOUR, open()).started, None);
     rig.clock.activity(at(T0), &*rig.store).unwrap();
     rig.clock.activity(at(T0 + 300), &*rig.store).unwrap();
-    assert_eq!(rig.tick(T0 + quiet_secs, open()).started, None, "pushed back");
+    assert_eq!(
+        rig.tick(T0 + quiet_secs, open()).started,
+        None,
+        "pushed back"
+    );
     let report = rig.tick(T0 + 300 + quiet_secs, open());
     assert_eq!(report.started, Some((String::from("goals"), false)));
     rig.finish(Outcome::Done);
     for minute in 1..100 {
         assert_eq!(
-            rig.tick(T0 + 300 + quiet_secs + minute * 60, open()).started,
+            rig.tick(T0 + 300 + quiet_secs + minute * 60, open())
+                .started,
             None
         );
     }
@@ -445,7 +465,10 @@ fn a_run_that_cant_start_is_failed_and_unclaimed() {
     let _ = rig.tick(T0, open());
     rig.starts.refuse.set(true);
     let report = rig.tick(T0 + HOUR, open());
-    assert_eq!(report.ended, Some((String::from("memory"), Outcome::Failed)));
+    assert_eq!(
+        report.ended,
+        Some((String::from("memory"), Outcome::Failed))
+    );
     assert_eq!(report.started, None);
     assert_eq!(rig.clock.running(), None);
     let state = rig.state();

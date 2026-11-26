@@ -321,7 +321,10 @@ impl<R: Run> Clock<R> {
         let state = store.update(&mut |state| {
             report.gap = None;
             report.interrupted = None;
-            if let Some(seen) = state.seen.filter(|seen| at.saturating_sub(*seen) > GAP_SECS) {
+            if let Some(seen) = state
+                .seen
+                .filter(|seen| at.saturating_sub(*seen) > GAP_SECS)
+            {
                 let gap = Gap { from: seen, to: at };
                 state.gaps.push(gap);
                 if state.gaps.len() > MAX_GAPS {
@@ -433,7 +436,8 @@ impl<R: Run> Clock<R> {
             for (when, each) in due {
                 let kept = state.loops.entry(each.name.to_owned()).or_default();
                 let next = each.cadence.next_after(now);
-                if each.needs_activity && kept.activity.is_none_or(|seen| Some(seen) <= kept.started)
+                if each.needs_activity
+                    && kept.activity.is_none_or(|seen| Some(seen) <= kept.started)
                 {
                     kept.due = next;
                     kept.ended = Some(at);
