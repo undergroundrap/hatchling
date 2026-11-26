@@ -5,8 +5,9 @@
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-/// `at` in `zone`, for a run's agent: "Wednesday 26 November 2026, 06:31
-/// (America/New_York, UTC-05:00)". A zone with no name is said to be unknown.
+/// `at` in `zone`, for a run's agent, such as `Thursday 26 November 2026,
+/// 06:31 (America/New_York, UTC-05:00)`. A zone with no name is said to be
+/// unknown.
 #[must_use]
 pub fn stamp(at: Timestamp, zone: &TimeZone) -> String {
     let local = at.to_zoned(zone.clone());

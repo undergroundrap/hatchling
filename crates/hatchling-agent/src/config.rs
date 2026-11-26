@@ -202,7 +202,6 @@ impl Config {
             run_chat,
             model_context_window,
         )?;
-        let run_now = parse_run_now(get(env::HATCHLING_RUN_NOW.name))?;
         let run_builders =
             parse_run_builders(get(env::HATCHLING_RUN_BUILDERS.name).as_deref(), run_chat)?;
         let run_deadline = number(
@@ -238,7 +237,7 @@ impl Config {
             run_chat,
             run_history,
             run_earlier,
-            run_now,
+            run_now: parse_run_now(get(env::HATCHLING_RUN_NOW.name))?,
             run_builders,
             run_tools,
             run_deadline,
