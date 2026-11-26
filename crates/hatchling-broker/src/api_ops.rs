@@ -3135,6 +3135,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Whether Hatchling is kept running, and when it wasn't, are said to
+    /// the app as the broker knows them (WO-054).
+    #[test]
+    fn keeping_hatchling_running_is_said_to_the_app() {
+        let vault = VaultProtection {
+            tier: hatchling_core::ui::VaultTier::File,
+            keys: 0,
+            codes: 0,
+            codes_unconfirmed: false,
+        };
+        let running = Running {
+            keep_running: Some(false),
+            stopped: Some(StoppedView { from: 10, to: 70 }),
+        };
+        let room = crate::room_disk::view_here();
+        let (said, outcome) = setup_answer(Some(Ok(vault)), None, room, false, running);
+        assert_eq!(outcome, ApiOutcome::Served);
+        assert!(
+            matches!(
+                said,
+                UiActionResult::Setup { setup }
+                    if setup.keep_running == Some(false)
+                        && setup.stopped == Some(StoppedView { from: 10, to: 70 })
+            ),
+            "{said:?}"
+        );
+    }
+
     /// Only the owner reads what's set up, the room disk with it; with no
     /// keeper to say who can open the vault, nothing is guessed.
     #[test]
@@ -3179,20 +3207,6 @@ mod tests {
                 )
             );
         }
-        // Whether Hatchling is kept running, and when it wasn't, are said
-        // as the broker knows them (WO-054).
-        let running = Running {
-            keep_running: Some(false),
-            stopped: Some(StoppedView { from: 10, to: 70 }),
-        };
-        let (said, _) = setup_answer(Some(Ok(vault)), None, room, false, running);
-        let UiActionResult::Setup { setup } = said else {
-            panic!("{said:?}");
-        };
-        assert_eq!(
-            (setup.keep_running, setup.stopped),
-            (running.keep_running, running.stopped)
-        );
         assert_eq!(
             room.off,
             Some(hatchling_core::ui::RoomDiskOff::NotHere),
