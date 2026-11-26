@@ -1308,9 +1308,10 @@ mod tests {
             Err(Error::KeyringExists { .. })
         ));
         let owner = rustix::process::getuid().as_raw();
+        // Not the directory's owner: refused at the directory, first.
         assert!(matches!(
             Keyring::load_as(&path, owner + 1),
-            Err(Error::InsecureKeyFile { .. })
+            Err(Error::InsecurePermissions { .. })
         ));
         assert!(matches!(
             Keyring::load(&keys.join("missing")),
