@@ -1,6 +1,6 @@
 # WO-053: The run record: what a run did, kept by the broker, so Keep going carries on from it
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (the record, where each effect happens, Keep going, the conversation store), `crates/hatchling-core` (the record's types, the plan op, the UI's action and card), `crates/hatchling-agent` (the plan tool, the record in the prompt), `frontend/` (Keep going, what a run did, the plan), `docs/`
 **Issue:** [#531](https://github.com/undergroundrap/hatchling/issues/531)
 **Trust boundary:** yes

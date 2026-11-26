@@ -37,6 +37,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use hatchling_channel::LocalHub;
 use hatchling_core::SecretName;
 use hatchling_core::conversation::{self, Bounds, ChatExchange, Conversation};
+use hatchling_core::run_record::RunRecord;
 use hatchling_core::ui::{ChatAuthor, ChatMessage, UiEventBody};
 use hatchling_scheduler::Timestamp;
 use hatchling_vault::{OpensStores, SealedVault, Secret, Store};
@@ -192,6 +193,12 @@ impl<'k> ConversationStore<'k> {
         [format!("user-{slot}"), format!("assistant-{slot}")]
     }
 
+    /// The entry name of the record of the run that answered slot `slot`'s
+    /// exchange (WO-053).
+    fn record_entry(slot: u64) -> String {
+        format!("record-{slot}")
+    }
+
     fn read_index(vault: &SealedVault<'_>) -> Result<Option<Index>, String> {
         let secret = match vault.fetch(&Self::name(INDEX)?) {
             Ok(secret) => secret,
@@ -267,7 +274,7 @@ impl<'k> ConversationStore<'k> {
                 Self::remove(vault, &Self::part(&side, part))?;
             }
         }
-        Ok(())
+        Self::remove(vault, &Self::record_entry(slot))
     }
 
     /// Keeps `text` as side `side`: in as many parts as it needs, and
@@ -405,6 +412,7 @@ impl<'k> ConversationStore<'k> {
         current: impl FnOnce() -> bool,
         conversation: &Conversation,
         run: Option<&str>,
+        record: Option<&RunRecord>,
     ) -> Result<bool, String> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         if !current() {
@@ -420,9 +428,21 @@ impl<'k> ConversationStore<'k> {
         // With an exchange, at least it is kept: every store has slots
         // for more than one.
         if let Some(newest) = conversation.exchanges.last() {
-            let [user, assistant] = Self::sides(slot(number, index.slots));
+            let at = slot(number, index.slots);
+            let [user, assistant] = Self::sides(at);
             Self::write_side(&vault, &user, &newest.user)?;
             Self::write_side(&vault, &assistant, &newest.assistant)?;
+            // The record of the run that answered it (WO-053), when the
+            // session left one: a slot never holds another run's.
+            match record {
+                Some(record) => {
+                    let bytes = serde_json::to_vec(record).map_err(|error| {
+                        format!("the conversation's record doesn't encode: {error}")
+                    })?;
+                    Self::write(&vault, &Self::record_entry(at), bytes)?;
+                }
+                None => Self::remove(&vault, &Self::record_entry(at))?,
+            }
         }
         let next = number
             .checked_add(1)
@@ -480,6 +500,34 @@ impl<'k> ConversationStore<'k> {
         let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
         let vault = self.vault()?;
         Ok(Self::read_index(&vault)?.map_or_else(Vec::new, |index| Self::runs_of(&index)))
+    }
+
+    /// The record of the run that answered each exchange kept, in their
+    /// order (WO-053): none for one whose run left none, or kept before
+    /// records were.
+    ///
+    /// # Errors
+    ///
+    /// Why they can't be read: the store's failure, or a record that isn't
+    /// one.
+    pub fn records(&self) -> Result<Vec<Option<RunRecord>>, String> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        let Some(index) = Self::read_index(&vault)? else {
+            return Ok(Vec::new());
+        };
+        (index.next - index.kept..index.next)
+            .map(|number| {
+                let name = Self::record_entry(slot(number, index.slots));
+                match vault.fetch(&Self::name(&name)?) {
+                    Ok(secret) => serde_json::from_slice(secret.as_bytes())
+                        .map(Some)
+                        .map_err(|error| format!("the conversation's {name} is corrupt: {error}")),
+                    Err(hatchling_vault::Error::NotFound { .. }) => Ok(None),
+                    Err(error) => Err(format!("the conversation's {name} can't be read: {error}")),
+                }
+            })
+            .collect()
     }
 
     /// Starts a new conversation: every slot is removed, whatever the
@@ -607,7 +655,10 @@ impl<'k> SealedConversation<'k> {
 impl Keeps for SealedConversation<'_> {
     fn keep(&self, sent_in: u64, kept: &Conversation, run: Option<&str>) {
         let current = || self.hub.conversation() == sent_in;
-        if let Err(error) = self.store.keep_if(current, kept, run) {
+        // The run's record, taken however the keep goes: it's held for
+        // this exchange alone (WO-053).
+        let record = run.and_then(crate::run_record::take);
+        if let Err(error) = self.store.keep_if(current, kept, run, record.as_ref()) {
             tracing::warn!(%error, "the conversation can't be kept");
         }
     }
@@ -645,7 +696,7 @@ mod tests {
     ) -> Conversation {
         for exchange in exchanges {
             kept.push(exchange.clone(), &Bounds::LEAST);
-            assert!(store.keep_if(|| true, &kept, None).unwrap());
+            assert!(store.keep_if(|| true, &kept, None, None).unwrap());
         }
         kept
     }
@@ -770,7 +821,7 @@ mod tests {
                 format!("q{n}")
             };
             kept.push(exchange(&user, &format!("a{n}")), &most);
-            assert!(store.keep_if(|| true, &kept, None).unwrap());
+            assert!(store.keep_if(|| true, &kept, None, None).unwrap());
         }
         assert_eq!(kept.exchanges.len(), most.exchanges);
         assert_eq!(kept.earlier, said(&["q0", "q1"]));
@@ -906,7 +957,7 @@ mod tests {
         let (config, _scratch, key) = kept("at-start");
         let store = ConversationStore::of(&config, &key).unwrap();
         let kept = holding(&[exchange("q0", "a0")]);
-        assert!(store.keep_if(|| true, &kept, Some(&run(9))).unwrap());
+        assert!(store.keep_if(|| true, &kept, Some(&run(9)), None).unwrap());
         let first = at_start(&store);
         assert_eq!(first, &Resumed::Kept(kept));
         // The answer is shown again with the run read with it (WO-043).
@@ -1005,7 +1056,11 @@ mod tests {
         let claimed: Vec<_> = (0..5)
             .map(|n| exchange(&format!("q{n}"), &format!("a{n}")))
             .collect();
-        assert!(store.keep_if(|| true, &holding(&claimed), None).unwrap());
+        assert!(
+            store
+                .keep_if(|| true, &holding(&claimed), None, None)
+                .unwrap()
+        );
         assert_eq!(store.resume().unwrap(), holding(&[exchange("q4", "a4")]));
     }
 
@@ -1018,7 +1073,7 @@ mod tests {
         let kept = keep_all(&store, &[exchange("q0", "a0")]);
         let mut moved = kept.clone();
         moved.push(exchange("q1", "a1"), &Bounds::LEAST);
-        assert!(!store.keep_if(|| false, &moved, None).unwrap());
+        assert!(!store.keep_if(|| false, &moved, None, None).unwrap());
         assert_eq!(store.resume().unwrap(), kept);
         assert_eq!(held(&config, &key), [0]);
     }
@@ -1183,7 +1238,7 @@ mod tests {
                 2 => Some("session-not-a-run"),
                 _ => Some(named.as_str()),
             };
-            assert!(store.keep_if(|| true, &kept, said).unwrap());
+            assert!(store.keep_if(|| true, &kept, said, None).unwrap());
         }
         let runs = store.runs().unwrap();
         let expected: Vec<String> = (1..=most)
@@ -1315,5 +1370,166 @@ mod tests {
         let bus = Bus::starting_at(1);
         show(&bus, &Resumed::Unreadable);
         assert_eq!(chats(&bus), [said(ChatAuthor::System, UNREADABLE)]);
+    }
+
+    /// A record of the run `n`, holding one item named `name`.
+    fn record_of(n: u64, name: &str) -> RunRecord {
+        let mut record = RunRecord::new(&run(n));
+        record.note(
+            0,
+            hatchling_core::run_record::Effect::LibraryItem {
+                name: name.to_owned(),
+                bytes: 1,
+            },
+        );
+        record
+    }
+
+    /// Each exchange keeps the record of the run that answered it, sealed:
+    /// read back by a store opened again, as after a restart, and never on
+    /// disk in the clear (WO-053).
+    #[test]
+    fn a_runs_record_is_kept_sealed_with_its_exchange() {
+        let (config, _scratch, key) = kept("records");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        let first = holding(&[exchange("q0", "a0")]);
+        let one = record_of(1, "first-plainword.md");
+        assert!(
+            store
+                .keep_if(|| true, &first, Some(&run(1)), Some(&one))
+                .unwrap()
+        );
+        let both = holding(&[exchange("q0", "a0"), exchange("q1", "a1")]);
+        assert!(store.keep_if(|| true, &both, Some(&run(2)), None).unwrap());
+        let all = holding(&[
+            exchange("q0", "a0"),
+            exchange("q1", "a1"),
+            exchange("q2", "a2"),
+        ]);
+        let three = record_of(3, "third-plainword.md");
+        assert!(
+            store
+                .keep_if(|| true, &all, Some(&run(3)), Some(&three))
+                .unwrap()
+        );
+        let again = ConversationStore::of(&config, &key).unwrap();
+        assert_eq!(again.records().unwrap(), [Some(one), None, Some(three)]);
+        // A keep that isn't the conversation's keeps no record either.
+        assert!(
+            !store
+                .keep_if(|| false, &all, Some(&run(4)), Some(&record_of(4, "x")))
+                .unwrap()
+        );
+        assert_eq!(again.records().unwrap().len(), 3);
+        for file in std::fs::read_dir(&config.scheduler.conversation).unwrap() {
+            let bytes = std::fs::read(file.unwrap().path()).unwrap();
+            assert!(
+                !bytes.windows(9).any(|window| window == b"plainword"),
+                "a record is on disk in the clear"
+            );
+        }
+    }
+
+    /// An exchange kept with no record leaves none in its slot, even one
+    /// an earlier keep there left; a new conversation takes them all, and
+    /// a record goes with its exchange once the conversation lets it go.
+    #[test]
+    fn a_slot_never_holds_another_runs_record() {
+        let (config, _scratch, key) = kept("records-slot");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        let vault = SealedVault::open_in(&config.scheduler.conversation, &key, Store::CONVERSATION)
+            .unwrap();
+        // A record left in slot 0, as a stopped keep would leave it.
+        let stale = serde_json::to_vec(&record_of(8, "stale.md")).unwrap();
+        ConversationStore::write(&vault, &ConversationStore::record_entry(0), stale).unwrap();
+        let first = holding(&[exchange("q0", "a0")]);
+        assert!(store.keep_if(|| true, &first, Some(&run(1)), None).unwrap());
+        assert_eq!(store.records().unwrap(), [None]);
+        let has = |slot: u64| vault.exists(&ConversationStore::record_entry(slot).parse().unwrap());
+        assert!(!has(0));
+        // Kept with one, then gone with New conversation.
+        let both = holding(&[exchange("q0", "a0"), exchange("q1", "a1")]);
+        assert!(
+            store
+                .keep_if(|| true, &both, Some(&run(2)), Some(&record_of(2, "b.md")))
+                .unwrap()
+        );
+        assert!(has(1));
+        store.start_new(|| {}).unwrap();
+        assert!(!has(1));
+        assert_eq!(store.records().unwrap(), Vec::<Option<RunRecord>>::new());
+        // Past what the conversation holds, the oldest exchange goes, and
+        // its record with it.
+        let mut exchanges = Vec::new();
+        let mut kept_so_far = Conversation::default();
+        for n in 0..SLOTS {
+            exchanges.push(exchange(&format!("q{n}"), &format!("a{n}")));
+            kept_so_far.exchanges.clone_from(&exchanges);
+            let record = record_of(n + 10, &format!("item-{n}.md"));
+            assert!(
+                store
+                    .keep_if(|| true, &kept_so_far, Some(&run(n + 10)), Some(&record))
+                    .unwrap()
+            );
+        }
+        let records = store.records().unwrap();
+        assert_eq!(
+            u64::try_from(records.len()).unwrap(),
+            SLOTS - 1,
+            "the store holds one fewer than its slots"
+        );
+        assert_eq!(
+            records.first().cloned().flatten().map(|record| record.run),
+            Some(run(11))
+        );
+        assert!(records.iter().all(Option::is_some));
+    }
+
+    /// A record that isn't one is an error to read, and never stops the
+    /// conversation itself being resumed.
+    #[test]
+    fn a_corrupt_record_is_an_error_to_read_but_not_to_resume() {
+        let (config, _scratch, key) = kept("records-corrupt");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        let first = holding(&[exchange("q0", "a0")]);
+        assert!(
+            store
+                .keep_if(|| true, &first, Some(&run(1)), Some(&record_of(1, "a.md")))
+                .unwrap()
+        );
+        let vault = SealedVault::open_in(&config.scheduler.conversation, &key, Store::CONVERSATION)
+            .unwrap();
+        ConversationStore::write(
+            &vault,
+            &ConversationStore::record_entry(0),
+            b"not a record".to_vec(),
+        )
+        .unwrap();
+        let reason = store.records().unwrap_err();
+        assert!(reason.contains("record-0 is corrupt"), "{reason}");
+        assert_eq!(store.resume().unwrap(), first);
+    }
+
+    /// The chat's keep takes its run's record from what the sessions left,
+    /// and keeps it with the exchange; one for a conversation no longer the
+    /// hub's is taken and not kept.
+    #[test]
+    fn the_chats_keep_takes_its_runs_record() {
+        let (config, _scratch, key) = kept("records-chat");
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let sealed = SealedConversation::new(ConversationStore::of(&config, &key).unwrap(), &hub);
+        let record = record_of(21, "from-the-session.md");
+        crate::run_record::publish(record.clone(), |_| Some(false));
+        let first = holding(&[exchange("q0", "a0")]);
+        sealed.keep(hub.conversation(), &first, Some(&run(21)));
+        let store = ConversationStore::of(&config, &key).unwrap();
+        assert_eq!(store.records().unwrap(), [Some(record)]);
+        assert_eq!(crate::run_record::take(&run(21)), None, "taken once");
+        // Sent in an earlier conversation: taken, and not kept.
+        crate::run_record::publish(record_of(22, "late.md"), |_| Some(false));
+        let both = holding(&[exchange("q0", "a0"), exchange("q1", "a1")]);
+        sealed.keep(hub.conversation().wrapping_add(1), &both, Some(&run(22)));
+        assert_eq!(crate::run_record::take(&run(22)), None);
+        assert_eq!(store.records().unwrap().len(), 1);
     }
 }

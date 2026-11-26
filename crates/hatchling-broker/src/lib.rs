@@ -118,6 +118,7 @@ pub mod owner;
 pub mod warnings;
 pub use output_gate::{RedactionConfig, Rules, RulesHandle, RulesWorker};
 pub mod run_launcher;
+pub mod run_record;
 pub mod run_trail;
 pub use run_launcher::{AGENT_RUN_SUBCOMMAND, CellLauncher, RunEnv, agent_run_main, scoped_config};
 pub mod redactions;

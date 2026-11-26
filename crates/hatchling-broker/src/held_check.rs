@@ -101,6 +101,9 @@ pub enum CheckFor {
     /// withholds it, and turns handing files over off for the
     /// conversation. The run goes on.
     FileOut,
+    /// A run's record, before it's kept (WO-053): a string that holds a
+    /// secret is kept as withheld.
+    Record,
 }
 
 impl CheckFor {
@@ -114,6 +117,7 @@ impl CheckFor {
             Self::Typed => "typed-check",
             Self::FileIn => "file-in-check",
             Self::FileOut => "file-out-check",
+            Self::Record => "record-check",
         }
     }
 }

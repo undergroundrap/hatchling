@@ -1004,6 +1004,9 @@ fn serve_session(
         config.scheduler.model_name.as_deref(),
     )
     .telling(crate::app_stream::stream(config));
+    // What the run did outside itself, as the broker serves it (WO-053):
+    // held for the chat once the session ends, however it ends.
+    let mut journal = crate::run_record::Journal::new(cell_id.as_str());
 
     // The session's children live in the session's own scope:
     // when the session ends, however it ends, they are killed and the
@@ -1029,6 +1032,7 @@ fn serve_session(
             }
             let request = request_of(&Zeroizing::new(frame))?;
             let used = crate::run_trail::tool_of(&request);
+            let asked = crate::run_record::asked(&request);
             if used.is_some() {
                 trail.starting(used);
             }
@@ -1150,6 +1154,12 @@ fn serve_session(
                 }
             };
             trail.note(used, &response);
+            journal.note(
+                asked,
+                used,
+                &response,
+                hatchling_scheduler::Timestamp::now().as_second(),
+            );
             let payload = encode_reply(&response, MAX_FRAME_BYTES)?;
             write_frame(stream, &payload).map_err(session_error)?;
             // This op's hit, or a Stop as it ran: it's answered, and it's
@@ -1159,6 +1169,22 @@ fn serve_session(
             }
         }
     });
+    // A run's record, for the chat to keep with the exchange it answered:
+    // checked against the vault first, and a string that can't be checked
+    // is withheld.
+    if run_cell.is_some() && crate::library::is_reply(cell_id.as_str()) {
+        crate::run_record::publish(journal.finish(trail.spend()), |text| {
+            crate::held_check::check(
+                crate::keeper::keeper(),
+                config,
+                key,
+                crate::held_check::CheckFor::Record,
+                run_cell,
+                text.as_bytes(),
+            )
+            .ok()
+        });
+    }
     if let Some(to) = hit.seen() {
         stopped(stream, cell_id, hub, to);
     } else if hit.stopped() {
@@ -3377,5 +3403,173 @@ mod gate_scope_tests {
             })
         ));
         let _ = std::fs::remove_dir_all(&usage);
+    }
+}
+
+#[cfg(test)]
+mod run_record_tests {
+    use hatchling_channel::{ChannelId, Cleared, Message, OutputGate, SenderId};
+    use hatchling_core::ChannelOp;
+    use hatchling_core::run_record::{Effect, Sent, WITHHELD};
+    use hatchling_core::subagent::ToolUse;
+    use hatchling_vault::{MasterKey, SealedVault, Secret};
+
+    use super::*;
+
+    fn ask(stream: &UnixStream, op: ChannelOp) -> ChannelResult {
+        write_frame(
+            stream,
+            &serde_json::to_vec(&SessionRequest::Channel(op)).unwrap(),
+        )
+        .unwrap();
+        let response: SessionResponse =
+            serde_json::from_slice(&read_frame(stream).unwrap()).unwrap();
+        let SessionResponse::Channel(result) = response else {
+            unreachable!("not a channel reply: {response:?}");
+        };
+        result
+    }
+
+    fn send(text: &str) -> ChannelOp {
+        ChannelOp::Send {
+            channel: String::from("local"),
+            text: text.to_owned(),
+            state_changing: false,
+            approval: None,
+            account: None,
+        }
+    }
+
+    fn receive() -> ChannelOp {
+        ChannelOp::Receive {
+            channel: String::from("local"),
+            account: None,
+        }
+    }
+
+    /// A run's session, served as the broker serves one, leaves the run's
+    /// record for the chat: each effect as it happened, checked against the
+    /// vault, so a message that held a secret is kept as withheld and one
+    /// that didn't is kept as sent (WO-053).
+    #[test]
+    fn a_runs_session_leaves_its_record_checked_against_the_vault() {
+        let dir = crate::api_auth::tests::scratch("run-record-session");
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = dir.0.join("vault");
+        config.web.credentials = dir.0.join("sign-ins");
+        let key = MasterKey::generate().unwrap();
+        SealedVault::open(&config.vault.root, &key)
+            .unwrap()
+            .store(
+                &"a-held-token".parse().unwrap(),
+                &Secret::new(b"held-token-value-9431".to_vec()).unwrap(),
+            )
+            .unwrap();
+        let hub = LocalHub::new(OutputGate::disabled());
+        let _ = hub.attach(Box::new(|_: &Cleared| Ok(())));
+        let (agent, broker) = UnixStream::pair().unwrap();
+        agent
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let creds = peer_credentials(&broker).unwrap();
+        let run = "run-0000000000000000000000aa";
+        let cell_id: CellId = run.parse().unwrap();
+        let skills = Skills::default();
+        let user = |text: &str| Message {
+            sender: SenderId(String::from("someone")),
+            channel: ChannelId::local(),
+            text: text.to_owned(),
+        };
+        std::thread::scope(|scope| {
+            let served = scope.spawn(|| {
+                serve_session(
+                    &broker,
+                    &config,
+                    &key,
+                    &skills,
+                    &cell_id,
+                    true,
+                    creds,
+                    Some(&hub),
+                    None,
+                    &HeldHit::default(),
+                    None,
+                    SkillReach::WithHarnesses,
+                )
+            });
+            // Two messages in, each answered once: one answer plain, one
+            // holding the vault's secret. A third send answers nothing, and
+            // is refused.
+            for (said, answer) in [
+                ("first", "a plain answer"),
+                ("second", "the token is held-token-value-9431"),
+            ] {
+                let _ = hub.inject(user(said));
+                assert!(matches!(
+                    ask(&agent, receive()),
+                    ChannelResult::Message { .. }
+                ));
+                assert_eq!(ask(&agent, send(answer)), ChannelResult::Sent);
+            }
+            assert_eq!(ask(&agent, send("unasked")), ChannelResult::Denied);
+            drop(agent);
+            served.join().unwrap().unwrap();
+        });
+        let record = crate::run_record::take(run).expect("the session left the run's record");
+        let effects: Vec<Effect> = record
+            .entries
+            .into_iter()
+            .map(|entry| entry.effect)
+            .collect();
+        let message = |text: &str| Effect::MessageSent {
+            channel: String::from("local"),
+            outcome: Sent::Sent,
+            text: Some(text.to_owned()),
+        };
+        assert_eq!(
+            effects,
+            [
+                message("a plain answer"),
+                message(WITHHELD),
+                Effect::Refused {
+                    tool: ToolUse::MessageSend
+                },
+            ]
+        );
+        assert_eq!(crate::run_record::take(run), None, "taken once");
+    }
+
+    /// A session that isn't a known run's, or whose cell isn't named as a
+    /// run is, leaves no record: nothing would take it.
+    #[test]
+    fn a_session_that_isnt_a_runs_leaves_no_record() {
+        let config = crate::api_auth::tests::owner_config(None);
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::default();
+        for (cell, known) in [
+            ("run-0000000000000000000000bb", false),
+            ("cell-not-a-run", true),
+        ] {
+            let (agent, broker) = UnixStream::pair().unwrap();
+            let creds = peer_credentials(&broker).unwrap();
+            let cell_id: CellId = cell.parse().unwrap();
+            drop(agent);
+            serve_session(
+                &broker,
+                &config,
+                &key,
+                &skills,
+                &cell_id,
+                known,
+                creds,
+                None,
+                None,
+                &HeldHit::default(),
+                None,
+                SkillReach::WithHarnesses,
+            )
+            .unwrap();
+            assert_eq!(crate::run_record::take(cell), None, "{cell}");
+        }
     }
 }

@@ -92,7 +92,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [050](workorder-050-fuzz-what-comes-from-outside.md) | Fuzz every parser of what comes from outside | yes | QUEUED |
 | [051](workorder-051-runs-bounded-by-what-matters.md) | A chat run bounded by time, tokens and context, with Stop | yes | CLOSED |
 | [052](workorder-052-the-agents-notes-on-earlier.md) | The agent's notes on earlier in the conversation | yes | QUEUED |
-| [053](workorder-053-the-run-record.md) | The run record: what a run did, kept by the broker, so Keep going carries on from it | yes | QUEUED |
+| [053](workorder-053-the-run-record.md) | The run record: what a run did, kept by the broker, so Keep going carries on from it | yes | IN-PROGRESS |
 
 ## Candidates
 
