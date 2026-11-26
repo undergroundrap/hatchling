@@ -1113,8 +1113,8 @@ mod tests {
             vec![0xff, 0x00, 0x41, 0x7f, 0x80, 0x01, 0x02, 0x03],
         ]
         .map(Zeroizing::new);
-        let percent: String = HELD.bytes().map(|byte| format!("%{byte:02x}")).collect();
-        let upper: String = HELD.bytes().map(|byte| format!("%{byte:02X}")).collect();
+        let percent = HELD.bytes().map(|byte| format!("%{byte:02x}")).collect::<Vec<_>>().concat();
+        let upper = HELD.bytes().map(|byte| format!("%{byte:02X}")).collect::<Vec<_>>().concat();
         let spaced: Vec<String> = HELD.bytes().map(|byte| format!("{byte:02x}")).collect();
         let colons: Vec<String> = HELD.bytes().map(|byte| format!("{byte:02X}")).collect();
         for text in [
@@ -1135,11 +1135,12 @@ mod tests {
             "commit 6e6967687482a7f3 in 01 02 03 04",
             &secrets
         ));
-        // A short secret's hex passes: too few bytes to tell apart from
-        // ordinary hex. Percent-decoded, it is the secret itself, which the
-        // gate finds raw at any length.
+        // A short secret's hex spaced out passes: too few bytes to tell
+        // apart from ordinary hex. Unbroken, and percent-decoded, it's a
+        // form the gate finds at any length.
         let short = [b"abc".to_vec()].map(Zeroizing::new);
-        assert!(!holds_secret("61 62 63 or 616263", &short));
+        assert!(!holds_secret("61 62 63", &short));
+        assert!(holds_secret("616263", &short));
         assert!(holds_secret("see %61%62%63", &short));
         assert!(holds_secret("abc", &short));
     }

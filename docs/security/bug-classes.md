@@ -109,6 +109,7 @@ For the full threat model, see [the trust boundary](../arch/trust-boundary.md). 
 
 | Test | Proves |
 | --- | --- |
+| `a_secret_is_found_percent_encoded_or_as_hex_written_any_way` in [`hatchling-broker/src/output_gate.rs`](../../crates/hatchling-broker/src/output_gate.rs) | A held secret in a reply to a person is redacted percent-encoded in a link, and as hex spaced or punctuated any way (#705). |
 | `a_registered_secret_never_reaches_the_transport` in [`hatchling-model/src/provider.rs`](../../crates/hatchling-model/src/provider.rs) | A held secret, JSON-escaped too, never reaches a model request; it's replaced by `[redacted secret]`. |
 | `cloud_and_local_providers_redact_and_rail_identically` in [`hatchling-agent/tests/model.rs`](../../crates/hatchling-agent/tests/model.rs) | Hosted and local models are redacted the same way. |
 | `no_cell_reachable_reply_carries_key_bytes` in [`hatchling-broker/tests/channel_custody.rs`](../../crates/hatchling-broker/tests/channel_custody.rs) | With logging at its most verbose, no reply and no log line holds any form of the key, and the scan is shown to catch one that does. |
