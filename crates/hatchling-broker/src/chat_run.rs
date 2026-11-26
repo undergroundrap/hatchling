@@ -1855,10 +1855,19 @@ mod tests {
         let now = Timestamp::now();
         let answers = Answers::default();
         assert_eq!(
-            chat.step(|| Some((message(text), conversation)), conversation, launches, &answers, now),
+            chat.step(
+                || Some((message(text), conversation)),
+                conversation,
+                launches,
+                &answers,
+                now
+            ),
             Step::Started
         );
-        assert_eq!(chat.step(|| None, conversation, launches, &answers, now), Step::Answered);
+        assert_eq!(
+            chat.step(|| None, conversation, launches, &answers, now),
+            Step::Answered
+        );
     }
 
     /// WO-053: a run that stops before it's done (out of steps, or failed)
@@ -1878,7 +1887,13 @@ mod tests {
                 .map(|request| request.records.clone())
         };
         let first = left("run-0000000000000000000000c1", "first.md");
-        run_through(&mut chat, &launches, spent(Some(ran_out()), "run-0000000000000000000000c1"), "make it", 0);
+        run_through(
+            &mut chat,
+            &launches,
+            spent(Some(ran_out()), "run-0000000000000000000000c1"),
+            "make it",
+            0,
+        );
         assert_eq!(given(0), Some(Vec::new()), "the first is given none");
         assert!(hub.keeps_going(), "it ran out: the owner may keep going");
         let second = left("run-0000000000000000000000c2", "second.md");
@@ -1891,10 +1906,29 @@ mod tests {
         assert_eq!(given(1), Some(vec![first.clone()]));
         assert!(hub.keeps_going(), "it failed: still not done");
         let _third = left("run-0000000000000000000000c3", "third.md");
-        run_through(&mut chat, &launches, spent(None, "run-0000000000000000000000c3"), KEEP_GOING_TEXT, 0);
-        assert_eq!(given(2), Some(vec![first, second]), "the chain, oldest first");
-        assert!(!hub.keeps_going(), "it answered: nothing to keep going from");
-        run_through(&mut chat, &launches, spent(None, "run-0000000000000000000000c4"), "thanks", 0);
+        run_through(
+            &mut chat,
+            &launches,
+            spent(None, "run-0000000000000000000000c3"),
+            KEEP_GOING_TEXT,
+            0,
+        );
+        assert_eq!(
+            given(2),
+            Some(vec![first, second]),
+            "the chain, oldest first"
+        );
+        assert!(
+            !hub.keeps_going(),
+            "it answered: nothing to keep going from"
+        );
+        run_through(
+            &mut chat,
+            &launches,
+            spent(None, "run-0000000000000000000000c4"),
+            "thanks",
+            0,
+        );
         assert_eq!(given(3), Some(Vec::new()), "an answer settles the chain");
     }
 
@@ -1913,16 +1947,46 @@ mod tests {
         ];
         let records: Vec<RunRecord> = cells.iter().map(|cell| left(cell, "x.md")).collect();
         for cell in cells {
-            run_through(&mut chat, &launches, spent(Some(ran_out()), cell), KEEP_GOING_TEXT, 0);
+            run_through(
+                &mut chat,
+                &launches,
+                spent(Some(ran_out()), cell),
+                KEEP_GOING_TEXT,
+                0,
+            );
         }
-        run_through(&mut chat, &launches, spent(Some(ran_out()), "run-0000000000000000000000d5"), KEEP_GOING_TEXT, 0);
-        let fifth = launches.requests.borrow().get(4).map(|request| request.records.clone());
-        assert_eq!(fifth, Some(records.get(1..).unwrap_or_default().to_vec()), "the last three");
+        run_through(
+            &mut chat,
+            &launches,
+            spent(Some(ran_out()), "run-0000000000000000000000d5"),
+            KEEP_GOING_TEXT,
+            0,
+        );
+        let fifth = launches
+            .requests
+            .borrow()
+            .get(4)
+            .map(|request| request.records.clone());
+        assert_eq!(
+            fifth,
+            Some(records.get(1..).unwrap_or_default().to_vec()),
+            "the last three"
+        );
         assert!(hub.keeps_going());
         hub.new_conversation();
         let next = hub.conversation();
-        run_through(&mut chat, &launches, spent(None, "run-0000000000000000000000d6"), "a new thing", next);
-        let sixth = launches.requests.borrow().get(5).map(|request| request.records.clone());
+        run_through(
+            &mut chat,
+            &launches,
+            spent(None, "run-0000000000000000000000d6"),
+            "a new thing",
+            next,
+        );
+        let sixth = launches
+            .requests
+            .borrow()
+            .get(5)
+            .map(|request| request.records.clone());
         assert_eq!(sixth, Some(Vec::new()), "a new conversation is given none");
         assert!(!hub.keeps_going());
     }

@@ -3962,7 +3962,10 @@ mod tests {
             },
             ApiOutcome::Served,
         );
-        assert_eq!(ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies), nothing);
+        assert_eq!(
+            ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies),
+            nothing
+        );
         assert!(hub.take().is_none(), "nothing sent");
         hub.may_keep_going(hub.conversation(), true);
         let other = caller(&[ScheduleGrant::ChannelSend {
@@ -3978,7 +3981,10 @@ mod tests {
         );
         assert!(hub.take().is_none(), "nothing sent for either");
         let (accepted, outcome) = ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies);
-        assert!(matches!(accepted, UiActionResult::MessageAccepted { .. }), "{accepted:?}");
+        assert!(
+            matches!(accepted, UiActionResult::MessageAccepted { .. }),
+            "{accepted:?}"
+        );
         assert_eq!(outcome, ApiOutcome::Served);
         let queued = hub.take().expect("the owner's message is queued");
         assert_eq!(queued.text, crate::chat_run::KEEP_GOING_TEXT);
@@ -3996,11 +4002,17 @@ mod tests {
             .collect();
         assert_eq!(
             shown,
-            [(ChatAuthor::User, String::from(crate::chat_run::KEEP_GOING_TEXT))]
+            [(
+                ChatAuthor::User,
+                String::from(crate::chat_run::KEEP_GOING_TEXT)
+            )]
         );
         // A new conversation has nothing to continue.
         hub.new_conversation();
-        assert_eq!(ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies), nothing);
+        assert_eq!(
+            ops.handle(&owner, &keep_going(LOCAL_CHAT), &mut replies),
+            nothing
+        );
     }
 
     /// Only the owner stops the chat's run in flight, in the local chat:
