@@ -276,7 +276,7 @@ pub const SECTIONS: &[Section] = &[
     },
     Section {
         name: "memory-discipline",
-        domain: "session",
+        domain: "product:memory",
         text: "Ask to keep durable facts as you learn them, before you reply: who the user is, what they care about, decisions you made together, commitments and their outcomes. Memory is a store for what's worth recalling, not a transcript. Record only what actually happened — mark work done only after a tool result or handoff confirms it, credit the user only with what they actually said, and write a guess as a guess. Never record credentials, codes, keys, tokens, or payment and ID numbers; note where the item lives, not its value. When something changes, say so in what you ask to keep. Note where each fact came from, so a later reader can judge how far to trust it.",
     },
     Section {
@@ -1048,7 +1048,7 @@ mod tests {
         ("narration", "activity"),
         ("self-review", "activity"),
         ("delegation-practice", "session"),
-        ("memory-discipline", "session"),
+        ("memory-discipline", "product:memory"),
         ("relationships", "session"),
         ("research-phases", "product:research"),
         ("artifact-integrity", "product:artifacts"),
