@@ -30,4 +30,12 @@ In `keeper::tests`:
 
 ## The gate
 
-RESULTS
+On the sandbox, at the tree under test:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4572 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by `keeper::tests`:
+  - the fill written under the keeper's lock again;
+  - a refused scan recorded as allowed;
+  - a failed fill dropping whatever channel the cell holds now.
+- **Mutation** on the changed lines of `keeper.rs`: 6 mutants, 5 caught, 1 unviable, none missed.
