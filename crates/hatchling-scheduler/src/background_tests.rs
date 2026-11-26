@@ -101,7 +101,7 @@ impl Launcher for Starts {
     }
 }
 
-fn hourly(name: &'static str) -> Loop {
+const fn hourly(name: &'static str) -> Loop {
     Loop {
         name,
         cadence: Cadence::Every { secs: HOUR },
@@ -109,8 +109,11 @@ fn hourly(name: &'static str) -> Loop {
     }
 }
 
-fn open() -> Gate {
-    Gate::default()
+const fn open() -> Gate {
+    Gate {
+        paused: false,
+        chat_active: false,
+    }
 }
 
 struct Rig {
@@ -160,8 +163,15 @@ fn a_suspend_shows_up_as_one_catch_up_run() {
     assert_eq!(rig.tick(T0 + 60, open()).started, None);
     // Asleep from T0 + 60 for ten hours.
     let wake = T0 + 10 * HOUR + 120;
+    assert_eq!(rig.clock.running(), None);
     let report = rig.tick(wake, open());
     assert_eq!(report.started, Some((String::from("memory"), true)));
+    assert_eq!(rig.clock.running(), Some("memory"));
+    let said = format!("{:?}", rig.clock);
+    assert!(
+        said.starts_with("Clock { loops: [") && said.ends_with("running: Some(\"memory\") }"),
+        "{said}"
+    );
     assert_eq!(
         report.gap,
         Some(Gap {

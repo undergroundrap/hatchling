@@ -327,10 +327,8 @@ impl<R: Run> Clock<R> {
             {
                 let gap = Gap { from: seen, to: at };
                 state.gaps.push(gap);
-                if state.gaps.len() > MAX_GAPS {
-                    let over = state.gaps.len() - MAX_GAPS;
-                    state.gaps.drain(..over);
-                }
+                let over = state.gaps.len().saturating_sub(MAX_GAPS);
+                state.gaps.drain(..over);
                 report.gap = Some(gap);
             }
             state.seen = Some(at);
