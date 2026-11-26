@@ -90,6 +90,7 @@ The record is new information given to a run, and new content kept at rest. Both
 - **The next message after a Stop or a limit.** Its run is given the record of the run that stopped, so an email the stopped run had already sent shows as sent, with or without Keep going.
 - **Continue on its own.** An owner setting, off by default: up to N continuations in a row (at most 5). Each is shown in the chat ("Kept going, 2 of 3"), and Stop ends the chain.
 - **No message sent twice by a chain.** A continuation, by Keep going or on its own, is refused a message identical to one an earlier run in its chain sent on the same channel. It goes only once the owner approves it, on the rail, as any send that isn't a reply does.
+- **The agent can look itself up.** A read-only tool gives the run its own record so far and its chain's: what it sent, wrote and asked, by the broker's account. It's how an agent checks "did I already do this?" before acting, across runs and after the context guard trimmed the start of a long one. It's given as the record is, fenced as data, and it writes nothing.
 - **What it did, on each answer.** A line under the answer, from the journal alone: files written, and where; messages sent; approvals used; tokens spent. "Did: wrote 29 files in notes/, sent 1 message, used 1 approval." It's never compared with the answer by a model. The answer is what it says, the line is what the broker saw, and the owner reads both.
 - **The plan.** A tool the agent can call to set its list of steps: up to 24, each up to 160 bytes, each pending, in progress or done. The broker keeps the latest in the record, and the output gate scans it before it's shown. The app shows it while the run works and on the answer. A continuation is given it under its own header, as the agent's own.
 - **Activity** links each run record to its Activity summary.
@@ -120,6 +121,7 @@ The record is new information given to a run, and new content kept at rest. Both
 - [ ] A record names each Room job still running and each approval still unanswered when its run ended, and a continuation is told of them. Tests leave one of each.
 - [ ] The continuation's task tells it to check the record against its computer. A test reads the task.
 - [ ] A continuation is refused a message identical to one its chain already sent on that channel, and it goes once the owner approves. A test sends one, continues, sends it again.
+- [ ] The record tool returns the run's record and its chain's as the broker holds them, fenced, and no op writes through it. A test sends a message, calls the tool, and finds the send.
 - [ ] The record reaches the model fenced, in the agent's role. A test reads the request sent. An injected line in a file name or a plan step coming back as an instruction is measured by WO-045's behaviour battery.
 - [ ] Each new guard fails its test when removed.
 
@@ -148,7 +150,7 @@ Filled in at close.
 - **Why sealed, when Activity isn't:** Activity is kept in the clear because it holds counts and kinds, never content. The record holds paths, recipients and message text, so it's held to the rule for content: vault-checked, sealed, bounded, gone with its conversation.
 - **Why approvals don't carry over:** an approval answers one request from one run. A continuation is a new run with the same task, and the owner was asked about the old one's request, not this one's. Asking again costs a click. Carrying it over would let a run inherit a yes it never asked for.
 - **Why no model judges "says" against "did":** a judge is a model reading the answer, and a planted answer could talk it round. The broker's count is a fact, the answer is a claim, and the owner sees both side by side.
-- **Amended 2026-11-26, by the maintainer's decision:** the last result, what's still open, checking the record against the disk, and no message sent twice. Each comes from where a continuing agent most often goes wrong: resuming mid-debug without the error it stopped on, starting again what's still running, trusting its own account over the files, and repeating a send.
+- **Amended 2026-11-26, by the maintainer's decision:** the last result, what's still open, checking the record against the disk, no message sent twice, and a tool to look the record up. Each comes from where a continuing agent most often goes wrong: resuming mid-debug without the error it stopped on, starting again what's still running, trusting its own account over the files, and repeating a send. The broker refuses a repeated send whatever the model does; the tool lets a model that checks find out first.
 - **One record serves later work:**
   - #664's waiting run resumes from it;
   - #666 counts repeats from it;
