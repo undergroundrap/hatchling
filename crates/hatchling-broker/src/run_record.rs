@@ -42,7 +42,8 @@ impl Held {
     /// make room.
     fn hold(&mut self, record: RunRecord) {
         self.0.retain(|kept| kept.run != record.run);
-        while self.0.len() >= MAX_HELD {
+        // One comes in at a time, so one going is room enough.
+        if self.0.len() >= MAX_HELD {
             self.0.pop_front();
         }
         self.0.push_back(record);
