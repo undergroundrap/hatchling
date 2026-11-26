@@ -26,4 +26,13 @@ In `hatchling-sys`'s `mounts::tests`:
 
 ## The gate
 
-RESULTS
+On the sandbox, at the tree under test, with `HATCHLING_REQUIRE_CELL=1`:
+
+- `cargo fmt --check`, and clippy with `-D warnings` on 1.98.1 and 1.85.0: clean.
+- The whole workspace's tests: 4595 passed, 0 failed. `hatchling-dev audit`: all checks passed.
+- **Hand-breaks**, each caught by `mounts::tests`:
+  - the device check on the fd dropped;
+  - the flags read from somewhere other than what was opened;
+  - `proc` no longer reserved;
+  - only the scratch itself refused, not what's under it.
+- **Mutation** on the changed lines of `mounts.rs`: 14 mutants, 11 caught, 3 unviable, none missed.
