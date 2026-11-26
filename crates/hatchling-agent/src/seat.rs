@@ -213,10 +213,7 @@ impl Tool for Finish<'_> {
     }
 
     fn execute(&self, arguments: Value) -> Result<ToolOutput, hatchling_loop::Error> {
-        let mut progress = self
-            .progress
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
         if progress.ending.is_some() {
             return Ok(ToolOutput::Err(String::from(
                 "this step has already ended: reply with one word, done",

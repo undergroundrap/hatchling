@@ -335,8 +335,10 @@ fn a_packets_records_make_its_snapshot() {
     let said: Packet = serde_json::from_str(&serde_json::to_string(&packet).unwrap()).unwrap();
     assert_eq!(said, packet);
     assert!(
-        serde_json::from_str::<Packet>(r#"{"prompt": "", "assignment": "", "records": [], "tools": []}"#)
-            .is_err(),
+        serde_json::from_str::<Packet>(
+            r#"{"prompt": "", "assignment": "", "records": [], "tools": []}"#
+        )
+        .is_err(),
         "nothing else reaches a seat"
     );
     let with = |records: Vec<PacketRecord>| Packet {
@@ -351,23 +353,53 @@ fn a_packets_records_make_its_snapshot() {
         with(vec![wire("memory:k1", "x"), wire("memory:k1", "y")]).snapshot(),
         Err(PacketError::Duplicate(_))
     ));
-    assert!(with(vec![wire("memory:k1", &"x".repeat(MAX_RECORD_BYTES))]).snapshot().is_ok());
+    assert!(
+        with(vec![wire("memory:k1", &"x".repeat(MAX_RECORD_BYTES))])
+            .snapshot()
+            .is_ok()
+    );
     assert_eq!(
         with(vec![wire("memory:k1", &"x".repeat(MAX_RECORD_BYTES + 1))]).snapshot(),
         Err(PacketError::TooBig("a record's text"))
     );
-    let many = (0..=MAX_RECORDS).map(|at| wire(&format!("memory:k{at}"), "x")).collect::<Vec<_>>();
-    assert_eq!(with(many.iter().take(MAX_RECORDS).cloned().collect()).snapshot().map(|kept| kept.records().count()), Ok(MAX_RECORDS));
-    assert_eq!(with(many).snapshot(), Err(PacketError::TooBig("the records")));
+    let many = (0..=MAX_RECORDS)
+        .map(|at| wire(&format!("memory:k{at}"), "x"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        with(many.iter().take(MAX_RECORDS).cloned().collect())
+            .snapshot()
+            .map(|kept| kept.records().count()),
+        Ok(MAX_RECORDS)
+    );
+    assert_eq!(
+        with(many).snapshot(),
+        Err(PacketError::TooBig("the records"))
+    );
     let long = "x".repeat(MAX_BRIEF_BYTES + 1);
     assert_eq!(
-        Packet { prompt: long.clone(), ..packet.clone() }.snapshot(),
+        Packet {
+            prompt: long.clone(),
+            ..packet.clone()
+        }
+        .snapshot(),
         Err(PacketError::TooBig("the prompt or the assignment"))
     );
     assert_eq!(
-        Packet { assignment: long, ..packet.clone() }.snapshot(),
+        Packet {
+            assignment: long,
+            ..packet.clone()
+        }
+        .snapshot(),
         Err(PacketError::TooBig("the prompt or the assignment"))
     );
     let fits = "x".repeat(MAX_BRIEF_BYTES);
-    assert!(Packet { prompt: fits.clone(), assignment: fits, ..packet }.snapshot().is_ok());
+    assert!(
+        Packet {
+            prompt: fits.clone(),
+            assignment: fits,
+            ..packet
+        }
+        .snapshot()
+        .is_ok()
+    );
 }

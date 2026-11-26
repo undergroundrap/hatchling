@@ -291,13 +291,10 @@ impl Packet {
             if record.text.len() > MAX_RECORD_BYTES {
                 return Err(PacketError::TooBig("a record's text"));
             }
-            let handle = record
-                .handle
-                .parse()
-                .map_err(|error| PacketError::Handle {
-                    handle: record.handle.clone(),
-                    error,
-                })?;
+            let handle = record.handle.parse().map_err(|error| PacketError::Handle {
+                handle: record.handle.clone(),
+                error,
+            })?;
             records.push(Record {
                 handle,
                 fingerprint: record.fingerprint.clone(),

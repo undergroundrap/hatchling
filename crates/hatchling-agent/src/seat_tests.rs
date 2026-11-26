@@ -124,9 +124,20 @@ fn a_seat_reads_its_records_then_finishes() {
         "{ending:?}"
     );
     let said = told(&histories);
-    assert!(nth(&said, 0).contains("message:c1/m2") && nth(&said, 0).contains("outside") && !nth(&said, 0).contains("Ignore"), "{said:?}");
-    assert!(nth(&said, 1).contains("rather tea") && nth(&said, 1).contains("owner"), "{said:?}");
-    assert!(nth(&said, 2).contains("memory:k9 isn't among the records you were given"), "{said:?}");
+    assert!(
+        nth(&said, 0).contains("message:c1/m2")
+            && nth(&said, 0).contains("outside")
+            && !nth(&said, 0).contains("Ignore"),
+        "{said:?}"
+    );
+    assert!(
+        nth(&said, 1).contains("rather tea") && nth(&said, 1).contains("owner"),
+        "{said:?}"
+    );
+    assert!(
+        nth(&said, 2).contains("memory:k9 isn't among the records you were given"),
+        "{said:?}"
+    );
     assert!(nth(&said, 3).contains("finished"), "{said:?}");
     let first = histories.first().map(Vec::as_slice).unwrap_or_default();
     assert!(
@@ -139,9 +150,16 @@ fn a_seat_reads_its_records_then_finishes() {
 #[test]
 fn a_refused_output_is_answered_once_with_every_reason() {
     let (ending, histories) = seated(vec![bad(), good(), done()], 10);
-    assert!(matches!(ending, Ending::Finished { repaired: true, .. }), "{ending:?}");
+    assert!(
+        matches!(ending, Ending::Finished { repaired: true, .. }),
+        "{ending:?}"
+    );
     let said = told(&histories);
-    assert!(nth(&said, 0).contains("memory:k9 isn't among the records you were given") && nth(&said, 0).contains("once more"), "{said:?}");
+    assert!(
+        nth(&said, 0).contains("memory:k9 isn't among the records you were given")
+            && nth(&said, 0).contains("once more"),
+        "{said:?}"
+    );
 }
 
 #[test]
@@ -155,13 +173,25 @@ fn a_second_refusal_ends_the_step_with_nothing() {
     );
     let said = told(&histories);
     assert!(nth(&said, 1).contains("ends with nothing"), "{said:?}");
-    assert!(nth(&said, 2).contains("already ended"), "a good one after is refused: {said:?}");
+    assert!(
+        nth(&said, 2).contains("already ended"),
+        "a good one after is refused: {said:?}"
+    );
 }
 
 #[test]
 fn a_step_finishes_once() {
     let (ending, histories) = seated(vec![good(), bad(), done()], 10);
-    assert!(matches!(ending, Ending::Finished { repaired: false, .. }), "{ending:?}");
+    assert!(
+        matches!(
+            ending,
+            Ending::Finished {
+                repaired: false,
+                ..
+            }
+        ),
+        "{ending:?}"
+    );
     assert!(nth(&told(&histories), 1).contains("already ended"));
 }
 
@@ -179,11 +209,19 @@ fn a_seat_that_never_finishes_hands_back_nothing() {
 /// there: the model broke the contract.
 #[test]
 fn a_tool_a_seat_wasnt_given_runs_nothing() {
-    for name in ["memory_propose", "egress_request", "spawn_subagent", "write"] {
+    for name in [
+        "memory_propose",
+        "egress_request",
+        "spawn_subagent",
+        "write",
+    ] {
         let (ending, histories) = seated(vec![call(name, json!({})), good(), done()], 10);
         assert_eq!(ending, Ending::Unfinished, "{name}");
         assert_eq!(histories.len(), 1, "{name}: nothing after it");
     }
     let (ending, _) = seated(vec![good(), call("memory_propose", json!({}))], 10);
-    assert!(matches!(ending, Ending::Finished { .. }), "what was finished stands: {ending:?}");
+    assert!(
+        matches!(ending, Ending::Finished { .. }),
+        "what was finished stands: {ending:?}"
+    );
 }
