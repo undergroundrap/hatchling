@@ -28,6 +28,7 @@ pub mod room;
 pub mod run_failure;
 pub mod run_record;
 pub mod run_tools;
+pub mod seat;
 pub mod secret;
 pub mod skill_text;
 pub mod strict_json;
