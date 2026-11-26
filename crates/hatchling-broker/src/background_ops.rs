@@ -229,6 +229,11 @@ mod tests {
         let other = MasterKey::generate().unwrap();
         let sealed = SealedBackgroundStore::new(&root, &other).read();
         let stop = last_stop(&config, &key);
+        // Another gap after it: the last stop is the newest.
+        let latest = later + GAP_SECS + 60;
+        let mut third = Clock::new(Vec::new());
+        let _ = tick_once(&mut third, &config, &key, None, &NoLoops, at(latest)).unwrap();
+        let newest = last_stop(&config, &key);
         let _ = std::fs::remove_dir_all(&root);
         let gap = Gap {
             from: T0,
@@ -240,6 +245,13 @@ mod tests {
             Some(StoppedView {
                 from: u64::try_from(T0).unwrap(),
                 to: u64::try_from(later).unwrap(),
+            })
+        );
+        assert_eq!(
+            newest,
+            Some(StoppedView {
+                from: u64::try_from(later).unwrap(),
+                to: u64::try_from(latest).unwrap(),
             })
         );
         let kept = kept.unwrap();

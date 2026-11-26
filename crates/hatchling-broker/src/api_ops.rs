@@ -3163,6 +3163,38 @@ mod tests {
         );
     }
 
+    /// What the broker knows of keeping Hatchling running is read from
+    /// the background clock's own store: the latest stretch it wasn't.
+    #[test]
+    fn whats_known_of_keeping_hatchling_running_is_the_clocks() {
+        use hatchling_scheduler::background::{Clock, GAP_SECS};
+        let dir = scratch("running");
+        let config = owner_config(Some(&dir.0.join("schedules").to_string_lossy()));
+        let key = MasterKey::generate().unwrap();
+        assert_eq!(Running::here(&config, &key).stopped, None);
+        let tick = |second: i64| {
+            let mut clock = Clock::new(Vec::new());
+            crate::background_ops::tick_once(
+                &mut clock,
+                &config.scheduler,
+                &key,
+                None,
+                &crate::background_ops::NoLoops,
+                Timestamp::from_second(second).unwrap(),
+            )
+            .unwrap()
+        };
+        let _ = tick(1_000_000);
+        let _ = tick(1_000_000 + GAP_SECS + 1);
+        assert_eq!(
+            Running::here(&config, &key).stopped,
+            Some(StoppedView {
+                from: 1_000_000,
+                to: 1_000_000 + u64::try_from(GAP_SECS).unwrap() + 1,
+            })
+        );
+    }
+
     /// Only the owner reads what's set up, the room disk with it; with no
     /// keeper to say who can open the vault, nothing is guessed.
     #[test]

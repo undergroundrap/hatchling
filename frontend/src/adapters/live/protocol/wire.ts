@@ -4065,6 +4065,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     },
     "SetupState": {
         "properties": {
+            "keep_running": {
+                "type": [
+                    "boolean",
+                    "null"
+                ]
+            },
             "last_backup": {
                 "minimum": 0,
                 "type": [
@@ -4079,6 +4085,16 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "anyOf": [
                     {
                         "$ref": "#/$defs/RoomDiskView"
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
+            },
+            "stopped": {
+                "anyOf": [
+                    {
+                        "$ref": "#/$defs/StoppedView"
                     },
                     {
                         "type": "null"
@@ -4860,6 +4876,23 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "scope",
             "made_at",
             "state"
+        ],
+        "type": "object"
+    },
+    "StoppedView": {
+        "properties": {
+            "from": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "to": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "from",
+            "to"
         ],
         "type": "object"
     },

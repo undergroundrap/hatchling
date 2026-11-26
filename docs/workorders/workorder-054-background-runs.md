@@ -120,6 +120,7 @@ Each slice commits its evidence under `docs/evidence/`.
 
 - Slice 1, the background clock: [wo054-background-clock.md](../evidence/wo054-background-clock.md).
 - Slice 2a, Windows saying whether it keeps Hatchling running: [wo054-keep-running.md](../evidence/wo054-keep-running.md).
+- Slice 2b, the app's notes: [wo054-app-notes.md](../evidence/wo054-app-notes.md).
 
 ## Notes
 

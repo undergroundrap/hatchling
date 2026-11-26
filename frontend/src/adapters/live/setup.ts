@@ -32,6 +32,8 @@ export function setupOf(setup: WireSetup): SetupView {
         windowsSetup: setup.windows_setup ?? false,
         roomDisk: setup.room_disk ? roomDiskOf(setup.room_disk) : null,
         processLimitsOnly: setup.process_limits_only ?? false,
+        keepRunning: setup.keep_running ?? null,
+        stopped: setup.stopped ? { from: setup.stopped.from, to: setup.stopped.to } : null,
     };
 }
 export class LiveSetup implements SetupPort {
