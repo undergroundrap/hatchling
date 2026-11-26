@@ -178,7 +178,9 @@ pub fn propose(
     };
     // Within its bounds, its text may still be escaped past what one
     // sealed entry holds: refused, never failed on.
-    if serde_json::to_vec(&item).map_or(true, |bytes| bytes.len() > hatchling_core::MAX_SECRET_BYTES) {
+    if serde_json::to_vec(&item)
+        .map_or(true, |bytes| bytes.len() > hatchling_core::MAX_SECRET_BYTES)
+    {
         return Ok(Proposed::Refused("too long to keep, written out"));
     }
     write_json(&vault, &entry(&id), &item)?;
