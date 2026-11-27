@@ -351,7 +351,7 @@ export class LiveAdapter implements ProtocolAdapter {
         switch (body.kind) {
             case 'activity':
                 this.#activity.apply(body.event);
-                this.#covered.observe();
+                this.#covered.observe(body.event);
                 this.#chats.trail(body.event);
                 this.#usage.observeRun(body.event);
                 this.#ideas.observeRun(body.event);
