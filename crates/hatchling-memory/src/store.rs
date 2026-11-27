@@ -990,6 +990,22 @@ mod tests {
         assert_eq!(rebuilt, 3, "kept-b and kept-d to build it, kept-d given");
         assert_eq!(given(&store), ["kept-d"]);
         assert_eq!(reads(&counts).0, 1, "built, it's read: only kept-d");
+        // Changed to no longer be recalled without the index being told:
+        // the item's own tags decide, and it isn't given.
+        let mut retagged = store
+            .recall(&p, &MemoryScope::User, &id("kept-d"), 10)
+            .unwrap()
+            .unwrap();
+        retagged.tags = vec![Tag::from_str("superseded").unwrap()];
+        store
+            .backing
+            .put(
+                &space,
+                &id("kept-d"),
+                &serde_json::to_vec(&retagged).unwrap(),
+            )
+            .unwrap();
+        assert!(given(&store).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
