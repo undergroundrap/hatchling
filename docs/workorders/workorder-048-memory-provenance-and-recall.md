@@ -70,6 +70,7 @@ Each slice commits its evidence under `docs/evidence/`.
 - Slice 1, the record: [wo048-kept-record.md](../evidence/wo048-kept-record.md).
 - Slice 2, no duplicates: [wo048-no-duplicates.md](../evidence/wo048-no-duplicates.md).
 - Slice 3, typed items and dates: [wo048-typed-items.md](../evidence/wo048-typed-items.md).
+- Slice 4, absences: [wo048-absences.md](../evidence/wo048-absences.md).
 
 ## Notes
 

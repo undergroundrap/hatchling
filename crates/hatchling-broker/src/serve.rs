@@ -1064,6 +1064,7 @@ fn serve_session(
                     why,
                     how_to_apply,
                     check_by,
+                    absence,
                 }) => {
                     // Where it was asked, as the broker knows it (WO-048).
                     let from = crate::memory_keep::ProposedIn {
@@ -1081,6 +1082,7 @@ fn serve_session(
                         why: why.as_deref(),
                         how_to_apply: how_to_apply.as_deref(),
                         check_by: check_by.as_deref(),
+                        absence,
                     };
                     SessionResponse::Memory(crate::memory_keep::propose(
                         config,
@@ -3666,6 +3668,7 @@ mod memory_proposal_tests {
                 why: Some(String::from("The owner said so.")),
                 how_to_apply: Some(String::from("On the release.")),
                 check_by: Some(String::from("2099-01-01")),
+                absence: true,
             });
             write_frame(&agent, &serde_json::to_vec(&request).unwrap()).unwrap();
             let response: SessionResponse =
@@ -3744,6 +3747,7 @@ mod memory_proposal_tests {
                 Some("2099-01-01")
             )
         );
+        assert!(record.absence, "kept as known not to be so");
         record
     }
 

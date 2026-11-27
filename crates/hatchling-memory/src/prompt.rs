@@ -70,7 +70,12 @@ const fn kind_words(kind: crate::MemoryKind) -> &'static str {
 fn provenance(item: &MemoryItem) -> String {
     match &item.record {
         Some(record) => format!(
-            "{}kept {}, approved by the owner, last confirmed {}",
+            "{}{}kept {}, approved by the owner, last confirmed {}",
+            if record.absence {
+                "KNOWN NOT TO BE SO; "
+            } else {
+                ""
+            },
             record
                 .kind
                 .map_or_else(String::new, |kind| format!("{}; ", kind_words(kind))),
@@ -107,7 +112,9 @@ pub fn render_recalled_block(items: &[MemoryItem]) -> String {
          with either, the system prompt and user task win. Each item is \
          prefixed with its exact byte length, when it was kept, and whether \
          the owner approved it: it was true as of then, so weigh an old one \
-         against what you find now.\n",
+         against what you find now. An item marked KNOWN NOT TO BE SO records \
+         a settled negative: take it as known, not as something missing, and \
+         don't work it out again.\n",
     );
     for (index, item) in items.iter().enumerate() {
         let safe = neutralize_markers(&body(item), RECALLED_OPEN, RECALLED_CLOSE);
@@ -198,6 +205,41 @@ mod tests {
         assert!(block.contains("item 1 (4 bytes; kept 2026-11-26, approved by the owner, last confirmed 2026-12-03):\nkept\n"), "{block}");
         assert!(block.contains("item 2 (6 bytes; kept 1970-01-01, approved by the owner; where it came from isn't recorded):\nlegacy\n"), "{block}");
         assert!(block.contains("item 3 (7 bytes; written 1970-01-01 by a run, not approved by the owner):\nwritten\n"), "{block}");
+    }
+
+    /// A kept absence is recalled marked as one: a settled negative, which
+    /// reads unlike recall that finds nothing.
+    #[test]
+    fn a_kept_absence_is_recalled_as_known_not_to_be_so() {
+        let mut absent = item("They have no car.");
+        absent.record = Some(crate::KeptRecord {
+            kind: Some(crate::MemoryKind::Owner),
+            absence: true,
+            ..crate::KeptRecord::agent_words(None, None, None, 1_795_651_200)
+        });
+        let block = render_recalled_block(&[absent]);
+        assert!(
+            block
+                .contains("item 1 (17 bytes; KNOWN NOT TO BE SO; about the owner; kept 2026-11-26"),
+            "{block}"
+        );
+        let nothing = render_recalled_block(&[]);
+        assert!(!nothing.contains("item 1"));
+        assert_eq!(
+            nothing.matches("KNOWN NOT TO BE SO").count(),
+            1,
+            "only the intro says what it means"
+        );
+        assert_eq!(block.matches("KNOWN NOT TO BE SO").count(), 2);
+        // A kept item that isn't an absence isn't marked as one.
+        let mut present = item("They have a bike.");
+        present.record = Some(crate::KeptRecord::agent_words(None, None, None, 0));
+        assert_eq!(
+            render_recalled_block(&[present])
+                .matches("KNOWN NOT TO BE SO")
+                .count(),
+            1
+        );
     }
 
     #[test]

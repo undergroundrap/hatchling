@@ -264,6 +264,10 @@ pub enum MemoryOp {
         /// confirm it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         check_by: Option<String>,
+        /// Whether it records a settled negative (v36): a claim found
+        /// untrue, something that doesn't exist, a thread closed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        absence: bool,
     },
 }
 
@@ -5704,7 +5708,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 35);
+        assert_eq!(crate::PROTOCOL_VERSION, 36);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5809,7 +5813,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 35);
+        assert_eq!(crate::PROTOCOL_VERSION, 36);
     }
 
     /// A hand-over and its results go on the wire as written, and a field
@@ -5888,7 +5892,7 @@ mod room_tests {
         assert!(
             serde_json::from_str::<LeftOut>(r#"{"links":0,"mounts":0,"others":0,"x":1}"#).is_err()
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 35);
+        assert_eq!(crate::PROTOCOL_VERSION, 36);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5947,6 +5951,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 35);
+        assert_eq!(crate::PROTOCOL_VERSION, 36);
     }
 }

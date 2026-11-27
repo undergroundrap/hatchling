@@ -38,6 +38,8 @@ pub struct Asked<'a> {
     pub how_to_apply: Option<&'a str>,
     /// The day after which the owner is asked to confirm it.
     pub check_by: Option<&'a str>,
+    /// Whether it records something known not to be so.
+    pub absence: bool,
 }
 
 impl<'a> Asked<'a> {
@@ -50,6 +52,7 @@ impl<'a> Asked<'a> {
             why: None,
             how_to_apply: None,
             check_by: None,
+            absence: false,
         }
     }
 }
@@ -68,6 +71,8 @@ pub struct Checked {
     pub how_to_apply: Option<String>,
     /// The day to check it again, `YYYY-MM-DD`, when given.
     pub check_by: Option<String>,
+    /// Whether it records something known not to be so.
+    pub absence: bool,
 }
 
 impl Checked {
@@ -80,6 +85,7 @@ impl Checked {
             why: None,
             how_to_apply: None,
             check_by: None,
+            absence: false,
         }
     }
 }
@@ -150,6 +156,7 @@ pub fn check(asked: &Asked<'_>, now_secs: u64) -> Result<Checked, Unfit> {
         why,
         how_to_apply,
         check_by,
+        absence: asked.absence,
     })
 }
 
@@ -285,8 +292,18 @@ mod tests {
                 why: None,
                 how_to_apply: None,
                 check_by: None,
+                absence: false,
             }
         );
+        let absent = check(
+            &Asked {
+                absence: true,
+                ..Asked::about_owner("They have no car.")
+            },
+            NOW,
+        )
+        .unwrap();
+        assert!(absent.absence, "a settled negative is kept as one");
         assert_eq!(
             check(&asked("The plan is in docs/.", "pointer"), NOW)
                 .unwrap()

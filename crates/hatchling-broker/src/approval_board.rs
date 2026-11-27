@@ -1065,6 +1065,9 @@ fn memory_action(proposal: &crate::memory_proposal::Checked, action: bool) -> se
             frozen.insert(String::from(name), json!(value));
         }
     }
+    if proposal.absence {
+        frozen.insert(String::from("absence"), json!(true));
+    }
     serde_json::Value::Object(frozen)
 }
 
@@ -1105,6 +1108,15 @@ fn memory_fields(proposal: &crate::memory_proposal::Checked) -> Vec<Confirmation
         value: String::from(kind),
         source: FieldSource::Broker,
     }];
+    if proposal.absence {
+        fields.push(ConfirmationField {
+            label: String::from("Known not to be so"),
+            value: String::from(
+                "This records that something isn't so: the agent takes it as settled, and doesn't work it out again.",
+            ),
+            source: FieldSource::Broker,
+        });
+    }
     for (label, value) in [
         ("Why", &proposal.why),
         ("When it applies", &proposal.how_to_apply),
@@ -1280,6 +1292,19 @@ mod tests {
             memory_action(&crate::memory_proposal::Checked::owner("x"), false),
             json!({"op": "memory.keep", "content": "x", "kind": "owner"})
         );
+        let absent = crate::memory_proposal::Checked {
+            absence: true,
+            ..crate::memory_proposal::Checked::owner("They have no car.")
+        };
+        assert_eq!(
+            memory_action(&absent, false),
+            json!({"op": "memory.keep", "content": "They have no car.", "kind": "owner", "absence": true})
+        );
+        let shown: Vec<String> = memory_fields(&absent)
+            .into_iter()
+            .map(|field| field.label)
+            .collect();
+        assert_eq!(shown, ["What it is", "Known not to be so"]);
         for (kind, name, summary) in [
             (
                 hatchling_memory::MemoryKind::Work,

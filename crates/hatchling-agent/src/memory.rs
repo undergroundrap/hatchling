@@ -251,6 +251,8 @@ pub struct Proposing<'a> {
     pub how_to_apply: Option<&'a str>,
     /// The day after which the owner is asked to confirm it, `YYYY-MM-DD`.
     pub check_by: Option<&'a str>,
+    /// Whether it records something known not to be so.
+    pub absence: bool,
 }
 
 /// Asks the owner to keep `content` about them (v18). Nothing is kept
@@ -270,6 +272,7 @@ pub fn propose(stream: &UnixStream, asked: &Proposing<'_>) -> Result<Proposal, E
         why: owned(asked.why),
         how_to_apply: owned(asked.how_to_apply),
         check_by: owned(asked.check_by),
+        absence: asked.absence,
     };
     match request(stream, &op)? {
         MemoryResult::Proposed => Ok(Proposal::Asked),

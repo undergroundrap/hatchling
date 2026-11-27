@@ -15,6 +15,9 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v36 lets a memory proposal record a settled negative
+/// (`MemoryOp::Propose`'s `absence`, WO-048): kept and recalled as known
+/// not to be so, never as something missing.
 /// v35 has a memory proposal say what kind of thing it is, why and when
 /// it applies, and a day to check it again (`MemoryOp::Propose`'s `kind`,
 /// `why`, `how_to_apply`, `check_by`, WO-048): checked by the broker,
@@ -112,7 +115,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 35;
+pub const PROTOCOL_VERSION: u16 = 36;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.
