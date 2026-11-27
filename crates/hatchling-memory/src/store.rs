@@ -35,6 +35,7 @@ use crate::item::{
     MAX_CONTENT_BYTES, MAX_ENCODED_ITEM_BYTES, MemoryId, MemoryItem, MemoryPrincipal, MemoryScope,
     Tag, reply_encoded_len,
 };
+use crate::recall_index::{RecallEntry, Recalled};
 use crate::{Error, KeptRecord, RetentionPolicy, is_expired, owner_dir};
 
 /// Whether `item` has a TTL and `now_secs` is past it: [`is_expired`]'s
@@ -320,6 +321,9 @@ impl MemoryStore {
                 max: MAX_ENCODED_ITEM_BYTES,
             });
         }
+        // The index first: a put that fails after it leaves an entry recall
+        // skips or one that names this item's last words.
+        self.reindex(&space, id, Some(RecallEntry::of(&item)))?;
         self.backing.put(&space, id, &bytes)?;
         tracing::info!(memory_id = %id, "stored memory item");
         Ok(item)
@@ -352,8 +356,8 @@ impl MemoryStore {
             // then report absence. Best-effort: a racing purge may
             // have taken it first, and a failure here just means the
             // next recall (or purge) filters it again.
-            if past_its_ttl(&item, now_secs) {
-                let _ = self.backing.remove(&space, id);
+            if past_its_ttl(&item, now_secs) && self.backing.remove(&space, id).is_ok() {
+                let _ = self.reindex(&space, id, None);
             }
             tracing::debug!(memory_id = %id, "expired memory item purged on recall");
             return Ok(None);
@@ -387,8 +391,8 @@ impl MemoryStore {
                 continue;
             };
             if is_expired(&item, now_secs) {
-                if past_its_ttl(&item, now_secs) {
-                    let _ = self.backing.remove(&space, &id);
+                if past_its_ttl(&item, now_secs) && self.backing.remove(&space, &id).is_ok() {
+                    let _ = self.reindex(&space, &id, None);
                 }
                 continue;
             }
@@ -398,6 +402,102 @@ impl MemoryStore {
         }
         items.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
         Ok(items)
+    }
+
+    /// The recall index of `space`: kept, or built from its items when none
+    /// is, or what's kept can't be read.
+    fn index_of(&self, space: &Space) -> Result<Vec<RecallEntry>, Error> {
+        if let Some(entries) = self
+            .backing
+            .get_index(space)?
+            .and_then(|bytes| serde_json::from_slice::<Vec<RecallEntry>>(&bytes).ok())
+        {
+            return Ok(entries);
+        }
+        let mut entries = Vec::new();
+        for id in self.backing.ids(space)? {
+            if let Some(item) = self.read_item(space, &id)? {
+                entries.push(RecallEntry::of(&item));
+            }
+        }
+        self.put_index(space, &mut entries)?;
+        Ok(entries)
+    }
+
+    /// Keeps `entries`, sorted by id, as `space`'s recall index.
+    fn put_index(&self, space: &Space, entries: &mut [RecallEntry]) -> Result<(), Error> {
+        entries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        let bytes = serde_json::to_vec(entries).map_err(|_| Error::Corrupt)?;
+        self.backing.put_index(space, &bytes)
+    }
+
+    /// `space`'s recall index with `id`'s entry replaced by `entry`, or
+    /// removed when there's none.
+    fn reindex(
+        &self,
+        space: &Space,
+        id: &MemoryId,
+        entry: Option<RecallEntry>,
+    ) -> Result<(), Error> {
+        let mut entries = self.index_of(space)?;
+        entries.retain(|kept| kept.id != *id);
+        entries.extend(entry);
+        self.put_index(space, &mut entries)
+    }
+
+    /// What a run is given of the items carrying `tag` in `scopes`, at
+    /// `now_secs`: the index within `index_bytes` and the items given whole
+    /// within `full_bytes` (WO-048). It reads each scope's recall index and
+    /// then only the items it gives whole.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Corrupt`] for an unreadable item, or [`Error::Io`].
+    pub fn recall_budgeted(
+        &self,
+        principal: &MemoryPrincipal,
+        scopes: &[MemoryScope],
+        tag: &Tag,
+        now_secs: u64,
+        index_bytes: usize,
+        full_bytes: usize,
+    ) -> Result<Recalled, Error> {
+        let mut entries = Vec::new();
+        let mut spaces = Vec::new();
+        for scope in scopes {
+            let space = Self::space(principal, scope);
+            for entry in self.index_of(&space)? {
+                if entry.recalled_by(tag, now_secs) {
+                    entries.push(entry);
+                    spaces.push(space.clone());
+                }
+            }
+        }
+        let chosen = crate::recall_index::choose(&entries, index_bytes, full_bytes);
+        let mut items = Vec::new();
+        for &position in &chosen.whole {
+            let (Some(entry), Some(space)) = (entries.get(position), spaces.get(position)) else {
+                continue;
+            };
+            // An entry whose item is gone, or changed to no longer be
+            // recalled, is skipped.
+            if let Some(item) = self.read_item(space, &entry.id)?
+                && crate::recall_index::still_given(&item, now_secs)
+                && item.tags.iter().any(|kept| kept == tag)
+            {
+                items.push(item);
+            }
+        }
+        let index = chosen
+            .index
+            .iter()
+            .filter_map(|&position| entries.get(position).cloned())
+            .collect();
+        Ok(Recalled {
+            index,
+            items,
+            left_out: chosen.left_out,
+        })
     }
 
     /// Rewrites the tags of the item under `id` in the principal-bound
@@ -420,6 +520,7 @@ impl MemoryStore {
         };
         item.tags = tags.to_vec();
         let bytes = serde_json::to_vec(&item).map_err(|_| Error::Corrupt)?;
+        self.reindex(&space, id, Some(RecallEntry::of(&item)))?;
         self.backing.put(&space, id, &bytes)?;
         Ok(true)
     }
@@ -436,7 +537,11 @@ impl MemoryStore {
         scope: &MemoryScope,
         id: &MemoryId,
     ) -> Result<bool, Error> {
-        let removed = self.backing.remove(&Self::space(principal, scope), id)?;
+        let space = Self::space(principal, scope);
+        let removed = self.backing.remove(&space, id)?;
+        if removed {
+            self.reindex(&space, id, None)?;
+        }
         if removed {
             tracing::info!(memory_id = %id, "removed memory item");
         }
@@ -461,6 +566,7 @@ impl MemoryStore {
                 match self.read_item(&space, &id) {
                     Ok(Some(item)) if is_expired(&item, now_secs) => {
                         if past_its_ttl(&item, now_secs) && self.backing.remove(&space, &id)? {
+                            self.reindex(&space, &id, None)?;
                             purged += 1;
                         }
                     }
@@ -580,6 +686,223 @@ mod tests {
             read.created_at_secs, 300,
             "an overwrite keeps when it was made"
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What a counted backing has done.
+    #[derive(Debug, Default)]
+    struct Counts {
+        item_reads: std::sync::atomic::AtomicUsize,
+        index_reads: std::sync::atomic::AtomicUsize,
+    }
+
+    /// A backing in memory that keeps a recall index and counts its reads.
+    /// Items by their space's segments and their id.
+    type Kept = std::collections::BTreeMap<(Vec<String>, String), Vec<u8>>;
+
+    #[derive(Debug, Default)]
+    struct Counted {
+        items: std::sync::Mutex<Kept>,
+        index: std::sync::Mutex<std::collections::BTreeMap<Vec<String>, Vec<u8>>>,
+        counts: std::sync::Arc<Counts>,
+    }
+
+    impl Backing for Counted {
+        fn get(&self, space: &Space, id: &MemoryId) -> Result<Option<Vec<u8>>, Error> {
+            self.counts
+                .item_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .get(&(space.segments().to_vec(), id.to_string()))
+                .cloned())
+        }
+
+        fn put(&self, space: &Space, id: &MemoryId, bytes: &[u8]) -> Result<(), Error> {
+            self.items
+                .lock()
+                .unwrap()
+                .insert((space.segments().to_vec(), id.to_string()), bytes.to_vec());
+            Ok(())
+        }
+
+        fn remove(&self, space: &Space, id: &MemoryId) -> Result<bool, Error> {
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .remove(&(space.segments().to_vec(), id.to_string()))
+                .is_some())
+        }
+
+        fn ids(&self, space: &Space) -> Result<Vec<MemoryId>, Error> {
+            let segments = space.segments().to_vec();
+            Ok(self
+                .items
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|(kept, _)| *kept == segments)
+                .map(|(_, id)| MemoryId::from_str(id).unwrap())
+                .collect())
+        }
+
+        fn spaces(&self) -> Result<Vec<Space>, Error> {
+            Ok(Vec::new())
+        }
+
+        fn get_index(&self, space: &Space) -> Result<Option<Vec<u8>>, Error> {
+            self.counts
+                .index_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.index.lock().unwrap().get(space.segments()).cloned())
+        }
+
+        fn put_index(&self, space: &Space, bytes: &[u8]) -> Result<(), Error> {
+            self.index
+                .lock()
+                .unwrap()
+                .insert(space.segments().to_vec(), bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    /// A store over a counted backing, and its counts.
+    fn counted(name: &str) -> (MemoryStore, std::sync::Arc<Counts>, PathBuf) {
+        let root = test_root(name);
+        let backing = Counted::default();
+        let counts = std::sync::Arc::clone(&backing.counts);
+        (
+            MemoryStore::with_backing(&root, Box::new(backing)).unwrap(),
+            counts,
+            root,
+        )
+    }
+
+    fn reads(counts: &Counts) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (
+            counts.item_reads.swap(0, SeqCst),
+            counts.index_reads.swap(0, SeqCst),
+        )
+    }
+
+    /// With 500 items kept, a budgeted recall reads the index once and then
+    /// only the items it gives whole: never every item.
+    #[test]
+    fn a_budgeted_recall_reads_only_what_it_gives() {
+        let (store, counts, root) = counted("budgeted");
+        let p = principal(7, "sess-budget");
+        let recall = Tag::from_str("recall").unwrap();
+        for n in 0..500u64 {
+            let id = MemoryId::from_str(&format!("kept-{n:03}")).unwrap();
+            let record = KeptRecord::agent_words(None, None, None, 1_000 + n);
+            store
+                .keep(
+                    &p,
+                    &MemoryScope::User,
+                    &id,
+                    &format!("Fact number {n}, kept for the owner."),
+                    std::slice::from_ref(&recall),
+                    record,
+                )
+                .unwrap();
+        }
+        let _ = reads(&counts);
+        let recalled = store
+            .recall_budgeted(&p, &[MemoryScope::User], &recall, 5_000, 3 * 1024, 5 * 1024)
+            .unwrap();
+        let (item_reads, index_reads) = reads(&counts);
+        assert_eq!(index_reads, 1, "the index, once");
+        assert_eq!(
+            item_reads,
+            recalled.items.len(),
+            "only the items given whole"
+        );
+        assert!(!recalled.items.is_empty() && recalled.items.len() < 500);
+        let words: usize = recalled.items.iter().map(|item| item.content.len()).sum();
+        assert!(words <= 5 * 1024, "{words}");
+        // The newest first, and the index counts what it had no room for.
+        assert_eq!(
+            recalled.items.first().map(|item| item.id.as_str()),
+            Some("kept-499")
+        );
+        assert_eq!(
+            recalled.index.first().map(|entry| entry.id.as_str()),
+            Some("kept-499")
+        );
+        assert_eq!(recalled.index.len() + recalled.left_out, 500);
+        assert!(recalled.left_out > 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The index follows every change: a keep, a retag, a remove. An entry
+    /// whose item went without the index being told is skipped, and an
+    /// index that's missing is built from the items once, then read.
+    #[test]
+    fn the_recall_index_follows_every_change() {
+        let (store, counts, root) = counted("follows");
+        let p = principal(7, "sess-follows");
+        let recall = Tag::from_str("recall").unwrap();
+        let id = |raw: &str| MemoryId::from_str(raw).unwrap();
+        let given = |store: &MemoryStore| -> Vec<String> {
+            store
+                .recall_budgeted(&p, &[MemoryScope::User], &recall, 10, 4096, 4096)
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|item| item.id.to_string())
+                .collect()
+        };
+        for raw in ["kept-a", "kept-b", "kept-c"] {
+            store
+                .keep(
+                    &p,
+                    &MemoryScope::User,
+                    &id(raw),
+                    raw,
+                    std::slice::from_ref(&recall),
+                    KeptRecord::agent_words(None, None, None, 1),
+                )
+                .unwrap();
+        }
+        assert_eq!(given(&store), ["kept-a", "kept-b", "kept-c"]);
+        assert!(
+            store
+                .retag(
+                    &p,
+                    &MemoryScope::User,
+                    &id("kept-b"),
+                    &[Tag::from_str("superseded").unwrap()]
+                )
+                .unwrap()
+        );
+        assert!(store.remove(&p, &MemoryScope::User, &id("kept-c")).unwrap());
+        assert_eq!(given(&store), ["kept-a"]);
+        // Gone without the index being told: skipped.
+        let space = MemoryStore::space(&p, &MemoryScope::User);
+        assert!(store.backing.remove(&space, &id("kept-a")).unwrap());
+        assert!(given(&store).is_empty());
+        // Missing, it's built once from the items, then read.
+        store
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &id("kept-d"),
+                "kept-d",
+                std::slice::from_ref(&recall),
+                KeptRecord::agent_words(None, None, None, 1),
+            )
+            .unwrap();
+        store.backing.put_index(&space, b"not an index").unwrap();
+        let _ = reads(&counts);
+        assert_eq!(given(&store), ["kept-d"]);
+        let (rebuilt, _) = reads(&counts);
+        assert_eq!(rebuilt, 3, "kept-b and kept-d to build it, kept-d given");
+        assert_eq!(given(&store), ["kept-d"]);
+        assert_eq!(reads(&counts).0, 1, "built, it's read: only kept-d");
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -545,10 +545,10 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         // the failure is visible regardless of provider) and proceed
         // without memory. It never blocks the live user task.
         if let Some(provider) = &self.memory_provider {
-            match provider.recall() {
-                Ok(items) => {
-                    if !items.is_empty() {
-                        let block = hatchling_memory::render_recalled_block(&items);
+            match provider.recall_budgeted() {
+                Ok(recalled) => {
+                    if !recalled.items.is_empty() || !recalled.index.is_empty() {
+                        let block = hatchling_memory::render_recalled(&recalled);
                         history.push(Message::RecalledMemory(block));
                     }
                 }

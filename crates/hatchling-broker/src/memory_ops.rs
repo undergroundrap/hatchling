@@ -39,6 +39,14 @@ pub fn handle_memory_op(
     principal: &MemoryPrincipal,
     session_id: &SessionId,
 ) -> Result<MemoryResult, Error> {
+    if let MemoryOp::RecallBudgeted {
+        tag,
+        index_bytes,
+        full_bytes,
+    } = op
+    {
+        return recall_budgeted(config, principal, tag, *index_bytes, *full_bytes);
+    }
     let action = memory_action(op);
     let scope_str = op_scope_str(op);
     if !is_granted(config, scope_str, action) {
@@ -134,7 +142,86 @@ pub fn handle_memory_op(
         // A proposal is put to the owner, which takes the session's task:
         // the session itself does that ([`crate::memory_keep::propose`]).
         // Here, nothing is written.
-        MemoryOp::Propose { .. } => Ok(MemoryResult::Denied),
+        // A budgeted recall is answered before the grant check, across
+        // the scopes it may recall.
+        MemoryOp::Propose { .. } | MemoryOp::RecallBudgeted { .. } => Ok(MemoryResult::Denied),
+    }
+}
+
+/// The most a budgeted recall's index may take, in bytes.
+pub const MAX_INDEX_BYTES: u32 = 6 * 1024;
+
+/// The most a budgeted recall's whole items may take, in bytes.
+pub const MAX_FULL_BYTES: u32 = 12 * 1024;
+
+/// What a run is given of its recalled memory (v38): the index and the
+/// items given whole, in the user and project scopes it may recall, each
+/// bounded, and the whole reply within one frame.
+fn recall_budgeted(
+    config: &MemoryConfig,
+    principal: &MemoryPrincipal,
+    tag: &str,
+    index_bytes: u32,
+    full_bytes: u32,
+) -> Result<MemoryResult, Error> {
+    let mut scopes = Vec::new();
+    for name in ["user", "project"] {
+        if is_granted(config, name, MemoryAction::Recall) {
+            scopes.push(
+                bind_scope(name, principal).map_err(|reason| Error::SessionProtocol {
+                    reason: format!("invalid memory scope: {reason}"),
+                })?,
+            );
+        }
+    }
+    if scopes.is_empty() {
+        return Ok(MemoryResult::Denied);
+    }
+    let tag = parse_tag(tag)?;
+    let store = crate::memory_sealed::open_published(&config.root)
+        .map_err(|source| Error::Memory { source })?;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let recalled = store
+        .recall_budgeted(
+            principal,
+            &scopes,
+            &tag,
+            now_secs,
+            usize::try_from(index_bytes.min(MAX_INDEX_BYTES)).unwrap_or(0),
+            usize::try_from(full_bytes.min(MAX_FULL_BYTES)).unwrap_or(0),
+        )
+        .map_err(|source| Error::Memory { source })?;
+    let corrupt = || Error::Memory {
+        source: hatchling_memory::Error::Corrupt,
+    };
+    let index_json = recalled
+        .index
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| corrupt())?;
+    let mut items_json = recalled
+        .items
+        .into_iter()
+        .map(|item| serde_json::to_string(&item.shareable()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| corrupt())?;
+    let left_out = u32::try_from(recalled.left_out).unwrap_or(u32::MAX);
+    // Escaping can grow an item past what its words measure: the reply is
+    // fitted to one frame, the last items given whole dropped first.
+    loop {
+        let reply = MemoryResult::Recalled {
+            index_json: index_json.clone(),
+            items_json: items_json.clone(),
+            left_out,
+        };
+        let fits = serde_json::to_vec(&hatchling_core::SessionResponse::Memory(reply.clone()))
+            .is_ok_and(|frame| frame.len() <= hatchling_core::MAX_FRAME_BYTES);
+        if fits || items_json.pop().is_none() {
+            return Ok(reply);
+        }
     }
 }
 
@@ -209,7 +296,9 @@ fn parse_seq(raw: &str) -> Result<u64, Error> {
 const fn memory_action(op: &MemoryOp) -> MemoryAction {
     match op {
         MemoryOp::Write { .. } => MemoryAction::Write,
-        MemoryOp::Recall { .. } | MemoryOp::RecallByTag { .. } => MemoryAction::Recall,
+        MemoryOp::Recall { .. }
+        | MemoryOp::RecallByTag { .. }
+        | MemoryOp::RecallBudgeted { .. } => MemoryAction::Recall,
         MemoryOp::Remove { .. } => MemoryAction::Remove,
         MemoryOp::ContextAppend { .. } => MemoryAction::ContextAppend,
         MemoryOp::ContextRead { .. } => MemoryAction::ContextRead,
@@ -225,7 +314,7 @@ fn op_scope_str(op: &MemoryOp) -> &str {
         | MemoryOp::RecallByTag { scope, .. }
         | MemoryOp::Remove { scope, .. } => scope,
         MemoryOp::ContextAppend { .. } | MemoryOp::ContextRead { .. } => "session",
-        MemoryOp::Propose { .. } => "user",
+        MemoryOp::Propose { .. } | MemoryOp::RecallBudgeted { .. } => "user",
     }
 }
 
@@ -396,6 +485,7 @@ mod paging_tests {
                 | MemoryResult::Denied
                 | MemoryResult::MemoryError
                 | MemoryResult::Proposed
+                | MemoryResult::Recalled { .. }
                 | MemoryResult::Unasked { .. }) => {
                     unreachable!("page {pages}: not a page but {other:?}")
                 }
@@ -626,6 +716,7 @@ mod paging_tests {
                 | MemoryResult::Denied
                 | MemoryResult::MemoryError
                 | MemoryResult::Proposed
+                | MemoryResult::Recalled { .. }
                 | MemoryResult::Unasked { .. }) => unreachable!("{other:?}"),
             }
         };

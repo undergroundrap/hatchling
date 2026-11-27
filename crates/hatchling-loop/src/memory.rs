@@ -26,6 +26,21 @@ pub trait MemoryProvider: Send + Sync {
     /// log the failure to the context log before returning; the loop
     /// will proceed without memory.
     fn recall(&self) -> Result<Vec<MemoryItem>, RecallError>;
+
+    /// What a run is given (WO-048): an index of what's recalled and the
+    /// items given whole. By default the items [`recall`](Self::recall)
+    /// gives, with no index.
+    ///
+    /// # Errors
+    ///
+    /// As [`recall`](Self::recall).
+    fn recall_budgeted(&self) -> Result<hatchling_memory::Recalled, RecallError> {
+        self.recall().map(|items| hatchling_memory::Recalled {
+            index: Vec::new(),
+            items,
+            left_out: 0,
+        })
+    }
 }
 
 /// Why a memory recall failed.

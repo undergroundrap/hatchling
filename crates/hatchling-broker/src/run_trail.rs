@@ -481,7 +481,8 @@ const fn memory_ending(result: &MemoryResult) -> Ending {
         | MemoryResult::NotFound
         | MemoryResult::Removed { .. }
         | MemoryResult::ContextAppended
-        | MemoryResult::ContextEntries { .. } => Done,
+        | MemoryResult::ContextEntries { .. }
+        | MemoryResult::Recalled { .. } => Done,
     }
 }
 
