@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 16;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 39;
+export const SESSION_PROTOCOL_VERSION = 40;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2571,6 +2571,12 @@ export type MemoryResult = {
     readonly result: 'memory-error';
 } | {
     readonly result: 'proposed';
+} | {
+    /**
+     * The kept memory's id: what a later correction names.
+     */
+    readonly id: string;
+    readonly result: 'kept';
 } | {
     /**
      * Why.

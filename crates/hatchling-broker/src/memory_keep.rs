@@ -16,6 +16,14 @@
 //! Only [`keep`] writes one. Before records, the tag
 //! [`hatchling_memory::LEGACY_APPROVED_TAG`] said so, and a run can't write
 //! that tag (#736).
+//!
+//! **Kept automatically (WO-057).** When the owner chose automatic memory
+//! ([`crate::memory_mode`]), a proposal from a chat run whose conversation
+//! read nothing from outside ([`crate::conversation_taint`]) is kept at once,
+//! with no card, and the owner is told in the chat. The broker decides that
+//! from what it served, never a model. Its record says it was kept
+//! automatically, and at most [`MAX_AUTOMATIC_PER_DAY`] are in a day: past
+//! that, or in any other conversation, it's a card as before.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -36,6 +44,13 @@ pub const RECALL_TAG: &str = "recall";
 /// The most a proposal may say, in bytes: a fact or two, not a document.
 pub const MAX_PROPOSAL_BYTES: usize = 1000;
 
+/// The most memories kept automatically in a day (WO-057): past it, a
+/// looping or misled agent's proposals are cards again.
+pub const MAX_AUTOMATIC_PER_DAY: usize = 20;
+
+/// A day, in seconds: what [`MAX_AUTOMATIC_PER_DAY`] counts over.
+const DAY_SECS: u64 = 86_400;
+
 /// Where a proposal was made, as the broker knows it, never as the agent
 /// says: the run it started, and the chat that run answered.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,13 +63,31 @@ pub struct ProposedIn {
 
 /// Puts `content`, which task `task` asks to keep, to the owner, from a
 /// session configured by `config` that `from` says where: what the agent
-/// is told.
+/// is told. Never kept at once: [`propose_in`], not clean.
 #[must_use]
 pub fn propose(
     config: &Config,
     task: &str,
     asked: &crate::memory_proposal::Asked<'_>,
     from: ProposedIn,
+) -> MemoryResult {
+    propose_in(config, task, asked, from, false)
+}
+
+/// [`propose`], from a session whose conversation the broker says is
+/// `clean`.
+///
+/// It's kept at once instead when `clean`, which the broker alone says:
+/// the session is a chat run's, and its conversation read nothing from
+/// outside ([`crate::conversation_taint`]). Then the owner's mode must be
+/// Automatic, and fewer than [`MAX_AUTOMATIC_PER_DAY`] kept so in a day.
+#[must_use]
+pub fn propose_in(
+    config: &Config,
+    task: &str,
+    asked: &crate::memory_proposal::Asked<'_>,
+    from: ProposedIn,
+    clean: bool,
 ) -> MemoryResult {
     let granted = config
         .memory
@@ -104,6 +137,18 @@ pub fn propose(
             content: old.content,
         });
     }
+    // Words the owner said no to are never kept without them: the card
+    // path below tells the agent so.
+    if clean
+        && crate::memory_mode::mode(&config.scheduler) == crate::memory_mode::Mode::Automatic
+        && !board(config).refuses_memory(&proposal)
+        && open(config).is_ok_and(|(principal, store)| {
+            kept_automatically_since(&store, &principal, now.saturating_sub(DAY_SECS), now)
+                < MAX_AUTOMATIC_PER_DAY
+        })
+    {
+        return keep_at_once(config, &proposal, &from, now);
+    }
     let now = i64::try_from(now).unwrap_or(i64::MAX);
     match board(config).propose_memory(&proposal, task, from, now) {
         Ok(_) => MemoryResult::Proposed,
@@ -145,6 +190,102 @@ pub fn keep(
     from: &ProposedIn,
     now: i64,
 ) -> Result<Keeping, hatchling_memory::Error> {
+    let record = KeptRecord::agent_words(
+        approval.map(str::to_owned),
+        from.run.clone(),
+        from.chat.clone(),
+        u64::try_from(now).unwrap_or(0),
+    );
+    keep_as(config, proposal, record, now)
+}
+
+/// Keeps `proposal` at once, by the broker's rule (WO-057), at `now` (Unix
+/// seconds): the owner is told in the chat, and the agent that it's kept.
+fn keep_at_once(
+    config: &Config,
+    proposal: &crate::memory_proposal::Checked,
+    from: &ProposedIn,
+    now: u64,
+) -> MemoryResult {
+    let record = KeptRecord::automatic(from.run.clone(), from.chat.clone(), now);
+    let now = i64::try_from(now).unwrap_or(i64::MAX);
+    match keep_as(config, proposal, record, now) {
+        Ok(keeping) => {
+            let said = said(&proposal.content, &keeping);
+            board(config).tell_owner(&format!(
+                "{said} Kept automatically: nothing in this conversation came from outside. If it's wrong, forget it on the Memory page."
+            ));
+            match keeping {
+                Keeping::Kept { id } | Keeping::Replaced { id, .. } => {
+                    MemoryResult::Kept { id: id.to_string() }
+                }
+                Keeping::Already => MemoryResult::Unasked {
+                    reason: String::from("it's already kept: the agent is given it in every run"),
+                },
+            }
+        }
+        Err(error) => {
+            tracing::error!(%error, "a memory to keep automatically wasn't kept");
+            MemoryResult::MemoryError
+        }
+    }
+}
+
+/// What the owner is told of `content`, kept as `keeping` says.
+#[must_use]
+pub fn said(content: &str, keeping: &Keeping) -> String {
+    match keeping {
+        Keeping::Kept { .. } => {
+            format!("Remembered: “{content}” The agent is given it from now on.")
+        }
+        Keeping::Already => format!("Already remembered: “{content}” It's kept once."),
+        Keeping::Replaced { retired: true, .. } => format!(
+            "Remembered: “{content}” It replaces what it corrects, which the agent isn't given any more."
+        ),
+        Keeping::Replaced { retired: false, .. } => format!(
+            "Remembered: “{content}” What it would replace had changed or been forgotten meanwhile, so nothing else changed."
+        ),
+    }
+}
+
+/// How many memories the broker kept automatically from `since` to `now`
+/// (Unix seconds), recalled or replaced since: one forgotten is gone.
+fn kept_automatically_since(
+    store: &MemoryStore,
+    principal: &MemoryPrincipal,
+    since: u64,
+    now: u64,
+) -> usize {
+    [RECALL_TAG, SUPERSEDED_TAG]
+        .into_iter()
+        .filter_map(|tag| tag.parse::<Tag>().ok())
+        .map(|tag| {
+            store
+                .recall_by_tag(principal, &MemoryScope::User, &tag, now)
+                .map_or(MAX_AUTOMATIC_PER_DAY, |items| {
+                    items
+                        .iter()
+                        .filter(|item| {
+                            item.kept_automatically()
+                                && item
+                                    .record
+                                    .as_ref()
+                                    .is_some_and(|record| record.kept_at_secs > since)
+                        })
+                        .count()
+                })
+        })
+        .sum()
+}
+
+/// Keeps `proposal` with `record`, filled in from it, at `now` (Unix
+/// seconds).
+fn keep_as(
+    config: &Config,
+    proposal: &crate::memory_proposal::Checked,
+    record: KeptRecord,
+    now: i64,
+) -> Result<Keeping, hatchling_memory::Error> {
     let content = proposal.content.as_str();
     let (principal, store) = open(config)?;
     // Approved while the same words were kept some other way: one copy.
@@ -154,7 +295,7 @@ pub fn keep(
     let id = crate::approval::random_hex("kept-")
         .map_err(|source| hatchling_memory::Error::Io { source })?;
     let id: MemoryId = id.parse()?;
-    // Approved by the owner is what its record says, written here alone.
+    // Who kept it is what its record says, written here alone.
     let record = KeptRecord {
         kind: Some(proposal.kind),
         why: proposal.why.clone(),
@@ -166,12 +307,7 @@ pub fn keep(
             .as_ref()
             .map(|replaced| replaced.id.parse())
             .transpose()?,
-        ..KeptRecord::agent_words(
-            approval.map(str::to_owned),
-            from.run.clone(),
-            from.chat.clone(),
-            u64::try_from(now).unwrap_or(0),
-        )
+        ..record
     };
     store.keep(
         &principal,
@@ -182,9 +318,10 @@ pub fn keep(
         record,
     )?;
     let Some(replaced) = &proposal.supersedes else {
-        return Ok(Keeping::Kept);
+        return Ok(Keeping::Kept { id });
     };
     Ok(Keeping::Replaced {
+        id,
         retired: retire(
             &store,
             &principal,
@@ -210,7 +347,7 @@ fn recalled_kept(
         .recall_by_tag(principal, &MemoryScope::User, &recall, now_secs)
         .ok()?
         .into_iter()
-        .find(|item| item.id.as_str() == raw && item.approved_by_owner())
+        .find(|item| item.id.as_str() == raw && item.kept())
 }
 
 /// Stops `replaced` being recalled, when it's still recalled in the words
@@ -247,16 +384,21 @@ fn retire(
 }
 
 /// What [`keep`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Keeping {
-    /// It's kept now.
-    Kept,
+    /// It's kept now, as `id`.
+    Kept {
+        /// The memory kept.
+        id: MemoryId,
+    },
     /// The owner had approved the same words already: nothing new is kept.
     Already,
     /// It's kept now, in place of the memory it replaces: `retired` when
     /// that one isn't recalled any more, and not when it had changed or
     /// gone meanwhile.
     Replaced {
+        /// The memory kept.
+        id: MemoryId,
         /// Whether the one it replaces stopped being recalled.
         retired: bool,
     },
@@ -267,8 +409,9 @@ fn same_words(a: &str, b: &str) -> bool {
     a.split_whitespace().eq(b.split_whitespace())
 }
 
-/// Whether the owner already approved keeping `content`, in the same words.
-/// What a run wrote itself doesn't count: the owner never approved it.
+/// Whether the broker already kept `content`, in the same words, with the
+/// owner's approval or automatically. What a run wrote itself doesn't
+/// count: the broker never kept it.
 fn already_kept(
     store: &MemoryStore,
     principal: &MemoryPrincipal,
@@ -283,7 +426,7 @@ fn already_kept(
         .is_ok_and(|items| {
             items
                 .iter()
-                .any(|item| item.approved_by_owner() && same_words(&item.content, content))
+                .any(|item| item.kept() && same_words(&item.content, content))
         })
 }
 
@@ -1429,7 +1572,7 @@ Remembered: “The owner uses metric.” The agent is given it from now on."
     #[test]
     fn what_is_already_kept_is_neither_asked_again_nor_kept_twice() {
         let (config, dir) = config("duplicates", &[MemoryAction::Propose]);
-        assert_eq!(
+        assert!(matches!(
             keep(
                 &config,
                 &crate::memory_proposal::Checked::owner("Their cat is Biscuit."),
@@ -1438,8 +1581,8 @@ Remembered: “The owner uses metric.” The agent is given it from now on."
                 10
             )
             .unwrap(),
-            Keeping::Kept
-        );
+            Keeping::Kept { .. }
+        ));
         assert_eq!(
             propose(
                 &config,
@@ -1841,3 +1984,7 @@ Remembered: “The owner uses metric.” The agent is given it from now on."
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "memory_keep_automatic_tests.rs"]
+mod automatic_tests;

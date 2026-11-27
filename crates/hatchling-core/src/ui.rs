@@ -4795,7 +4795,7 @@ mod tests {
             );
         }
         assert!(serde_json::from_str::<SuggestionState>("\"retired\"").is_err());
-        assert_eq!(PROTOCOL_VERSION, 39);
+        assert_eq!(PROTOCOL_VERSION, 40);
     }
 
     /// v30: a chat answer says when its run ran out of steps, and is
@@ -4849,6 +4849,6 @@ mod tests {
             )
         );
         assert_eq!(serde_json::from_str::<Suggestion>(&json).unwrap(), said);
-        assert_eq!(PROTOCOL_VERSION, 39);
+        assert_eq!(PROTOCOL_VERSION, 40);
     }
 }

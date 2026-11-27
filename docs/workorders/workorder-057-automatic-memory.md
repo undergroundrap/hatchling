@@ -1,6 +1,6 @@
 # WO-057: Automatic memory, every memory traceable
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (memory keep, the run's taint, the review queue), `crates/hatchling-core` (UI and session protocol), `crates/hatchling-agent` (memory_propose), `frontend/` (the Memory page, chat notices, the setting)
 **Issue:** [#767](https://github.com/undergroundrap/hatchling/issues/767)
 **Trust boundary:** yes (what's kept in the owner's memory without their click)
@@ -24,7 +24,8 @@ A model asked "is this safe to keep?" can be talked out of it by the injected te
 2. **It's a chat run:** the owner was there, and the memory comes from what they said. A scheduled or background run's proposals go to the review queue, never kept automatically.
 3. **The conversation is clean:** no run in this conversation, from its start to now, read anything from outside.
    - **Clean:** recalling memory, asking to remember, reading goals, listing schedules.
-   - **Taints the conversation:** a web search or page, the browser, reading messages, a network request, the agent's computer (its files and commands), a skill, a subagent, a shared space or a file sent in.
+   - **Taints the conversation:** a web search or page, the browser, reading messages, a network request, the agent's computer (its files and commands), a skill, a subagent, a shared space, an artifact or a file sent in.
+   - **Recalling memory or reading goals taints it too, where runs may write them.** The install grants runs neither, so they stay clean there. With a write grant, a background run that read a page could have left its words where a clean chat reads them.
 
    Once tainted, the conversation stays tainted until a new one starts.
 4. **Under the day's cap:** at most 20 memories kept automatically a day. Past it, proposals go to the card as today.
@@ -33,7 +34,7 @@ A model asked "is this safe to keep?" can be talked out of it by the injected te
 - the card, for a chat run in Ask me mode or past the cap;
 - the review queue (WO-054), for a tainted conversation or a background run. That's non-blocking: the agent isn't waiting for it, and the owner decides on the Memory page when they look.
 
-**Unchanged:** corrections replace what they correct, retiring it but keeping it (WO-048). A memory denied or skipped isn't kept, automatically or otherwise. Each proposal is checked as today (its kind, its reasons, dates, its size).
+**Unchanged:** corrections replace what they correct, retiring it but keeping it (WO-048). A memory denied or skipped isn't kept, automatically or otherwise: the broker checks the owner's denials before it keeps without a card. Each proposal is checked as today (its kind, its reasons, dates, its size).
 
 ## Threats, and what stops each
 
@@ -42,7 +43,8 @@ A model asked "is this safe to keep?" can be talked out of it by the injected te
 | **Poisoning by injected text:** a page, file or email gets kept as the owner's word. | Kept automatically only from a conversation that read nothing from outside, as the broker's trail records it. One that did goes to the review queue, for the owner's eyes. |
 | **Laundering through the conversation:** the agent read a page earlier, wrote its words into an answer, and proposes them in a later turn that used no tools. | The taint is the **conversation's**, from its start, not the turn's. |
 | **Unattended writes:** a background run keeps things nobody saw. | Background and scheduled runs never keep automatically: their proposals go to the review queue. |
-| **Runaway writes:** a looping or compromised agent fills the memory. | A daily cap of 20. Past it, every proposal is a card again. |
+| **Runaway writes:** a looping or compromised agent fills the memory. | A daily cap of 20, counting those since replaced, so correcting in a loop can't pass it. Past it, every proposal is a card again. |
+| **Laundering through what runs wrote:** a background run read a page and left its words in memory or a goal's tracking, and a clean chat reads them. | Where runs may write memory or goals, reading them taints the conversation too. |
 | **The owner doesn't know what was kept.** | Each automatic memory is said in the chat ("Remembered: …"), its record says **kept automatically**, which chat and run, and when, and the Memory page lists and filters them, each forgettable in one click. |
 | **A model hallucinates a fact about the owner** in a clean conversation. | It's kept, visible in the chat at once, and one click from forgotten. This is the same trade Claude Code makes. The record makes it findable. |
 
@@ -51,7 +53,7 @@ A model asked "is this safe to keep?" can be talked out of it by the injected te
 **In scope:**
 - **The broker:**
   - the conversation's taint, from the trail of each of its runs;
-  - the mode (Automatic or Ask me, the owner's, kept beside the memory store);
+  - the mode (Automatic or Ask me, the owner's, kept in the owner directory beside the model's choice);
   - keeping a proposal at once when the rule holds, otherwise the card or the review queue;
   - the daily count.
 - **The record:** `KeptRecord` says who kept it, the owner's approval or automatic, with the chat and run as today.
@@ -113,11 +115,19 @@ All must pass before the WO closes:
 
 ## Evidence
 
-Filled in as each slice lands.
+- Slice 1, the conversation's taint, the mode and keeping at once: [wo057-taint.md](../evidence/wo057-taint.md).
 
 ## Notes
 
 ### Where the taint lives (found 2026-11-27)
+
+As built in slice 1:
+
+- **A broker-wide table of the chat's runs** (`conversation_taint`), as the chat's follow-ups are: the chat registers each run it starts with its conversation's taint, and the run's session marks it the moment it asks for an outside tool, before it's served. A run not in the table is never clean.
+- **The chat holds the conversation's flag** and takes each run's mark into it when the run ends, answered or not. The conversation store's index keeps it across a restart.
+- **The mode file** is `memory-mode.json` in the owner directory. Absent is Automatic; one that doesn't read is Ask me.
+
+Found while designing:
 
 - **The main chat's conversation.** The broker serves one chat, `local`. Side chats are the app's alone until #735 and 0.13. So "the conversation" is the conversation store's, and a new conversation (`start_new`) clears its taint with everything else.
 - **A sealed flag in the store's index** (`#[serde(default)]`, so older stores read as clean). The Library already keeps a sealed per-conversation number that a new conversation clears, and that's the pattern.
@@ -128,6 +138,8 @@ Filled in as each slice lands.
 - **Files sent in taint at hand-over.** The trail can't tell an inbox read from other use of the agent's computer, so the chat marks the conversation when it gives a run the inbox's notes.
 
 
-1. **The conversation's taint and the mode,** in the broker, with automatic keeping and the record's `kept_by`.
-2. **The routes:** the review queue for tainted conversations and background runs, and the daily cap.
-3. **The agent and the app:** `Kept`, the chat notice, the Memory page, the setting.
+### Slices
+
+1. **The conversation's taint and the mode,** in the broker, with automatic keeping, the record's `kept_by`, the daily cap, and `Kept` to the agent (session v40), so it never says it asked when it didn't. Until slice 2, everything else is a card, as before.
+2. **The routes:** the review queue for tainted conversations and background runs.
+3. **The app:** the chat notice's Forget link, the Memory page's label and filter, and the setting (UI v17).

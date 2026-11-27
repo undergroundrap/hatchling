@@ -1050,6 +1050,11 @@ fn serve_session(
             if used.is_some() {
                 trail.starting(used);
             }
+            // A use that reads from outside taints the run's conversation
+            // before it's served, however it ends (WO-057).
+            if used.is_some_and(|tool| crate::conversation_taint::outside(tool, config)) {
+                crate::conversation_taint::read(cell_id.as_str());
+            }
             let response = match request {
                 SessionRequest::Vault(op) => SessionResponse::Vault(handle_vault_op(
                     &config.vault,
@@ -1093,11 +1098,17 @@ fn serve_session(
                         absence,
                         supersedes: supersedes.as_deref(),
                     };
-                    SessionResponse::Memory(crate::memory_keep::propose(
+                    // Kept at once only from the chat's own run, in a
+                    // conversation the broker saw read nothing from outside.
+                    let clean = chat_run
+                        && run_cell.is_some()
+                        && crate::conversation_taint::clean(cell_id.as_str());
+                    SessionResponse::Memory(crate::memory_keep::propose_in(
                         config,
                         web.task(),
                         &asked,
                         from,
+                        clean,
                     ))
                 }
                 // A run's recall is ranked by what it's for, as the broker
@@ -3827,6 +3838,125 @@ mod recall_ask_tests {
 
     use super::*;
     use crate::config::{MemoryAction, MemoryGrant};
+
+    /// Serves `requests` in turn in a chat run's session in `cell`, the
+    /// broker's own, with automatic memory kept where `dir` says: what each
+    /// was answered.
+    fn served_in_chat(
+        dir: &std::path::Path,
+        cell: &str,
+        requests: &[SessionRequest],
+    ) -> Vec<SessionResponse> {
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = dir.join("vault");
+        config.memory.root = dir.join("memory");
+        config.scheduler.root = dir.join("schedules");
+        config.memory.grants = vec![MemoryGrant {
+            scope: String::from("user"),
+            action: MemoryAction::Propose,
+        }];
+        config.web.attended = true;
+        config.scheduler.followup = Some(crate::FollowupScope {
+            root: dir.join("schedules"),
+            run: String::from(cell),
+            grants: Vec::new(),
+            channel: String::from("local"),
+            depth: 0,
+            ask: String::new(),
+        });
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::default();
+        let (agent, broker) = UnixStream::pair().unwrap();
+        agent
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let creds = peer_credentials(&broker).unwrap();
+        let cell_id: CellId = cell.parse().unwrap();
+        std::thread::scope(|scope| {
+            let served = scope.spawn(|| {
+                serve_session(
+                    &broker,
+                    &config,
+                    &key,
+                    &skills,
+                    &cell_id,
+                    true,
+                    creds,
+                    None,
+                    None,
+                    &HeldHit::default(),
+                    None,
+                    SkillReach::WithHarnesses,
+                )
+            });
+            let answers = requests
+                .iter()
+                .map(|request| {
+                    write_frame(&agent, &serde_json::to_vec(request).unwrap()).unwrap();
+                    serde_json::from_slice(&read_frame(&agent).unwrap()).unwrap()
+                })
+                .collect();
+            drop(agent);
+            served.join().unwrap().unwrap();
+            answers
+        })
+    }
+
+    fn proposing(content: &str) -> SessionRequest {
+        SessionRequest::Memory(MemoryOp::Propose {
+            content: content.to_owned(),
+            memory_kind: Some(String::from("owner")),
+            why: None,
+            how_to_apply: None,
+            check_by: None,
+            absence: false,
+            supersedes: None,
+        })
+    }
+
+    /// WO-057, end to end: the chat's run in a clean conversation is told
+    /// its memory is kept. One that searched the web first, refused or
+    /// not, is a card; so is a run the chat didn't start.
+    #[test]
+    fn a_clean_chat_run_keeps_at_once_and_one_that_read_from_outside_asks() {
+        let dir = crate::api_auth::tests::scratch("serve-automatic");
+        let clean = "run-0000000000000000000000000000a057";
+        crate::conversation_taint::began(clean, false);
+        let answers = served_in_chat(&dir.0, clean, &[proposing("Pepper is a cat.")]);
+        assert!(
+            matches!(
+                answers.as_slice(),
+                [SessionResponse::Memory(MemoryResult::Kept { id })] if id.starts_with("kept-")
+            ),
+            "{answers:?}"
+        );
+        let read = "run-0000000000000000000000000000b057";
+        crate::conversation_taint::began(read, false);
+        let answers = served_in_chat(
+            &dir.0,
+            read,
+            &[
+                SessionRequest::Web(hatchling_core::WebOp::Search {
+                    query: String::from("pepper"),
+                }),
+                proposing("They live in Bath."),
+            ],
+        );
+        assert_eq!(
+            answers.get(1),
+            Some(&SessionResponse::Memory(MemoryResult::Proposed)),
+            "{answers:?}"
+        );
+        assert!(crate::conversation_taint::ended(read), "the chat is told");
+        let unknown = "run-0000000000000000000000000000c057";
+        let answers = served_in_chat(&dir.0, unknown, &[proposing("They like tea.")]);
+        assert_eq!(
+            answers,
+            [SessionResponse::Memory(MemoryResult::Proposed)],
+            "a run the chat didn't start"
+        );
+        let _ = std::fs::remove_dir_all(&dir.0);
+    }
 
     /// A run's own recall, served as the broker serves one, is ranked by
     /// what the run is for as the broker received it (WO-048): the run

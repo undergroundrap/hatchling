@@ -46,6 +46,9 @@ pub struct RecallEntry {
     /// Whether the owner approved it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub approved: bool,
+    /// Whether the broker kept it automatically, unapproved (WO-057).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic: bool,
     /// When it was kept: its record's time, or when it was written.
     pub kept_at_secs: u64,
     /// When it last changed.
@@ -75,6 +78,7 @@ impl RecallEntry {
             kind: record.and_then(|record| record.kind),
             absence: record.is_some_and(|record| record.absence),
             approved: item.approved_by_owner(),
+            automatic: item.kept_automatically(),
             kept_at_secs: record.map_or(item.created_at_secs, |record| record.kept_at_secs),
             updated_at_secs: item.updated_at_secs,
             expires_at_secs: crate::item::expires_at(item),

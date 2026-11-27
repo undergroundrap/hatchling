@@ -70,7 +70,7 @@ const fn kind_words(kind: crate::MemoryKind) -> &'static str {
 fn provenance(item: &MemoryItem) -> String {
     match &item.record {
         Some(record) => format!(
-            "{}{}kept {}, approved by the owner, last confirmed {}",
+            "{}{}kept {}{}, last confirmed {}",
             if record.absence {
                 "KNOWN NOT TO BE SO; "
             } else {
@@ -80,6 +80,12 @@ fn provenance(item: &MemoryItem) -> String {
                 .kind
                 .map_or_else(String::new, |kind| format!("{}; ", kind_words(kind))),
             crate::utc_day(record.kept_at_secs),
+            match record.kept_by {
+                crate::KeptBy::Owner => ", approved by the owner",
+                crate::KeptBy::Automatic => {
+                    " automatically from what the owner said, not approved by them"
+                }
+            },
             crate::utc_day(record.confirmed_at_secs)
         ),
         None if item.approved_by_owner() => format!(
@@ -135,6 +141,8 @@ pub(crate) fn index_line(entry: &crate::RecallEntry) -> String {
         crate::utc_day(entry.kept_at_secs),
         if entry.approved {
             ""
+        } else if entry.automatic {
+            " automatically"
         } else {
             ", not approved by the owner"
         },
@@ -266,6 +274,39 @@ mod tests {
         assert!(block.contains("item 1 (4 bytes; kept 2026-11-26, approved by the owner, last confirmed 2026-12-03; id test-item):\nkept\n"), "{block}");
         assert!(block.contains("item 2 (6 bytes; kept 1970-01-01, approved by the owner; where it came from isn't recorded; id test-item):\nlegacy\n"), "{block}");
         assert!(block.contains("item 3 (7 bytes; written 1970-01-01 by a run, not approved by the owner; id test-item):\nwritten\n"), "{block}");
+    }
+
+    /// One the broker kept automatically (WO-057) says so, in the item and
+    /// in the index: never that the owner approved it.
+    #[test]
+    fn a_memory_kept_automatically_is_recalled_as_not_approved() {
+        let mut automatic = item("auto");
+        automatic.record = Some(crate::KeptRecord::automatic(None, None, 1_795_651_200));
+        let block = render_recalled_block(std::slice::from_ref(&automatic));
+        assert!(block.contains("item 1 (4 bytes; kept 2026-11-26 automatically from what the owner said, not approved by them, last confirmed 2026-11-26; id test-item):
+auto
+"), "{block}");
+        assert!(!block.contains("approved by the owner"), "{block}");
+        let entry = crate::RecallEntry::of(&automatic);
+        assert!(entry.automatic && !entry.approved);
+        assert_eq!(
+            index_line(&entry),
+            "- id test-item; kept 2026-11-26 automatically: auto"
+        );
+        let mut approved = item("owner");
+        approved.record = Some(crate::KeptRecord::agent_words(
+            None,
+            None,
+            None,
+            1_795_651_200,
+        ));
+        let entry = crate::RecallEntry::of(&approved);
+        assert!(entry.approved && !entry.automatic);
+        assert_eq!(index_line(&entry), "- id test-item; kept 2026-11-26: owner");
+        assert_eq!(
+            index_line(&crate::RecallEntry::of(&item("run"))),
+            "- id test-item; kept 1970-01-01, not approved by the owner: run"
+        );
     }
 
     /// A kept absence is recalled marked as one: a settled negative, which

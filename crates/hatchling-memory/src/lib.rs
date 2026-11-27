@@ -74,7 +74,7 @@ pub use item::{
 pub use paging::{PAGE_BUDGET_BYTES, Page, page};
 pub use prompt::{render_recalled, render_recalled_block};
 pub use recall_index::{RecallAsk, RecallEntry, Recalled};
-pub use record::{KeptRecord, MemoryKind, Words, utc_day};
+pub use record::{KeptBy, KeptRecord, MemoryKind, Words, utc_day};
 pub use session::{
     ConfirmationRecord, SessionRecord, SessionStatus, SessionStore, TaskRecord, ToolCallOutcome,
     ToolCallRecord,

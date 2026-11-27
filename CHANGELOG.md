@@ -8,6 +8,15 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Memory kept without a card, from what you said** ([WO-057](docs/workorders/workorder-057-automatic-memory.md), slice 1).
+  - When the agent asks to remember something you told it in the chat, Hatchling keeps it at once and says so in the chat: "Remembered: …". There's no card to stop for.
+  - Only from a conversation that read nothing from outside. Hatchling decides that from what it served, never a model: once any run in the conversation searched the web, read a page or messages, used the browser, the agent's computer, a skill, a subagent, a shared space or an artifact, or you sent a file, every memory asked for in it is a card, as before, until you start a new conversation. A conversation stays so across a restart.
+  - Scheduled and background runs never keep without you, and words you said no to or skipped are never kept this way.
+  - At most 20 a day. Past that, they're cards again.
+  - Each one's record says it was kept automatically, from which run and chat, and when. Later runs are told it was kept automatically, not approved by you.
+  - The agent says it'll remember, not that it asked.
+  - Memory is automatic unless you choose Ask me. The setting, a Forget link on the notice and the Memory page's label come next.
+
 - **The agent says who made Hatchling** ([#764](https://github.com/undergroundrap/hatchling/issues/764)). Asked who it is or who made it, the agent used to say only that it's Hatchling, and a model could fill the rest from its training, naming its own lab. Now it says Hatchling was created by Ocean Bennett, an independent developer, not an AI lab, and that the model it runs on right now is someone else's, named from Hatchling's settings. It names the model's maker only if it can tell.
 
 - **A context ring, the model in use, and what fills the window** ([WO-056](docs/workorders/workorder-056-context-panel-and-model-in-use.md), slice 3).
