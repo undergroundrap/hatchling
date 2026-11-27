@@ -144,4 +144,3 @@ test('a listed memory\'s details are kept beside it, and confirming reads the li
     const odd = surface([memory({ result: 'confirmed' })]);
     assert.match((await odd.live.forget('user/a')).message, /something else/);
 });
-
