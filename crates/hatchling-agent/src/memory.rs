@@ -75,6 +75,7 @@ pub fn store(
         // named so a future `MemoryResult` variant breaks compilation
         // instead of being silently accepted.
         other @ (MemoryResult::Item { .. }
+        | MemoryResult::Recalled { .. }
         | MemoryResult::Items { .. }
         | MemoryResult::NotFound
         | MemoryResult::Removed { .. }
@@ -108,6 +109,7 @@ pub fn recall(stream: &UnixStream, scope: MemoryScope, id: &str) -> Result<Optio
         MemoryResult::Denied => Err(denied(&op)),
         MemoryResult::MemoryError => Err(Error::MemoryFailed),
         other @ (MemoryResult::Stored
+        | MemoryResult::Recalled { .. }
         | MemoryResult::Items { .. }
         | MemoryResult::Removed { .. }
         | MemoryResult::ContextAppended
@@ -163,6 +165,7 @@ pub fn recall_by_tag(
             MemoryResult::Denied => return Err(denied(&op)),
             MemoryResult::MemoryError => return Err(Error::MemoryFailed),
             other @ (MemoryResult::Stored
+            | MemoryResult::Recalled { .. }
             | MemoryResult::Item { .. }
             | MemoryResult::NotFound
             | MemoryResult::Removed { .. }
@@ -193,6 +196,7 @@ pub fn remove(stream: &UnixStream, scope: MemoryScope, id: &str) -> Result<bool,
         MemoryResult::Denied => Err(denied(&op)),
         MemoryResult::MemoryError => Err(Error::MemoryFailed),
         other @ (MemoryResult::Stored
+        | MemoryResult::Recalled { .. }
         | MemoryResult::Item { .. }
         | MemoryResult::Items { .. }
         | MemoryResult::NotFound
@@ -219,6 +223,7 @@ pub fn context_append(stream: &UnixStream, text: &str) -> Result<(), Error> {
         MemoryResult::Denied => Err(denied(&op)),
         MemoryResult::MemoryError => Err(Error::MemoryFailed),
         other @ (MemoryResult::Stored
+        | MemoryResult::Recalled { .. }
         | MemoryResult::Item { .. }
         | MemoryResult::Items { .. }
         | MemoryResult::NotFound
@@ -236,6 +241,56 @@ pub enum Proposal {
     Asked,
     /// Not put to them, and why.
     Unasked(String),
+}
+
+/// What a run is given of the items tagged `tag` (v38): the index within
+/// `index_bytes` and the items given whole within `full_bytes`.
+///
+/// # Errors
+///
+/// [`Error`] when it's denied, fails, or the broker answers anything else.
+pub fn recall_budgeted(
+    stream: &UnixStream,
+    tag: &str,
+    index_bytes: u32,
+    full_bytes: u32,
+) -> Result<hatchling_memory::Recalled, Error> {
+    let op = MemoryOp::RecallBudgeted {
+        tag: tag.to_owned(),
+        index_bytes,
+        full_bytes,
+    };
+    match request(stream, &op)? {
+        MemoryResult::Recalled {
+            index_json,
+            items_json,
+            left_out,
+        } => {
+            let malformed = |_| Error::MemoryFailed;
+            Ok(hatchling_memory::Recalled {
+                index: index_json
+                    .iter()
+                    .map(|json| serde_json::from_str(json).map_err(malformed))
+                    .collect::<Result<_, _>>()?,
+                items: items_json
+                    .iter()
+                    .map(|json| serde_json::from_str(json).map_err(malformed))
+                    .collect::<Result<_, _>>()?,
+                left_out: usize::try_from(left_out).unwrap_or(usize::MAX),
+            })
+        }
+        MemoryResult::Denied => Err(denied(&op)),
+        MemoryResult::MemoryError => Err(Error::MemoryFailed),
+        other @ (MemoryResult::Stored
+        | MemoryResult::Item { .. }
+        | MemoryResult::Items { .. }
+        | MemoryResult::NotFound
+        | MemoryResult::Removed { .. }
+        | MemoryResult::ContextAppended
+        | MemoryResult::ContextEntries { .. }
+        | MemoryResult::Proposed
+        | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
+    }
 }
 
 /// What the agent asks the owner to keep (v35).
@@ -288,7 +343,8 @@ pub fn propose(stream: &UnixStream, asked: &Proposing<'_>) -> Result<Proposal, E
         | MemoryResult::NotFound
         | MemoryResult::Removed { .. }
         | MemoryResult::ContextAppended
-        | MemoryResult::ContextEntries { .. }) => Err(unexpected_reply(&op, &other)),
+        | MemoryResult::ContextEntries { .. }
+        | MemoryResult::Recalled { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
 
@@ -328,6 +384,7 @@ pub fn context_read(stream: &UnixStream) -> Result<Vec<String>, Error> {
             MemoryResult::Denied => return Err(denied(&op)),
             MemoryResult::MemoryError => return Err(Error::MemoryFailed),
             other @ (MemoryResult::Stored
+            | MemoryResult::Recalled { .. }
             | MemoryResult::Item { .. }
             | MemoryResult::Items { .. }
             | MemoryResult::NotFound
@@ -375,6 +432,7 @@ const fn action_name(op: &MemoryOp) -> &'static str {
         MemoryOp::ContextAppend { .. } => "context-append",
         MemoryOp::ContextRead { .. } => "context-read",
         MemoryOp::Propose { .. } => "propose",
+        MemoryOp::RecallBudgeted { .. } => "recall-budgeted",
     }
 }
 
@@ -386,7 +444,7 @@ fn scope_name(op: &MemoryOp) -> &str {
         | MemoryOp::RecallByTag { scope, .. }
         | MemoryOp::Remove { scope, .. } => scope,
         MemoryOp::ContextAppend { .. } | MemoryOp::ContextRead { .. } => "session",
-        MemoryOp::Propose { .. } => "user",
+        MemoryOp::Propose { .. } | MemoryOp::RecallBudgeted { .. } => "user",
     }
 }
 

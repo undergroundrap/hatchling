@@ -281,6 +281,17 @@ fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
         )
         .unwrap();
     let block = recalled_block(&result.history).expect("the memory is recalled");
+    // The budgeted recall (v38): the index, then the item whole.
+    assert!(
+        block.contains("The index of what's kept, 1 listed, by id;"),
+        "{block}"
+    );
+    assert!(
+        block.contains(
+            "- id kept-plan; where something lives; kept 1970-01-01: The plan is in docs/plan.md.\n"
+        ),
+        "{block}"
+    );
     assert!(
         block.contains("; id kept-plan):\nThe plan is in docs/plan.md.\n"),
         "{block}"

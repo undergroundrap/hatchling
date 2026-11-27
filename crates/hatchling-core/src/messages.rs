@@ -209,6 +209,19 @@ pub enum MemoryOp {
         /// `next`. Absent for the first page.
         after: Option<String>,
     },
+    /// What a run is given of the items carrying `tag` (v38, WO-048), in
+    /// each of the user and project scopes it may recall: an index, one
+    /// entry each, within `index_bytes`, and the items given whole within
+    /// `full_bytes`. The broker reads only what it gives. It bounds both.
+    #[serde(rename = "recall-budgeted")]
+    RecallBudgeted {
+        /// The tag to match.
+        tag: String,
+        /// The most the index's lines may take, in bytes.
+        index_bytes: u32,
+        /// The most the items given whole may take, in bytes.
+        full_bytes: u32,
+    },
     /// Removes the item stored under (`scope`, `id`). Idempotent:
     /// removing a missing item reports
     /// [`Removed`](MemoryResult::Removed) with `removed: false`.
@@ -302,6 +315,16 @@ pub enum MemoryResult {
         /// The cursor to pass as `after` for the next page, or `None`
         /// when this page ends the result.
         next: Option<String>,
+    },
+    /// What a budgeted recall gives (v38).
+    #[serde(rename = "recalled")]
+    Recalled {
+        /// The index's entries, each JSON-encoded, in the order given.
+        index_json: Vec<String>,
+        /// The items given whole, each JSON-encoded, in the order given.
+        items_json: Vec<String>,
+        /// How many recalled items the index had no room for.
+        left_out: u32,
     },
     /// No item is stored under the id.
     #[serde(rename = "not-found")]
@@ -5712,7 +5735,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 37);
+        assert_eq!(crate::PROTOCOL_VERSION, 38);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5817,7 +5840,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 37);
+        assert_eq!(crate::PROTOCOL_VERSION, 38);
     }
 
     /// A hand-over and its results go on the wire as written, and a field
@@ -5896,7 +5919,7 @@ mod room_tests {
         assert!(
             serde_json::from_str::<LeftOut>(r#"{"links":0,"mounts":0,"others":0,"x":1}"#).is_err()
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 37);
+        assert_eq!(crate::PROTOCOL_VERSION, 38);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5955,6 +5978,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 37);
+        assert_eq!(crate::PROTOCOL_VERSION, 38);
     }
 }

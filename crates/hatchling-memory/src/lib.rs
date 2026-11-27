@@ -57,6 +57,7 @@ pub mod item;
 pub mod owner_dir;
 pub mod paging;
 pub mod prompt;
+pub mod recall_index;
 pub mod record;
 pub mod session;
 pub mod store;
@@ -71,7 +72,8 @@ pub use item::{
     is_expired, reply_encoded_len,
 };
 pub use paging::{PAGE_BUDGET_BYTES, Page, page};
-pub use prompt::render_recalled_block;
+pub use prompt::{render_recalled, render_recalled_block};
+pub use recall_index::{RecallEntry, Recalled};
 pub use record::{KeptRecord, MemoryKind, Words, utc_day};
 pub use session::{
     ConfirmationRecord, SessionRecord, SessionStatus, SessionStore, TaskRecord, ToolCallOutcome,

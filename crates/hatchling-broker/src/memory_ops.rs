@@ -39,6 +39,14 @@ pub fn handle_memory_op(
     principal: &MemoryPrincipal,
     session_id: &SessionId,
 ) -> Result<MemoryResult, Error> {
+    if let MemoryOp::RecallBudgeted {
+        tag,
+        index_bytes,
+        full_bytes,
+    } = op
+    {
+        return recall_budgeted(config, principal, tag, *index_bytes, *full_bytes);
+    }
     let action = memory_action(op);
     let scope_str = op_scope_str(op);
     if !is_granted(config, scope_str, action) {
@@ -134,8 +142,94 @@ pub fn handle_memory_op(
         // A proposal is put to the owner, which takes the session's task:
         // the session itself does that ([`crate::memory_keep::propose`]).
         // Here, nothing is written.
-        MemoryOp::Propose { .. } => Ok(MemoryResult::Denied),
+        // A budgeted recall is answered before the grant check, across
+        // the scopes it may recall.
+        MemoryOp::Propose { .. } | MemoryOp::RecallBudgeted { .. } => Ok(MemoryResult::Denied),
     }
+}
+
+/// The most a budgeted recall's index may take, in bytes.
+pub const MAX_INDEX_BYTES: u32 = 6 * 1024;
+
+/// The most a budgeted recall's whole items may take, in bytes.
+pub const MAX_FULL_BYTES: u32 = 12 * 1024;
+
+/// What a run is given of its recalled memory (v38): the index and the
+/// items given whole, in the user and project scopes it may recall, each
+/// bounded, and the whole reply within one frame.
+fn recall_budgeted(
+    config: &MemoryConfig,
+    principal: &MemoryPrincipal,
+    tag: &str,
+    index_bytes: u32,
+    full_bytes: u32,
+) -> Result<MemoryResult, Error> {
+    let mut scopes = Vec::new();
+    for name in ["user", "project"] {
+        if is_granted(config, name, MemoryAction::Recall) {
+            scopes.push(
+                bind_scope(name, principal).map_err(|reason| Error::SessionProtocol {
+                    reason: format!("invalid memory scope: {reason}"),
+                })?,
+            );
+        }
+    }
+    if scopes.is_empty() {
+        return Ok(MemoryResult::Denied);
+    }
+    let tag = parse_tag(tag)?;
+    let store = crate::memory_sealed::open_published(&config.root)
+        .map_err(|source| Error::Memory { source })?;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let recalled = store
+        .recall_budgeted(
+            principal,
+            &scopes,
+            &tag,
+            now_secs,
+            usize::try_from(index_bytes.min(MAX_INDEX_BYTES)).unwrap_or(0),
+            usize::try_from(full_bytes.min(MAX_FULL_BYTES)).unwrap_or(0),
+        )
+        .map_err(|source| Error::Memory { source })?;
+    let corrupt = || Error::Memory {
+        source: hatchling_memory::Error::Corrupt,
+    };
+    let index_json = recalled
+        .index
+        .iter()
+        .map(serde_json::to_string)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| corrupt())?;
+    let mut items_json = recalled
+        .items
+        .into_iter()
+        .map(|item| serde_json::to_string(&item.shareable()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| corrupt())?;
+    let left_out = u32::try_from(recalled.left_out).unwrap_or(u32::MAX);
+    // Escaping can grow an item past what its words measure: the reply is
+    // fitted to one frame, the last items given whole dropped first.
+    let given = items_json.len();
+    for _ in 0..given {
+        let reply = MemoryResult::Recalled {
+            index_json: index_json.clone(),
+            items_json: items_json.clone(),
+            left_out,
+        };
+        if serde_json::to_vec(&hatchling_core::SessionResponse::Memory(reply.clone()))
+            .is_ok_and(|frame| frame.len() <= hatchling_core::MAX_FRAME_BYTES)
+        {
+            return Ok(reply);
+        }
+        items_json.pop();
+    }
+    Ok(MemoryResult::Recalled {
+        index_json,
+        items_json,
+        left_out,
+    })
 }
 
 /// Maps a write's backend failure onto the session.
@@ -209,7 +303,9 @@ fn parse_seq(raw: &str) -> Result<u64, Error> {
 const fn memory_action(op: &MemoryOp) -> MemoryAction {
     match op {
         MemoryOp::Write { .. } => MemoryAction::Write,
-        MemoryOp::Recall { .. } | MemoryOp::RecallByTag { .. } => MemoryAction::Recall,
+        MemoryOp::Recall { .. }
+        | MemoryOp::RecallByTag { .. }
+        | MemoryOp::RecallBudgeted { .. } => MemoryAction::Recall,
         MemoryOp::Remove { .. } => MemoryAction::Remove,
         MemoryOp::ContextAppend { .. } => MemoryAction::ContextAppend,
         MemoryOp::ContextRead { .. } => MemoryAction::ContextRead,
@@ -225,7 +321,7 @@ fn op_scope_str(op: &MemoryOp) -> &str {
         | MemoryOp::RecallByTag { scope, .. }
         | MemoryOp::Remove { scope, .. } => scope,
         MemoryOp::ContextAppend { .. } | MemoryOp::ContextRead { .. } => "session",
-        MemoryOp::Propose { .. } => "user",
+        MemoryOp::Propose { .. } | MemoryOp::RecallBudgeted { .. } => "user",
     }
 }
 
@@ -396,6 +492,7 @@ mod paging_tests {
                 | MemoryResult::Denied
                 | MemoryResult::MemoryError
                 | MemoryResult::Proposed
+                | MemoryResult::Recalled { .. }
                 | MemoryResult::Unasked { .. }) => {
                     unreachable!("page {pages}: not a page but {other:?}")
                 }
@@ -626,6 +723,7 @@ mod paging_tests {
                 | MemoryResult::Denied
                 | MemoryResult::MemoryError
                 | MemoryResult::Proposed
+                | MemoryResult::Recalled { .. }
                 | MemoryResult::Unasked { .. }) => unreachable!("{other:?}"),
             }
         };
@@ -646,6 +744,140 @@ mod paging_tests {
             assert_eq!(item.record, Some(record.shareable()));
             assert!(item.approved_by_owner());
         }
+        let _ = std::fs::remove_dir_all(&config.root);
+    }
+
+    /// A budgeted recall answers over the scopes the run may recall, the
+    /// items given whole without where they came from; with no recall
+    /// granted it's denied, and its budgets are bounded.
+    #[test]
+    fn a_budgeted_recall_answers_within_its_bounds() {
+        let config = config("budgeted");
+        let (p, s) = principal();
+        let record = hatchling_memory::KeptRecord::agent_words(
+            Some(String::from("confirm-1")),
+            Some(String::from("run-1")),
+            None,
+            40,
+        );
+        let store = crate::memory_sealed::open_published(&config.root).unwrap();
+        for (id, words) in [
+            ("kept-1", "Their cat is Biscuit."),
+            ("kept-2", "They live in York."),
+        ] {
+            store
+                .keep(
+                    &p,
+                    &hatchling_memory::MemoryScope::User,
+                    &id.parse().unwrap(),
+                    words,
+                    &["t".parse().unwrap()],
+                    record.clone(),
+                )
+                .unwrap();
+        }
+        let ask = |index_bytes, full_bytes| MemoryOp::RecallBudgeted {
+            tag: String::from("t"),
+            index_bytes,
+            full_bytes,
+        };
+        let MemoryResult::Recalled {
+            index_json,
+            items_json,
+            left_out,
+        } = handle_memory_op(&config, &ask(4096, 4096), &p, &s).unwrap()
+        else {
+            unreachable!("a recall's answer");
+        };
+        assert_eq!((index_json.len(), items_json.len(), left_out), (2, 2, 0));
+        for json in &items_json {
+            let item: hatchling_memory::MemoryItem = serde_json::from_str(json).unwrap();
+            assert_eq!(
+                item.record,
+                Some(record.shareable()),
+                "no ids of where it came from"
+            );
+        }
+        let entry: hatchling_memory::RecallEntry =
+            serde_json::from_str(index_json.first().unwrap()).unwrap();
+        assert!(entry.approved);
+        // Nothing whole, nothing listed: the bounds are the run's to set.
+        let MemoryResult::Recalled {
+            index_json,
+            items_json,
+            left_out,
+        } = handle_memory_op(&config, &ask(0, 0), &p, &s).unwrap()
+        else {
+            unreachable!("a recall's answer");
+        };
+        assert_eq!((index_json.len(), items_json.len(), left_out), (0, 0, 2));
+        // A budget past the broker's bound is held to it.
+        assert!(matches!(
+            handle_memory_op(&config, &ask(u32::MAX, u32::MAX), &p, &s).unwrap(),
+            MemoryResult::Recalled { .. }
+        ));
+        // A run that may recall nothing is denied.
+        let mut none = config.clone();
+        none.grants
+            .retain(|grant| grant.action != MemoryAction::Recall);
+        assert_eq!(
+            handle_memory_op(&none, &ask(4096, 4096), &p, &s).unwrap(),
+            MemoryResult::Denied
+        );
+        let _ = std::fs::remove_dir_all(&config.root);
+    }
+
+    /// A run's budget past the broker's bound is held to it, and a reply
+    /// that escaping would grow past one frame gives fewer items whole.
+    #[test]
+    fn a_budgeted_recall_is_held_to_the_brokers_bounds_and_one_frame() {
+        let config = config("budget-bounds");
+        let (p, s) = principal();
+        // 150 items whose index lines alone are past 6 KiB.
+        for n in 0..150 {
+            write(
+                &config,
+                &format!("note-{n:03}"),
+                &format!("A note of the run's, number {n}, long enough to count."),
+            );
+        }
+        let ask = |index_bytes, full_bytes| MemoryOp::RecallBudgeted {
+            tag: String::from("t"),
+            index_bytes,
+            full_bytes,
+        };
+        let MemoryResult::Recalled {
+            index_json,
+            left_out,
+            ..
+        } = handle_memory_op(&config, &ask(u32::MAX, 0), &p, &s).unwrap()
+        else {
+            unreachable!("a recall's answer");
+        };
+        assert!(left_out > 0, "held to 6 KiB");
+        assert!(
+            index_json.len() > 40,
+            "as much as 6 KiB holds: {}",
+            index_json.len()
+        );
+        assert_eq!(index_json.len() + usize::try_from(left_out).unwrap(), 150);
+        // Eight items whose words are small but escape large: all of them
+        // whole would be past one frame, so fewer are given.
+        let control = "\u{1}".repeat(1500);
+        for n in 0..8 {
+            write(&config, &format!("escapes-{n}"), &control);
+        }
+        let reply = handle_memory_op(&config, &ask(0, u32::MAX), &p, &s).unwrap();
+        let frame = serde_json::to_vec(&SessionResponse::Memory(reply.clone())).unwrap();
+        assert!(frame.len() <= MAX_FRAME_BYTES, "{}", frame.len());
+        let MemoryResult::Recalled { items_json, .. } = reply else {
+            unreachable!("a recall's answer");
+        };
+        let escaping = items_json
+            .iter()
+            .filter(|json| json.contains("escapes-"))
+            .count();
+        assert!((1..8).contains(&escaping), "{escaping} of 8 given whole");
         let _ = std::fs::remove_dir_all(&config.root);
     }
 }

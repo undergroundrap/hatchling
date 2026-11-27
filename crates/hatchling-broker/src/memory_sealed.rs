@@ -78,6 +78,13 @@ fn index_key(space: &Space) -> String {
     sealed_blobs::key_of(&parts)
 }
 
+/// The key of `space`'s recall index (WO-048).
+fn recall_index_key(space: &Space) -> String {
+    let mut parts: Vec<&[u8]> = vec![b"recall-index"];
+    parts.extend(space.segments().iter().map(String::as_bytes));
+    sealed_blobs::key_of(&parts)
+}
+
 /// The registry's key.
 fn registry_key() -> String {
     sealed_blobs::key_of(&[b"spaces"])
@@ -193,6 +200,18 @@ impl Backing for SealedMemory {
         let vault = self.vault().map_err(told)?;
         let spaces: BTreeSet<Space> = read_set(&vault, &registry_key()).map_err(told)?;
         Ok(spaces.into_iter().collect())
+    }
+
+    fn get_index(&self, space: &Space) -> Result<Option<Vec<u8>>, hatchling_memory::Error> {
+        let _held = lock();
+        let vault = self.vault().map_err(told)?;
+        sealed_blobs::read(&vault, &recall_index_key(space)).map_err(told)
+    }
+
+    fn put_index(&self, space: &Space, bytes: &[u8]) -> Result<(), hatchling_memory::Error> {
+        let _held = lock();
+        let vault = self.vault().map_err(told)?;
+        sealed_blobs::write(&vault, &recall_index_key(space), bytes).map_err(told)
     }
 }
 

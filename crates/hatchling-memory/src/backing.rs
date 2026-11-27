@@ -78,6 +78,27 @@ pub trait Backing: Send + Sync + std::fmt::Debug {
     ///
     /// When they can't be read.
     fn spaces(&self) -> Result<Vec<Space>, Error>;
+
+    /// The recall index kept for `space` (WO-048), or `None` when none is:
+    /// the store then builds it from the items. A backing that keeps none
+    /// has every recall read every item.
+    ///
+    /// # Errors
+    ///
+    /// When it can't be read.
+    fn get_index(&self, _space: &Space) -> Result<Option<Vec<u8>>, Error> {
+        Ok(None)
+    }
+
+    /// Keeps `bytes` as `space`'s recall index, whole or not at all. A
+    /// backing that keeps none drops it.
+    ///
+    /// # Errors
+    ///
+    /// When it can't be kept; the index before is then as it was.
+    fn put_index(&self, _space: &Space, _bytes: &[u8]) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 /// An item's file suffix. Only files with it are items.

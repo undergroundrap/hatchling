@@ -47,6 +47,12 @@ pub const MAX_RECALL_ITEMS: usize = 10;
 /// `bound_recalled`). One oversized item never suppresses all recall.
 pub const MAX_RECALL_BYTES: usize = 8 * 1024;
 
+/// The most a run's index of its recalled memory takes, in bytes (WO-048).
+pub const INDEX_BYTES: u32 = 3 * 1024;
+
+/// The most the items it's given whole take, in bytes (WO-048).
+pub const FULL_BYTES: u32 = 5 * 1024;
+
 /// The production memory provider: recalls tagged items through the
 /// peer-authorized broker session.
 pub struct BrokerMemoryProvider<'s> {
@@ -83,6 +89,14 @@ impl MemoryProvider for BrokerMemoryProvider<'_> {
     ///
     /// Merged most-recently-updated first (id breaks ties), then
     /// bounded by [`MAX_RECALL_ITEMS`] and [`MAX_RECALL_BYTES`].
+    /// The index of every recalled item within [`INDEX_BYTES`], and the
+    /// items given whole within [`FULL_BYTES`], the broker reading only
+    /// what it gives (v38).
+    fn recall_budgeted(&self) -> Result<hatchling_memory::Recalled, RecallError> {
+        memory::recall_budgeted(self.stream, RECALL_TAG, INDEX_BYTES, FULL_BYTES)
+            .map_err(|error| RecallError(format!("broker budgeted recall failed: {error}")))
+    }
+
     fn recall(&self) -> Result<Vec<MemoryItem>, RecallError> {
         let mut items = self.recall_scope(MemoryScope::User)?;
         items.extend(self.recall_scope(MemoryScope::Project)?);
@@ -149,6 +163,11 @@ mod tests {
     fn bounds_are_ten_items_and_8_kib() {
         assert_eq!(MAX_RECALL_ITEMS, 10);
         assert_eq!(MAX_RECALL_BYTES, 8 * 1024);
+    }
+
+    #[test]
+    fn a_budgeted_recall_asks_for_a_3_kib_index_and_5_kib_whole() {
+        assert_eq!((super::INDEX_BYTES, super::FULL_BYTES), (3072, 5120));
     }
 
     #[test]
