@@ -1068,6 +1068,10 @@ fn memory_action(proposal: &crate::memory_proposal::Checked, action: bool) -> se
     if proposal.absence {
         frozen.insert(String::from("absence"), json!(true));
     }
+    if let Some(replaced) = &proposal.supersedes {
+        frozen.insert(String::from("supersedes"), json!(replaced.id));
+        frozen.insert(String::from("replaces"), json!(replaced.content));
+    }
     serde_json::Value::Object(frozen)
 }
 
@@ -1117,6 +1121,16 @@ fn memory_fields(proposal: &crate::memory_proposal::Checked) -> Vec<Confirmation
             source: FieldSource::Broker,
         });
     }
+    if let Some(replaced) = &proposal.supersedes {
+        fields.push(ConfirmationField {
+            label: String::from("What it replaces"),
+            value: format!(
+                "“{}” The agent isn't given that any more once you approve this.",
+                replaced.content
+            ),
+            source: FieldSource::Broker,
+        });
+    }
     for (label, value) in [
         ("Why", &proposal.why),
         ("When it applies", &proposal.how_to_apply),
@@ -1145,6 +1159,12 @@ fn kept(config: &Config, id: &str, keep: &MemoryKeep, now: i64) -> Result<String
             crate::memory_keep::Keeping::Already => {
                 format!("Already remembered: “{content}” It's kept once.")
             }
+            crate::memory_keep::Keeping::Replaced { retired: true } => format!(
+                "Remembered: “{content}” It replaces what it corrects, which the agent isn't given any more."
+            ),
+            crate::memory_keep::Keeping::Replaced { retired: false } => format!(
+                "Remembered: “{content}” What it would replace had changed or been forgotten meanwhile, so nothing else changed."
+            ),
         })
         .map_err(|error| {
             tracing::error!(%id, %error, "an approved memory wasn't kept");
@@ -1305,6 +1325,30 @@ mod tests {
             .map(|field| field.label)
             .collect();
         assert_eq!(shown, ["What it is", "Known not to be so"]);
+        let correcting = crate::memory_proposal::Checked {
+            supersedes: Some(crate::memory_proposal::Replaced {
+                id: String::from("kept-1"),
+                content: String::from("They have a car."),
+            }),
+            ..crate::memory_proposal::Checked::owner("They sold their car.")
+        };
+        assert_eq!(
+            memory_action(&correcting, false),
+            json!({"op": "memory.keep", "content": "They sold their car.", "kind": "owner", "supersedes": "kept-1", "replaces": "They have a car."})
+        );
+        let replaces: Vec<(String, String)> = memory_fields(&correcting)
+            .into_iter()
+            .map(|field| (field.label, field.value))
+            .collect();
+        assert_eq!(
+            replaces.last(),
+            Some(&(
+                String::from("What it replaces"),
+                String::from(
+                    "“They have a car.” The agent isn't given that any more once you approve this."
+                )
+            ))
+        );
         for (kind, name, summary) in [
             (
                 hatchling_memory::MemoryKind::Work,

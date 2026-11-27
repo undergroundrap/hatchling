@@ -253,6 +253,8 @@ pub struct Proposing<'a> {
     pub check_by: Option<&'a str>,
     /// Whether it records something known not to be so.
     pub absence: bool,
+    /// The id of a recalled memory it corrects.
+    pub supersedes: Option<&'a str>,
 }
 
 /// Asks the owner to keep `content` about them (v18). Nothing is kept
@@ -273,6 +275,7 @@ pub fn propose(stream: &UnixStream, asked: &Proposing<'_>) -> Result<Proposal, E
         how_to_apply: owned(asked.how_to_apply),
         check_by: owned(asked.check_by),
         absence: asked.absence,
+        supersedes: owned(asked.supersedes),
     };
     match request(stream, &op)? {
         MemoryResult::Proposed => Ok(Proposal::Asked),

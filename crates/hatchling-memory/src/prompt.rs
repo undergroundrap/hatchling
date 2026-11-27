@@ -121,9 +121,10 @@ pub fn render_recalled_block(items: &[MemoryItem]) -> String {
         let len = safe.len();
         let _ = writeln!(
             block,
-            "item {} ({len} bytes; {}):",
+            "item {} ({len} bytes; {}; id {}):",
             index + 1,
-            provenance(item)
+            provenance(item),
+            item.id
         );
         block.push_str(&safe);
         block.push('\n');
@@ -183,10 +184,10 @@ mod tests {
     fn items_are_length_framed() {
         let block = render_recalled_block(&[item("one"), item("two")]);
         assert!(block.contains(
-            "item 1 (3 bytes; written 1970-01-01 by a run, not approved by the owner):\none\n"
+            "item 1 (3 bytes; written 1970-01-01 by a run, not approved by the owner; id test-item):\none\n"
         ));
         assert!(block.contains(
-            "item 2 (3 bytes; written 1970-01-01 by a run, not approved by the owner):\ntwo\n"
+            "item 2 (3 bytes; written 1970-01-01 by a run, not approved by the owner; id test-item):\ntwo\n"
         ));
         assert!(block.contains("weigh an old one against what you find now"));
     }
@@ -202,9 +203,9 @@ mod tests {
         let mut legacy = item("legacy");
         legacy.tags = vec![crate::LEGACY_APPROVED_TAG.parse().unwrap()];
         let block = render_recalled_block(&[kept, legacy, item("written")]);
-        assert!(block.contains("item 1 (4 bytes; kept 2026-11-26, approved by the owner, last confirmed 2026-12-03):\nkept\n"), "{block}");
-        assert!(block.contains("item 2 (6 bytes; kept 1970-01-01, approved by the owner; where it came from isn't recorded):\nlegacy\n"), "{block}");
-        assert!(block.contains("item 3 (7 bytes; written 1970-01-01 by a run, not approved by the owner):\nwritten\n"), "{block}");
+        assert!(block.contains("item 1 (4 bytes; kept 2026-11-26, approved by the owner, last confirmed 2026-12-03; id test-item):\nkept\n"), "{block}");
+        assert!(block.contains("item 2 (6 bytes; kept 1970-01-01, approved by the owner; where it came from isn't recorded; id test-item):\nlegacy\n"), "{block}");
+        assert!(block.contains("item 3 (7 bytes; written 1970-01-01 by a run, not approved by the owner; id test-item):\nwritten\n"), "{block}");
     }
 
     /// A kept absence is recalled marked as one: a settled negative, which
@@ -256,7 +257,7 @@ mod tests {
         let block = render_recalled_block(&[guidance]);
         assert!(
             block.contains(&format!(
-                "item 1 ({} bytes; the owner's guidance on how to work; kept 2026-11-26, approved by the owner, last confirmed 2026-11-26):\n{body}\n",
+                "item 1 ({} bytes; the owner's guidance on how to work; kept 2026-11-26, approved by the owner, last confirmed 2026-11-26; id test-item):\n{body}\n",
                 body.len()
             )),
             "{block}"

@@ -82,6 +82,28 @@ pub fn propose(
             reason: String::from("it's already kept: the agent is given it in every run"),
         };
     }
+    // What it corrects is a memory the owner approved, recalled as it is.
+    let mut proposal = proposal;
+    if let Some(raw) = asked
+        .supersedes
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        let Some(old) = open(config)
+            .ok()
+            .and_then(|(principal, store)| recalled_kept(&store, &principal, raw, now))
+        else {
+            return MemoryResult::Unasked {
+                reason: format!(
+                    "no memory the owner approved is recalled with the id {raw}: name one by the id it's recalled with"
+                ),
+            };
+        };
+        proposal.supersedes = Some(crate::memory_proposal::Replaced {
+            id: old.id.to_string(),
+            content: old.content,
+        });
+    }
     let now = i64::try_from(now).unwrap_or(i64::MAX);
     match board(config).propose_memory(&proposal, task, from, now) {
         Ok(_) => MemoryResult::Proposed,
@@ -127,6 +149,11 @@ pub fn keep(
         how_to_apply: proposal.how_to_apply.clone(),
         check_by: proposal.check_by.clone(),
         absence: proposal.absence,
+        supersedes: proposal
+            .supersedes
+            .as_ref()
+            .map(|replaced| replaced.id.parse())
+            .transpose()?,
         ..KeptRecord::agent_words(
             approval.map(str::to_owned),
             from.run.clone(),
@@ -142,7 +169,69 @@ pub fn keep(
         &[RECALL_TAG.parse::<Tag>()?],
         record,
     )?;
-    Ok(Keeping::Kept)
+    let Some(replaced) = &proposal.supersedes else {
+        return Ok(Keeping::Kept);
+    };
+    Ok(Keeping::Replaced {
+        retired: retire(
+            &store,
+            &principal,
+            replaced,
+            u64::try_from(now).unwrap_or(0),
+        ),
+    })
+}
+
+/// The tag a memory another replaced carries, in place of [`RECALL_TAG`]:
+/// kept, so the owner can see what replaced what, and never recalled.
+pub const SUPERSEDED_TAG: &str = "superseded";
+
+/// The memory the owner approved that's recalled with the id `raw`.
+fn recalled_kept(
+    store: &MemoryStore,
+    principal: &MemoryPrincipal,
+    raw: &str,
+    now_secs: u64,
+) -> Option<hatchling_memory::MemoryItem> {
+    let recall = RECALL_TAG.parse::<Tag>().ok()?;
+    store
+        .recall_by_tag(principal, &MemoryScope::User, &recall, now_secs)
+        .ok()?
+        .into_iter()
+        .find(|item| item.id.as_str() == raw && item.approved_by_owner())
+}
+
+/// Stops `replaced` being recalled, when it's still recalled in the words
+/// the owner was shown: whether it was.
+fn retire(
+    store: &MemoryStore,
+    principal: &MemoryPrincipal,
+    replaced: &crate::memory_proposal::Replaced,
+    now_secs: u64,
+) -> bool {
+    let Some(old) = recalled_kept(store, principal, &replaced.id, now_secs)
+        .filter(|old| old.content == replaced.content)
+    else {
+        return false;
+    };
+    let Ok(superseded) = SUPERSEDED_TAG.parse::<Tag>() else {
+        return false;
+    };
+    // From before records, the broker's tag still says the owner approved it.
+    let tags: Vec<Tag> = std::iter::once(superseded)
+        .chain(
+            old.tags
+                .iter()
+                .filter(|tag| tag.as_str() == hatchling_memory::LEGACY_APPROVED_TAG)
+                .cloned(),
+        )
+        .collect();
+    store
+        .retag(principal, &MemoryScope::User, &old.id, &tags)
+        .unwrap_or_else(|error| {
+            tracing::error!(%error, "a replaced memory is still recalled");
+            false
+        })
 }
 
 /// What [`keep`] did.
@@ -152,6 +241,13 @@ pub enum Keeping {
     Kept,
     /// The owner had approved the same words already: nothing new is kept.
     Already,
+    /// It's kept now, in place of the memory it replaces: `retired` when
+    /// that one isn't recalled any more, and not when it had changed or
+    /// gone meanwhile.
+    Replaced {
+        /// Whether the one it replaces stopped being recalled.
+        retired: bool,
+    },
 }
 
 /// Whether `a` and `b` are the same words, however they're spaced.
@@ -475,6 +571,7 @@ mod tests {
             how_to_apply: Some("Any measurement."),
             check_by: Some("2099-01-01"),
             absence: false,
+            supersedes: None,
         };
         assert_eq!(
             propose(&config, "task-g", &asked, ProposedIn::default()),
@@ -540,6 +637,304 @@ mod tests {
                 .find_run("task-x", crate::approvals::State::Pending, |_| true)
                 .is_none()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Approves the one request `task` has waiting, and runs it at `now`:
+    /// what the owner is told.
+    fn approve(config: &Config, task: &str, now: i64) -> String {
+        let board = board(config);
+        let id = board
+            .approvals()
+            .find_run(task, crate::approvals::State::Pending, |_| true)
+            .unwrap();
+        let request = board.approvals().get(&id).unwrap();
+        board
+            .decide(&id, request.revision, &request.digest, Decision::Approve, 1)
+            .unwrap();
+        crate::approval_board::run_approved(
+            &board,
+            &id,
+            config,
+            &hatchling_vault::MasterKey::generate().unwrap(),
+            &crate::Skills::default(),
+            None,
+            now,
+        )
+    }
+
+    /// The id of what's recalled for the owner in `content`.
+    fn recalled_id(config: &Config, content: &str) -> String {
+        let (principal, store) = open(config).unwrap();
+        recalled(&store, &principal)
+            .into_iter()
+            .find(|item| item.content == content)
+            .map(|item| item.id.to_string())
+            .unwrap()
+    }
+
+    /// What's recalled for the owner.
+    fn recalled(
+        store: &MemoryStore,
+        principal: &MemoryPrincipal,
+    ) -> Vec<hatchling_memory::MemoryItem> {
+        store
+            .recall_by_tag(
+                principal,
+                &MemoryScope::User,
+                &RECALL_TAG.parse().unwrap(),
+                u64::MAX / 2,
+            )
+            .unwrap()
+    }
+
+    /// Keeps a memory the owner approved, and a run's own recalled note
+    /// beside it: the approved one's id.
+    fn kept_and_a_runs_note(config: &Config) -> String {
+        keep(
+            config,
+            &crate::memory_proposal::Checked::owner("Their cat is Biscuit."),
+            Some("confirm-0"),
+            &ProposedIn::default(),
+            10,
+        )
+        .unwrap();
+        let (principal, store) = open(config).unwrap();
+        store
+            .write(
+                &principal,
+                &MemoryScope::User,
+                &"by-a-run".parse().unwrap(),
+                "A run's note.",
+                &[RECALL_TAG.parse().unwrap()],
+                RetentionPolicy::Keep,
+                11,
+            )
+            .unwrap();
+        recalled_id(config, "Their cat is Biscuit.")
+    }
+
+    /// Only a memory the owner approved, recalled as it is, can be corrected:
+    /// an id nothing is recalled with, a run's own note and a path aren't.
+    #[test]
+    fn only_a_memory_the_owner_approved_can_be_corrected() {
+        let (config, dir) = config("supersede-refused", &[MemoryAction::Propose]);
+        kept_and_a_runs_note(&config);
+        for id in ["kept-none", "by-a-run", "../x"] {
+            let correcting = crate::memory_proposal::Asked {
+                supersedes: Some(id),
+                ..crate::memory_proposal::Asked::about_owner("Their cat is called Miso.")
+            };
+            assert_eq!(
+                propose(&config, "task-s", &correcting, ProposedIn::default()),
+                MemoryResult::Unasked {
+                    reason: format!(
+                        "no memory the owner approved is recalled with the id {id}: name one by the id it's recalled with"
+                    )
+                },
+                "{id}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A correction names a memory the owner approved, recalled as it is:
+    /// the owner is shown what it replaces, and once they approve, only the
+    /// correction is recalled. The one it replaces is kept, its record as it
+    /// was, so the chain can be seen.
+    #[test]
+    fn a_correction_replaces_what_it_corrects_once_the_owner_approves() {
+        let (config, dir) = config("supersede", &[MemoryAction::Propose]);
+        let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(std::sync::Arc::clone(&bus));
+        let old = kept_and_a_runs_note(&config);
+        let (principal, store) = open(&config).unwrap();
+        let asked = crate::memory_proposal::Asked {
+            supersedes: Some(old.as_str()),
+            ..crate::memory_proposal::Asked::about_owner("Their cat is called Miso.")
+        };
+        assert_eq!(
+            propose(&config, "task-s", &asked, ProposedIn::default()),
+            MemoryResult::Proposed
+        );
+        let card = first_card(&bus);
+        let replaces = card
+            .fields
+            .iter()
+            .find(|field| field.label == "What it replaces")
+            .unwrap();
+        assert_eq!(
+            (replaces.value.as_str(), replaces.source),
+            (
+                "“Their cat is Biscuit.” The agent isn't given that any more once you approve this.",
+                hatchling_core::ui::FieldSource::Broker
+            )
+        );
+        assert_eq!(
+            approve(&config, "task-s", 20),
+            "Remembered: “Their cat is called Miso.” It replaces what it corrects, which the agent isn't given any more."
+        );
+        let words: Vec<String> = recalled(&store, &principal)
+            .into_iter()
+            .map(|item| item.content)
+            .collect();
+        // Recalled in id order: the run's note, then the correction; the old
+        // one isn't recalled.
+        assert_eq!(words, ["A run's note.", "Their cat is called Miso."]);
+        let new = recalled_id(&config, "Their cat is called Miso.");
+        let new_record = store
+            .recall(&principal, &MemoryScope::User, &new.parse().unwrap(), 30)
+            .unwrap()
+            .and_then(|item| item.record)
+            .unwrap();
+        assert_eq!(
+            new_record.supersedes.map(|id| id.to_string()),
+            Some(old.clone())
+        );
+        let kept_old = store
+            .recall(&principal, &MemoryScope::User, &old.parse().unwrap(), 30)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            kept_old
+                .tags
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [SUPERSEDED_TAG]
+        );
+        assert_eq!(
+            kept_old
+                .record
+                .and_then(|record| record.approval)
+                .as_deref(),
+            Some("confirm-0")
+        );
+        // The owner's list shows the correction, not what it replaced.
+        let listed = listing(handle_kept_op(&config, &KeptOp::List));
+        assert!(
+            listed
+                .iter()
+                .all(|kept| kept.content != "Their cat is Biscuit.")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A memory whose words changed after the owner was shown them isn't
+    /// retired by the correction: what they approved replacing was the
+    /// words they saw.
+    #[test]
+    fn a_correction_of_a_memory_changed_meanwhile_leaves_it() {
+        let (config, dir) = config("supersede-changed", &[MemoryAction::Propose]);
+        let old = kept_and_a_runs_note(&config);
+        let asked = crate::memory_proposal::Asked {
+            supersedes: Some(old.as_str()),
+            ..crate::memory_proposal::Asked::about_owner("Their cat is called Miso.")
+        };
+        assert_eq!(
+            propose(&config, "task-c", &asked, ProposedIn::default()),
+            MemoryResult::Proposed
+        );
+        let (principal, store) = open(&config).unwrap();
+        store
+            .keep(
+                &principal,
+                &MemoryScope::User,
+                &old.parse().unwrap(),
+                "Their cat is Biscuit, a tabby.",
+                &[RECALL_TAG.parse().unwrap()],
+                KeptRecord::agent_words(Some(String::from("confirm-9")), None, None, 15),
+            )
+            .unwrap();
+        assert!(approve(&config, "task-c", 20).contains("had changed or been forgotten meanwhile"));
+        let words: Vec<String> = recalled(&store, &principal)
+            .into_iter()
+            .map(|item| item.content)
+            .collect();
+        assert!(
+            words.contains(&String::from("Their cat is Biscuit, a tabby.")),
+            "{words:?}"
+        );
+        assert!(
+            words.contains(&String::from("Their cat is called Miso.")),
+            "{words:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A memory kept before records keeps the broker's old mark of the
+    /// owner's approval when it's replaced; one forgotten before the owner
+    /// approves the correction leaves nothing else changed, and they're told.
+    #[test]
+    fn a_correction_of_an_old_or_forgotten_memory() {
+        let (config, dir) = config("supersede-old", &[MemoryAction::Propose]);
+        let (principal, store) = open(&config).unwrap();
+        let legacy = [
+            RECALL_TAG.parse().unwrap(),
+            hatchling_memory::LEGACY_APPROVED_TAG.parse().unwrap(),
+        ];
+        store
+            .write(
+                &principal,
+                &MemoryScope::User,
+                &"kept-old".parse().unwrap(),
+                "They live in Leeds.",
+                &legacy,
+                RetentionPolicy::Keep,
+                5,
+            )
+            .unwrap();
+        let moved = crate::memory_proposal::Asked {
+            supersedes: Some("kept-old"),
+            ..crate::memory_proposal::Asked::about_owner("They live in York.")
+        };
+        assert_eq!(
+            propose(&config, "task-o", &moved, ProposedIn::default()),
+            MemoryResult::Proposed
+        );
+        assert!(approve(&config, "task-o", 20).contains("It replaces what it corrects"));
+        let old = store
+            .recall(
+                &principal,
+                &MemoryScope::User,
+                &"kept-old".parse().unwrap(),
+                30,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            old.tags.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [SUPERSEDED_TAG, hatchling_memory::LEGACY_APPROVED_TAG]
+        );
+        assert!(old.approved_by_owner());
+        // Forgotten before the correction is approved.
+        let york = recalled_id(&config, "They live in York.");
+        let again = crate::memory_proposal::Asked {
+            supersedes: Some(york.as_str()),
+            ..crate::memory_proposal::Asked::about_owner("They live in Bath.")
+        };
+        assert_eq!(
+            propose(&config, "task-f", &again, ProposedIn::default()),
+            MemoryResult::Proposed
+        );
+        assert_eq!(
+            handle_kept_op(
+                &config,
+                &KeptOp::Forget {
+                    id: format!("user/{york}")
+                }
+            ),
+            KeptResult::Forgotten
+        );
+        assert_eq!(
+            approve(&config, "task-f", 40),
+            "Remembered: “They live in Bath.” What it would replace had changed or been forgotten meanwhile, so nothing else changed."
+        );
+        let words: Vec<String> = recalled(&store, &principal)
+            .into_iter()
+            .map(|item| item.content)
+            .collect();
+        assert_eq!(words, ["They live in Bath."]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

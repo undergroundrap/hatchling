@@ -209,3 +209,104 @@ fn recall_denied_fails_closed_without_blocking() {
         "no memory block on failed recall"
     );
 }
+
+/// A run that finds a recalled memory contradicted proposes the correction
+/// by that memory's id (WO-048). The recalled block names each item's id;
+/// a proposal that supersedes one the owner approved is put to them, and
+/// one naming an id nothing is recalled with isn't. A scripted model stands
+/// in for the model: WO-045 measures how often real ones do this.
+#[test]
+fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
+    let root = memory_root("contradiction");
+    let broker = FixtureBroker::spawn(
+        "memory-contradiction",
+        BrokerBehavior::Memory {
+            root: root.to_path_buf(),
+            grants: vec![
+                grant("user", MemoryAction::Recall),
+                grant("project", MemoryAction::Recall),
+                grant("user", MemoryAction::Propose),
+            ],
+        },
+    )
+    .unwrap();
+    let cell = ready_cell(&broker).unwrap();
+    // A memory the owner approved, kept as the broker keeps one.
+    let principal = hatchling_memory::MemoryPrincipal {
+        peer_uid: rustix::process::getuid().as_raw(),
+        session_id: hatchling_memory::SessionId::generate().unwrap(),
+    };
+    hatchling_broker::memory_sealed::open_published(&root)
+        .unwrap()
+        .keep(
+            &principal,
+            &hatchling_memory::MemoryScope::User,
+            &"kept-plan".parse().unwrap(),
+            "The plan is in docs/plan.md.",
+            &[RECALL_TAG.parse().unwrap()],
+            hatchling_memory::KeptRecord {
+                kind: Some(hatchling_memory::MemoryKind::Pointer),
+                ..hatchling_memory::KeptRecord::agent_words(
+                    Some(String::from("confirm-1")),
+                    None,
+                    None,
+                    1,
+                )
+            },
+        )
+        .unwrap();
+    let correction = |supersedes: &str| hatchling_loop::ToolCall {
+        name: String::from("memory_propose"),
+        arguments: serde_json::json!({
+            "content": "The plan is in notes/plan.md.",
+            "kind": "pointer",
+            "supersedes": supersedes,
+        }),
+    };
+    // The file the memory points to isn't there; the run proposes the
+    // correction, first by an id nothing is recalled with, then by its own.
+    let model = FakeModel::new(vec![
+        ModelAction::ToolCalls(vec![correction("kept-none")]),
+        ModelAction::ToolCalls(vec![correction("kept-plan")]),
+        ModelAction::Text(String::from(
+            "The plan moved to notes/plan.md; I asked you to update what I remember.",
+        )),
+    ]);
+    let result = cell
+        .run_loop(
+            hatchling_agent::PromptKind::Chat,
+            &model,
+            String::from("open the plan"),
+            LoopBudget { max_steps: 6 },
+        )
+        .unwrap();
+    let block = recalled_block(&result.history).expect("the memory is recalled");
+    assert!(
+        block.contains("; id kept-plan):\nThe plan is in docs/plan.md.\n"),
+        "{block}"
+    );
+    let said: Vec<String> = result
+        .history
+        .iter()
+        .filter_map(|message| match message {
+            Message::ToolUse { results, .. } => Some(format!("{results:?}")),
+            Message::System(_)
+            | Message::User(_)
+            | Message::Assistant(_)
+            | Message::RecalledMemory(_)
+            | Message::Evidence(_)
+            | Message::Note(_) => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 2, "{said:?}");
+    let first = said.first().unwrap();
+    assert!(first.contains("\"asked\": Bool(false)"), "{said:?}");
+    assert!(
+        first.contains("no memory the owner approved is recalled with the id kept-none"),
+        "{said:?}"
+    );
+    assert!(
+        said.last().unwrap().contains("\"asked\": Bool(true)"),
+        "put to the owner: {said:?}"
+    );
+}

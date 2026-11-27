@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 13;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 36;
+export const SESSION_PROTOCOL_VERSION = 37;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -3822,6 +3822,11 @@ export type SessionRequest = {
      */
     readonly memory_kind?: string | null;
     readonly op: 'propose';
+    /**
+     * The id of a recalled memory this corrects (v37): approved, it
+     * replaces that one, which isn't recalled any more.
+     */
+    readonly supersedes?: string | null;
     /**
      * Why, as the owner gave it: required for `guidance` and `work`.
      */

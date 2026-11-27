@@ -400,6 +400,30 @@ impl MemoryStore {
         Ok(items)
     }
 
+    /// Rewrites the tags of the item under `id` in the principal-bound
+    /// scope to `tags`, keeping everything else as it was: its words, its
+    /// times, its retention and its record. `Ok(false)` when there's none.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Corrupt`] for an unreadable item, or [`Error::Io`].
+    pub fn retag(
+        &self,
+        principal: &MemoryPrincipal,
+        scope: &MemoryScope,
+        id: &MemoryId,
+        tags: &[Tag],
+    ) -> Result<bool, Error> {
+        let space = Self::space(principal, scope);
+        let Some(mut item) = self.read_item(&space, id)? else {
+            return Ok(false);
+        };
+        item.tags = tags.to_vec();
+        let bytes = serde_json::to_vec(&item).map_err(|_| Error::Corrupt)?;
+        self.backing.put(&space, id, &bytes)?;
+        Ok(true)
+    }
+
     /// Removes the item under `id` in the principal-bound scope.
     /// Idempotent: removing a missing item reports `Ok(false)`.
     ///
@@ -555,6 +579,47 @@ mod tests {
         assert_eq!(
             read.created_at_secs, 300,
             "an overwrite keeps when it was made"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Retagging changes the tags alone: the words, times and record stay,
+    /// and an item that isn't there is said not to be.
+    #[test]
+    fn retag_changes_the_tags_alone() {
+        let root = test_root("retag");
+        let store = MemoryStore::open(&root).unwrap();
+        let p = principal(7, "sess-retag");
+        let id = MemoryId::from_str("kept-1").unwrap();
+        let record = KeptRecord::agent_words(Some(String::from("confirm-1")), None, None, 300);
+        let kept = store
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &id,
+                "Their cat is Biscuit.",
+                &[Tag::from_str("recall").unwrap()],
+                record,
+            )
+            .unwrap();
+        let old = [Tag::from_str("superseded").unwrap()];
+        assert!(store.retag(&p, &MemoryScope::User, &id, &old).unwrap());
+        let read = store
+            .recall(&p, &MemoryScope::User, &id, 400)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read,
+            MemoryItem {
+                tags: old.to_vec(),
+                ..kept
+            }
+        );
+        let none = MemoryId::from_str("kept-none").unwrap();
+        assert!(!store.retag(&p, &MemoryScope::User, &none, &old).unwrap());
+        assert_eq!(
+            store.recall(&p, &MemoryScope::User, &none, 400).unwrap(),
+            None
         );
         let _ = std::fs::remove_dir_all(&root);
     }

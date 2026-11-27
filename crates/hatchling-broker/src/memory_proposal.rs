@@ -40,6 +40,8 @@ pub struct Asked<'a> {
     pub check_by: Option<&'a str>,
     /// Whether it records something known not to be so.
     pub absence: bool,
+    /// The id of a recalled memory it corrects.
+    pub supersedes: Option<&'a str>,
 }
 
 impl<'a> Asked<'a> {
@@ -53,8 +55,18 @@ impl<'a> Asked<'a> {
             how_to_apply: None,
             check_by: None,
             absence: false,
+            supersedes: None,
         }
     }
+}
+
+/// A recalled memory a proposal would replace, as the owner approved it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Replaced {
+    /// Its id.
+    pub id: String,
+    /// Its words.
+    pub content: String,
 }
 
 /// A proposal the broker checked: what's put to the owner, and what's kept
@@ -73,6 +85,9 @@ pub struct Checked {
     pub check_by: Option<String>,
     /// Whether it records something known not to be so.
     pub absence: bool,
+    /// The recalled memory it replaces, which [`check`] leaves for the
+    /// store to say ([`crate::memory_keep::propose`]).
+    pub supersedes: Option<Replaced>,
 }
 
 impl Checked {
@@ -86,6 +101,7 @@ impl Checked {
             how_to_apply: None,
             check_by: None,
             absence: false,
+            supersedes: None,
         }
     }
 }
@@ -157,6 +173,7 @@ pub fn check(asked: &Asked<'_>, now_secs: u64) -> Result<Checked, Unfit> {
         how_to_apply,
         check_by,
         absence: asked.absence,
+        supersedes: None,
     })
 }
 
@@ -293,6 +310,7 @@ mod tests {
                 how_to_apply: None,
                 check_by: None,
                 absence: false,
+                supersedes: None,
             }
         );
         let absent = check(
