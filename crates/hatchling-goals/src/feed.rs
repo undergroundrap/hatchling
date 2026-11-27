@@ -115,9 +115,10 @@ pub enum FeedBody {
     /// A tracking entry.
     #[serde(rename = "tracking")]
     Tracking(TrackingEntry),
-    /// A memory item, recalled by tag.
+    /// A memory item, recalled by tag, as a run is given it
+    /// ([`MemoryItem::shareable`]).
     #[serde(rename = "memory")]
-    Memory(MemoryItem),
+    Memory(Box<MemoryItem>),
 }
 
 /// One query result: a record plus the provenance derived from it.
@@ -383,7 +384,7 @@ impl FeedReader {
                             .is_none_or(|after| item.id.as_str() > after.as_str())
                     })
                     .map(|item| FeedItem {
-                        body: FeedBody::Memory(item),
+                        body: FeedBody::Memory(Box::new(item.shareable())),
                     })
                     .collect())
             }

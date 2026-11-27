@@ -94,6 +94,8 @@ pub struct ScheduleCreate {
 pub struct MemoryKeep {
     /// The words kept, the agent's.
     pub content: String,
+    /// Where they were proposed, as the broker knows it: kept with them.
+    pub from: crate::memory_keep::ProposedIn,
 }
 
 /// The owner's signed-in profile the agent asks to use.
@@ -434,12 +436,14 @@ impl Board {
         &self,
         content: &str,
         task: &str,
+        from: crate::memory_keep::ProposedIn,
         now: i64,
     ) -> Result<Requested, Refusal> {
         let requested = self.approvals.propose(
             Proposal {
                 run: Approved::Memory(MemoryKeep {
                     content: content.to_owned(),
+                    from,
                 }),
                 action: json!({ "format": 1, "op": "memory.keep", "scope": "user", "content": content }),
                 fingerprint: json!({ "op": "memory.keep", "content": content }),
@@ -1037,8 +1041,9 @@ fn settled(
 
 /// Keeps `content`, which the owner approved in request `id`, at `now`:
 /// what they're told, either way.
-fn kept(config: &Config, id: &str, content: &str, now: i64) -> Result<String, String> {
-    crate::memory_keep::keep(config, content, now)
+fn kept(config: &Config, id: &str, keep: &MemoryKeep, now: i64) -> Result<String, String> {
+    let content = &keep.content;
+    crate::memory_keep::keep(config, content, Some(id), &keep.from, now)
         .map(|()| format!("Remembered: “{content}” The agent is given it from now on."))
         .map_err(|error| {
             tracing::error!(%id, %error, "an approved memory wasn't kept");
@@ -1075,7 +1080,7 @@ pub fn run_approved(
     };
     let run = match approved {
         Approved::Activation(run) => run,
-        Approved::Memory(keep) => return settled(claim, kept(config, id, &keep.content, now)),
+        Approved::Memory(keep) => return settled(claim, kept(config, id, &keep, now)),
         Approved::Schedule(asked) => {
             let at = Timestamp::from_second(now).unwrap_or_else(|_| Timestamp::now());
             let created = crate::schedule_proposals::create(
@@ -1372,8 +1377,22 @@ mod tests {
                 100,
             )
             .unwrap();
-        let memory = board.propose_memory("likes teal", "t2", 100).unwrap();
-        let late = board.propose_memory("has a corgi", "t3", 100).unwrap();
+        let memory = board
+            .propose_memory(
+                "likes teal",
+                "t2",
+                crate::memory_keep::ProposedIn::default(),
+                100,
+            )
+            .unwrap();
+        let late = board
+            .propose_memory(
+                "has a corgi",
+                "t3",
+                crate::memory_keep::ProposedIn::default(),
+                100,
+            )
+            .unwrap();
         let build = board
             .propose_activation(&proposal("act-1", "a"), &pinned("an idea"), "t4", 100)
             .unwrap();

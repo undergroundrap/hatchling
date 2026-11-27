@@ -238,6 +238,36 @@ pub struct MemoryItem {
     pub updated_at_secs: u64,
     /// The item's retention policy, fixed at write time.
     pub retention: RetentionPolicy,
+    /// Where it came from, written by the broker when the owner approved
+    /// keeping it (WO-048). `None` for anything else: an item a run wrote,
+    /// or one kept before records were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<crate::KeptRecord>,
+}
+
+/// The tag the broker gave an item the owner approved before records were
+/// kept (Hatchling 0.10 and earlier). A run can't write it.
+pub const LEGACY_APPROVED_TAG: &str = "approved";
+
+impl MemoryItem {
+    /// Whether the owner approved keeping it: its record says so, or, from
+    /// before records were kept, the broker's tag does.
+    #[must_use]
+    pub fn approved_by_owner(&self) -> bool {
+        self.record.is_some()
+            || self
+                .tags
+                .iter()
+                .any(|tag| tag.as_str() == LEGACY_APPROVED_TAG)
+    }
+
+    /// The item as a run is given it: its record without the ids of where
+    /// it came from ([`crate::KeptRecord::shareable`]).
+    #[must_use]
+    pub fn shareable(mut self) -> Self {
+        self.record = self.record.as_ref().map(crate::KeptRecord::shareable);
+        self
+    }
 }
 
 /// The unix epoch second at which `item` expires, or `None` for
@@ -277,7 +307,50 @@ mod tests {
             created_at_secs: created,
             updated_at_secs: created,
             retention,
+            record: None,
         }
+    }
+
+    /// An item kept before records were reads as one with none: approved
+    /// by the owner when the broker's tag says so, and not otherwise.
+    #[test]
+    fn an_item_from_before_records_reads_as_not_recorded() {
+        let old = r#"{"id":"kept-1","scope":"User","content":"tea","tags":["recall","approved"],"created_at_secs":5,"updated_at_secs":5,"retention":"Keep"}"#;
+        let item: MemoryItem = serde_json::from_str(old).unwrap();
+        assert_eq!(item.record, None);
+        assert!(item.approved_by_owner());
+        let unapproved = MemoryItem {
+            tags: vec!["recall".parse().unwrap()],
+            ..item.clone()
+        };
+        assert!(!unapproved.approved_by_owner());
+        // Written again, it has no record to write: the format is as it was.
+        assert_eq!(serde_json::to_string(&item).unwrap(), old);
+    }
+
+    #[test]
+    fn a_shared_item_keeps_its_record_without_where_it_came_from() {
+        let mut item = item_with_retention(RetentionPolicy::Keep, 9);
+        assert_eq!(item.clone().shareable(), item);
+        let record = crate::KeptRecord::agent_words(
+            Some(String::from("confirm-1")),
+            Some(String::from("run-1")),
+            Some(String::from("local")),
+            9,
+        );
+        item.record = Some(record.clone());
+        let shared = item.clone().shareable();
+        assert_eq!(shared.record, Some(record.shareable()));
+        assert_eq!(
+            MemoryItem {
+                record: None,
+                ..shared
+            },
+            MemoryItem {
+                record: None,
+                ..item
+            }
+        );
     }
 
     #[test]
