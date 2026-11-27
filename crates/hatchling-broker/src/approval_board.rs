@@ -1044,7 +1044,14 @@ fn settled(
 fn kept(config: &Config, id: &str, keep: &MemoryKeep, now: i64) -> Result<String, String> {
     let content = &keep.content;
     crate::memory_keep::keep(config, content, Some(id), &keep.from, now)
-        .map(|()| format!("Remembered: “{content}” The agent is given it from now on."))
+        .map(|keeping| match keeping {
+            crate::memory_keep::Keeping::Kept => {
+                format!("Remembered: “{content}” The agent is given it from now on.")
+            }
+            crate::memory_keep::Keeping::Already => {
+                format!("Already remembered: “{content}” It's kept once.")
+            }
+        })
         .map_err(|error| {
             tracing::error!(%id, %error, "an approved memory wasn't kept");
             String::from(

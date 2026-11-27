@@ -66,6 +66,13 @@ pub fn propose(config: &Config, task: &str, content: &str, from: ProposedIn) -> 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
+    // What the owner already approved isn't asked again (#596). A store
+    // that can't be read asks: keeping checks again.
+    if open(config).is_ok_and(|(principal, store)| already_kept(&store, &principal, content, now)) {
+        return MemoryResult::Unasked {
+            reason: String::from("it's already kept: the agent is given it in every run"),
+        };
+    }
     let now = i64::try_from(now).unwrap_or(i64::MAX);
     match board(config).propose_memory(content, task, from, now) {
         Ok(_) => MemoryResult::Proposed,
@@ -102,11 +109,12 @@ pub fn keep(
     approval: Option<&str>,
     from: &ProposedIn,
     now: i64,
-) -> Result<(), hatchling_memory::Error> {
-    let principal = MemoryPrincipal {
-        peer_uid: config.agent_uid.as_u32(),
-        session_id: SessionId::generate()?,
-    };
+) -> Result<Keeping, hatchling_memory::Error> {
+    let (principal, store) = open(config)?;
+    // Approved while the same words were kept some other way: one copy.
+    if already_kept(&store, &principal, content, u64::try_from(now).unwrap_or(0)) {
+        return Ok(Keeping::Already);
+    }
     let id = crate::approval::random_hex("kept-")
         .map_err(|source| hatchling_memory::Error::Io { source })?;
     let id: MemoryId = id.parse()?;
@@ -117,7 +125,7 @@ pub fn keep(
         from.chat.clone(),
         u64::try_from(now).unwrap_or(0),
     );
-    crate::memory_sealed::open_published(&config.memory.root)?.keep(
+    store.keep(
         &principal,
         &MemoryScope::User,
         &id,
@@ -125,7 +133,41 @@ pub fn keep(
         &[RECALL_TAG.parse::<Tag>()?],
         record,
     )?;
-    Ok(())
+    Ok(Keeping::Kept)
+}
+
+/// What [`keep`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Keeping {
+    /// It's kept now.
+    Kept,
+    /// The owner had approved the same words already: nothing new is kept.
+    Already,
+}
+
+/// Whether `a` and `b` are the same words, however they're spaced.
+fn same_words(a: &str, b: &str) -> bool {
+    a.split_whitespace().eq(b.split_whitespace())
+}
+
+/// Whether the owner already approved keeping `content`, in the same words.
+/// What a run wrote itself doesn't count: the owner never approved it.
+fn already_kept(
+    store: &MemoryStore,
+    principal: &MemoryPrincipal,
+    content: &str,
+    now_secs: u64,
+) -> bool {
+    let Ok(recall) = RECALL_TAG.parse::<Tag>() else {
+        return false;
+    };
+    store
+        .recall_by_tag(principal, &MemoryScope::User, &recall, now_secs)
+        .is_ok_and(|items| {
+            items
+                .iter()
+                .any(|item| item.approved_by_owner() && same_words(&item.content, content))
+        })
 }
 
 /// Lists or forgets what the agent is given from the owner's memory, as
@@ -383,6 +425,136 @@ mod tests {
             .into_iter()
             .filter_map(|item| item.record)
             .collect()
+    }
+
+    /// What the owner already approved, in the same words however spaced,
+    /// isn't put to them again, nor kept twice (#596). What a run wrote
+    /// itself doesn't count: the owner never approved it.
+    #[test]
+    fn what_is_already_kept_is_neither_asked_again_nor_kept_twice() {
+        let (config, dir) = config("duplicates", &[MemoryAction::Propose]);
+        assert_eq!(
+            keep(
+                &config,
+                "Their cat is Biscuit.",
+                None,
+                &ProposedIn::default(),
+                10
+            )
+            .unwrap(),
+            Keeping::Kept
+        );
+        assert_eq!(
+            propose(
+                &config,
+                "task-d",
+                "Their  cat\nis Biscuit.",
+                ProposedIn::default()
+            ),
+            MemoryResult::Unasked {
+                reason: String::from("it's already kept: the agent is given it in every run")
+            }
+        );
+        assert!(
+            board(&config)
+                .approvals()
+                .find_run("task-d", crate::approvals::State::Pending, |_| true)
+                .is_none(),
+            "nothing was put to the owner"
+        );
+        assert_eq!(
+            keep(
+                &config,
+                "Their cat is  Biscuit.",
+                None,
+                &ProposedIn::default(),
+                20
+            )
+            .unwrap(),
+            Keeping::Already
+        );
+        assert_eq!(kept(&config).len(), 1, "kept once");
+        // Different words are asked.
+        assert_eq!(
+            propose(
+                &config,
+                "task-d",
+                "Their cat is Biscuit, a tabby.",
+                ProposedIn::default()
+            ),
+            MemoryResult::Proposed
+        );
+        // The same words a run wrote itself are still the owner's to approve.
+        let (principal, store) = open(&config).unwrap();
+        store
+            .write(
+                &principal,
+                &MemoryScope::User,
+                &"by-a-run".parse().unwrap(),
+                "They walk at six.",
+                &[RECALL_TAG.parse().unwrap()],
+                RetentionPolicy::Keep,
+                30,
+            )
+            .unwrap();
+        assert_eq!(
+            propose(
+                &config,
+                "task-r",
+                "They walk at six.",
+                ProposedIn::default()
+            ),
+            MemoryResult::Proposed
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Approved after the same words were kept some other way, it isn't
+    /// kept a second time, and the owner is told so.
+    #[test]
+    fn an_approval_of_what_was_kept_meanwhile_keeps_one_copy() {
+        let (config, dir) = config("meanwhile", &[MemoryAction::Propose]);
+        assert_eq!(
+            propose(
+                &config,
+                "task-m",
+                "They prefer metric units.",
+                ProposedIn::default()
+            ),
+            MemoryResult::Proposed
+        );
+        keep(
+            &config,
+            "They prefer metric units.",
+            None,
+            &ProposedIn::default(),
+            5,
+        )
+        .unwrap();
+        let board = board(&config);
+        let id = board
+            .approvals()
+            .find_run("task-m", crate::approvals::State::Pending, |_| true)
+            .unwrap();
+        let request = board.approvals().get(&id).unwrap();
+        board
+            .decide(&id, request.revision, &request.digest, Decision::Approve, 1)
+            .unwrap();
+        let said = crate::approval_board::run_approved(
+            &board,
+            &id,
+            &config,
+            &hatchling_vault::MasterKey::generate().unwrap(),
+            &crate::Skills::default(),
+            None,
+            9,
+        );
+        assert_eq!(
+            said,
+            "Already remembered: “They prefer metric units.” It's kept once."
+        );
+        assert_eq!(kept(&config).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Where a kept item came from is the broker's to say: words that claim

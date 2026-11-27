@@ -68,6 +68,7 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 Each slice commits its evidence under `docs/evidence/`.
 
 - Slice 1, the record: [wo048-kept-record.md](../evidence/wo048-kept-record.md).
+- Slice 2, no duplicates: [wo048-no-duplicates.md](../evidence/wo048-no-duplicates.md).
 
 ## Notes
 
