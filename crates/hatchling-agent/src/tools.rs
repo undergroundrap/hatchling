@@ -563,6 +563,10 @@ impl Tool for MemoryProposeTool<'_> {
                 "check_by": {
                     "type": "string",
                     "description": "Optional: a calendar day, YYYY-MM-DD, after which the owner should be asked whether it's still so."
+                },
+                "absence": {
+                    "type": "boolean",
+                    "description": "true when this records that something is NOT so: a claim found untrue, something that doesn't exist, a thread closed. Say the negative in content, such as 'They have no car.'"
                 }
             },
             "required": ["content", "kind"],
@@ -584,6 +588,7 @@ impl Tool for MemoryProposeTool<'_> {
             why: text("why"),
             how_to_apply: text("how_to_apply"),
             check_by: text("check_by"),
+            absence: arguments.get("absence").and_then(Value::as_bool).unwrap_or(false),
         };
         Ok(match crate::memory::propose(self.stream, &asked) {
             Ok(crate::memory::Proposal::Asked) => ToolOutput::Ok(json!({
@@ -4731,7 +4736,8 @@ mod tests {
                 "kind": "guidance",
                 "why": "They live in Europe.",
                 "how_to_apply": "Any measurement.",
-                "check_by": "2027-06-01"
+                "check_by": "2027-06-01",
+                "absence": true
             }))
             .unwrap();
         drop(agent);
@@ -4739,6 +4745,7 @@ mod tests {
         assert_eq!(sent.get("why"), Some(&json!("They live in Europe.")));
         assert_eq!(sent.get("how_to_apply"), Some(&json!("Any measurement.")));
         assert_eq!(sent.get("check_by"), Some(&json!("2027-06-01")));
+        assert_eq!(sent.get("absence"), Some(&json!(true)));
         let (agent, broker) = remembered(hatchling_core::MemoryResult::Unasked {
             reason: String::from("the owner said no to keeping this"),
         });

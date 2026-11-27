@@ -126,6 +126,7 @@ pub fn keep(
         why: proposal.why.clone(),
         how_to_apply: proposal.how_to_apply.clone(),
         check_by: proposal.check_by.clone(),
+        absence: proposal.absence,
         ..KeptRecord::agent_words(
             approval.map(str::to_owned),
             from.run.clone(),
@@ -473,6 +474,7 @@ mod tests {
             why: Some("They live in Europe."),
             how_to_apply: Some("Any measurement."),
             check_by: Some("2099-01-01"),
+            absence: false,
         };
         assert_eq!(
             propose(&config, "task-g", &asked, ProposedIn::default()),

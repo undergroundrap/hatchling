@@ -57,7 +57,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35; an item's `record` (WO-048) |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36; an item's `record` (WO-048) |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -758,3 +758,9 @@ same commit.
   Each failed check is `Unasked { reason }`, saying what to change.
 - **The owner's card** says what kind of thing it is in the broker's words, and shows the reason, when it applies and the day as the agent's. What they approve is kept in the item's `record` (`kind`, `why`, `how_to_apply`, `check_by`).
 - **Recall** gives each kept item with its kind in its header, and its reason, when it applies and its day after its words, all inside the item's length frame.
+
+## v36 — A memory of what isn't so
+
+- **`MemoryOp::Propose`** gains `absence` (WO-048), `false` when left out. `true` records a settled negative: a claim found untrue, something that doesn't exist, a thread closed. The words say the negative ("They have no car.").
+- **The owner's card** says, in the broker's words, that it records something isn't so and that the agent takes it as settled. The approval freezes it.
+- **Kept,** it's the item record's `absence`. **Recalled,** its header says `KNOWN NOT TO BE SO`, and the block's intro says what that means: take it as known, not as something missing, and don't work it out again.
