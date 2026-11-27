@@ -1242,9 +1242,11 @@ export type ConflictEntry = {
     readonly won_version: number;
 };
 /**
- * What filled a model call's prompt (WO-056): its server's count of it,
- * split by the size of each part of the request the broker forwarded. Each
- * part is about right; their sum is the server's count exactly.
+ * What filled a model call's prompt (WO-056).
+ *
+ * Its server's count of it, split by the size of each part of the request
+ * the broker forwarded. Each part is about right; their sum is the
+ * server's count exactly.
  */
 export type ContextParts = {
     /**

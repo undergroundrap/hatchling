@@ -69,6 +69,8 @@ On the sandbox, with `HATCHLING_REQUIRE_CELL=1`:
     - the seam test, two code lines over its limit, now marked `#[expect(clippy::too_many_lines)]` with its reason.
   - After those: broker lib 1955 passed, core 260.
 - `hatchling-dev audit`: all checks passed. `protocol-schema --write`: all checks passed, with the schema and the app's generated types committed.
+  - CI's protocol drift check then found the schema a step behind: `ContextParts`' doc comment, reworded for clippy after the schema was made, is its description in the schema.
+  - Regenerated, `protocol-schema` and `npm run protocol:check` both pass.
 - **Hand-breaks:** all eight caught.
 - **Mutation** on the change (`--in-diff` against slice 1, `hatchling-broker` and `hatchling-core`): 26 mutants, 24 caught, 2 unviable, **none missed**.
 - **The app:** `npm run check`, green with the new types.
