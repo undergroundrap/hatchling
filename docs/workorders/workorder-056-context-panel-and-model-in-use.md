@@ -98,6 +98,7 @@ All must pass before the WO closes:
 
 - Slice 1, the model fact: [wo056-model-fact.md](../evidence/wo056-model-fact.md).
 - Slice 2, the broker's count: [wo056-count.md](../evidence/wo056-count.md).
+- Slice 3, the ring, the chip and the panel: [wo056-panel.md](../evidence/wo056-panel.md).
 
 ## Notes
 

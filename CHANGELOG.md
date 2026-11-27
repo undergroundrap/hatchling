@@ -8,6 +8,14 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **A context ring, the model in use, and what fills the window** ([WO-056](docs/workorders/workorder-056-context-panel-and-model-in-use.md), slice 3).
+  - Under the composer, the "Context: 9.9K of 64K tokens" line becomes a small ring showing how full the chat's last answer got, with the exact numbers on hover, on focus and in its name.
+  - Beside it is the model that answered, which opens the model setting.
+  - Clicking the ring shows what filled the window: the conversation, the tools, the memory and the instructions, each about right, and what was free, exactly.
+  - Each chat shows its own last answer. Before, every chat showed the last answer anywhere.
+  - After Hatchling restarts, the ring no longer flickers through older answers as the history comes back.
+  - Not in any release.
+
 - **Hatchling counts what fills the agent's window** ([WO-056](docs/workorders/workorder-056-context-panel-and-model-in-use.md), slice 2). Each run's summary now says what filled its largest prompt: the instructions, the tools' definitions, the memory it was given, and the conversation. The model's server counts only the total. Hatchling measures each part in the request it sent and splits that exact total by size, so each part is about right and they add up exactly. It's counted from what was sent, never from what the agent says. The summary also names the model, from Hatchling's settings, and the chat the run answered. The context panel that shows them follows. **Breaking for the local API:** UI schema v16 (a run summary's `model`, `chat_id` and `context_parts`). **Breaking for `hatchling-core`:** `SubagentEvent::RunSummary` gains the three fields. Not in any release.
 
 - **The agent says truly which model runs it** ([WO-056](docs/workorders/workorder-056-context-panel-and-model-in-use.md), slice 1). Asked which model it is, a model used to answer from its training, often wrongly. Now each run is told the model's name from Hatchling's settings, and whether it runs on your machine or at a named host, which the conversation is then sent to. The agent answers as Hatchling, running on that model right now. Not in any release.

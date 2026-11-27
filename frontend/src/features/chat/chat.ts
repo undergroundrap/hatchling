@@ -1,5 +1,6 @@
 import type { ContextUse } from '../../session/usage.js';
 import { fitNote } from '../settings/usage.js';
+import { contextRows, countedNote, exactWords, headline, shareOf } from './context.js';
 import { loadingImage } from '../../components/loading-image.js';
 import { domainApprovalNotice } from '../approvals/domain.js';
 import { renderTaskApprovalQueue } from '../approvals/surfaces.js';
@@ -19,6 +20,7 @@ import type { ArtifactFormat, DeepReadonly, Message } from '../../protocol/model
 import { h } from '../../components/dom.js';
 import { elapsedSince } from '../../components/elapsed.js';
 import { icon } from '../../components/icons.js';
+import { setFloatingMenuOpen } from '../../components/floating.js';
 import { button, emptyState, iconButton, markdown, menu, pill } from '../../components/ui.js';
 import { purchaseCard } from './purchase-card.js';
 export function renderChat(ctx: AppContext): HTMLElement {
@@ -249,17 +251,16 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     if (approval)
         area.append(approval);
     area.append(form);
-    const context = ctx.ui.chatId === 'main' ? ctx.usage?.context() : null;
+    // The chat in view's own last answer (WO-056), never another chat's.
+    const context = ctx.usage?.context(ctx.ui.chatId) ?? null;
     if (context) {
-        area.append(contextMeter(context));
+        area.append(contextBar(ctx, context));
         const note = fitNote(context);
         if (note)
             area.append(h('p', { class: 'composer-caption context-fit', role: 'status' }, note));
     }
     return area;
 }
-const SHORT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
-/** A model's window as it's named: 16K for 16,384, 128K for 131,072. */
 /** What the chat offers for the run in flight: Stop while it works, and, in the demo, Resume once it's paused. Connected to Hatchling a stopped run is over, so there's nothing to resume (WO-051). */
 export function turnAction(mode: AppContext['state']['mode'], turn: AppContext['state']['turn']): 'stop' | 'resume' | null {
     if (turn === 'working')
@@ -272,16 +273,50 @@ function turnButton(ctx: AppContext): HTMLElement | null {
         return button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' });
     return action === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
 }
-export function windowSize(window: number): string {
-    return window % 1024 === 0 ? `${window / 1024}K` : SHORT.format(window);
+/** A ring showing `share` percent of the window used: its arc is the share; with no window known, an empty ring. */
+function contextRing(share: number | null): SVGSVGElement {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [key, value] of Object.entries({ viewBox: '0 0 20 20', width: '16', height: '16', 'aria-hidden': 'true', focusable: 'false', class: 'context-ring' }))
+        svg.setAttribute(key, value);
+    for (const [part, length] of [['track', 100], ['used', share ?? 0]] as const) {
+        const circle = document.createElementNS(svg.namespaceURI, 'circle');
+        for (const [key, value] of Object.entries({ cx: '10', cy: '10', r: '8', pathLength: '100', class: `context-ring-${part}`, 'stroke-dasharray': `${length} 100` }))
+            circle.setAttribute(key, value);
+        svg.append(circle);
+    }
+    if (share !== null && share >= 90)
+        svg.classList.add('nearly-full');
+    return svg;
 }
-/** How full the model's context was on the last answer: against its window when that's known. */
-export function contextMeter(context: ContextUse): HTMLElement {
-    const tokens = SHORT.format(context.tokens);
-    if (context.window === null)
-        return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, as the model server counted it. Ollama says the model’s window itself; for another server, set HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW to see it against the model’s window.' }, `Context: ${tokens} tokens on the last answer`);
-    const share = Math.min(100, Math.round((context.tokens / context.window) * 100));
-    return h('p', { class: 'composer-caption context-meter', title: 'The largest prompt of the last answer, against the model’s context window, as the model server counted it.' }, `Context: ${tokens} of ${windowSize(context.window)} tokens (${share}%) on the last answer`, h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used on the last answer: ${share}%` }));
+/** The panel the ring opens: how full, what filled it, what's free, and how it's counted. */
+function contextPanel(context: ContextUse): HTMLElement {
+    const share = shareOf(context);
+    const rows = contextRows(context);
+    return h('div', { class: 'menu-popover context-panel', id: 'context-panel', role: 'group', 'aria-label': 'Context window' }, h('p', { class: 'context-panel-title' }, 'Context window'), h('p', { class: 'context-panel-headline' }, headline(context)), share === null || context.window === null ? null : h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used: ${share}%` }), rows.length ? h('dl', { class: 'context-panel-rows' }, ...rows.map(row => h('div', { class: `context-panel-row${row.about ? '' : ' exact'}` }, h('dt', {}, row.label), h('dd', {}, row.about ? `about ${row.tokens}` : row.tokens)))) : null, h('p', { class: 'context-panel-note' }, countedNote(context)));
+}
+/** Under the composer (WO-056): a ring for how full the chat's last answer got, opening its panel, and the model that answered, opening the model setting. */
+export function contextBar(ctx: AppContext, context: ContextUse): HTMLElement {
+    const share = shareOf(context);
+    const exact = exactWords(context);
+    const summary = h('summary', { class: 'context-ring-trigger', 'aria-label': `${exact}. Show what filled it.`, 'aria-expanded': 'false', 'aria-controls': 'context-panel', 'data-tooltip': exact }, contextRing(share), h('span', { class: 'context-ring-label' }, share === null ? `${context.tokens.toLocaleString('en')} tokens` : `${share}%`));
+    const ring = h('details', { class: 'menu context-menu' }, summary, contextPanel(context));
+    // As every menu: the floating layer places it, and Escape or Tab closes it back to the ring.
+    summary.addEventListener('click', (event) => {
+        event.preventDefault();
+        setFloatingMenuOpen(ring, !ring.open);
+    });
+    ring.addEventListener('keydown', (event) => {
+        if (!ring.open || (event.key !== 'Escape' && event.key !== 'Tab'))
+            return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        setFloatingMenuOpen(ring, false);
+        summary.focus({ preventScroll: true });
+    });
+    const model = context.model === null ? null : button(context.model, () => ctx.openSettings('general'), { variant: 'ghost', className: 'model-chip', title: `The model that answered: ${context.model}. Change it in Settings.` });
+    return h('div', { class: 'composer-caption context-bar' }, ring, model);
 }
 function dataUrl(file: File): Promise<string> {
     return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('The file could not be read.')); reader.onerror = () => reject(new Error('The file could not be read.')); reader.readAsDataURL(file); });

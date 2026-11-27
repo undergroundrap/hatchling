@@ -45,6 +45,13 @@ export interface Usage {
     readonly limits: UsageLimits;
     readonly spent: UsageSpent;
 }
+/** What filled a prompt (WO-056): the broker's split of the model server's count, by size. */
+export interface ContextParts {
+    readonly system: number;
+    readonly tools: number;
+    readonly memory: number;
+    readonly conversation: number;
+}
 /** How full the model's context was on the chat's last answer, as the broker counted it. */
 export interface ContextUse {
     /** Tokens the largest model call of that answer read. */
@@ -55,6 +62,10 @@ export interface ContextUse {
     readonly onCpu: number | null;
     /** Whether the computer was low on memory on that answer. */
     readonly memoryLow: boolean;
+    /** The model that answered, as Hatchling's settings name it (WO-056); `null` when they don't. */
+    readonly model: string | null;
+    /** What filled that answer's largest prompt (WO-056); `null` when the broker didn't say. */
+    readonly parts: ContextParts | null;
 }
 /** Usage as last read: not yet, couldn't be, or what the broker said. */
 export type UsageState = {
@@ -72,6 +83,6 @@ export interface UsagePort {
     refresh(): Promise<void>;
     /** Set the limits, each replacing what was set. */
     setLimits(limits: UsageLimits): Promise<CommandResult>;
-    /** How full the context was on the chat's last answer: none until one is recorded. */
-    context(): ContextUse | null;
+    /** How full the context was on chat `chatId`'s last answer: none until one is recorded there. */
+    context(chatId: string): ContextUse | null;
 }

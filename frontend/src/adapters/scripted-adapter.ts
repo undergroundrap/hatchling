@@ -1,6 +1,7 @@
 import { ScriptedTaskApprovals } from './task-approvals.js';
 import type { TaskApproval } from '../session/task-approvals.js';
 import { ScriptedChatSession } from './chat-session.js';
+import { ScriptedUsage } from './scripted-usage.js';
 import { presentationSnapshot } from './presentation-snapshot.js';
 import { identityDocumentId, patchIdentityDocument } from '../protocol/identity-document.js';
 import { reduceBrowserSession } from './browser-fixtures.js';
@@ -32,6 +33,8 @@ export class ScriptedAdapter implements ProtocolAdapter {
     readonly mode = 'scripted' as const;
     readonly chatSession: ScriptedChatSession;
     readonly taskApprovals: ScriptedTaskApprovals;
+    /** The preview's usage: nothing counted, and a sample of the composer's context (WO-056). */
+    readonly usage = new ScriptedUsage();
     private state: AppState = createFixtures();
     private readonly listeners = new Set<() => void>();
     private readonly browserScheduled = new Set<string>();

@@ -2,7 +2,7 @@
 // and after each answer, and every broker answer as a state the view can say.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LiveUsage, usageOf } from '../../dist/app/adapters/live/usage.js';
+import { LiveUsage, SETTLE_MS, usageOf } from '../../dist/app/adapters/live/usage.js';
 import { compact, fitNote, monthName, parseTokens, summary, tokensText, weekday } from '../../dist/app/features/settings/usage.js';
 /** A client that answers each request from a script, and records it. */
 class FakeClient {
@@ -30,11 +30,13 @@ const day = (date, calls = 2, extra = {}) => ({ date, calls, input_tokens: 1200,
 const REPORT = { counted: true, days: [day('2026-11-03'), day('2026-11-02', 0, { input_tokens: 0, output_tokens: 0 })], models: [{ model: 'qwen3.5:9b', calls: 2, input_tokens: 1200, output_tokens: 300 }], limits: { daily_tokens: 500000 }, spent: { today: 1500, month: 9000, month_of: '2026-11' } };
 const usage = report => ({ kind: 'answered', result: { result: 'usage', usage: report } });
 const flush = () => new Promise(resolve => setImmediate(resolve));
-const surface = answers => {
+/** A usage surface; `held` collects repaints to run by hand, or they run at once. */
+const surface = (answers, held = null) => {
     const client = new FakeClient(answers);
     let changes = 0;
     let serial = 0;
-    const live = new LiveUsage(client, () => { changes++; }, () => `r${++serial}`);
+    const later = held === null ? run => run() : run => held.push(run);
+    const live = new LiveUsage(client, () => { changes++; }, () => `r${++serial}`, later);
     return { client, live, changes: () => changes };
 };
 test('the broker\'s report reads in the app\'s words', () => {
@@ -142,22 +144,56 @@ test('limits that weren\'t set say why, and leave the usage as it was', async ()
     assert.deepEqual(live.current(), { kind: 'unread' });
     assert.equal(changes(), 0);
 });
+const run = (chat, calls, peak, window, extra = {}) => ({ event: 'run_summary', event_id: 'e', ts: 't', run_id: 'r', cell_id: 'c', chat, tools: [], model_calls: calls, model_calls_refused: 0, peak_input_tokens: peak, output_tokens: 1, context_window: window, ...extra });
 test('the context is a chat answer\'s largest prompt: background work and runs without a model call don\'t move it', () => {
     const { live, changes } = surface([]);
-    const run = (chat, calls, peak, window) => ({ event: 'run_summary', event_id: 'e', ts: 't', run_id: 'r', cell_id: 'c', chat, tools: [], model_calls: calls, model_calls_refused: 0, peak_input_tokens: peak, output_tokens: 1, context_window: window });
-    assert.equal(live.context(), null);
+    assert.equal(live.context('main'), null);
     live.observeRun({ event: 'api_call', event_id: 'e', ts: 't', run_id: 'api', caller: 'ui', capabilities: [], request: 'hello', outcome: 'served' });
     live.observeRun(run(false, 3, 9000, null));
     live.observeRun(run(true, 0, 0, null));
-    assert.equal(live.context(), null);
+    assert.equal(live.context('main'), null);
     assert.equal(changes(), 0);
+    // One from before a summary named its chat is the main chat's.
     live.observeRun(run(true, 2, 5500, 16384));
-    assert.deepEqual(live.context(), { tokens: 5500, window: 16384, onCpu: null, memoryLow: false });
+    assert.deepEqual(live.context('main'), { tokens: 5500, window: 16384, onCpu: null, memoryLow: false, model: null, parts: null });
     live.observeRun({ ...run(true, 1, 700, null), context_window: undefined });
-    assert.deepEqual(live.context(), { tokens: 700, window: null, onCpu: null, memoryLow: false });
+    assert.deepEqual(live.context('main'), { tokens: 700, window: null, onCpu: null, memoryLow: false, model: null, parts: null });
     live.observeRun({ ...run(true, 1, 700, 131072), model_on_cpu: 900000000, memory_low: true });
-    assert.deepEqual(live.context(), { tokens: 700, window: 131072, onCpu: 900000000, memoryLow: true });
+    assert.deepEqual(live.context('main'), { tokens: 700, window: 131072, onCpu: 900000000, memoryLow: true, model: null, parts: null });
     assert.equal(changes(), 3);
+});
+test('each chat has its own last answer\'s context, with the model and what filled it (WO-056)', () => {
+    const { live } = surface([]);
+    const parts = { system: 30, tools: 20, memory: 10, conversation: 40 };
+    live.observeRun(run(true, 1, 100, 65536, { chat_id: 'local', model: 'gemma4:12b', context_parts: parts }));
+    live.observeRun(run(true, 1, 4000, 65536, { chat_id: 'side-1', model: 'qwen3.5:9b', context_parts: null }));
+    assert.deepEqual(live.context('main'), { tokens: 100, window: 65536, onCpu: null, memoryLow: false, model: 'gemma4:12b', parts });
+    assert.deepEqual(live.context('side-1'), { tokens: 4000, window: 65536, onCpu: null, memoryLow: false, model: 'qwen3.5:9b', parts: null });
+    assert.equal(live.context('side-2'), null, 'a chat with no answer yet has none');
+});
+test('a burst of run summaries, as a replay brings, repaints once when it settles (WO-056)', () => {
+    const held = [];
+    const { live, changes } = surface([], held);
+    for (const peak of [100, 200, 300])
+        live.observeRun(run(true, 1, peak, 1000));
+    assert.equal(changes(), 0, 'not on each one');
+    assert.equal(held.length, 1, 'one repaint waits');
+    assert.equal(live.context('main').tokens, 300, 'the newest is held already');
+    held.shift()();
+    assert.equal(changes(), 1);
+    live.observeRun(run(true, 1, 400, 1000));
+    assert.equal(held.length, 1, 'a later one waits again');
+    held.shift()();
+    assert.equal(changes(), 2);
+});
+test('without a timer given, the repaint waits for the burst to settle', async () => {
+    const client = new FakeClient([]);
+    let changes = 0;
+    const live = new LiveUsage(client, () => { changes++; }, () => 'r1');
+    live.observeRun(run(true, 1, 100, 1000));
+    assert.equal(changes, 0);
+    await new Promise(resolve => setTimeout(resolve, SETTLE_MS + 20));
+    assert.equal(changes, 1);
 });
 test('the owner is told when the model ran partly on the CPU, or the computer was low on memory', () => {
     const context = (onCpu, memoryLow) => ({ tokens: 5000, window: 32768, onCpu, memoryLow });

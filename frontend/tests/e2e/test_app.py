@@ -485,6 +485,28 @@ class FrontendTests(TouchupCases, ReleaseCases, NavigationCases, PolishCases, Co
         expect(self.page.locator('.user-bubble').last).to_contain_text('A second line')
         expect(send).to_be_hidden()
 
+    def test_29b_context_ring_names_its_numbers_and_opens_what_filled_it(self):
+        # WO-056: the ring says how full the last answer got, exactly, by name.
+        ring = self.page.locator('.context-menu > summary')
+        expect(ring).to_have_attribute('aria-label', '8.3K of 64K tokens of context (13%) used on the last answer. Show what filled it.')
+        expect(ring).to_contain_text('13%')
+        chip = self.page.locator('.context-bar .model-chip')
+        expect(chip).to_have_text('gemma4:12b')
+        ring.click()
+        panel = self.page.locator('.context-panel')
+        expect(panel).to_be_visible()
+        expect(panel.locator('.context-panel-headline')).to_have_text('13% used · 8.3K of 64K')
+        rows = panel.locator('.context-panel-row')
+        self.assertEqual(rows.locator('dt').all_inner_texts(), ['Conversation', 'Tools', 'Memory', 'System', 'Free'])
+        self.assertEqual(rows.locator('dd').all_inner_texts(), ['about 2.1K', 'about 2.4K', 'about 720', 'about 3.1K', '57.2K'])
+        expect(panel.locator('meter')).to_have_attribute('aria-label', 'Context used: 13%')
+        self.assert_no_overflow()
+        # Escape closes it, and the chip opens the model setting.
+        self.page.keyboard.press('Escape')
+        expect(panel).to_be_hidden()
+        chip.click()
+        expect(self.page.get_by_role('dialog')).to_be_visible()
+
     def test_30_per_chat_drafts_and_scroll_restore(self):
         draft = self.page.get_by_role('textbox', name='Message', exact=True)
         draft.fill('A reference draft\nwith a second line')
