@@ -51,4 +51,30 @@ Part of [#598](https://github.com/undergroundrap/hatchling/issues/598), [WO-048]
 
 ## The gate
 
-RESULTS
+**The first run** (`dr-k3.sh`) found four gaps, each now fixed:
+- **Version pins and schema.** Six core tests and one frontend test pinned the session protocol at 34, and the checked-in protocol schema was stale. The schema, `generated.ts` and the pins are now at v35. The frontend's check passes: 627, 271 and 16 tests.
+- **Five missed mutants in `memory_proposal.rs`:**
+  - Two were redundant guards. The calendar day is now checked by reading it back exactly as given, which also refuses `20261127`, `+2026-11-27` and `2026-1-27`. A count can't be empty, since the words are split and the empty ones dropped.
+  - Three were negatives no test had, now tested: "They travel in summer months.", "Long years ago they lived in Rome.", "It takes two weeks from the start.", "They moved two houses ago.".
+- **Clippy on 1.85.0:** a test helper is now a `const fn`.
+- **The audit:** `docs/session-protocol.md`'s status line is now v35.
+
+**The rerun**, on tree `af9b66cf`:
+- fmt passes, clippy passes on 1.98.1 and 1.85.0, and the workspace builds;
+- the workspace's tests: 4638 passed. The 3 that failed were the audit's three tests, over the status line. After its fix, `hatchling-dev`'s tests pass (202 and the rest) and `hatchling-dev audit` passes.
+
+**Nine hand-breaks, each caught by its tests:**
+- a proposal without a kind is taken as about the owner;
+- guidance with one reason of two is put to the owner;
+- a relative date is put to the owner;
+- today is a day to check again;
+- the card shows the words alone;
+- the approval doesn't freeze the reason;
+- the record keeps no kind;
+- the session drops the reason;
+- recall gives no reason.
+
+**Mutation** (`--in-diff`, the slice's own diff, none missed and none timed out):
+- `hatchling-broker` (`memory_proposal.rs`, `memory_keep.rs`, `approval_board.rs`, `serve.rs`): 83 mutants, 76 caught, 7 unviable;
+- `hatchling-memory` (`prompt.rs`): 8 mutants, 8 caught;
+- `hatchling-agent` (`tools.rs`, `memory.rs`): 5 mutants, 3 caught, 2 unviable.
