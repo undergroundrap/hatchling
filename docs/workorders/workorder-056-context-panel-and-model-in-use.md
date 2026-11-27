@@ -97,6 +97,7 @@ All must pass before the WO closes:
 ## Evidence
 
 - Slice 1, the model fact: [wo056-model-fact.md](../evidence/wo056-model-fact.md).
+- Slice 2, the broker's count: [wo056-count.md](../evidence/wo056-count.md).
 
 ## Notes
 

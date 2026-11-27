@@ -264,6 +264,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "chat": {
                         "type": "boolean"
                     },
+                    "chat_id": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "context_parts": {
+                        "anyOf": [
+                            {
+                                "$ref": "#/$defs/ContextParts"
+                            },
+                            {
+                                "type": "null"
+                            }
+                        ]
+                    },
                     "context_window": {
                         "minimum": 0,
                         "type": [
@@ -277,6 +293,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "memory_low": {
                         "type": "boolean"
+                    },
+                    "model": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
                     },
                     "model_calls": {
                         "minimum": 0,
@@ -1300,6 +1322,33 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "digest",
             "fields",
             "scopes"
+        ],
+        "type": "object"
+    },
+    "ContextParts": {
+        "properties": {
+            "conversation": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "memory": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "system": {
+                "minimum": 0,
+                "type": "integer"
+            },
+            "tools": {
+                "minimum": 0,
+                "type": "integer"
+            }
+        },
+        "required": [
+            "system",
+            "tools",
+            "memory",
+            "conversation"
         ],
         "type": "object"
     },

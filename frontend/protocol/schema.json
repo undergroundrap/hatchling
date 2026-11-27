@@ -378,6 +378,24 @@
               "description": "Whether it was a chat run, answering the owner: otherwise\nbackground work.",
               "type": "boolean"
             },
+            "chat_id": {
+              "description": "The chat the run answered (WO-056, v16), so the meter shows the\nchat in view; `None` for background work.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "context_parts": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ContextParts"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "What filled the largest call's prompt (WO-056, v16): its\nserver's count split by the bytes of each part of the request\nthe broker forwarded. The parts sum to `peak_input_tokens`;\n`None` without a model call the broker could read."
+            },
             "context_window": {
               "default": null,
               "description": "The model's context window in tokens: the one the model's\nserver says it gives the model (Ollama does), else the one the\noperator declared. What the largest call is measured against;\n`None` when neither is known.",
@@ -395,6 +413,13 @@
             "memory_low": {
               "description": "Whether the computer was low on memory when the session ended:\nless than a tenth of it free.",
               "type": "boolean"
+            },
+            "model": {
+              "description": "The model, as the broker's settings name it (WO-056, v16);\n`None` when they don't.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "model_calls": {
               "description": "Model calls answered.",
@@ -2889,6 +2914,42 @@
         "winner",
         "won_version",
         "at"
+      ],
+      "type": "object"
+    },
+    "ContextParts": {
+      "description": "What filled a model call's prompt (WO-056): its server's count of it,\nsplit by the size of each part of the request the broker forwarded. Each\npart is about right; their sum is the server's count exactly.",
+      "properties": {
+        "conversation": {
+          "description": "Everything else: the conversation, tool calls and their results.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "memory": {
+          "description": "The memory the run was given.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "system": {
+          "description": "The instructions: the system messages.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tools": {
+          "description": "The tools' definitions.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "system",
+        "tools",
+        "memory",
+        "conversation"
       ],
       "type": "object"
     },
@@ -17370,7 +17431,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 39,
-    "ui_schema_version": 15
+    "ui_schema_version": 16
   },
   "x-roots": {
     "ActivityEvent": {

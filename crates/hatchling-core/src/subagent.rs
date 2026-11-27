@@ -416,6 +416,20 @@ pub enum SubagentEvent {
         /// less than a tenth of it free.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         memory_low: bool,
+        /// The model, as the broker's settings name it (WO-056, v16);
+        /// `None` when they don't.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The chat the run answered (WO-056, v16), so the meter shows the
+        /// chat in view; `None` for background work.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chat_id: Option<String>,
+        /// What filled the largest call's prompt (WO-056, v16): its
+        /// server's count split by the bytes of each part of the request
+        /// the broker forwarded. The parts sum to `peak_input_tokens`;
+        /// `None` without a model call the broker could read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_parts: Option<ContextParts>,
     },
     /// A file the owner began sending into the Room's inbox (WO-041),
     /// once it ended: the inbox's name for it, its size, and how it
@@ -539,6 +553,24 @@ pub enum ToolUse {
     Room,
 }
 
+/// What filled a model call's prompt (WO-056).
+///
+/// Its server's count of it, split by the size of each part of the request
+/// the broker forwarded. Each part is about right; their sum is the
+/// server's count exactly.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ContextParts {
+    /// The instructions: the system messages.
+    pub system: u64,
+    /// The tools' definitions.
+    pub tools: u64,
+    /// The memory the run was given.
+    pub memory: u64,
+    /// Everything else: the conversation, tool calls and their results.
+    pub conversation: u64,
+}
+
 /// How often a session used one tool, by how each use ended.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -641,6 +673,64 @@ mod tests {
         ScheduleGrant::Egress {
             destination: String::from("api.example.com:443"),
         }
+    }
+
+    /// A run summary's model, chat and what filled its largest prompt
+    /// (WO-056, v16): on the wire when known, left out when not, and a
+    /// summary from before v16 reads as none of them.
+    #[test]
+    fn a_run_summarys_model_chat_and_context_parts_have_their_wire_form() {
+        let summary = SubagentEvent::RunSummary {
+            cell_id: String::from("run-1"),
+            chat: true,
+            tools: Vec::new(),
+            model_calls: 1,
+            model_calls_refused: 0,
+            peak_input_tokens: 100,
+            output_tokens: 5,
+            context_window: Some(65536),
+            model_on_cpu: None,
+            memory_low: false,
+            model: Some(String::from("gemma4:12b")),
+            chat_id: Some(String::from("main")),
+            context_parts: Some(ContextParts {
+                system: 30,
+                tools: 20,
+                memory: 10,
+                conversation: 40,
+            }),
+        };
+        let wire = serde_json::json!({
+            "event": "run_summary", "cell_id": "run-1", "chat": true, "tools": [],
+            "model_calls": 1, "model_calls_refused": 0, "peak_input_tokens": 100,
+            "output_tokens": 5, "context_window": 65536, "model": "gemma4:12b",
+            "chat_id": "main",
+            "context_parts": {"system": 30, "tools": 20, "memory": 10, "conversation": 40}
+        });
+        assert_eq!(serde_json::to_value(&summary).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<SubagentEvent>(wire.clone()).unwrap(),
+            summary
+        );
+        let mut before = wire;
+        for gone in ["model", "chat_id", "context_parts"] {
+            before.as_object_mut().unwrap().remove(gone);
+        }
+        let read = serde_json::from_value::<SubagentEvent>(before.clone()).unwrap();
+        assert!(matches!(
+            read,
+            SubagentEvent::RunSummary {
+                model: None,
+                chat_id: None,
+                context_parts: None,
+                ..
+            }
+        ));
+        assert_eq!(
+            serde_json::to_value(&read).unwrap(),
+            before,
+            "none of them sent"
+        );
     }
 
     #[test]
@@ -808,6 +898,9 @@ mod tests {
             context_window: Some(32768),
             model_on_cpu: Some(1_200_000_000),
             memory_low: true,
+            model: None,
+            chat_id: None,
+            context_parts: None,
         });
         assert_eq!(
             wire(&summary),
@@ -898,6 +991,9 @@ mod tests {
                     context_window: Some(16384),
                     model_on_cpu: None,
                     memory_low: false,
+                    model: None,
+                    chat_id: None,
+                    context_parts: None,
                 }),
                 json!({"event": "run_summary", "event_id": "ev-1", "ts": "2026-10-03T12:00:00Z",
                        "run_id": "parent", "cell_id": "run-1", "chat": true,
