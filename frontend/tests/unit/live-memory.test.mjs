@@ -114,6 +114,9 @@ test('a kept memory\'s details read in the page\'s words', () => {
     assert.equal(detailOf(kept('user/e', 'x', true, { confirmed_at: AT })).confirmed, null);
     assert.equal(detailOf(kept('user/f', 'x', true, { confirmed_at: null })).confirmed, null);
     assert.equal(detailOf(kept('user/g', 'x', true, { absence: true })).absence, true);
+    // From an older broker, saying nothing of where it came from.
+    const { from: _unsaid, ...older } = kept('user/h', 'x');
+    assert.equal(detailOf(older).origin, 'Where it came from isn’t recorded');
 });
 test('a listed memory\'s details are kept beside it, and confirming reads the list again', async () => {
     const { client, live } = surface([listed(kept('user/a', 'A', true, { due: true, kind: 'owner' }))]);

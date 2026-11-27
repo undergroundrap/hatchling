@@ -50,8 +50,9 @@ function dayOf(secs: number): string {
 }
 /** Where a memory came from, as the page says it. */
 function originOf(kept: Kept): string {
-    switch (kept.from.from) {
-        case 'chat': return kept.from.chat === 'local' ? 'Asked to remember in your chat' : 'Asked to remember in a chat';
+    const from = kept.from ?? { from: 'not_recorded' };
+    switch (from.from) {
+        case 'chat': return from.chat === 'local' ? 'Asked to remember in your chat' : 'Asked to remember in a chat';
         case 'run': return 'Asked to remember by a scheduled run';
         case 'approval': return 'Approved by you';
         case 'not_recorded': return 'Where it came from isn’t recorded';
@@ -70,6 +71,10 @@ export function detailOf(kept: Kept): MemoryDetail {
         replaces: kept.replaces ?? null,
     };
 }
+/** What a change is answered: anything but a listing. */
+type Changed = Exclude<KeptResult, {
+    result: 'listed';
+}>;
 export class LiveMemory implements MemoryDetailsPort {
     readonly #client: LiveClient;
     readonly #changed: () => void;
@@ -124,7 +129,7 @@ export class LiveMemory implements MemoryDetailsPort {
         return outcome.result === 'forgotten' ? { ok: true, message: FORGOTTEN } : { ok: false, message: this.#says(outcome) };
     }
     /** A change's answer, or a sentence when there was none, or another. */
-    async #change(op: KeptOp): Promise<KeptResult | string> {
+    async #change(op: KeptOp): Promise<Changed | string> {
         const reply = await this.#client.request(this.#nextId(), { action: 'manage_memory', op });
         if (reply.kind !== 'answered')
             return reply.detail;
@@ -135,13 +140,12 @@ export class LiveMemory implements MemoryDetailsPort {
             return UNEXPECTED;
         return result.outcome;
     }
-    #says(outcome: KeptResult): string {
+    #says(outcome: Changed): string {
         switch (outcome.result) {
             case 'not_found':
             case 'off':
             case 'failed':
                 return SAID[outcome.result];
-            case 'listed':
             case 'forgotten':
             case 'confirmed':
                 return UNEXPECTED;

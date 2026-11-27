@@ -5332,13 +5332,51 @@
     "Kept": {
       "description": "One thing the agent is given from the owner's memory.",
       "properties": {
+        "absence": {
+          "description": "Whether it records something known not to be so.",
+          "type": "boolean"
+        },
         "approved": {
           "description": "Whether the owner approved it: what the agent asked to keep, and\nthey approved, is; anything kept some other way isn't.",
           "type": "boolean"
         },
+        "check_by": {
+          "description": "The day after which the owner is asked whether it's still so.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confirmed_at": {
+          "description": "When the owner last confirmed it, Unix seconds.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "content": {
           "description": "The words kept.",
           "type": "string"
+        },
+        "due": {
+          "description": "Whether that day has come: the owner is asked now.",
+          "type": "boolean"
+        },
+        "from": {
+          "$ref": "#/$defs/KeptFrom",
+          "default": {
+            "from": "not_recorded"
+          },
+          "description": "Where it came from (v14)."
+        },
+        "how_to_apply": {
+          "description": "When it applies.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "id": {
           "description": "Its id.",
@@ -5349,6 +5387,27 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
+        },
+        "kind": {
+          "description": "What kind of thing it is: `owner`, `guidance`, `work` or `pointer`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "replaces": {
+          "description": "The words of the memory it replaced, when it corrects one.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "why": {
+          "description": "Why, as the owner gave it.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
@@ -5358,6 +5417,68 @@
         "approved"
       ],
       "type": "object"
+    },
+    "KeptFrom": {
+      "description": "Where a kept memory came from, as the broker recorded it (WO-048).",
+      "oneOf": [
+        {
+          "description": "A chat's run asked, and the owner approved.",
+          "properties": {
+            "chat": {
+              "description": "The chat.",
+              "type": "string"
+            },
+            "from": {
+              "const": "chat",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from",
+            "chat"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A scheduled run asked, and the owner approved.",
+          "properties": {
+            "from": {
+              "const": "run",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The owner approved it, from no run the broker started.",
+          "properties": {
+            "from": {
+              "const": "approval",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Kept before records were: where it came from isn't recorded.",
+          "properties": {
+            "from": {
+              "const": "not_recorded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "from"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "KeptOp": {
       "description": "An operation on what the agent is given from the owner's memory, from\ntheir app.",
@@ -5384,6 +5505,24 @@
             },
             "op": {
               "const": "forget",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Say one is still so (v14, WO-048): it's confirmed as of now, and\nisn't asked about again.",
+          "properties": {
+            "id": {
+              "description": "It, as listed.",
+              "type": "string"
+            },
+            "op": {
+              "const": "confirm",
               "type": "string"
             }
           },
@@ -5424,6 +5563,19 @@
           "properties": {
             "result": {
               "const": "forgotten",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "It's confirmed as still so (v14).",
+          "properties": {
+            "result": {
+              "const": "confirmed",
               "type": "string"
             }
           },
@@ -17178,7 +17330,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 39,
-    "ui_schema_version": 13
+    "ui_schema_version": 14
   },
   "x-roots": {
     "ActivityEvent": {

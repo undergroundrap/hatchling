@@ -395,12 +395,16 @@ fn kept_of(
     Kept {
         id,
         approved,
-        kept_at: record.as_ref().map_or(item.created_at_secs, |record| record.kept_at_secs),
+        kept_at: record
+            .as_ref()
+            .map_or(item.created_at_secs, |record| record.kept_at_secs),
         content: item.content,
         from,
         kind,
         why: record.as_ref().and_then(|record| record.why.clone()),
-        how_to_apply: record.as_ref().and_then(|record| record.how_to_apply.clone()),
+        how_to_apply: record
+            .as_ref()
+            .and_then(|record| record.how_to_apply.clone()),
         absence: record.as_ref().is_some_and(|record| record.absence),
         confirmed_at: record.as_ref().map(|record| record.confirmed_at_secs),
         due: check_by.as_deref().is_some_and(|day| is_due(day, now)),
@@ -760,23 +764,62 @@ mod tests {
             run: Some(String::from("run-2")),
             chat: None,
         };
-        keep(&config, &crate::memory_proposal::Checked::owner("They have a car."), Some("confirm-2"), &scheduled, 20).unwrap();
+        keep(
+            &config,
+            &crate::memory_proposal::Checked::owner("They have a car."),
+            Some("confirm-2"),
+            &scheduled,
+            20,
+        )
+        .unwrap();
         let car = recalled_id(&config, "They have a car.");
         let sold = crate::memory_proposal::Checked {
-            supersedes: Some(crate::memory_proposal::Replaced { id: car, content: String::from("They have a car.") }),
+            supersedes: Some(crate::memory_proposal::Replaced {
+                id: car,
+                content: String::from("They have a car."),
+            }),
             absence: true,
             ..crate::memory_proposal::Checked::owner("They have no car.")
         };
-        keep(&config, &sold, Some("confirm-3"), &ProposedIn::default(), 30).unwrap();
+        keep(
+            &config,
+            &sold,
+            Some("confirm-3"),
+            &ProposedIn::default(),
+            30,
+        )
+        .unwrap();
         let (principal, store) = open(&config).unwrap();
-        let legacy = [RECALL_TAG.parse().unwrap(), hatchling_memory::LEGACY_APPROVED_TAG.parse().unwrap()];
+        let legacy = [
+            RECALL_TAG.parse().unwrap(),
+            hatchling_memory::LEGACY_APPROVED_TAG.parse().unwrap(),
+        ];
         store
-            .write(&principal, &MemoryScope::User, &"old".parse().unwrap(), "They like tea.", &legacy, RetentionPolicy::Keep, 5)
+            .write(
+                &principal,
+                &MemoryScope::User,
+                &"old".parse().unwrap(),
+                "They like tea.",
+                &legacy,
+                RetentionPolicy::Keep,
+                5,
+            )
             .unwrap();
         let listed = listing(handle_kept_op(&config, &KeptOp::List));
-        let by = |content: &str| listed.iter().find(|kept| kept.content == content).unwrap().clone();
+        let by = |content: &str| {
+            listed
+                .iter()
+                .find(|kept| kept.content == content)
+                .unwrap()
+                .clone()
+        };
         let rule = by("Use metric units.");
-        assert_eq!(rule.from, hatchling_core::ui::KeptFrom::Chat { chat: String::from("local") });
+        assert_eq!(
+            rule.from,
+            hatchling_core::ui::KeptFrom::Chat {
+                chat: String::from("local")
+            }
+        );
         assert_eq!(rule.kind.as_deref(), Some("guidance"));
         assert_eq!(rule.why.as_deref(), Some("They live in Europe."));
         assert_eq!(rule.how_to_apply.as_deref(), Some("Any measurement."));
@@ -787,19 +830,37 @@ mod tests {
         assert_eq!(no_car.from, hatchling_core::ui::KeptFrom::Approval);
         assert!(no_car.absence && !no_car.due);
         assert_eq!(no_car.replaces.as_deref(), Some("They have a car."));
-        assert!(listed.iter().all(|kept| kept.content != "They have a car."), "what it replaced isn't listed");
+        assert!(
+            listed.iter().all(|kept| kept.content != "They have a car."),
+            "what it replaced isn't listed"
+        );
         let tea = by("They like tea.");
         assert_eq!(tea.from, hatchling_core::ui::KeptFrom::NotRecorded);
         assert!(tea.approved && tea.confirmed_at.is_none() && tea.kind.is_none());
         // Confirmed, it isn't asked about again.
-        assert_eq!(handle_kept_op(&config, &KeptOp::Confirm { id: rule.id.clone() }), KeptResult::Confirmed);
+        assert_eq!(
+            handle_kept_op(
+                &config,
+                &KeptOp::Confirm {
+                    id: rule.id.clone()
+                }
+            ),
+            KeptResult::Confirmed
+        );
         let again = listing(handle_kept_op(&config, &KeptOp::List));
-        let rule = again.iter().find(|kept| kept.content == "Use metric units.").unwrap();
+        let rule = again
+            .iter()
+            .find(|kept| kept.content == "Use metric units.")
+            .unwrap();
         assert!(!rule.due && rule.check_by.is_none());
         assert!(rule.confirmed_at.is_some_and(|at| at > 10));
         // Nothing to confirm: one from before records, or none at all.
         for id in [tea.id.as_str(), "user/kept-none", "nonsense"] {
-            assert_eq!(handle_kept_op(&config, &KeptOp::Confirm { id: id.to_owned() }), KeptResult::NotFound, "{id}");
+            assert_eq!(
+                handle_kept_op(&config, &KeptOp::Confirm { id: id.to_owned() }),
+                KeptResult::NotFound,
+                "{id}"
+            );
         }
         assert!(is_due("2026-11-26", 1_795_737_600), "the day after");
         assert!(!is_due("2026-11-27", 1_795_737_600), "on the day itself");
