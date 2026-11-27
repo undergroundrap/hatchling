@@ -35,7 +35,7 @@ use crate::item::{
     MAX_CONTENT_BYTES, MAX_ENCODED_ITEM_BYTES, MemoryId, MemoryItem, MemoryPrincipal, MemoryScope,
     Tag, reply_encoded_len,
 };
-use crate::{Error, RetentionPolicy, is_expired, owner_dir};
+use crate::{Error, KeptRecord, RetentionPolicy, is_expired, owner_dir};
 
 /// Whether `item` has a TTL and `now_secs` is past it: [`is_expired`]'s
 /// answer read from the item's own fields through other code. An expired
@@ -233,6 +233,58 @@ impl MemoryStore {
         retention: RetentionPolicy,
         now_secs: u64,
     ) -> Result<MemoryItem, Error> {
+        self.put_item(
+            principal, scope, id, content, tags, retention, now_secs, None,
+        )
+    }
+
+    /// Keeps `content` under (`scope`, `id`), as the owner approved it,
+    /// with `record`, where it came from, at `record`'s keeping time.
+    ///
+    /// The broker's alone, after the owner's approval: a run's writes go
+    /// through [`write`](Self::write), which writes no record.
+    ///
+    /// # Errors
+    ///
+    /// As [`write`](Self::write).
+    pub fn keep(
+        &self,
+        principal: &MemoryPrincipal,
+        scope: &MemoryScope,
+        id: &MemoryId,
+        content: &str,
+        tags: &[Tag],
+        record: KeptRecord,
+    ) -> Result<MemoryItem, Error> {
+        let now_secs = record.kept_at_secs;
+        self.put_item(
+            principal,
+            scope,
+            id,
+            content,
+            tags,
+            RetentionPolicy::Keep,
+            now_secs,
+            Some(record),
+        )
+    }
+
+    /// Writes an item, with `record` or without one.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the item's fields, each its own: a struct would only rename them"
+    )]
+    fn put_item(
+        &self,
+        principal: &MemoryPrincipal,
+        scope: &MemoryScope,
+        id: &MemoryId,
+        content: &str,
+        tags: &[Tag],
+        retention: RetentionPolicy,
+        now_secs: u64,
+        record: Option<KeptRecord>,
+    ) -> Result<MemoryItem, Error> {
         if content.len() > MAX_CONTENT_BYTES {
             return Err(Error::ContentTooLarge {
                 len: content.len(),
@@ -256,6 +308,7 @@ impl MemoryStore {
             created_at_secs,
             updated_at_secs: now_secs,
             retention,
+            record,
         };
         let bytes = serde_json::to_vec(&item).map_err(|_| Error::Corrupt)?;
         // The frame invariant: measure the item exactly as a reply will
@@ -457,6 +510,55 @@ mod tests {
             .unwrap()
     }
 
+    /// Only `keep` writes a record, and keeps it as given; a run's write
+    /// over a kept item replaces it with one that has none, no longer
+    /// approved by the owner.
+    #[test]
+    fn keep_writes_the_record_and_a_runs_write_drops_it() {
+        let root = test_root("kept-record");
+        let store = MemoryStore::open(&root).unwrap();
+        let p = principal(7, "sess-kept");
+        let id = MemoryId::from_str("kept-1").unwrap();
+        let record = KeptRecord::agent_words(Some(String::from("confirm-1")), None, None, 300);
+        let kept = store
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &id,
+                "Their cat is Biscuit.",
+                &[],
+                record.clone(),
+            )
+            .unwrap();
+        assert_eq!((kept.created_at_secs, kept.updated_at_secs), (300, 300));
+        assert_eq!(kept.retention, RetentionPolicy::Keep);
+        let read = store
+            .recall(&p, &MemoryScope::User, &id, 400)
+            .unwrap()
+            .unwrap();
+        assert_eq!(read.record, Some(record));
+        assert!(read.approved_by_owner());
+        let replaced = write(
+            &store,
+            &p,
+            &MemoryScope::User,
+            "kept-1",
+            "Changed by a run.",
+            500,
+        );
+        assert_eq!(replaced.record, None);
+        let read = store
+            .recall(&p, &MemoryScope::User, &id, 600)
+            .unwrap()
+            .unwrap();
+        assert!(!read.approved_by_owner());
+        assert_eq!(
+            read.created_at_secs, 300,
+            "an overwrite keeps when it was made"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn past_its_ttl_is_expiry_read_from_the_items_own_fields() {
         let item = |retention, created_at_secs| MemoryItem {
@@ -467,6 +569,7 @@ mod tests {
             created_at_secs,
             updated_at_secs: created_at_secs,
             retention,
+            record: None,
         };
         let ttl = item(RetentionPolicy::Ttl { ttl_secs: 100 }, 1_000);
         assert!(!past_its_ttl(&ttl, 1_099));

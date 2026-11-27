@@ -919,6 +919,8 @@ fn serve_session(
     reach: SkillReach,
 ) -> Result<(), Error> {
     let run_cell = known.then_some(cell_id);
+    // A chat run is a run its person is there for (WO-028).
+    let chat_run = config.web.attended && config.scheduler.followup.is_some();
     // The session's egress, opened once per session, with a surrogate key
     // fresh for it: surrogates do not survive reconnects. It goes through
     // the egress authority, which holds the key and reads each credential
@@ -995,7 +997,7 @@ fn serve_session(
         session_id.as_str(),
         cell_id.as_str(),
     )
-    .of_chat(config.web.attended && config.scheduler.followup.is_some())
+    .of_chat(chat_run)
     .counting_in(&config.scheduler.usage)
     .with_window(config.scheduler.model_context_window)
     .with_budget(config.scheduler.run_tokens)
@@ -1056,9 +1058,24 @@ fn serve_session(
                 SessionRequest::Channel(op) => SessionResponse::Channel(
                     crate::channel::handle_channel_op(&mut channels, &op, creds.uid().as_u32())?,
                 ),
-                SessionRequest::Memory(MemoryOp::Propose { content }) => SessionResponse::Memory(
-                    crate::memory_keep::propose(config, web.task(), &content),
-                ),
+                SessionRequest::Memory(MemoryOp::Propose { content }) => {
+                    // Where it was asked, as the broker knows it (WO-048).
+                    let from = crate::memory_keep::ProposedIn {
+                        run: run_cell.map(|cell| cell.as_str().to_owned()),
+                        chat: config
+                            .scheduler
+                            .followup
+                            .as_ref()
+                            .filter(|_| chat_run)
+                            .map(|scope| scope.channel.clone()),
+                    };
+                    SessionResponse::Memory(crate::memory_keep::propose(
+                        config,
+                        web.task(),
+                        &content,
+                        from,
+                    ))
+                }
                 SessionRequest::Memory(op) => {
                     SessionResponse::Memory(crate::memory_ops::handle_memory_op(
                         &config.memory,
@@ -3571,5 +3588,160 @@ mod run_record_tests {
             .unwrap();
             assert_eq!(crate::run_record::take(cell), None, "{cell}");
         }
+    }
+}
+
+#[cfg(test)]
+mod memory_proposal_tests {
+    use hatchling_core::ui::Decision;
+    use hatchling_core::{MemoryOp, MemoryResult};
+    use hatchling_vault::MasterKey;
+
+    use super::*;
+    use crate::config::{MemoryAction, MemoryGrant};
+    use crate::memory_keep::ProposedIn;
+
+    /// Where a proposal made in `cell`'s session is said to come from.
+    fn proposed_from(name: &str, cell: &str, known: bool, chat: bool) -> ProposedIn {
+        let dir = crate::api_auth::tests::scratch(name);
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = dir.0.join("vault");
+        config.memory.root = dir.0.join("memory");
+        config.memory.grants = vec![MemoryGrant {
+            scope: String::from("user"),
+            action: MemoryAction::Propose,
+        }];
+        config.web.attended = chat;
+        config.scheduler.followup = Some(crate::FollowupScope {
+            root: dir.0.join("schedules"),
+            run: String::from(cell),
+            grants: Vec::new(),
+            channel: String::from("side-7"),
+            depth: 0,
+        });
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::default();
+        let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));
+        crate::approval_board::board(&config).attach(std::sync::Arc::clone(&bus));
+        let (agent, broker) = UnixStream::pair().unwrap();
+        agent
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let creds = peer_credentials(&broker).unwrap();
+        let cell_id: CellId = cell.parse().unwrap();
+        let content = format!("Their cat is Biscuit ({name}).");
+        std::thread::scope(|scope| {
+            let served = scope.spawn(|| {
+                serve_session(
+                    &broker,
+                    &config,
+                    &key,
+                    &skills,
+                    &cell_id,
+                    known,
+                    creds,
+                    None,
+                    None,
+                    &HeldHit::default(),
+                    None,
+                    SkillReach::WithHarnesses,
+                )
+            });
+            let request = SessionRequest::Memory(MemoryOp::Propose {
+                content: content.clone(),
+            });
+            write_frame(&agent, &serde_json::to_vec(&request).unwrap()).unwrap();
+            let response: SessionResponse =
+                serde_json::from_slice(&read_frame(&agent).unwrap()).unwrap();
+            assert_eq!(
+                response,
+                SessionResponse::Memory(MemoryResult::Proposed),
+                "{name}"
+            );
+            drop(agent);
+            served.join().unwrap().unwrap();
+        });
+        let record = approve_and_keep(&config, &bus, &key, &skills, &content);
+        let _ = std::fs::remove_dir_all(&dir.0);
+        ProposedIn {
+            run: record.run,
+            chat: record.chat,
+        }
+    }
+
+    /// The owner approves the proposal of `content` the board put on `bus`,
+    /// and the broker keeps it: its record.
+    fn approve_and_keep(
+        config: &Config,
+        bus: &crate::api_stream::Bus,
+        key: &MasterKey,
+        skills: &Skills,
+        content: &str,
+    ) -> hatchling_memory::KeptRecord {
+        let board = crate::approval_board::board(config);
+        let id = bus
+            .after(None)
+            .into_iter()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::Confirmation(card) = event.body {
+                    Some(card.confirmation_id)
+                } else {
+                    None
+                }
+            })
+            .expect("the proposal was put to the owner");
+        let request = board.approvals().get(&id).unwrap();
+        board
+            .decide(&id, request.revision, &request.digest, Decision::Approve, 1)
+            .unwrap();
+        let _ = crate::approval_board::run_approved(&board, &id, config, key, skills, None, 9);
+        let principal = MemoryPrincipal {
+            peer_uid: config.agent_uid.as_u32(),
+            session_id: SessionId::generate().unwrap(),
+        };
+        let record = crate::memory_sealed::open_published(&config.memory.root)
+            .unwrap()
+            .recall_by_tag(
+                &principal,
+                &hatchling_memory::MemoryScope::User,
+                &crate::memory_keep::RECALL_TAG.parse().unwrap(),
+                u64::MAX / 2,
+            )
+            .unwrap()
+            .into_iter()
+            .find(|item| item.content == content)
+            .and_then(|item| item.record)
+            .expect("kept with its record");
+        assert_eq!(record.approval.as_deref(), Some(id.as_str()));
+        record
+    }
+
+    /// A proposal names the run the broker started and the chat it
+    /// answers, as the broker knows them: a session that isn't a run's
+    /// names none, and a run no one is there for names no chat.
+    #[test]
+    fn a_proposal_names_the_run_and_chat_the_broker_knows() {
+        let run = "run-0000000000000000000000cc";
+        assert_eq!(
+            proposed_from("from-chat", run, true, true),
+            ProposedIn {
+                run: Some(String::from(run)),
+                chat: Some(String::from("side-7")),
+            }
+        );
+        assert_eq!(
+            proposed_from("from-scheduled", run, true, false),
+            ProposedIn {
+                run: Some(String::from(run)),
+                chat: None,
+            }
+        );
+        assert_eq!(
+            proposed_from("from-unknown", run, false, true),
+            ProposedIn {
+                run: None,
+                chat: Some(String::from("side-7")),
+            }
+        );
     }
 }

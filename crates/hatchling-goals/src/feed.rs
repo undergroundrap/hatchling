@@ -115,9 +115,10 @@ pub enum FeedBody {
     /// A tracking entry.
     #[serde(rename = "tracking")]
     Tracking(TrackingEntry),
-    /// A memory item, recalled by tag.
+    /// A memory item, recalled by tag, as a run is given it
+    /// ([`MemoryItem::shareable`]).
     #[serde(rename = "memory")]
-    Memory(MemoryItem),
+    Memory(Box<MemoryItem>),
 }
 
 /// One query result: a record plus the provenance derived from it.
@@ -383,7 +384,7 @@ impl FeedReader {
                             .is_none_or(|after| item.id.as_str() > after.as_str())
                     })
                     .map(|item| FeedItem {
-                        body: FeedBody::Memory(item),
+                        body: FeedBody::Memory(Box::new(item.shareable())),
                     })
                     .collect())
             }
@@ -856,6 +857,40 @@ mod tests {
         assert_eq!(ids(&after), vec!["pref-2"]);
         // Untagged items never reach the feed.
         assert!(ids(&memory_query("nothing")).is_empty());
+    }
+
+    /// A kept item reaches a run through the feed with its record, but
+    /// without the ids of the approval, run and chat it came from.
+    #[test]
+    fn a_kept_item_reaches_the_feed_without_where_it_came_from() {
+        let fx = Fixture::new("memory-record");
+        let memory = MemoryStore::open(&fx.memory_root).unwrap();
+        let p = principal(7);
+        let record = hatchling_memory::KeptRecord::agent_words(
+            Some(String::from("confirm-1")),
+            Some(String::from("run-1")),
+            Some(String::from("local")),
+            60,
+        );
+        memory
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &"kept-1".parse().unwrap(),
+                "likes trails",
+                &["kept".parse().unwrap()],
+                record.clone(),
+            )
+            .unwrap();
+        let items = fx.reader().query(&p, &memory_query("kept"), 300).unwrap();
+        let records: Vec<_> = items
+            .iter()
+            .map(|item| match &item.body {
+                FeedBody::Memory(memory) => memory.record.clone(),
+                FeedBody::Goal(_) | FeedBody::Tracking(_) => unreachable!("a memory query"),
+            })
+            .collect();
+        assert_eq!(records, [Some(record.shareable())]);
     }
 
     #[test]

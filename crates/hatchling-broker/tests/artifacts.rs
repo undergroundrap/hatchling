@@ -1602,7 +1602,12 @@ fn the_workers_turn_tells_the_app_of_a_request_taken_back() {
         .as_secs();
     let now = i64::try_from(now).unwrap();
     let asked = board
-        .propose_memory("likes teal", "a-session", now)
+        .propose_memory(
+            "likes teal",
+            "a-session",
+            hatchling_broker::memory_keep::ProposedIn::default(),
+            now,
+        )
         .unwrap();
     assert_eq!(board.approvals().withdraw_task("a-session", |_| true), 1);
     let turn = |now| {
@@ -1618,7 +1623,12 @@ fn the_workers_turn_tells_the_app_of_a_request_taken_back() {
     assert_eq!(turn(now), None, "nothing was approved");
     // Its clock is the turn's: a request whose day is up lapses on it.
     let lapsing = board
-        .propose_memory("has a corgi", "another-session", now)
+        .propose_memory(
+            "has a corgi",
+            "another-session",
+            hatchling_broker::memory_keep::ProposedIn::default(),
+            now,
+        )
         .unwrap();
     let a_day_on = now + hatchling_broker::approvals::UNWAITED_DECIDE_SECS;
     assert_eq!(turn(a_day_on - 1), None);

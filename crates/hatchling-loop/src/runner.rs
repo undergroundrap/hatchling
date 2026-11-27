@@ -675,6 +675,7 @@ mod tests {
             created_at_secs: 1_000,
             updated_at_secs: 1_000,
             retention: RetentionPolicy::Keep,
+            record: None,
         }
     }
 

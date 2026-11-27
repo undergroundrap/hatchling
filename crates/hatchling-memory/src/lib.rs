@@ -57,6 +57,7 @@ pub mod item;
 pub mod owner_dir;
 pub mod paging;
 pub mod prompt;
+pub mod record;
 pub mod session;
 pub mod store;
 
@@ -65,11 +66,13 @@ pub use compaction::{CompactionSummary, compact};
 pub use context_log::{ContextEntry, ContextKind, ContextLog, MAX_CONTEXT_PAYLOAD_BYTES};
 pub use error::Error;
 pub use item::{
-    MAX_CONTENT_BYTES, MAX_ENCODED_ITEM_BYTES, MemoryId, MemoryItem, MemoryPrincipal, MemoryScope,
-    ProjectName, RetentionPolicy, SessionId, Tag, expires_at, is_expired, reply_encoded_len,
+    LEGACY_APPROVED_TAG, MAX_CONTENT_BYTES, MAX_ENCODED_ITEM_BYTES, MemoryId, MemoryItem,
+    MemoryPrincipal, MemoryScope, ProjectName, RetentionPolicy, SessionId, Tag, expires_at,
+    is_expired, reply_encoded_len,
 };
 pub use paging::{PAGE_BUDGET_BYTES, Page, page};
 pub use prompt::render_recalled_block;
+pub use record::{KeptRecord, MemoryKind, Words, utc_day};
 pub use session::{
     ConfirmationRecord, SessionRecord, SessionStatus, SessionStore, TaskRecord, ToolCallOutcome,
     ToolCallRecord,
