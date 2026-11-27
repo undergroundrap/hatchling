@@ -23,4 +23,22 @@ Recall used to have no way to say "this is known not to be so". Without that, th
 
 ## The gate
 
-RESULTS
+The gate script (`dr-k4.sh`) on tree `0286df77`, the slice on slice 3:
+- fmt passes, clippy passes on 1.98.1 and 1.85.0, and the workspace builds;
+- the workspace's tests: 4642 passed, 0 failed;
+- `hatchling-dev audit`: all checks passed.
+
+The protocol schema and the frontend's wire are regenerated at v36, and the frontend's check passes: 627, 271 and 16 tests.
+
+**Six hand-breaks, each caught by its tests:**
+- the check drops an absence;
+- the approval doesn't freeze it;
+- the card doesn't say so;
+- the record doesn't keep it;
+- the session drops it;
+- recall doesn't mark it.
+
+**Mutation** on the slice's own diff, with none missed and none timed out:
+- broker: 8 mutants, 4 caught, 4 unviable;
+- memory: 4 mutants, 4 caught;
+- agent: 3 mutants, 1 caught, 2 unviable.
