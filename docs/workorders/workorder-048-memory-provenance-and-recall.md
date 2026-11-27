@@ -1,6 +1,6 @@
 # WO-048: Memory that knows where it came from: provenance, supersession, bounded retrieval, then search
 
-**Status:** QUEUED
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-memory` (items, the store, recall), `crates/hatchling-broker` (keeping, the owner's memory ops, the decisions history), `crates/hatchling-agent` (recall), `crates/hatchling-core` (the wire), `frontend/` (the owner's memory list), `docs/`
 **Issue:** [#598](https://github.com/undergroundrap/hatchling/issues/598)
 **Trust boundary:** yes
@@ -65,10 +65,18 @@ See [TEMPLATE.md](TEMPLATE.md#gates).
 
 ## Evidence
 
-Filled in at close.
+Each slice commits its evidence under `docs/evidence/`.
+
+- Slice 1, the record: [wo048-kept-record.md](../evidence/wo048-kept-record.md).
 
 ## Notes
 
 - *True as of*, contradictions as proposals, agreement with WO-052's notes, typed items and dates as dates were added on 2026-11-25, by the maintainer's decision, while the two were designed together.
 - Absences were added to the scope on 2026-11-23, by the maintainer's decision, before any of this work started: a field and a test now, where a change to the sealed store's item format later would be a migration.
+- Started on 2026-11-26. The maintainer approved its wire changes for the whole work order that day:
+  - the kept item's broker-written record;
+  - the proposal's optional fields;
+  - the memory list's record and a confirm operation.
+
+  They also decided that dates are checked in both the date fields (`YYYY-MM-DD`) and the memory's words: a relative date ("tomorrow", "next Thursday") is refused, and the agent is told to name the calendar date. The slices are on [#598](https://github.com/undergroundrap/hatchling/issues/598).
 - First on v0.11.0, by the maintainer's decision of 2026-11-22. WO-045, the evaluation harness, comes after it and measures recall too.

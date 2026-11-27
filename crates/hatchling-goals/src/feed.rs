@@ -859,6 +859,40 @@ mod tests {
         assert!(ids(&memory_query("nothing")).is_empty());
     }
 
+    /// A kept item reaches a run through the feed with its record, but
+    /// without the ids of the approval, run and chat it came from.
+    #[test]
+    fn a_kept_item_reaches_the_feed_without_where_it_came_from() {
+        let fx = Fixture::new("memory-record");
+        let memory = MemoryStore::open(&fx.memory_root).unwrap();
+        let p = principal(7);
+        let record = hatchling_memory::KeptRecord::agent_words(
+            Some(String::from("confirm-1")),
+            Some(String::from("run-1")),
+            Some(String::from("local")),
+            60,
+        );
+        memory
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &"kept-1".parse().unwrap(),
+                "likes trails",
+                &["kept".parse().unwrap()],
+                record.clone(),
+            )
+            .unwrap();
+        let items = fx.reader().query(&p, &memory_query("kept"), 300).unwrap();
+        let records: Vec<_> = items
+            .iter()
+            .map(|item| match &item.body {
+                FeedBody::Memory(memory) => memory.record.clone(),
+                FeedBody::Goal(_) | FeedBody::Tracking(_) => unreachable!("a memory query"),
+            })
+            .collect();
+        assert_eq!(records, [Some(record.shareable())]);
+    }
+
     #[test]
     fn a_reader_without_memory_refuses_memory_queries() {
         let fx = Fixture::new("no-memory");

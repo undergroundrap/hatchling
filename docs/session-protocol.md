@@ -57,7 +57,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18 |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18; an item's `record` (WO-048) |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -268,6 +268,13 @@ session holds.
   approve. Then the broker keeps it in the user scope, tagged `recall`, so
   later runs are given it. The agent never writes there itself: proposing
   needs the grant `user:propose`, which isn't `user:write`.
+- **A kept item's `record`** (WO-048) is added to the item in `item_json`, with no version change. It's optional, so a reader that doesn't know it ignores it.
+  - The broker writes it when the owner approves keeping the item, and nothing else does.
+  - It says whose words they are (`words`), when the item was kept (`kept_at_secs`) and last confirmed (`confirmed_at_secs`).
+  - It has room for what the work order's later steps fill: `kind`, `why`, `how_to_apply`, `check_by`, `absence` and `supersedes`.
+  - A run is given it without the ids of the approval, run and chat it came from, which only the owner's list has.
+  - An item a run wrote, or one kept before records (0.10), has none.
+- **A `Write` tagged `approved` is `Denied`**, whatever the grants (#736). That tag said the owner approved an item before records did, and saying so is the broker's.
 - **`MemoryResult`** gains `Proposed` (asked) and `Unasked { reason }`
   (not asked: the owner said no to the same proposal, or their requests
   are paused or full).
