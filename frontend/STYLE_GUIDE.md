@@ -143,7 +143,17 @@ While a chat run is working, the line above the composer says the step the run i
 
 The time is real, counted from the event that began the task (`elapsedSince` in `src/components/elapsed.ts`), and is written as `45 s`, `2 min 5 s`, `1 h 4 min`. It updates its own text each second without re-rendering the chat, stops when it leaves the page, and is hidden from assistive technology: the status beside it is announced when the step changes, not once a second. It is text, not motion, so reduced motion changes nothing about it.
 
-### What is connected in this build
+### The composer's context ring
+
+Under the composer, a small ring says how full the chat's last answer got, and the model that answered sits beside it as a chip (WO-056).
+
+- **The ring:** its arc is the share of the model's window used, and its label is that percentage. It turns to `--attention` at 90%. It's a `details.menu` like every popup: the floating layer places its panel, and Escape or Tab closes it back to the ring. Its accessible name, and its tooltip, are the exact numbers ("8.3K of 64K tokens of context (13%) used on the last answer").
+- **The panel:** the headline ("13% used · 8.3K of 64K") and a bar. Then what filled the window (Conversation, Tools, Memory, System), each marked **about**, since the broker splits the model's exact total by size. Then **Free**, which is exact, and one line saying how the numbers are made.
+- **The chip** opens the model setting.
+- **Each chat shows its own last answer**, never another chat's.
+
+Every number is the broker's, never the app's estimate. Without a known window there's no ring arc, no bar and no Free row; without the broker's split, the panel says what filled it isn't known. The local preview shows a sample in every chat, with no scenario to choose.
+
 
 Chat skeletons are driven by the existing history phase. Feed generation tracks its actual pending command and preserves a loaded edition. Chat attachments, library images/video posters, feed images and opened image viewers use real browser image events.
 

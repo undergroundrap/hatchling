@@ -135,7 +135,7 @@ When the agent proposes an action that needs your yes (building an idea into an 
 - **`decide`** names the `confirmation_id`, the `revision` and the `digest` you were shown, with `approve` (`once`), `approve_session` (`task`), `approve_day` (`day`, v9), `approve_always` (`always`), or `deny`. A decision for a scope the request doesn't offer is rejected as `not_offered`; a denial always is yours. The answer, `decided`, says for a 24-hour or always yes whether its grant was `kept`: one that wasn't covers only the request you were shown, once.
   - Only a caller holding every grant the owner holds can decide; anyone else gets `refused`/`not_granted`.
   - A decision on a request that changed, lapsed, or was already decided is rejected with its reason, and the broker's journal says which.
-  - On a batch (a confirmation with `items`), an approval may name the items it keeps (v15, WO-055): `keep`, their places on the revision you were shown, from 0, such as `[0, 2]`. The broker keeps those alone, and each item left out is refused from then on, as a denial's are, without pausing the session that asked. Without `keep`, an approval keeps them all. A `keep` with a denial, on a request without items, empty, out of range or repeated is rejected as `invalid_keep`, and nothing is decided.
+  - On a batch (a confirmation with `items`), an approval may name the items it keeps (v15, WO-055): `keep`, their places on the revision you were shown, from 0, such as `[0, 2]`. The broker keeps those alone, and each item left out is refused from then on, in its words (a memory in other words is a different memory), as a denial's are, without pausing the session that asked. Without `keep`, an approval keeps them all. A `keep` with a denial, on a request without items, empty, out of range or repeated is rejected as `invalid_keep`, and nothing is decided.
   - A `confirmation_decided` event follows on the stream either way.
 - **How long a request waits** depends on whether anything is waiting on your answer. A site or a sign-in, which an agent session is waiting for, lapses after 15 minutes. Something to remember, a schedule or a build, which the broker does itself once you approve, waits 24 hours.
 - **A request that stops waiting without your decision** is closed on the stream with `confirmation_closed`: its `confirmation_id`, its `revision`, and a `reason` of `expired` (its time ran out) or `withdrawn` (the session that asked has ended). Nothing can be decided on it afterwards, and a replay of the stream never presents it as waiting again. The broker looks for such requests every second.
@@ -147,7 +147,7 @@ When the agent proposes an action that needs your yes (building an idea into an 
 - **Asking is bounded:**
   - at most 5 requests wait, one per agent session (a batch card is one, and each item added to it counts against the hour);
   - at most 20 are made in an hour;
-  - a denied action is never asked again, however it's reworded, and a denied batch refuses each item on it, alone or on another card;
+  - a denied action is never asked again, however the agent words its reasons, and a denied batch refuses each item on it, alone or on another card. A memory's words are the memory, so one in other words is asked;
   - after a denial, new requests wait 10 minutes.
 
   The agent is told why it couldn't ask (`approval-refused`).

@@ -1,6 +1,6 @@
 # WO-056: The context panel, and the model in use
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-broker` (run trail, usage), `crates/hatchling-core` (activity and UI protocol), `crates/hatchling-prompt` and `crates/hatchling-agent` (the model fact), `frontend/` (composer ring, model chip, context panel)
 **Issue:** [#535](https://github.com/undergroundrap/hatchling/issues/535)
 **Trust boundary:** yes (a protocol change, and what the owner is told the agent's window holds)
@@ -75,29 +75,31 @@ The session protocol is unchanged: the model fact reaches the agent through the 
 
 ## Acceptance criteria
 
-- [ ] A run's summary carries the broker's split of its largest prompt, with system, tools, memory and conversation summing to the model's reported total. It's counted from the forwarded request, whatever the cell says.
-- [ ] A request with no memory block counts no memory. One with tools counts them under Tools, not Conversation.
-- [ ] The composer shows a ring and the model's name. The exact numbers are on hover, on focus and in the ring's accessible name. The chip opens the model setting.
-- [ ] The ring opens a panel with the bar, the exact total, and the four categories marked "about" and Free. It says how they're counted.
-- [ ] Asked which model it is, the agent names the model from the broker's settings, says whether it's local or hosted at a named host, and answers as Hatchling.
-- [ ] After a broker restart, the meter shows the chat in view and doesn't flicker through older runs.
-- [ ] Each change has its evidence record under `docs/evidence/`.
+- [x] A run's summary carries the broker's split of its largest prompt, with system, tools, memory and conversation summing to the model's reported total. It's counted from the forwarded request, whatever the cell says. ([count](../evidence/wo056-count.md): `the_total_is_split_by_size_and_summed_exactly`, `the_largest_prompt_is_split_from_the_request_forwarded`, the seam `an_answered_model_call_is_counted`)
+- [x] A request with no memory block counts no memory. One with tools counts them under Tools, not Conversation. ([count](../evidence/wo056-count.md): `each_part_of_a_request_is_measured_where_it_is`; live, [trial](../evidence/wo056-trial.md): Memory 0 before anything was kept)
+- [x] The composer shows a ring and the model's name. The exact numbers are on hover, on focus and in the ring's accessible name. The chip opens the model setting. ([panel](../evidence/wo056-panel.md): `test_29b`; live in the [trial](../evidence/wo056-trial.md))
+- [x] The ring opens a panel with the bar, the exact total, and the four categories marked "about" and Free. It says how they're counted. ([panel](../evidence/wo056-panel.md); live in the [trial](../evidence/wo056-trial.md))
+- [x] Asked which model it is, the agent names the model from the broker's settings, says whether it's local or hosted at a named host, and answers as Hatchling. ([model fact](../evidence/wo056-model-fact.md); live, [trial](../evidence/wo056-trial.md): "I'm Hatchling, made by Ocean Bennett, running right now on gemma4:12b." The local or hosted half is proven by `the_model_note_names_the_model_and_where_its_words_go`; a hosted model wasn't tried live, since the side install has no key.)
+- [x] After a broker restart, the meter shows the chat in view and doesn't flicker through older runs. ([panel](../evidence/wo056-panel.md): per-chat context, and `a burst of run summaries, as a replay brings, repaints once when it settles`. Shown by test; a live restart wasn't staged, since restarting the side broker re-keys its app.)
+- [x] Each change has its evidence record under `docs/evidence/` (below).
 
 ## Gates
 
 All must pass before the WO closes:
 
-- [ ] `bash scripts/check.sh` green on the pinned toolchain **and** 1.85.0.
-- [ ] Real-cell tests ran rather than skipped (`HATCHLING_REQUIRE_CELL=1`).
-- [ ] **Mutation, kill floor 1.0** on each slice's change.
-- [ ] `cd frontend && npm ci && npm run check`.
-- [ ] Wire types regenerated and committed.
-- [ ] Docs that describe the changed behavior updated in the same change.
+- [x] `bash scripts/check.sh` green on the pinned toolchain **and** 1.85.0: CI's gate on #759, #760 and #763. Locally, each slice ran the workspace's tests and clippy on both toolchains.
+- [x] Real-cell tests ran rather than skipped (`HATCHLING_REQUIRE_CELL=1`), on the WSL2 sandbox.
+- [x] **Mutation, kill floor 1.0** on each slice's change: slice 1, 10 mutants (8 caught, 2 unviable); slice 2, 26 (24, 2); slice 3, TypeScript, hand-broken 7 ways and at 100% live coverage. None missed.
+- [x] `cd frontend && npm ci && npm run check`: green on slices 2 and 3.
+- [x] Wire types regenerated and committed (slice 2, and again after CI's drift check caught a reworded description).
+- [x] Docs that describe the changed behavior updated in the same change: the activity contract, `arch/protocol.md`, `arch/distribution.md`, `STYLE_GUIDE.md` and the CHANGELOG.
 
 ## Evidence
 
 - Slice 1, the model fact: [wo056-model-fact.md](../evidence/wo056-model-fact.md).
 - Slice 2, the broker's count: [wo056-count.md](../evidence/wo056-count.md).
+- Slice 3, the ring, the chip and the panel: [wo056-panel.md](../evidence/wo056-panel.md).
+- The real-model trial: [wo056-trial.md](../evidence/wo056-trial.md).
 
 ## Notes
 
