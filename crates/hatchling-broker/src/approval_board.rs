@@ -1260,6 +1260,64 @@ mod tests {
 
     use super::*;
 
+    /// The approval freezes what the owner is shown: the words, the kind,
+    /// and each reason and day given, so a digest of one isn't a digest of
+    /// another. What isn't given isn't frozen.
+    #[test]
+    fn a_memory_approval_freezes_what_the_owner_sees() {
+        let full = crate::memory_proposal::Checked {
+            kind: hatchling_memory::MemoryKind::Guidance,
+            why: Some(String::from("w")),
+            how_to_apply: Some(String::from("h")),
+            check_by: Some(String::from("2099-01-01")),
+            ..crate::memory_proposal::Checked::owner("x")
+        };
+        assert_eq!(
+            memory_action(&full, true),
+            json!({"format": 2, "scope": "user", "op": "memory.keep", "content": "x", "kind": "guidance", "why": "w", "how_to_apply": "h", "check_by": "2099-01-01"})
+        );
+        assert_eq!(
+            memory_action(&crate::memory_proposal::Checked::owner("x"), false),
+            json!({"op": "memory.keep", "content": "x", "kind": "owner"})
+        );
+        for (kind, name, summary) in [
+            (
+                hatchling_memory::MemoryKind::Work,
+                "work",
+                "Remember this about your work?",
+            ),
+            (
+                hatchling_memory::MemoryKind::Pointer,
+                "pointer",
+                "Remember where this is?",
+            ),
+        ] {
+            assert_eq!(kind_name(kind), name);
+            assert_eq!(memory_summary(kind), summary);
+            let fields = memory_fields(&crate::memory_proposal::Checked {
+                kind,
+                ..crate::memory_proposal::Checked::owner("x")
+            });
+            assert_eq!(fields.len(), 1, "only what it is");
+        }
+        let said = |kind| {
+            memory_fields(&crate::memory_proposal::Checked {
+                kind,
+                ..crate::memory_proposal::Checked::owner("x")
+            })
+            .first()
+            .map(|field| field.value.clone())
+        };
+        assert_eq!(
+            said(hatchling_memory::MemoryKind::Work).as_deref(),
+            Some("A fact about ongoing work.")
+        );
+        assert_eq!(
+            said(hatchling_memory::MemoryKind::Pointer).as_deref(),
+            Some("Where something lives.")
+        );
+    }
+
     const fn empty() -> Board {
         Board {
             approvals: Approvals::new(),

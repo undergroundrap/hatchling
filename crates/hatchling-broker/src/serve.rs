@@ -3662,10 +3662,10 @@ mod memory_proposal_tests {
             });
             let request = SessionRequest::Memory(MemoryOp::Propose {
                 content: content.clone(),
-                memory_kind: Some(String::from("owner")),
-                why: None,
-                how_to_apply: None,
-                check_by: None,
+                memory_kind: Some(String::from("work")),
+                why: Some(String::from("The owner said so.")),
+                how_to_apply: Some(String::from("On the release.")),
+                check_by: Some(String::from("2099-01-01")),
             });
             write_frame(&agent, &serde_json::to_vec(&request).unwrap()).unwrap();
             let response: SessionResponse =
@@ -3730,6 +3730,20 @@ mod memory_proposal_tests {
             .and_then(|item| item.record)
             .expect("kept with its record");
         assert_eq!(record.approval.as_deref(), Some(id.as_str()));
+        // What the session said it is, why, when and its day, as sent.
+        assert_eq!(record.kind, Some(hatchling_memory::MemoryKind::Work));
+        assert_eq!(
+            (
+                record.why.as_deref(),
+                record.how_to_apply.as_deref(),
+                record.check_by.as_deref()
+            ),
+            (
+                Some("The owner said so."),
+                Some("On the release."),
+                Some("2099-01-01")
+            )
+        );
         record
     }
 
