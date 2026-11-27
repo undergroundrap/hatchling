@@ -66,6 +66,10 @@ pub struct Trail {
     model_calls: u32,
     model_calls_refused: u32,
     peak_input_tokens: u64,
+    /// What filled the largest call's prompt, split by the broker (WO-056).
+    peak_parts: Option<hatchling_core::subagent::ContextParts>,
+    /// The chat the run answers, if it's a chat run (WO-056).
+    chat_id: Option<String>,
     output_tokens: u64,
     /// The input tokens of every model call answered, summed.
     input_tokens: u64,
@@ -107,6 +111,8 @@ impl Trail {
             model_calls: 0,
             model_calls_refused: 0,
             peak_input_tokens: 0,
+            peak_parts: None,
+            chat_id: None,
             output_tokens: 0,
             input_tokens: 0,
             budget: None,
@@ -160,6 +166,14 @@ impl Trail {
     #[must_use]
     pub const fn of_chat(mut self, chat: bool) -> Self {
         self.chat = chat;
+        self
+    }
+
+    /// The trail of a run answering the chat `chat` (WO-056): its summary
+    /// names it, so the meter shows the chat in view.
+    #[must_use]
+    pub fn in_chat(mut self, chat: Option<String>) -> Self {
+        self.chat_id = chat;
         self
     }
 
@@ -254,6 +268,13 @@ impl Trail {
         at: i64,
     ) {
         if let Some((input, output)) = crate::usage::count(&self.usage, request, response, at) {
+            // The largest prompt yet: what filled it, from the request the
+            // broker forwarded, never from the cell's word (WO-056).
+            if let Some(read) = input.filter(|read| *read >= self.peak_input_tokens) {
+                if let Some(bytes) = crate::prompt_parts::measure(&request.body) {
+                    self.peak_parts = Some(crate::prompt_parts::split(read, bytes));
+                }
+            }
             self.model_call(input, output);
         }
     }
@@ -324,6 +345,9 @@ impl Trail {
                 context_window: self.context_window,
                 model_on_cpu: self.model_on_cpu,
                 memory_low: self.memory_low,
+                model: self.model.as_ref().map(|(_, name)| name.clone()),
+                chat_id: self.chat_id.clone(),
+                context_parts: self.peak_parts,
             },
         )
     }
@@ -1024,6 +1048,9 @@ mod tests {
                 context_window: None,
                 model_on_cpu: None,
                 memory_low: false,
+                model: None,
+                chat_id: None,
+                context_parts: None,
             })
         );
     }
@@ -1075,9 +1102,97 @@ mod tests {
                 context_window: None,
                 model_on_cpu: None,
                 memory_low: false,
+                model: None,
+                chat_id: None,
+                context_parts: None,
             })
         );
         let _ = std::fs::remove_dir_all(&usage);
+    }
+
+    /// What filled the largest prompt is the broker's split of the request
+    /// it forwarded (WO-056): the parts sum to the server's count, a smaller
+    /// call later doesn't replace them and a larger one does, and the
+    /// summary names the model and the chat.
+    #[test]
+    fn the_largest_prompt_is_split_from_the_request_forwarded() {
+        let mut trail = Trail::new(None, "session-1", "run-1")
+            .of_chat(true)
+            .in_chat(Some(s("main")))
+            .asking(Some("http://127.0.0.1:9/v1"), Some("gemma4:12b"));
+        let request = |body: &serde_json::Value| hatchling_egress::EgressRequest {
+            method: s("POST"),
+            destination: s("localhost:11434"),
+            path: s("/v1/chat/completions"),
+            headers: Vec::new(),
+            body: serde_json::to_vec(body).unwrap(),
+            surrogate_b64: String::new(),
+        };
+        let reply = |read: u64| hatchling_egress::EgressResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: format!(
+                r#"{{"model":"m","usage":{{"prompt_tokens":{read},"completion_tokens":1}}}}"#
+            )
+            .into_bytes(),
+        };
+        let system = serde_json::json!({"role": "system", "content": "x".repeat(300)});
+        let memory = serde_json::json!({"role": "user", "content": format!("[RECALLED-MEMORY]\n{}", "m".repeat(80))});
+        let owner = serde_json::json!({"role": "user", "content": "hi"});
+        let first = serde_json::json!({"messages": [system, memory, owner]});
+        trail.count(&request(&first), &reply(1000), 1);
+        let parts = |trail: &Trail| {
+            if let Some(SubagentEvent::RunSummary {
+                context_parts,
+                model,
+                chat_id,
+                ..
+            }) = trail.summary()
+            {
+                (context_parts, model, chat_id)
+            } else {
+                (None, None, None)
+            }
+        };
+        let (split, model, chat) = parts(&trail);
+        let split = split.unwrap();
+        assert_eq!(
+            split.system + split.tools + split.memory + split.conversation,
+            1000
+        );
+        assert!(
+            split.system > split.memory && split.memory > split.conversation,
+            "{split:?}"
+        );
+        assert_eq!(split.tools, 0);
+        assert_eq!(
+            (model.as_deref(), chat.as_deref()),
+            (Some("gemma4:12b"), Some("main"))
+        );
+        // A smaller call after doesn't replace what filled the largest.
+        let smaller = serde_json::json!({"messages": [owner]});
+        trail.count(&request(&smaller), &reply(400), 2);
+        assert_eq!(parts(&trail).0, Some(split));
+        // A larger one does.
+        trail.count(&request(&smaller), &reply(2000), 3);
+        assert_eq!(
+            parts(&trail).0,
+            Some(hatchling_core::subagent::ContextParts {
+                conversation: 2000,
+                ..hatchling_core::subagent::ContextParts::default()
+            })
+        );
+        // A call whose body isn't a chat request leaves what was there.
+        let mut unread = Trail::new(None, "session-2", "run-2");
+        unread.count(
+            &hatchling_egress::EgressRequest {
+                body: b"not json".to_vec(),
+                ..request(&smaller)
+            },
+            &reply(50),
+            4,
+        );
+        assert_eq!(parts(&unread), (None, None, None));
     }
 
     /// When the session ends, its summary is written to the activity log

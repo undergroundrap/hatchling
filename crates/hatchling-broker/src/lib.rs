@@ -119,6 +119,7 @@ pub mod output_gate;
 pub mod owner;
 pub mod warnings;
 pub use output_gate::{RedactionConfig, Rules, RulesHandle, RulesWorker};
+pub mod prompt_parts;
 pub mod review_queue;
 pub mod run_launcher;
 pub mod run_record;

@@ -863,6 +863,17 @@ fn read_hello(stream: &UnixStream, timeout: Duration) -> Result<Vec<u8>, Error> 
     Ok(frame)
 }
 
+/// The chat a chat run answers, as `config` names it; `None` for any other
+/// run. What its memory proposals and its summary say it was in.
+fn chat_of(config: &Config, chat_run: bool) -> Option<String> {
+    config
+        .scheduler
+        .followup
+        .as_ref()
+        .filter(|_| chat_run)
+        .map(|scope| scope.channel.clone())
+}
+
 /// Runs the post-handshake session: one op per frame until EOF.
 ///
 /// The peer was authorized before the handshake; every op is additionally
@@ -998,6 +1009,7 @@ fn serve_session(
         cell_id.as_str(),
     )
     .of_chat(chat_run)
+    .in_chat(chat_of(config, chat_run))
     .counting_in(&config.scheduler.usage)
     .with_window(config.scheduler.model_context_window)
     .with_budget(config.scheduler.run_tokens)
@@ -1070,12 +1082,7 @@ fn serve_session(
                     // Where it was asked, as the broker knows it (WO-048).
                     let from = crate::memory_keep::ProposedIn {
                         run: run_cell.map(|cell| cell.as_str().to_owned()),
-                        chat: config
-                            .scheduler
-                            .followup
-                            .as_ref()
-                            .filter(|_| chat_run)
-                            .map(|scope| scope.channel.clone()),
+                        chat: chat_of(config, chat_run),
                     };
                     let asked = crate::memory_proposal::Asked {
                         content: &content,
@@ -3010,7 +3017,12 @@ mod gate_scope_tests {
     /// from the server's reply; where the broker has no place for usage,
     /// nothing is.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one answered call, counted three ways: the owner's usage, each trail's summary, and what filled its prompt"
+    )]
     fn an_answered_model_call_is_counted() {
+        use hatchling_core::subagent::ContextParts;
         use std::io::{Read as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -3105,6 +3117,13 @@ mod gate_scope_tests {
                     context_window: None,
                     model_on_cpu: None,
                     memory_low: false,
+                    model: None,
+                    chat_id: None,
+                    // No messages forwarded: all conversation (WO-056).
+                    context_parts: Some(ContextParts {
+                        conversation: 11,
+                        ..Default::default()
+                    }),
                 })
             );
         }

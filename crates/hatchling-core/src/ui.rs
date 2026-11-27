@@ -99,7 +99,9 @@ pub use surfaces::{
 /// `message_accepted` or `nothing_to_continue`.
 /// 15: several memories on one card (WO-055): a confirmation's `items`,
 /// each memory's fields in order.
-pub const UI_SCHEMA_VERSION: u16 = 15;
+/// 16: the context panel and the model in use (WO-056): a run summary's
+/// `model`, `chat_id` and `context_parts`.
+pub const UI_SCHEMA_VERSION: u16 = 16;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -2854,7 +2856,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 15);
+        assert_eq!(UI_SCHEMA_VERSION, 16);
     }
 
     /// A batch card's items on the wire (WO-055, v15): each memory's fields
@@ -3217,6 +3219,9 @@ mod tests {
                     context_window: None,
                     model_on_cpu: None,
                     memory_low: false,
+                    model: None,
+                    chat_id: None,
+                    context_parts: None,
                 },
                 ActivityState::Success,
             ),

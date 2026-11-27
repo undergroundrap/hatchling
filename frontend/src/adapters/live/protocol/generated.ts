@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 15;
+export const UI_SCHEMA_VERSION = 16;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 39;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -234,6 +234,18 @@ export type ActivityEvent = {
      */
     readonly chat: boolean;
     /**
+     * The chat the run answered (WO-056, v16), so the meter shows the
+     * chat in view; `None` for background work.
+     */
+    readonly chat_id?: string | null;
+    /**
+     * What filled the largest call's prompt (WO-056, v16): its
+     * server's count split by the bytes of each part of the request
+     * the broker forwarded. The parts sum to `peak_input_tokens`;
+     * `None` without a model call the broker could read.
+     */
+    readonly context_parts?: ContextParts | null;
+    /**
      * The model's context window in tokens: the one the model's
      * server says it gives the model (Ollama does), else the one the
      * operator declared. What the largest call is measured against;
@@ -246,6 +258,11 @@ export type ActivityEvent = {
      * less than a tenth of it free.
      */
     readonly memory_low?: boolean;
+    /**
+     * The model, as the broker's settings name it (WO-056, v16);
+     * `None` when they don't.
+     */
+    readonly model?: string | null;
     /**
      * Model calls answered.
      */
@@ -1223,6 +1240,31 @@ export type ConflictEntry = {
      * The version the winning write became.
      */
     readonly won_version: number;
+};
+/**
+ * What filled a model call's prompt (WO-056).
+ *
+ * Its server's count of it, split by the size of each part of the request
+ * the broker forwarded. Each part is about right; their sum is the
+ * server's count exactly.
+ */
+export type ContextParts = {
+    /**
+     * Everything else: the conversation, tool calls and their results.
+     */
+    readonly conversation: number;
+    /**
+     * The memory the run was given.
+     */
+    readonly memory: number;
+    /**
+     * The instructions: the system messages.
+     */
+    readonly system: number;
+    /**
+     * The tools' definitions.
+     */
+    readonly tools: number;
 };
 /**
  * Who controls a shared surface.

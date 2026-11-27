@@ -168,6 +168,9 @@ the agent says it did, and never what a request carried.
 | `context_window` | u32 \| null | The model's context window in tokens: the one the model's server says it gives the model when the session ends (Ollama's `GET /api/ps`), else the one the operator declared (`HATCHLING_SCHEDULER_MODEL_CONTEXT_WINDOW`); `null` when neither is known. |
 | `model_on_cpu` | u64, optional | Bytes of the model that ran from the computer's own memory, on its CPU, when the session ended, as the model's server says (Ollama's `GET /api/ps`: `size` less `size_vram`). Answers are slower for it. Absent when the server doesn't say. |
 | `memory_low` | bool, optional | Whether the computer was low on memory when the session ended: less than a tenth of `/proc/meminfo`'s `MemTotal` available. Absent when false. |
+| `model` | string, optional | The model, as the broker's settings name it (`HATCHLING_SCHEDULER_MODEL_NAME`), v16. Absent when they don't. |
+| `chat_id` | string, optional | The chat a chat run answered, v16: the composer's meter shows only the chat in view. Absent for background work. |
+| `context_parts` | object, optional | What filled the largest call's prompt, v16 (WO-056): `system`, `tools`, `memory` and `conversation`, in tokens. The broker measures each part's bytes in the request it forwarded (the system messages; the `tools` definitions; the user message carrying the recalled memory block, known by its `[RECALLED-MEMORY]` label; and everything else). It splits the server's count in proportion, by largest remainder, so each is about right and they sum to `peak_input_tokens` exactly. Never what the agent says. Absent without a model call the broker could read. |
 
 `tool` is one of `goals_read`, `goals_write`, `memory_recall`,
 `memory_propose`, `memory_write`, `schedule_read`, `schedule_write`,
