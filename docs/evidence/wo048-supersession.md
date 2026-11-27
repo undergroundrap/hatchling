@@ -30,11 +30,32 @@ Part of [#598](https://github.com/undergroundrap/hatchling/issues/598), [WO-048]
   - the card quotes what it replaces;
   - approved, only the correction is recalled, its record names the one it replaced, and the old one is kept, retagged, with its record as it was. The owner's list doesn't show it;
   - a memory from before records keeps its old approval tag when replaced;
-  - one forgotten before the correction is approved leaves nothing else changed, and the owner is told.
+  - one forgotten before the correction is approved leaves nothing else changed, and the owner is told;
+  - one whose words changed after the owner was shown them isn't retired.
 - **`hatchling-broker`, `approval_board::tests`:** the approval freezes `supersedes` and the words replaced.
 - **`hatchling-agent`, `tests/memory_recall.rs`:** a scripted model, against the real broker pipeline, is given an approved memory recalled with its id. Its correction by an unknown id is refused, and the one by the memory's id is put to the owner. WO-045 measures how often real models do this.
 - **`hatchling-agent`, `tools::tests`:** the tool sends `supersedes` on the wire.
 
 ## The gate
 
-RESULTS
+The gate script (`dr-k5.sh`) on tree `ce241384`, the slice on slice 4:
+- fmt passes, clippy passes on 1.98.1 and 1.85.0, and the workspace builds;
+- the workspace's tests: 4648 passed, 0 failed;
+- `hatchling-dev audit`: all checks passed.
+
+The protocol schema and the frontend's wire are regenerated at v37, and the frontend's check passes: 627, 271 and 16 tests.
+
+**Eight hand-breaks, each caught by its tests:**
+- a run's own note can be corrected as if approved;
+- the kept correction doesn't name what it replaces;
+- words changed meanwhile are retired anyway;
+- a memory from before records loses its approval when replaced;
+- the approval doesn't freeze what it replaces;
+- the card doesn't quote it;
+- the session drops what it corrects, caught by the scripted-model test;
+- recall names no item.
+
+**Mutation** on the slice's own diff, with none missed and none timed out:
+- broker: 20 mutants, 14 caught, 6 unviable;
+- memory: 4 mutants, 4 caught;
+- agent: 3 mutants, 1 caught, 2 unviable.
