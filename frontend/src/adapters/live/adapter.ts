@@ -29,6 +29,7 @@ import type { AgentFilesPort } from '../../session/agent-files.js';
 import type { GoalsPort } from '../../session/goals.js';
 import type { FeedPort } from '../../session/feed.js';
 import type { IdeasPort } from '../../session/ideas.js';
+import type { ReviewPort } from '../../session/review.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
@@ -40,6 +41,7 @@ import { LiveGoals } from './goals.js';
 import { LiveFeed } from './feed.js';
 import { LiveIdeas } from './ideas.js';
 import { LiveMemory } from './memory.js';
+import { LiveReview } from './review.js';
 import { LiveCovered } from './covered.js';
 import { LiveSites } from './sites.js';
 import { LiveSkills } from './skills.js';
@@ -91,6 +93,8 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly goals: GoalsPort;
     readonly #goals: LiveGoals;
     readonly #memory: LiveMemory;
+    /** What background work may not apply on its own, waiting on the Memory page: straight to the broker, never as a Command. */
+    readonly review: ReviewPort;
     /** The owner's Feed page: its prompt, its time, and what was written. */
     readonly feed: FeedPort;
     readonly #feed: LiveFeed;
@@ -138,6 +142,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#ideas = new LiveIdeas(this.#client, this.#schedules, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.ideas = this.#ideas;
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.review = new LiveReview(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#inbox = new LiveInbox(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.inbox = this.#inbox;
         this.#agentFiles = new LiveAgentFiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`, { runs: { of: id => this.#chats.runOf(id), shown: () => this.#chats.runsShown() } });

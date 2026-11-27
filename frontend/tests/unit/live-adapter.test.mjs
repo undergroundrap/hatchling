@@ -50,7 +50,7 @@ const replay = (transport, frames = SAMPLE_EVENTS) => {
 const answer = (transport, request_id, result) => transport.deliver({ type: 'action_result', request_id, result });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 // The actions the app sent besides what it reads each time it connects: allowed and signed-in sites, schedules, goals, and usage.
-const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library', 'list_covered'].includes(frame.action.action) && !(['manage_suggestions', 'manage_grants', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory', 'manage_skills'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
+const sentActions = transport => transport.sent.filter(frame => frame.type === 'action' && !['read_usage', 'read_feed', 'read_model', 'read_setup', 'list_inbox', 'list_library', 'list_covered'].includes(frame.action.action) && !(['manage_suggestions', 'manage_grants', 'manage_profiles', 'manage_sign_ins', 'manage_schedule', 'manage_goals', 'manage_memory', 'manage_skills', 'manage_review'].includes(frame.action.action) && frame.action.op.op === 'list') && frame.action.action !== 'list_decisions');
 const thread = adapter => adapter.getSnapshot().threads[0];
 const lane = (adapter, id) => thread(adapter).lanes.find(item => item.id === id);
 const confirmation = (seq, revision, summary = 'Post the sample summary?') => sampleEvent(seq, seq, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'confirm-1', revision, chat_id: 'main', summary, expires_at: null, digest: `digest-${revision}`, fields: [{ label: 'Operation', value: summary, source: 'broker' }, { label: 'Text', value: 'Sample text.', source: 'agent' }] });
@@ -1659,6 +1659,24 @@ test('memory: listed into the snapshot, forgotten from the page, never added the
     assert.equal((await forgetting).ok, true);
     assert.deepEqual(adapter.getSnapshot().memory, []);
     assert.match((await adapter.execute({ type: 'memory.save', id: '', title: 't', body: 'b' })).message, /you approve its words/);
+});
+test('the review queue: listed on connecting, decided straight with the broker, never as a Command', async () => {
+    const { transport, adapter } = connected();
+    const last = op => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_review' && frame.action.op.op === op).at(-1);
+    const item = { item_id: 'r1', proposed_by: 'memory', kind: 'remove', target: 'pref/1', change: 'Forget that they like tea.', why: 'They said they stopped.', evidence: ['chat/1'], proposed_at: '2026-11-26T12:00:00Z', state: 'waiting', decided_at: null };
+    let heard = 0;
+    adapter.subscribe(() => heard++);
+    answer(transport, last('list').request_id, { result: 'review', outcome: { result: 'listed', items: [item] } });
+    await flush();
+    assert.deepEqual(adapter.review.current().entries.map(entry => [entry.id, entry.state]), [['r1', 'waiting']]);
+    assert.ok(heard > 0, 'a read list is published');
+    const deciding = adapter.review.decide('r1', false);
+    assert.deepEqual(last('decide').action, { action: 'manage_review', op: { op: 'decide', item_id: 'r1', approve: false } });
+    answer(transport, last('decide').request_id, { result: 'review', outcome: { result: 'decided', item: { ...item, state: 'rejected' } } });
+    await flush();
+    answer(transport, last('list').request_id, { result: 'review', outcome: { result: 'listed', items: [{ ...item, state: 'rejected' }] } });
+    assert.deepEqual(await deciding, { ok: true, message: 'Rejected. Nothing changes.' });
+    assert.equal(adapter.review.current().entries[0].state, 'rejected');
 });
 test('an approval that says what approving does is labelled so; one that doesn\'t is Allow once', () => {
     const { transport, adapter } = connected();

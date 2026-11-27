@@ -15,6 +15,7 @@ import type { ModelPort } from '../session/model.js';
 import type { GoalsPort } from '../session/goals.js';
 import type { FeedPort } from '../session/feed.js';
 import type { IdeasPort } from '../session/ideas.js';
+import type { ReviewPort } from '../session/review.js';
 import { ChatDelivery } from '../features/chat/delivery.js';
 import type { ChatSessionPort } from '../session/chat-session.js';
 import { ComposerDrafts } from '../features/chat/drafts.js';
@@ -90,6 +91,9 @@ export class App implements AppContext {
     get ideas(): IdeasPort | undefined {
         return this.adapter.ideas;
     }
+    get review(): ReviewPort | undefined {
+        return this.adapter.review;
+    }
     get attention(): AttentionPort | undefined {
         return this.adapter.attention;
     }
@@ -124,6 +128,7 @@ export class App implements AppContext {
         readonly goals?: GoalsPort;
         readonly feed?: FeedPort;
         readonly ideas?: IdeasPort;
+        readonly review?: ReviewPort;
         readonly attention?: AttentionPort;
     }, private readonly root: HTMLElement, dialogRoot: HTMLElement, private readonly toastRoot: HTMLElement) {
         this.dialogs = new DialogManager(dialogRoot, this.acknowledgeVisible);
@@ -305,6 +310,9 @@ export class App implements AppContext {
         // Hatchling changes the Ideas page without the app being told: read it as the owner opens it.
         if (route === 'ideas')
             this.ideas?.opened();
+        // Background work proposes without the app being told, too.
+        if (route === 'memory')
+            this.review?.opened();
         if (window.innerWidth <= 800)
             this.ui.navOpen = false;
         else if (route === 'library' || route === 'chat')

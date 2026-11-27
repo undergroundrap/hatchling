@@ -1,4 +1,4 @@
-# WO-054 slice 4a: the review queue
+# WO-054 slice 4: the review queue
 
 Part of [#718](https://github.com/undergroundrap/hatchling/issues/718), [WO-054](../workorders/workorder-054-background-runs.md). The maintainer approved the protocol change on 2026-11-26.
 
@@ -32,7 +32,16 @@ The queue never blocks a loop.
   - an approved one is applied by its loop's apply step (slice 5, with the memory loop), which rechecks its target and marks it `stale` when that changed;
   - a rejected one changes nothing.
 
-**What isn't here:** the app's Review page (4b), and the loops that propose and apply (the memory loop's work order).
+## The app's list
+
+What waits is on the live Memory page, above what's kept: under **Waiting for you**, each proposal's change, its kind, why, and when it was proposed, with **Approve** (behind a confirmation that says what approving does) and **Reject**. Under **Decided**, what was approved, rejected or went stale, with where it stands.
+
+- **Never a Command.** Deciding goes straight to the broker through a port (`ReviewPort`), as closing a goal does. The threat it stops: the agent, or an automation driving the app on its behalf, approving its own loop's proposal. No Command decides one, so the automation catalog can't reach it, and the broker keeps `manage_review` to the owner's connection besides.
+- **Read when it can have changed:** when the connection opens, and whenever the owner opens Memory, since loops propose without the app being told.
+- **With scheduled work off,** nothing runs in the background to propose anything: the list is empty, not a warning on every visit. Every other answer is said in a sentence.
+- **Built from what's there:** the page's own entry cards, its section titles, `pill` and `button`. No new look.
+
+**What isn't here:** the loops that propose and apply (the memory loop's work order).
 
 ## Tests
 
@@ -44,8 +53,22 @@ In `hatchling-broker`'s `review_queue::tests`:
 - the owner's operations are answered: `off` with no store, `failed` under another key;
 - an item that JSON escapes past one sealed entry is refused, and a full index fits one.
 
-`hatchling-core`'s tests pass with the version at 13. The frontend's check passes with its maps naming the new action: typecheck, lint, protocol, and 622, 266 and 16 tests.
+`hatchling-core`'s tests pass with the version at 13.
+
+In the frontend, `live-review.test.mjs` covers the adapter whole (lines, branches and functions at 100%):
+- each kind and state reads in the page's words, and a time that isn't one shows none;
+- the list is read once each time the connection opens, and again as the Memory page opens, never while disconnected;
+- with scheduled work off nothing waits, and every other answer is said in its place;
+- deciding sends the owner's choice and reads the list again, and every answer is said.
+
+`live-adapter.test.mjs` checks the adapter end to end: listed on connecting, decided straight with the broker, the decision read back. The frontend's check passes: typecheck, lint, design, actions, protocol, seam, format, and 627, 271 and 16 tests.
 
 ## The gate
 
-RESULTS
+The gate script (`dr-rq.sh`) on the slice's first commit:
+- the workspace's tests, 4620 passed, with clippy on 1.98.1 and 1.85.0 and the audit;
+- four hand-breaks of `review_queue.rs`, each caught by its tests: a decided item decided again, a waiting item evicted, the entry's size bound, and the queue answered with scheduled work off.
+
+Its mutation run on `review_queue.rs` left six mutants missed. Five of them were in an id check that only duplicated the index (an id the index doesn't hold is never read), so the check was removed. The sixth, `>` for `>=`, was at the entry's size bound, now named `fits` with its limit tested on each side.
+
+On the fixed tree: the module's tests pass, clippy passes on both toolchains, and the mutation run on `review_queue.rs` (`--in-diff`, the broker's `review_queue` tests) tested 39 mutants: 34 caught, 5 unviable, 0 missed, 0 timeouts.
