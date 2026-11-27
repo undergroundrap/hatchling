@@ -396,6 +396,19 @@ impl<'t, 'r, 'm> Loop<'t, 'r, 'm> {
         }
     }
 
+    /// Which model runs this run (WO-056): its `name` and `endpoint`, from
+    /// the settings the broker gave the cell, told at the end of the system
+    /// prompt in the pack's words. Without both, nothing is said.
+    #[must_use]
+    pub fn with_model(self, name: Option<&str>, endpoint: Option<&str>) -> Self {
+        match (name, endpoint) {
+            (Some(name), Some(endpoint)) => {
+                self.with_system_note(&hatchling_prompt::model_note(name, endpoint))
+            }
+            _ => self,
+        }
+    }
+
     /// The broker's records of the runs this one continues (WO-053), their
     /// JSON put in its envelope (`hatchling_prompt::carried_records`): one
     /// [`Message::Assistant`] after the prior turns and before the request.
@@ -958,6 +971,33 @@ mod tests {
         );
         let untold = Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_now(None);
         assert_eq!(untold.system_prompt, plain);
+    }
+
+    /// Which model runs the run is told at the end of the system prompt
+    /// (WO-056), from its name and endpoint; without both, nothing.
+    #[test]
+    fn the_model_in_use_ends_the_system_prompt() {
+        let registry = empty_registry();
+        let plain = hatchling_prompt::system_prompt_for(hatchling_prompt::PromptKind::Chat);
+        let endpoint = "http://localhost:11434/v1";
+        let told = Loop::new(&registry, hatchling_prompt::PromptKind::Chat)
+            .with_model(Some("gemma4:12b"), Some(endpoint));
+        assert_eq!(
+            told.system_prompt,
+            format!(
+                "{plain}\n\n{}",
+                hatchling_prompt::model_note("gemma4:12b", endpoint)
+            )
+        );
+        for (name, endpoint) in [
+            (Some("gemma4:12b"), None),
+            (None, Some(endpoint)),
+            (None, None),
+        ] {
+            let untold =
+                Loop::new(&registry, hatchling_prompt::PromptKind::Chat).with_model(name, endpoint);
+            assert_eq!(untold.system_prompt, plain, "{name:?} {endpoint:?}");
+        }
     }
 
     /// The record of the runs a run continues comes after the prior turns,
