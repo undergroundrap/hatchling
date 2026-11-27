@@ -95,7 +95,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [053](workorder-053-the-run-record.md) | The run record: what a run did, kept by the broker, so Keep going carries on from it | yes | IN-PROGRESS |
 | [054](workorder-054-background-runs.md) | Background runs: seats that propose, code that applies, and a clock that wakes them | yes | IN-PROGRESS |
 | [055](workorder-055-several-memories-one-card.md) | Several memories, one card | yes | CLOSED |
-| [056](workorder-056-context-panel-and-model-in-use.md) | The context panel, and the model in use | yes | IN-PROGRESS |
+| [056](workorder-056-context-panel-and-model-in-use.md) | The context panel, and the model in use | yes | CLOSED |
 
 ## Candidates
 
