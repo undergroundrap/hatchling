@@ -118,6 +118,9 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/browser-venv"
           "$RUNNER_TEMP/browser-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
           # The browser's system libraries, from apt.
+          # The runner image's Microsoft apt source is unused here and
+          # sometimes answers 403, which fails apt's update (#761).
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -name 'microsoft*' -print -delete
           "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install-deps chromium-headless-shell
           shell=$(bash scripts/fetch-test-browser.sh "$RUNNER_TEMP/browser")
           echo "HATCHLING_TEST_BROWSER=$shell" >> "$GITHUB_ENV"
@@ -237,6 +240,9 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/browser-venv"
           "$RUNNER_TEMP/browser-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          # The runner image's Microsoft apt source is unused here and
+          # sometimes answers 403, which fails apt's update (#761).
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -name 'microsoft*' -print -delete
           "$RUNNER_TEMP/browser-venv/bin/python" -m playwright install-deps chromium-headless-shell
           shell=$(bash scripts/fetch-test-browser.sh "$RUNNER_TEMP/browser")
           sudo cp -r "$(dirname "$shell")" /opt/
@@ -433,6 +439,9 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/room-app-venv"
           "$RUNNER_TEMP/room-app-venv/bin/python" -m pip install -r frontend/tests/e2e/requirements.txt
+          # The runner image's Microsoft apt source is unused here and
+          # sometimes answers 403, which fails apt's update (#761).
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -name 'microsoft*' -print -delete
           timeout -k 10 600 "$RUNNER_TEMP/room-app-venv/bin/python" -m playwright install-deps chromium
           timeout -k 10 300 "$RUNNER_TEMP/room-app-venv/bin/python" -m playwright install chromium
 
@@ -742,6 +751,9 @@ jobs:
           # The system libraries, from apt, once. Then the browsers: their download
           # has hung for 20 minutes at a time, so each try is bounded, killed
           # outright if it lingers, and a stuck one is tried again.
+          # The runner image's Microsoft apt source is unused here and
+          # sometimes answers 403, which fails apt's update (#761).
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -name 'microsoft*' -print -delete
           "$RUNNER_TEMP/app-venv/bin/python" -m playwright install-deps chromium
           for attempt in 1 2 3; do
             timeout -k 10 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install chromium && break
@@ -812,6 +824,9 @@ jobs:
           # The system libraries, from apt, once. Then the browsers: their download
           # has hung for 20 minutes at a time, so each try is bounded, killed
           # outright if it lingers, and a stuck one is tried again.
+          # The runner image's Microsoft apt source is unused here and
+          # sometimes answers 403, which fails apt's update (#761).
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -name 'microsoft*' -print -delete
           "$RUNNER_TEMP/app-venv/bin/python" -m playwright install-deps chromium chromium-headless-shell
           for attempt in 1 2 3; do
             timeout -k 10 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install chromium && break
@@ -983,6 +998,9 @@ jobs:
           # The system libraries, from apt, once. Then the browsers: their download
           # has hung for 20 minutes at a time, so each try is bounded, killed
           # outright if it lingers, and a stuck one is tried again.
+          # The runner image's Microsoft apt source is unused here and
+          # sometimes answers 403, which fails apt's update (#761).
+          sudo find /etc/apt/sources.list.d -maxdepth 1 -name 'microsoft*' -print -delete
           "$RUNNER_TEMP/app-venv/bin/python" -m playwright install-deps chromium
           for attempt in 1 2 3; do
             timeout -k 10 300 "$RUNNER_TEMP/app-venv/bin/python" -m playwright install chromium && break
