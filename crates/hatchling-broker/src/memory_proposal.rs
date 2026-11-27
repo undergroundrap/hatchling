@@ -181,19 +181,12 @@ fn reason(given: Option<&str>, name: &str) -> Result<Option<String>, Unfit> {
 /// The day number since 1970-01-01 of `raw`, when it's a real calendar
 /// day written `YYYY-MM-DD`.
 fn calendar_day(raw: &str) -> Option<u64> {
-    let bytes = raw.as_bytes();
-    let shaped = bytes.len() == 10
-        && bytes.iter().enumerate().all(|(at, byte)| {
-            if at == 4 || at == 7 {
-                *byte == b'-'
-            } else {
-                byte.is_ascii_digit()
-            }
-        });
-    if !shaped {
+    let midnight = format!("{raw}T00:00:00Z");
+    let at: hatchling_scheduler::Timestamp = midnight.parse().ok()?;
+    // Written back exactly as given: no other shape the parser also takes.
+    if at.to_string() != midnight {
         return None;
     }
-    let at: hatchling_scheduler::Timestamp = format!("{raw}T00:00:00Z").parse().ok()?;
     u64::try_from(at.as_second())
         .ok()
         .map(|secs| secs / DAY_SECS)
@@ -228,7 +221,8 @@ const COUNTS: [&str; 15] = [
 
 /// Whether `word` is a count: a number or a word for one.
 fn is_count(word: &str) -> bool {
-    COUNTS.contains(&word) || (!word.is_empty() && word.bytes().all(|byte| byte.is_ascii_digit()))
+    // `word` is never empty: the words are split and the empty dropped.
+    COUNTS.contains(&word) || word.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// The first relative date `text` uses, as it says it.
@@ -273,7 +267,7 @@ mod tests {
     /// Noon on 2026-11-26, UTC.
     const NOW: u64 = 1_795_694_400;
 
-    fn asked<'a>(content: &'a str, kind: &'a str) -> Asked<'a> {
+    const fn asked<'a>(content: &'a str, kind: &'a str) -> Asked<'a> {
         Asked {
             kind: Some(kind),
             ..Asked::about_owner(content)
@@ -471,6 +465,10 @@ mod tests {
             "The days are long in June.",
             "Several years of Rust.",
             "This is their monthly plan.",
+            "They travel in summer months.",
+            "Long years ago they lived in Rome.",
+            "It takes two weeks from the start.",
+            "They moved two houses ago.",
         ] {
             assert!(check(&Asked::about_owner(fine), NOW).is_ok(), "{fine}");
         }
@@ -500,6 +498,10 @@ mod tests {
             "2026-11-2x",
             "next week",
             "2026-11-270",
+            "20261127",
+            "2026-11-27T00:00:00Z",
+            "+2026-11-27",
+            "2026-1-27",
         ] {
             assert_eq!(check(&on(bad), NOW), refused, "{bad}");
         }
