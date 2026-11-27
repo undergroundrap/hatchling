@@ -32,7 +32,7 @@ function liveMemory(ctx: AppContext): HTMLElement {
     if (!ctx.state.memory.length)
         page.append(emptyState('memory', 'Nothing kept yet.', 'Tell the agent something about yourself worth keeping: it asks to remember it, and you approve.'));
     for (const entry of ctx.state.memory)
-        page.append(h('article', { class: 'memory-entry' }, h('header', {}, h('div', {}, h('p', {}, entry.body), h('time', { class: 'tiny muted' }, entry.date)), button('Forget', () => ctx.dialogs.confirm('Forget this?', 'The agent isn’t given it from the next chat on. This can’t be undone.', () => { void ctx.run({ type: 'memory.delete', id: entry.id }); }, { label: 'Forget', danger: true }), { variant: 'ghost' }))));
+        page.append(h('article', { class: 'memory-entry' }, h('header', {}, h('div', {}, h('p', {}, entry.body), h('time', { class: 'tiny muted' }, entry.date)), button('Forget', () => ctx.dialogs.confirm('Forget this?', 'The agent isn’t given it from the next chat on. This can’t be undone.', () => { void ctx.run({ type: 'memory.delete', id: entry.id }); }, { label: 'Forget', danger: true }), { variant: 'ghost' })), ...memoryDetails(ctx, entry.id)));
     page.append(h('div', { class: 'notice muted' }, icon('lock', 20), 'Passwords, codes, tokens, card and account numbers don’t belong in memory: say no if the agent ever asks to keep one.'));
     return page;
 }
@@ -65,6 +65,33 @@ function appendReview(ctx: AppContext, page: HTMLElement): void {
 }
 function reviewEntry(entry: ReviewEntry, footer: HTMLElement): HTMLElement {
     return h('article', { class: 'memory-entry', 'data-review-state': entry.state }, h('header', {}, h('div', {}, h('p', {}, entry.change), h('time', { class: 'tiny muted' }, entry.date)), pill(entry.kind)), entry.why ? h('p', { class: 'muted' }, entry.why) : null, footer);
+}
+/**
+ * What the page says of a kept memory beyond its words: its kind, whether
+ * it's known not to be so, why and when it applies, what it replaced,
+ * where it came from and when it was confirmed; and, when its day has
+ * come, whether it's still so, which only the owner's click confirms.
+ */
+function memoryDetails(ctx: AppContext, id: string): HTMLElement[] {
+    const detail = ctx.memoryDetails?.of(id);
+    if (!detail)
+        return [];
+    const port = ctx.memoryDetails;
+    const said = (result: CommandResult): void => { ctx.toast(result.message, !result.ok); ctx.render(); };
+    const pills = [detail.kind, detail.absence ? 'Known not to be so' : null].filter((label): label is string => label !== null);
+    const lines: HTMLElement[] = [];
+    if (pills.length)
+        lines.push(h('div', { class: 'metadata' }, ...pills.map((label) => pill(label))));
+    if (detail.why)
+        lines.push(h('p', { class: 'muted' }, `Why: ${detail.why}`));
+    if (detail.howToApply)
+        lines.push(h('p', { class: 'muted' }, `When it applies: ${detail.howToApply}`));
+    if (detail.replaces)
+        lines.push(h('p', { class: 'muted' }, `It replaced “${detail.replaces}”`));
+    lines.push(h('p', { class: 'tiny muted' }, detail.confirmed ? `${detail.origin}. ${detail.confirmed}.` : `${detail.origin}.`));
+    if (detail.due && port)
+        lines.push(h('div', { class: 'notice' }, h('p', {}, 'Is this still so? You asked to be asked by now.'), h('div', { class: 'action-row' }, button('Still so', () => { void port.confirm(id).then(said); }, { variant: 'primary' }))));
+    return lines;
 }
 function editMemory(ctx: AppContext, id: string): void {
     const entry = ctx.state.memory.find((item) => item.id === id);

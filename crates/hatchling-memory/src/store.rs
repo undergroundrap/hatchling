@@ -502,6 +502,31 @@ impl MemoryStore {
         })
     }
 
+    /// Rewrites the record of the item under `id` in the principal-bound
+    /// scope to `record`, keeping everything else as it was. `Ok(false)`
+    /// when there's none. The broker's alone, on the owner's word.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Corrupt`] for an unreadable item, or [`Error::Io`].
+    pub fn rerecord(
+        &self,
+        principal: &MemoryPrincipal,
+        scope: &MemoryScope,
+        id: &MemoryId,
+        record: KeptRecord,
+    ) -> Result<bool, Error> {
+        let space = Self::space(principal, scope);
+        let Some(mut item) = self.read_item(&space, id)? else {
+            return Ok(false);
+        };
+        item.record = Some(record);
+        let bytes = serde_json::to_vec(&item).map_err(|_| Error::Corrupt)?;
+        self.reindex(&space, id, Some(RecallEntry::of(&item)))?;
+        self.backing.put(&space, id, &bytes)?;
+        Ok(true)
+    }
+
     /// Rewrites the tags of the item under `id` in the principal-bound
     /// scope to `tags`, keeping everything else as it was: its words, its
     /// times, its retention and its record. `Ok(false)` when there's none.

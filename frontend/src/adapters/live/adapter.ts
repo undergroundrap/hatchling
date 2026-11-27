@@ -30,6 +30,7 @@ import type { GoalsPort } from '../../session/goals.js';
 import type { FeedPort } from '../../session/feed.js';
 import type { IdeasPort } from '../../session/ideas.js';
 import type { ReviewPort } from '../../session/review.js';
+import type { MemoryDetailsPort } from '../../session/memory.js';
 import { LiveChatSession } from './session.js';
 import { LiveSchedules } from './schedules.js';
 import { LiveUsage } from './usage.js';
@@ -93,6 +94,8 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly goals: GoalsPort;
     readonly #goals: LiveGoals;
     readonly #memory: LiveMemory;
+    /** Each kept memory's details, and confirming one: straight to the broker, never as a Command. */
+    readonly memoryDetails: MemoryDetailsPort;
     /** What background work may not apply on its own, waiting on the Memory page: straight to the broker, never as a Command. */
     readonly review: ReviewPort;
     /** The owner's Feed page: its prompt, its time, and what was written. */
@@ -142,6 +145,7 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#ideas = new LiveIdeas(this.#client, this.#schedules, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.ideas = this.#ideas;
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.memoryDetails = this.#memory;
         this.review = new LiveReview(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.#inbox = new LiveInbox(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.inbox = this.#inbox;

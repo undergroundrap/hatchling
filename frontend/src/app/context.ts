@@ -10,6 +10,7 @@ import type { SetupPort } from '../session/setup.js';
 import type { FeedPort } from '../session/feed.js';
 import type { IdeasPort } from '../session/ideas.js';
 import type { ReviewPort } from '../session/review.js';
+import type { MemoryDetailsPort } from '../session/memory.js';
 import type { GoalsPort } from '../session/goals.js';
 import type { ApprovalReview } from '../features/approvals/review.js';
 import type { ChatDelivery } from '../features/chat/delivery.js';
@@ -86,6 +87,8 @@ export interface AppContext {
     readonly ideas: IdeasPort | undefined;
     /** What background work may not apply on its own, for the owner to decide, when the app is connected to Hatchling. */
     readonly review: ReviewPort | undefined;
+    /** Each kept memory's details, and confirming one, when the app is connected to Hatchling. */
+    readonly memoryDetails: MemoryDetailsPort | undefined;
     /** Scheduled work that needs the owner, when the app is connected to Hatchling. */
     readonly attention: AttentionPort | undefined;
     readonly delivery: ChatDelivery;

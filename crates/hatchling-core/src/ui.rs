@@ -97,7 +97,7 @@ pub use surfaces::{
 /// 12: Keep going (WO-053): `keep_going`, the owner's, to have the next
 /// run carry on from one that stopped before it was done, answered
 /// `message_accepted` or `nothing_to_continue`.
-pub const UI_SCHEMA_VERSION: u16 = 13;
+pub const UI_SCHEMA_VERSION: u16 = 14;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -1420,6 +1420,30 @@ pub enum KeptOp {
         /// It, as listed.
         id: String,
     },
+    /// Say one is still so (v14, WO-048): it's confirmed as of now, and
+    /// isn't asked about again.
+    Confirm {
+        /// It, as listed.
+        id: String,
+    },
+}
+
+/// Where a kept memory came from, as the broker recorded it (WO-048).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "from", rename_all = "snake_case")]
+pub enum KeptFrom {
+    /// A chat's run asked, and the owner approved.
+    Chat {
+        /// The chat.
+        chat: String,
+    },
+    /// A scheduled run asked, and the owner approved.
+    Run,
+    /// The owner approved it, from no run the broker started.
+    Approval,
+    /// Kept before records were: where it came from isn't recorded.
+    NotRecorded,
 }
 
 /// One thing the agent is given from the owner's memory.
@@ -1435,6 +1459,38 @@ pub struct Kept {
     /// Whether the owner approved it: what the agent asked to keep, and
     /// they approved, is; anything kept some other way isn't.
     pub approved: bool,
+    /// Where it came from (v14).
+    #[serde(default = "not_recorded")]
+    pub from: KeptFrom,
+    /// What kind of thing it is: `owner`, `guidance`, `work` or `pointer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Why, as the owner gave it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// When it applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub how_to_apply: Option<String>,
+    /// Whether it records something known not to be so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub absence: bool,
+    /// When the owner last confirmed it, Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed_at: Option<u64>,
+    /// The day after which the owner is asked whether it's still so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_by: Option<String>,
+    /// Whether that day has come: the owner is asked now.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub due: bool,
+    /// The words of the memory it replaced, when it corrects one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<String>,
+}
+
+/// Where a memory listed without it came from.
+const fn not_recorded() -> KeptFrom {
+    KeptFrom::NotRecorded
 }
 
 /// The result of a [`KeptOp`].
@@ -1449,6 +1505,8 @@ pub enum KeptResult {
     },
     /// It was forgotten.
     Forgotten,
+    /// It's confirmed as still so (v14).
+    Confirmed,
     /// Nothing kept has the id.
     NotFound,
     /// The broker keeps no memory: the operator hasn't given it a place to.
