@@ -117,7 +117,16 @@ Filled in as each slice lands.
 
 ## Notes
 
-### Slices
+### Where the taint lives (found 2026-11-27)
+
+- **The main chat's conversation.** The broker serves one chat, `local`. Side chats are the app's alone until #735 and 0.13. So "the conversation" is the conversation store's, and a new conversation (`start_new`) clears its taint with everything else.
+- **A sealed flag in the store's index** (`#[serde(default)]`, so older stores read as clean). The Library already keeps a sealed per-conversation number that a new conversation clears, and that's the pattern.
+- **Set when a run ends, kept or not:**
+  - The run record (WO-053) carries a failed run's doings to the next run, so a run that read a page and then failed must still taint the conversation.
+  - The flag is set for the conversation the run was sent in, never one the owner has started since.
+- **The run's own uses, as the trail counted them:** any use of an outside tool, however it ended. A refused web page read nothing, but a failed request's error text can carry words. Counting every use is the conservative choice.
+- **Files sent in taint at hand-over.** The trail can't tell an inbox read from other use of the agent's computer, so the chat marks the conversation when it gives a run the inbox's notes.
+
 
 1. **The conversation's taint and the mode,** in the broker, with automatic keeping and the record's `kept_by`.
 2. **The routes:** the review queue for tainted conversations and background runs, and the daily cap.
