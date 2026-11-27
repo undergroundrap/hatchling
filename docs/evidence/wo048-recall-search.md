@@ -26,6 +26,8 @@ Part of [#598](https://github.com/undergroundrap/hatchling/issues/598), [WO-048]
 - **`hatchling-memory`:**
   - `recall_index::tests`:
     - an ask is matched by its words;
+    - the scores are BM25 to the digit, worked out by hand, the guidance boost included;
+    - *when it applies* keeps at most sixteen words;
     - entries are scored by how well they match: a holder above a non-holder, a rare word above a common one, and guidance and work boosted by what their *how to apply* names;
     - choosing ranks by the ask after guidance.
   - `store::tests`: what the owner asked finds a memory outside the newest ten, which isn't given unasked; a read gives the one item it names, and nothing for an id not kept. This is the work order's acceptance criterion for search.
@@ -40,8 +42,43 @@ Part of [#598](https://github.com/undergroundrap/hatchling/issues/598), [WO-048]
 - **`hatchling-agent`, `tools::tests`:**
   - `memory_search` and `memory_read` send their words and id;
   - they answer as recalled data, and say why when there's nothing to give;
-  - they share their bound of 16.
+  - they share their bound of 16;
+  - their sizes are pinned. A look that isn't refused fails at once over a closed socket, so a broken bound fails its test instead of hanging it.
 
 ## The gate
 
-RESULTS
+**The gate script** (`dr-k7.sh`) on tree `183dc0fd`:
+- fmt passes, clippy passes on 1.98.1 and 1.85.0, and the workspace builds;
+- the workspace's tests: 4670 passed, 0 failed;
+- `hatchling-dev audit`: all checks passed.
+
+The protocol schema and the frontend's wire are regenerated at v39, and the frontend's check passes: 627, 271 and 16 tests.
+
+**Eight hand-breaks:**
+- the run's ask doesn't reach its recall;
+- the run's ask comes before a search's own words;
+- a read gives every item;
+- when it applies weighs nothing;
+- relevance doesn't rank;
+- every word is as rare as any other;
+- reads and searches are unbounded;
+- the launcher gives the run no ask.
+
+All but one failed their tests. "Reads and searches are unbounded" hung its test on a socket nobody answered.
+
+**Mutation found what the tests didn't hold:**
+- memory: 26 missed. The arithmetic of BM25 was tested only by the order it gives, and a redundant early return made one mutant equivalent;
+- agent: 7 missed and 4 timeouts. The constants and descriptions weren't pinned, the empty-search answer wasn't checked, and the bound's mutants hung the same way;
+- broker: its baseline failed on a ranking test that assumed every note was written in the same second.
+
+**Fixed:**
+- the scores pinned to the digit;
+- the early return removed;
+- the tool tests over a closed socket;
+- the constants, descriptions and empty answer checked;
+- the ranking test asserting what it means: the old note doesn't come first unasked.
+
+**The rerun** (clippy on both toolchains, and mutation on the slice's diff against main), with none missed and none timed out:
+- memory: 55 mutants, 53 caught, 2 unviable;
+- agent: 37 mutants, 34 caught, 3 unviable;
+- broker: 5 mutants, 2 caught, 3 unviable.
