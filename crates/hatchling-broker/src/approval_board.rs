@@ -1344,7 +1344,9 @@ mod tests {
             replaces.last(),
             Some(&(
                 String::from("What it replaces"),
-                String::from("“They have a car.” The agent isn't given that any more once you approve this.")
+                String::from(
+                    "“They have a car.” The agent isn't given that any more once you approve this."
+                )
             ))
         );
         for (kind, name, summary) in [

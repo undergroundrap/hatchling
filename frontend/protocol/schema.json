@@ -9199,6 +9199,13 @@
                   "const": "propose",
                   "type": "string"
                 },
+                "supersedes": {
+                  "description": "The id of a recalled memory this corrects (v37): approved, it\nreplaces that one, which isn't recalled any more.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "why": {
                   "description": "Why, as the owner gave it: required for `guidance` and `work`.",
                   "type": [
@@ -17088,7 +17095,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 36,
+    "session_protocol": 37,
     "ui_schema_version": 13
   },
   "x-roots": {

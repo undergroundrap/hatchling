@@ -236,7 +236,7 @@ fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
         peer_uid: rustix::process::getuid().as_raw(),
         session_id: hatchling_memory::SessionId::generate().unwrap(),
     };
-    hatchling_broker::memory_sealed::open_published(&root.to_path_buf())
+    hatchling_broker::memory_sealed::open_published(&root)
         .unwrap()
         .keep(
             &principal,
@@ -246,7 +246,12 @@ fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
             &[RECALL_TAG.parse().unwrap()],
             hatchling_memory::KeptRecord {
                 kind: Some(hatchling_memory::MemoryKind::Pointer),
-                ..hatchling_memory::KeptRecord::agent_words(Some(String::from("confirm-1")), None, None, 1)
+                ..hatchling_memory::KeptRecord::agent_words(
+                    Some(String::from("confirm-1")),
+                    None,
+                    None,
+                    1,
+                )
             },
         )
         .unwrap();
@@ -263,7 +268,9 @@ fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
     let model = FakeModel::new(vec![
         ModelAction::ToolCalls(vec![correction("kept-none")]),
         ModelAction::ToolCalls(vec![correction("kept-plan")]),
-        ModelAction::Text(String::from("The plan moved to notes/plan.md; I asked you to update what I remember.")),
+        ModelAction::Text(String::from(
+            "The plan moved to notes/plan.md; I asked you to update what I remember.",
+        )),
     ]);
     let result = cell
         .run_loop(
@@ -274,7 +281,10 @@ fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
         )
         .unwrap();
     let block = recalled_block(&result.history).expect("the memory is recalled");
-    assert!(block.contains("; id kept-plan):\nThe plan is in docs/plan.md.\n"), "{block}");
+    assert!(
+        block.contains("; id kept-plan):\nThe plan is in docs/plan.md.\n"),
+        "{block}"
+    );
     let said: Vec<String> = result
         .history
         .iter()
@@ -291,7 +301,12 @@ fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
     assert_eq!(said.len(), 2, "{said:?}");
     let first = said.first().unwrap();
     assert!(first.contains("\"asked\": Bool(false)"), "{said:?}");
-    assert!(first.contains("no memory the owner approved is recalled with the id kept-none"), "{said:?}");
-    assert!(said.last().unwrap().contains("\"asked\": Bool(true)"), "put to the owner: {said:?}");
+    assert!(
+        first.contains("no memory the owner approved is recalled with the id kept-none"),
+        "{said:?}"
+    );
+    assert!(
+        said.last().unwrap().contains("\"asked\": Bool(true)"),
+        "put to the owner: {said:?}"
+    );
 }
-

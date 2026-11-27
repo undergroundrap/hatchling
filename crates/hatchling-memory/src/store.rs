@@ -593,15 +593,34 @@ mod tests {
         let id = MemoryId::from_str("kept-1").unwrap();
         let record = KeptRecord::agent_words(Some(String::from("confirm-1")), None, None, 300);
         let kept = store
-            .keep(&p, &MemoryScope::User, &id, "Their cat is Biscuit.", &[Tag::from_str("recall").unwrap()], record)
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &id,
+                "Their cat is Biscuit.",
+                &[Tag::from_str("recall").unwrap()],
+                record,
+            )
             .unwrap();
         let old = [Tag::from_str("superseded").unwrap()];
         assert!(store.retag(&p, &MemoryScope::User, &id, &old).unwrap());
-        let read = store.recall(&p, &MemoryScope::User, &id, 400).unwrap().unwrap();
-        assert_eq!(read, MemoryItem { tags: old.to_vec(), ..kept });
+        let read = store
+            .recall(&p, &MemoryScope::User, &id, 400)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read,
+            MemoryItem {
+                tags: old.to_vec(),
+                ..kept
+            }
+        );
         let none = MemoryId::from_str("kept-none").unwrap();
         assert!(!store.retag(&p, &MemoryScope::User, &none, &old).unwrap());
-        assert_eq!(store.recall(&p, &MemoryScope::User, &none, 400).unwrap(), None);
+        assert_eq!(
+            store.recall(&p, &MemoryScope::User, &none, 400).unwrap(),
+            None
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
