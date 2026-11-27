@@ -149,8 +149,8 @@ export class LiveClient {
         return this.#ledger.decision(confirmationId);
     }
     /** The action deciding a pending confirmation at its current revision, if it is pending. */
-    decide(confirmationId: string, decision: Decision): UiAction | undefined {
-        return this.#ledger.decide(confirmationId, decision);
+    decide(confirmationId: string, decision: Decision, keep?: readonly number[]): UiAction | undefined {
+        return this.#ledger.decide(confirmationId, decision, keep);
     }
     /**
      * Send an action under the caller's request id. While one is waiting, the

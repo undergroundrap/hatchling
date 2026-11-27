@@ -1429,6 +1429,7 @@ mod tests {
                         revision: asked.revision,
                         digest: digest.to_owned(),
                         decision: Decision::Approve,
+                        keep: None,
                     },
                 },
             );

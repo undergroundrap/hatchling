@@ -352,14 +352,14 @@ impl<'a> Ops<'a> {
                 revision,
                 digest,
                 decision,
-            } => {
-                // Only the owner decides (WO-027): a caller holding less
-                // than every grant the owner holds can't.
-                if !owns {
-                    return refused(ActionRefusal::NotGranted);
-                }
-                self.decide(confirmation_id, *revision, digest, *decision)
-            }
+                keep,
+            } => self.decide(
+                owns,
+                confirmation_id,
+                (*revision, digest),
+                *decision,
+                keep.as_deref(),
+            ),
             UiAction::TakeControl { session_id } => self.browser(owns, OwnerAct::Take(session_id)),
             UiAction::ReturnControl {
                 session_id,
@@ -758,18 +758,29 @@ impl<'a> Ops<'a> {
     /// queues an approval for its worker and tells the stream.
     fn decide(
         &self,
+        owns: bool,
         confirmation_id: &str,
-        revision: u64,
-        digest: &str,
+        (revision, digest): (u64, &str),
         decision: Decision,
+        keep: Option<&[u32]>,
     ) -> (UiActionResult, ApiOutcome) {
+        // Only the owner decides (WO-027): a caller holding less than every
+        // grant the owner holds can't.
+        if !owns {
+            return (
+                UiActionResult::Refused {
+                    reason: ActionRefusal::NotGranted,
+                },
+                ApiOutcome::Refused,
+            );
+        }
         match crate::approval_board::decide_as_owner(
             self.config,
             self.key,
             confirmation_id,
-            revision,
-            digest,
+            (revision, digest),
             decision,
+            keep,
             Timestamp::now().as_second(),
         ) {
             Ok(decided) => (
@@ -3863,6 +3874,7 @@ mod tests {
             revision: 1,
             digest: String::from("00"),
             decision: Decision::Approve,
+            keep: None,
         };
         assert_eq!(
             ops.handle(&partial, &decide, &mut replies),
@@ -3879,6 +3891,82 @@ mod tests {
                 UiActionResult::DecisionRejected {
                     confirmation_id: String::from("approval-none"),
                     reason: DecisionRejection::Unknown,
+                },
+                ApiOutcome::Refused
+            )
+        );
+    }
+
+    /// WO-055: the owner's `keep` reaches the ledger through the API, and
+    /// one that can't be kept is rejected as `invalid_keep`.
+    #[test]
+    fn the_owners_keep_reaches_the_card_it_decides() {
+        let mut config = owner_config(Some("/srv/hatchling/schedules"));
+        config.vault.root = PathBuf::from("/nonexistent/hatchling-api-keep-test");
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::load(&SkillConfig::disabled()).unwrap();
+        let ops = Ops::new(&config, &key, &skills, None, Arc::new(Bus::starting_at(1)));
+        let owner = caller(&ops.owner_grants().into_iter().collect::<Vec<_>>());
+        let mut replies = Replies::default();
+        let board = crate::approval_board::board(&config);
+        let now = Timestamp::now().as_second();
+        let card = |task: &str| {
+            for words in ["Pepper is a cat.", "Uses metric."] {
+                board
+                    .propose_memory(
+                        &crate::memory_proposal::Checked::owner(&format!("{task}: {words}")),
+                        task,
+                        crate::memory_keep::ProposedIn::default(),
+                        now,
+                    )
+                    .unwrap();
+            }
+            let id = board.approvals().waiting(task, now, |_| true).unwrap();
+            UiAction::Decide {
+                confirmation_id: id.id,
+                revision: id.revision,
+                digest: id.digest,
+                decision: Decision::Approve,
+                keep: Some(vec![1]),
+            }
+        };
+        let decide = card("t1");
+        let UiAction::Decide {
+            confirmation_id, ..
+        } = &decide
+        else {
+            unreachable!("a decision");
+        };
+        assert_eq!(
+            ops.handle(&owner, &decide, &mut replies).1,
+            ApiOutcome::Served
+        );
+        assert_eq!(
+            board.approvals().get(confirmation_id).unwrap().kept(),
+            Some(&[1][..])
+        );
+        let UiAction::Decide {
+            confirmation_id,
+            revision,
+            digest,
+            ..
+        } = card("t2")
+        else {
+            unreachable!("a decision");
+        };
+        let none = UiAction::Decide {
+            confirmation_id: confirmation_id.clone(),
+            revision,
+            digest,
+            decision: Decision::Approve,
+            keep: Some(Vec::new()),
+        };
+        assert_eq!(
+            ops.handle(&owner, &none, &mut replies),
+            (
+                UiActionResult::DecisionRejected {
+                    confirmation_id,
+                    reason: DecisionRejection::InvalidKeep,
                 },
                 ApiOutcome::Refused
             )

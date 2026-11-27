@@ -136,6 +136,30 @@ class ApprovalTests(unittest.TestCase):
         self.capture('06b-fields-review')
         self.assert_no_overflow()
 
+    def test_05c_a_batch_card_keeps_what_stays_ticked(self):
+        self.scenario('batch')
+        card = self.page.locator('.task-approval-card')
+        items = card.locator('.task-approval-items > li')
+        expect(items).to_have_count(3)
+        boxes = card.locator('.task-approval-keep input[type="checkbox"]')
+        expect(boxes).to_have_count(3)
+        for n in range(3):
+            expect(boxes.nth(n)).to_be_checked()
+            expect(boxes.nth(n)).to_have_attribute('aria-label', f'Keep memory {n + 1}')
+        approve = card.locator('[id^="approval-once-"]')
+        expect(approve).to_have_text('Remember them')
+        boxes.nth(1).uncheck()
+        expect(approve).to_have_text('Keep 2')
+        boxes.nth(0).uncheck()
+        boxes.nth(2).uncheck()
+        expect(approve).to_be_disabled()
+        boxes.nth(0).check()
+        expect(approve).to_have_text('Keep 1')
+        self.capture('06c-batch-card')
+        self.assert_no_overflow()
+        approve.click()
+        expect(self.page.locator('.task-approval-card')).to_have_count(0)
+
     def test_06_failed_decision_is_visible_and_retryable(self):
         self.scenario('failed')
         self.page.locator('[id^="approval-once-"]').click()

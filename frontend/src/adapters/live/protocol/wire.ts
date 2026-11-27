@@ -1452,6 +1452,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "not_offered",
                 "type": "string"
+            },
+            {
+                "const": "invalid_keep",
+                "type": "string"
             }
         ]
     },
@@ -5857,6 +5861,16 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "digest": {
                         "type": "string"
+                    },
+                    "keep": {
+                        "items": {
+                            "minimum": 0,
+                            "type": "integer"
+                        },
+                        "type": [
+                            "array",
+                            "null"
+                        ]
                     },
                     "revision": {
                         "minimum": 0,

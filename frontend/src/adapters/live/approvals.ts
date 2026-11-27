@@ -30,6 +30,7 @@ const REJECTIONS: Readonly<Record<DecisionRejection, string>> = {
     expired: 'This request expired before the decision arrived, so nothing was decided.',
     already_decided: 'This request was already decided.',
     not_offered: 'This request can only be approved once, so nothing was decided.',
+    invalid_keep: 'Choose at least one to keep, or Deny. Nothing was decided.',
 };
 /** What a broker rejection says about the request itself. */
 const CLOSES: Readonly<Partial<Record<DecisionRejection, ApprovalStatus>>> = { unknown: 'cancelled', expired: 'expired' };
@@ -204,7 +205,7 @@ export class LiveApprovals implements TaskApprovalPort {
             return rejected('That answer is not offered for this request. Choose another.');
         if (this.#sending.has(attempt.requestId))
             return unknown('An answer to this request is already on its way. Check its status instead of answering again.');
-        const action = this.#client.decide(attempt.requestId, DECISIONS[attempt.decision]);
+        const action = this.#client.decide(attempt.requestId, DECISIONS[attempt.decision], attempt.keep);
         if (action?.action !== 'decide' || this.#closed.has(attempt.requestId))
             return rejected('This request is no longer waiting for an answer.');
         if (action.revision !== attempt.revision)

@@ -55,10 +55,11 @@ export class EventLedger {
      * confirmation that is not pending (decided, closed, or never offered) gets
      * no action: a decision is never sent twice, and never to a closed request.
      */
-    decide(confirmationId: string, decision: Decision): UiAction | undefined {
+    decide(confirmationId: string, decision: Decision, keep?: readonly number[]): UiAction | undefined {
         const request = this.#pending.get(confirmationId);
         if (request === undefined)
             return undefined;
-        return { action: 'decide', confirmation_id: confirmationId, revision: request.revision, digest: request.digest, decision };
+        // The items kept of a batch, by place on this revision (WO-055); none named keeps them all.
+        return { action: 'decide', confirmation_id: confirmationId, revision: request.revision, digest: request.digest, decision, ...(keep === undefined ? {} : { keep: [...keep] }) };
     }
 }

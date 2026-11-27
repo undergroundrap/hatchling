@@ -44,7 +44,8 @@ export class ApprovalReview {
             }
         }
     }
-    async respond(request: TaskApproval, decision: ApprovalDecision): Promise<void> {
+    /** Answer `request`; for a batch, `keep` names the items kept by place (WO-055), and none named keeps them all. */
+    async respond(request: TaskApproval, decision: ApprovalDecision, keep?: readonly number[]): Promise<void> {
         const current = this.requests.find(item => item.id === request.id);
         const feedback = this.feedback.get(request.id);
         if (!this.port || !current || current.status !== 'pending' || current.revision !== request.revision || (feedback && feedback.phase !== 'error'))
@@ -52,7 +53,7 @@ export class ApprovalReview {
         if (decision !== 'deny' && !current.scopes.includes(decision))
             return;
         // An explicitly rejected attempt is safe to try again. Unknown attempts are not.
-        const attempt: ApprovalAttempt = { id: `${this.prefix}-${++this.serial}`, requestId: request.id, revision: request.revision, decision };
+        const attempt: ApprovalAttempt = { id: `${this.prefix}-${++this.serial}`, requestId: request.id, revision: request.revision, decision, ...(keep === undefined ? {} : { keep }) };
         this.attempts.set(request.id, attempt);
         this.feedback.set(request.id, { phase: 'submitting', detail: 'Saving your decision…', revision: request.revision });
         this.changed();

@@ -1720,6 +1720,24 @@ test('a batch card lists each memory on it, in order, each with its own fields (
     other.transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'keep-1', revision: 1, chat_id: 'main', summary: 'Remember this about you?', expires_at: null, digest: 'digest-1', fields: [{ label: 'What it would remember', value: 'Their cat is Biscuit.', source: 'agent' }], approve: 'Remember it' }));
     assert.equal('items' in other.adapter.taskApprovals.getSnapshot()[0], false);
 });
+test('keeping some of a batch sends the places kept on the revision shown; keeping all sends none (WO-055)', async () => {
+    const { transport, adapter } = connected();
+    const memory = words => ({ fields: [{ label: 'What it would remember', value: words, source: 'agent' }] });
+    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'keep-3', revision: 2, chat_id: 'main', summary: 'Remember these 3 things?', expires_at: null, digest: 'digest-2', fields: [], approve: 'Remember them', items: [memory('a'), memory('b'), memory('c')] }));
+    const some = adapter.taskApprovals.respond({ id: 'k1', requestId: 'keep-3', revision: 2, decision: 'once', keep: [0, 2] });
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'decide', confirmation_id: 'keep-3', revision: 2, digest: 'digest-2', decision: 'approve', keep: [0, 2] });
+    // The broker refusing what was kept has its words, and nothing was decided.
+    answer(transport, 'k1', { result: 'decision_rejected', confirmation_id: 'keep-3', reason: 'invalid_keep' });
+    const refused = await some;
+    assert.equal(refused.state, 'rejected');
+    assert.match(refused.detail, /Choose at least one to keep, or Deny/);
+    const all = adapter.taskApprovals.respond({ id: 'k2', requestId: 'keep-3', revision: 2, decision: 'once' });
+    await flush();
+    assert.equal('keep' in transport.last().action, false, 'all of them: none named');
+    answer(transport, 'k2', { result: 'decided', confirmation_id: 'keep-3', decision: 'approve' });
+    assert.equal((await all).state, 'accepted');
+});
 test('Hatchling\'s own word reads the schedules again: a schedule the owner approved appears', async () => {
     const { transport } = connected();
     const lists = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').length;

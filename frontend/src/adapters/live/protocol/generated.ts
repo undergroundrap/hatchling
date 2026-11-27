@@ -1309,7 +1309,7 @@ export type DecisionRecord = {
 /**
  * Why a decision was not recorded.
  */
-export type DecisionRejection = 'unknown' | 'stale_revision' | 'expired' | 'already_decided' | 'not_offered';
+export type DecisionRejection = 'unknown' | 'stale_revision' | 'expired' | 'already_decided' | 'not_offered' | 'invalid_keep';
 /**
  * Why a delivery was refused.
  */
@@ -5734,6 +5734,13 @@ export type UiAction = {
      * The digest of the action the user saw.
      */
     readonly digest: string;
+    /**
+     * The items kept, by their place on the revision shown (WO-055,
+     * v15): an approval of some of a batch's memories, the rest
+     * skipped. `None` keeps them all. Refused on a request without
+     * items, with a denial, and when empty, out of range or repeated.
+     */
+    readonly keep?: readonly (number)[];
     /**
      * The revision the user saw.
      */

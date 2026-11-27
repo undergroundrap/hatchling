@@ -152,6 +152,8 @@ pub struct Request<A> {
     fingerprint: String,
     /// Each item's fingerprint, for a request made of items (WO-055).
     parts: Vec<String>,
+    /// The items the owner kept, by place, when they kept some (WO-055).
+    kept: Option<Vec<usize>>,
     scopes: Vec<GrantScope>,
     grant_key: Option<String>,
 }
@@ -167,6 +169,14 @@ impl<A> Request<A> {
     #[must_use]
     pub const fn run(&self) -> &A {
         &self.run
+    }
+
+    /// The items the owner kept, by place, when they kept some of a
+    /// request made of items (WO-055); `None` when they kept them all, or
+    /// it has none.
+    #[must_use]
+    pub fn kept(&self) -> Option<&[usize]> {
+        self.kept.as_deref()
     }
 }
 
@@ -331,7 +341,29 @@ impl<A: Clone> Approvals<A> {
         decision: Decision,
         now: i64,
     ) -> Result<State, DecisionRejection> {
-        self.ledger().decide(id, revision, digest, decision, now)
+        self.decide_items(id, revision, digest, decision, None, now)
+    }
+
+    /// [`Approvals::decide`], keeping only the items at the places in
+    /// `keep` of a request made of items (WO-055): the rest are refused
+    /// from then on, as a denial's are, without pausing the task that asked.
+    ///
+    /// # Errors
+    ///
+    /// As [`Approvals::decide`], and [`DecisionRejection::InvalidKeep`] for
+    /// a `keep` with a denial, on a request without items, or empty, out of
+    /// range or repeated. Nothing changes.
+    pub fn decide_items(
+        &self,
+        id: &str,
+        revision: u64,
+        digest: &str,
+        decision: Decision,
+        keep: Option<&[u32]>,
+        now: i64,
+    ) -> Result<State, DecisionRejection> {
+        self.ledger()
+            .decide(id, revision, digest, decision, keep, now)
     }
 
     /// Lapses every waiting request whose time is up at `now`. Proposing
@@ -539,6 +571,7 @@ impl<A: Clone> Ledger<A> {
                 run: proposal.run,
                 fingerprint,
                 parts,
+                kept: None,
                 scopes: proposal.scopes.clone(),
                 grant_key: proposal.grant_key.clone(),
             },
@@ -628,6 +661,7 @@ impl<A: Clone> Ledger<A> {
         revision: u64,
         digest: &str,
         decision: Decision,
+        keep: Option<&[u32]>,
         now: i64,
     ) -> Result<State, DecisionRejection> {
         let ledger = self;
@@ -658,6 +692,13 @@ impl<A: Clone> Ledger<A> {
         if !offered {
             return Err(DecisionRejection::NotOffered);
         }
+        let kept = match keep {
+            None => None,
+            Some(keep) => Some(
+                kept_places(keep, request.parts.len(), decision)
+                    .ok_or(DecisionRejection::InvalidKeep)?,
+            ),
+        };
         let fingerprint = request.fingerprint.clone();
         let parts = request.parts.clone();
         let decided = match decision {
@@ -669,6 +710,17 @@ impl<A: Clone> Ledger<A> {
         };
         request.state = decided;
         request.decision = Some(decision);
+        request.kept.clone_from(&kept);
+        // What the owner skipped is their no to those items, from then on;
+        // the task isn't paused, as they said yes to it.
+        if let Some(kept) = &kept {
+            let skipped = parts
+                .iter()
+                .enumerate()
+                .filter(|(place, _)| !kept.contains(place))
+                .map(|(_, part)| part.clone());
+            ledger.denied.extend(skipped);
+        }
         if decided == State::Denied {
             ledger.denied.insert(fingerprint);
             ledger.denied.extend(parts);
@@ -761,6 +813,25 @@ impl<A: Clone> Ledger<A> {
             }
         }
     }
+}
+
+/// The places in `keep`, of a request with `items` items, that `decision`
+/// keeps: `None` unless it approves, the request is a batch (two items or
+/// more), and the places are some, each in range and named once.
+fn kept_places(keep: &[u32], items: usize, decision: Decision) -> Option<Vec<usize>> {
+    if decision.scope().is_none() || items < 2 || keep.is_empty() {
+        return None;
+    }
+    let mut places = Vec::with_capacity(keep.len());
+    for &place in keep {
+        let place = usize::try_from(place).ok().filter(|place| *place < items)?;
+        if places.contains(&place) {
+            return None;
+        }
+        places.push(place);
+    }
+    places.sort_unstable();
+    Some(places)
 }
 
 /// Each of `items`' digests: their fingerprints as the ledger keeps them.
@@ -1583,5 +1654,116 @@ mod tests {
         );
         // An hour after the first, its place in the hour is free again.
         assert!(ledger.revise(&first.id, over, &parts, 3600).unwrap().new);
+    }
+
+    /// The owner keeps some of a card's items: those are kept, by place,
+    /// and each one skipped is refused from then on, on any card, without
+    /// pausing the task they said yes to.
+    #[test]
+    fn keeping_some_items_refuses_the_rest_and_pauses_nothing() {
+        let ledger = Approvals::new();
+        let (three, parts) = card(&["a", "b", "c"], "t1");
+        let asked = ledger.propose_items(three, &parts, 0).unwrap();
+        assert_eq!(
+            ledger.decide_items(
+                &asked.id,
+                1,
+                &asked.digest,
+                Decision::Approve,
+                Some(&[2, 0]),
+                1
+            ),
+            Ok(State::Approved)
+        );
+        assert_eq!(ledger.get(&asked.id).unwrap().kept(), Some(&[0, 2][..]));
+        let (with_b, parts) = card(&["b"], "t2");
+        assert_eq!(
+            ledger.propose_items(with_b, &parts, 2),
+            Err(Refusal::Denied)
+        );
+        let (with_a, parts) = card(&["a"], "t2");
+        assert!(
+            ledger.propose_items(with_a, &parts, 2).is_ok(),
+            "a kept item isn't refused"
+        );
+        let (again, parts) = card(&["d"], "t1");
+        assert!(
+            ledger.propose_items(again, &parts, 2).is_ok(),
+            "the task isn't paused"
+        );
+        // Kept whole, nothing's refused, and nothing's said kept by place.
+        let (two, parts) = card(&["e", "f"], "t3");
+        let whole = ledger.propose_items(two, &parts, 3).unwrap();
+        ledger
+            .decide_items(
+                &whole.id,
+                1,
+                &whole.digest,
+                Decision::Approve,
+                Some(&[1, 0]),
+                4,
+            )
+            .unwrap();
+        let (with_f, parts) = card(&["f"], "t4");
+        assert!(ledger.propose_items(with_f, &parts, 5).is_ok());
+        let plain = ledger.propose(proposal("one", "t5"), 5).unwrap();
+        approve(&ledger, &plain, 6).unwrap();
+        assert_eq!(ledger.get(&plain.id).unwrap().kept(), None);
+    }
+
+    /// A keep that can't be kept is refused, and nothing changes: with a
+    /// denial, on a request of one item or none, empty, out of range or
+    /// repeated.
+    #[test]
+    fn a_keep_that_cant_be_kept_is_refused_and_changes_nothing() {
+        let ledger = Approvals::new();
+        let (two, parts) = card(&["a", "b"], "t1");
+        let asked = ledger.propose_items(two, &parts, 0).unwrap();
+        let (one, parts) = card(&["c"], "t2");
+        let single = ledger.propose_items(one, &parts, 0).unwrap();
+        let plain = ledger.propose(proposal("x", "t3"), 0).unwrap();
+        for (request, decision, keep) in [
+            (&asked, Decision::Deny, &[0_u32][..]),
+            (&asked, Decision::Approve, &[][..]),
+            (&asked, Decision::Approve, &[2][..]),
+            (&asked, Decision::Approve, &[u32::MAX][..]),
+            (&asked, Decision::Approve, &[1, 1][..]),
+            (&single, Decision::Approve, &[0][..]),
+            (&plain, Decision::Approve, &[0][..]),
+        ] {
+            assert_eq!(
+                ledger.decide_items(&request.id, 1, &request.digest, decision, Some(keep), 1),
+                Err(DecisionRejection::InvalidKeep),
+                "{decision:?} {keep:?}"
+            );
+            assert_eq!(ledger.get(&request.id).unwrap().state, State::Pending);
+        }
+        // Nothing was refused by them.
+        let (with_b, parts) = card(&["b"], "t4");
+        assert!(ledger.propose_items(with_b, &parts, 2).is_ok());
+        // A stale revision is still told as stale, keep or not.
+        assert_eq!(
+            ledger.decide_items(
+                &asked.id,
+                2,
+                &asked.digest,
+                Decision::Approve,
+                Some(&[0]),
+                3
+            ),
+            Err(DecisionRejection::StaleRevision)
+        );
+        // And the card can still be decided.
+        assert_eq!(
+            ledger.decide_items(
+                &asked.id,
+                1,
+                &asked.digest,
+                Decision::Approve,
+                Some(&[1]),
+                4
+            ),
+            Ok(State::Approved)
+        );
     }
 }

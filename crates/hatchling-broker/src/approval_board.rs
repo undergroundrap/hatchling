@@ -254,13 +254,13 @@ pub fn decide_as_owner(
     config: &Config,
     keys: &dyn OpensStores,
     id: &str,
-    revision: u64,
-    digest: &str,
+    (revision, digest): (u64, &str),
     decision: Decision,
+    keep: Option<&[u32]>,
     now: i64,
 ) -> Result<OwnerDecision, DecisionRejection> {
     let board = board(config);
-    let decided = board.decide(id, revision, digest, decision, now)?;
+    let decided = board.decide_items(id, revision, digest, decision, keep, now)?;
     let site = board
         .approvals
         .get(id)
@@ -705,7 +705,29 @@ impl Board {
         decision: Decision,
         now: i64,
     ) -> Result<State, DecisionRejection> {
-        let decided = self.approvals.decide(id, revision, digest, decision, now);
+        self.decide_items(id, revision, digest, decision, None, now)
+    }
+
+    /// [`ApprovalBoard::decide`], keeping only the items at the places in
+    /// `keep` of a batch (WO-055): the worker keeps those, the rest are
+    /// refused from then on, and the record says which were skipped.
+    ///
+    /// # Errors
+    ///
+    /// As [`ApprovalBoard::decide`], and [`DecisionRejection::InvalidKeep`]
+    /// for a `keep` that can't be kept.
+    pub fn decide_items(
+        &self,
+        id: &str,
+        revision: u64,
+        digest: &str,
+        decision: Decision,
+        keep: Option<&[u32]>,
+        now: i64,
+    ) -> Result<State, DecisionRejection> {
+        let decided = self
+            .approvals
+            .decide_items(id, revision, digest, decision, keep, now);
         // A decision that came too late finds its request lapsed: the app
         // hears that the request closed, as well as that nothing was decided.
         self.tell_closed();
@@ -805,6 +827,10 @@ impl Board {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
+        let kept = self
+            .approvals
+            .get(id)
+            .and_then(|request| request.kept().map(<[usize]>::to_vec));
         if let (Some(card), Some(path)) = (card, path) {
             let decided_at = Timestamp::from_second(now)
                 .unwrap_or_else(|_| Timestamp::now())
@@ -821,8 +847,16 @@ impl Board {
                         .fields
                         .into_iter()
                         .chain(card.items.into_iter().zip(1_usize..).flat_map(|(item, n)| {
+                            // One the owner skipped says so (slice 3).
+                            let skipped =
+                                kept.as_ref().is_some_and(|kept| !kept.contains(&(n - 1)));
+                            let named = if skipped {
+                                format!("Memory {n}, skipped")
+                            } else {
+                                format!("Memory {n}")
+                            };
                             item.fields.into_iter().map(move |field| ConfirmationField {
-                                label: format!("Memory {n}: {}", field.label),
+                                label: format!("{named}: {}", field.label),
                                 ..field
                             })
                         }))
@@ -1302,14 +1336,27 @@ fn memory_fields(proposal: &crate::memory_proposal::Checked) -> Vec<Confirmation
     fields
 }
 
-/// Keeps each memory on `keep`'s card, which the owner approved in request
-/// `id`, at `now`: what they're told, either way.
-fn kept(config: &Config, id: &str, keep: &MemoryKeep, now: i64) -> Result<String, String> {
+/// Keeps each memory on `keep`'s card the owner kept (all, or those at the
+/// places in `kept`), which they approved in request `id`, at `now`: what
+/// they're told, either way.
+fn kept_of(
+    config: &Config,
+    id: &str,
+    keep: &MemoryKeep,
+    kept: Option<&[usize]>,
+    now: i64,
+) -> Result<String, String> {
     // Each memory on the card is kept as its own, under the one approval,
     // and each is said: one that couldn't be kept doesn't hide the others.
+    // Only those the owner kept, when they kept some (WO-055).
     let mut said = Vec::new();
     let mut failed = false;
-    for item in keep.items() {
+    let chosen = keep
+        .items()
+        .enumerate()
+        .filter(|(place, _)| kept.is_none_or(|kept| kept.contains(place)))
+        .map(|(_, item)| item);
+    for item in chosen {
         match kept_one(config, id, item, &keep.from, now) {
             Ok(text) => said.push(text),
             Err(text) => {
@@ -1376,12 +1423,19 @@ pub fn run_approved(
         // session.
         return format!("Approval {id} was not run: it is not the worker's to run.");
     }
+    // What the owner kept of a batch, fixed when they decided (WO-055).
+    let kept = board
+        .approvals()
+        .get(id)
+        .and_then(|request| request.kept().map(<[usize]>::to_vec));
     let Some((approved, claim)) = board.approvals().claim(id) else {
         return format!("Approval {id} was not run: it is no longer approved.");
     };
     let run = match approved {
         Approved::Activation(run) => run,
-        Approved::Memory(keep) => return settled(claim, kept(config, id, &keep, now)),
+        Approved::Memory(keep) => {
+            return settled(claim, kept_of(config, id, &keep, kept.as_deref(), now));
+        }
         Approved::Schedule(asked) => {
             let at = Timestamp::from_second(now).unwrap_or_else(|_| Timestamp::now());
             let created = crate::schedule_proposals::create(

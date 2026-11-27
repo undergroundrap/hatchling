@@ -73,6 +73,7 @@ All must pass before the WO closes:
 
 - Slice 1, the ledger: [wo055-ledger.md](../evidence/wo055-ledger.md).
 - Slice 2, the card: [wo055-card.md](../evidence/wo055-card.md).
+- Slice 3, Keep and Skip: [wo055-keep.md](../evidence/wo055-keep.md).
 
 The rest is filled in at close.
 
