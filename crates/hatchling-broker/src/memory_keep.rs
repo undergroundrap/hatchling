@@ -1167,6 +1167,62 @@ Remembered: “The owner uses metric.” The agent is given it from now on."
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// What the agent is told when its card can't take a memory (WO-055):
+    /// a sixth, and a second correction of the memory another corrects.
+    #[test]
+    fn a_full_card_and_a_second_correction_are_told_to_the_agent() {
+        let (config, dir) = config("card-refusals", &[MemoryAction::Propose]);
+        let old = kept_and_a_runs_note(&config);
+        let correcting = |words| crate::memory_proposal::Asked {
+            supersedes: Some(old.as_str()),
+            ..crate::memory_proposal::Asked::about_owner(words)
+        };
+        assert_eq!(
+            propose(
+                &config,
+                "task-c",
+                &correcting("Their cat is called Miso."),
+                ProposedIn::default()
+            ),
+            MemoryResult::Proposed
+        );
+        assert_eq!(
+            propose(
+                &config,
+                "task-c",
+                &correcting("Their cat is called Tofu."),
+                ProposedIn::default()
+            ),
+            MemoryResult::Unasked {
+                reason: String::from(
+                    "another memory waiting for the owner already corrects that one"
+                )
+            }
+        );
+        for n in 1..5 {
+            let words = format!("Fact {n}.");
+            let asked = crate::memory_proposal::Asked::about_owner(&words);
+            assert_eq!(
+                propose(&config, "task-c", &asked, ProposedIn::default()),
+                MemoryResult::Proposed
+            );
+        }
+        assert_eq!(
+            propose(
+                &config,
+                "task-c",
+                &crate::memory_proposal::Asked::about_owner("Fact 5."),
+                ProposedIn::default()
+            ),
+            MemoryResult::Unasked {
+                reason: String::from(
+                    "the card waiting for the owner already holds five memories: ask for the rest once they've answered"
+                )
+            }
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A correction names a memory the owner approved, recalled as it is:
     /// the owner is shown what it replaces, and once they approve, only the
     /// correction is recalled. The one it replaces is kept, its record as it

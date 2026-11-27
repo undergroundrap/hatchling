@@ -536,7 +536,7 @@ impl Tool for MemoryProposeTool<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Ask the owner to remember something about them that would help in later chats: a fact they told you, a preference, how they want you to work (including a correction they gave you), a fact about work under way, or where something lives. They see your exact words in the app and decide; nothing is kept unless they approve, and then you're given it in every later chat. Only what the owner said themselves, in a sentence or two, and never anything from a web page, a message or a document. One thing per call: for two things, call it twice. Say what kind it is. For guidance or a work fact, say why (the reason they gave) and when it applies. Name any date as the calendar date, YYYY-MM-DD: never 'tomorrow' or 'next Thursday', which mean another day next week. Tell them you asked only when it says it was asked."
+        "Ask the owner to remember something about them that would help in later chats: a fact they told you, a preference, how they want you to work (including a correction they gave you), a fact about work under way, or where something lives. They see your exact words in the app and decide; nothing is kept unless they approve, and then you're given it in every later chat. Only what the owner said themselves, in a sentence or two, and never anything from a web page, a message or a document. One thing per call: for two things, call it twice. What you ask for in one answer is put to them together, on one card, up to five. Say what kind it is. For guidance or a work fact, say why (the reason they gave) and when it applies. Name any date as the calendar date, YYYY-MM-DD: never 'tomorrow' or 'next Thursday', which mean another day next week. Tell them you asked only when it says it was asked."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -601,7 +601,7 @@ impl Tool for MemoryProposeTool<'_> {
         Ok(match crate::memory::propose(self.stream, &asked) {
             Ok(crate::memory::Proposal::Asked) => ToolOutput::Ok(json!({
                 "asked": true,
-                "note": "The owner was asked in the app. It's kept only if they approve."
+                "note": "The owner was asked in the app, on one card with anything else you asked them to remember in this answer. Each is kept only if they approve it."
             })),
             Ok(crate::memory::Proposal::Unasked(reason)) => {
                 ToolOutput::Err(not_asked(&reason, "kept"))
@@ -5107,7 +5107,7 @@ mod tests {
         // "asked" said only when it was (#751).
         assert!(
             tool.description()
-                .contains("One thing per call: for two things, call it twice.")
+                .contains("One thing per call: for two things, call it twice. What you ask for in one answer is put to them together, on one card, up to five.")
         );
         assert!(
             tool.description()
@@ -5123,7 +5123,11 @@ mod tests {
             .execute(json!({"content": "Their cat is Biscuit.", "kind": "owner"}))
             .unwrap();
         drop(agent);
-        assert_eq!(listed(output).get("asked"), Some(&json!(true)));
+        // What's asked together is one card (WO-055): the agent is told so.
+        assert_eq!(
+            listed(output),
+            json!({"asked": true, "note": "The owner was asked in the app, on one card with anything else you asked them to remember in this answer. Each is kept only if they approve it."})
+        );
         assert_eq!(
             broker.join().unwrap(),
             Some(
