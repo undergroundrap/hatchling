@@ -4528,22 +4528,67 @@ mod tests {
             },
             &json!({"action": "manage_memory", "op": {"op": "forget", "id": "kept-1"}}),
         );
+        // v14: a kept memory's record, and confirming one (WO-048).
+        let old = Kept {
+            id: s("kept-1"),
+            content: s("Their cat is Biscuit."),
+            kept_at: 10,
+            approved: true,
+            from: KeptFrom::NotRecorded,
+            kind: None,
+            why: None,
+            how_to_apply: None,
+            absence: false,
+            confirmed_at: None,
+            check_by: None,
+            due: false,
+            replaces: None,
+        };
+        let recorded = Kept {
+            id: s("kept-2"),
+            content: s("Use metric units."),
+            from: KeptFrom::Chat { chat: s("local") },
+            kind: Some(s("guidance")),
+            why: Some(s("They live in Europe.")),
+            how_to_apply: Some(s("Any measurement.")),
+            absence: true,
+            confirmed_at: Some(20),
+            check_by: Some(s("2027-01-01")),
+            due: true,
+            replaces: Some(s("Use miles.")),
+            ..old
+        };
         pinned(
             &UiActionResult::Memory {
                 outcome: KeptResult::Listed {
-                    kept: vec![Kept {
-                        id: s("kept-1"),
-                        content: s("Their cat is Biscuit."),
-                        kept_at: 10,
-                        approved: true,
-                    }],
+                    kept: vec![old, recorded],
                 },
             },
             &json!({"result": "memory", "outcome": {"result": "listed", "kept": [
-                {"id": "kept-1", "content": "Their cat is Biscuit.", "kept_at": 10, "approved": true}
+                {"id": "kept-1", "content": "Their cat is Biscuit.", "kept_at": 10, "approved": true, "from": {"from": "not_recorded"}},
+                {"id": "kept-2", "content": "Use metric units.", "kept_at": 10, "approved": true,
+                 "from": {"from": "chat", "chat": "local"}, "kind": "guidance", "why": "They live in Europe.",
+                 "how_to_apply": "Any measurement.", "absence": true, "confirmed_at": 20, "check_by": "2027-01-01",
+                 "due": true, "replaces": "Use miles."}
             ]}}),
         );
+        // A listing from a broker before v14 reads as not recorded.
+        let older: Kept = serde_json::from_value(
+            json!({"id": "kept-1", "content": "x", "kept_at": 1, "approved": false}),
+        )
+        .unwrap();
+        assert_eq!(older.from, KeptFrom::NotRecorded);
+        for (from, tag) in [(KeptFrom::Run, "run"), (KeptFrom::Approval, "approval")] {
+            assert_eq!(serde_json::to_value(from).unwrap(), json!({"from": tag}));
+        }
+        pinned(
+            &UiAction::ManageMemory {
+                op: KeptOp::Confirm { id: s("kept-2") },
+            },
+            &json!({"action": "manage_memory", "op": {"op": "confirm", "id": "kept-2"}}),
+        );
         for (outcome, tag) in [
+            (KeptResult::Confirmed, "confirmed"),
             (KeptResult::Forgotten, "forgotten"),
             (KeptResult::NotFound, "not_found"),
             (KeptResult::Off, "off"),

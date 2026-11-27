@@ -370,14 +370,15 @@ fn kept_of(
 ) -> Kept {
     let approved = item.approved_by_owner();
     let record = item.record;
-    let from = match &record {
-        None => hatchling_core::ui::KeptFrom::NotRecorded,
-        Some(record) => match (&record.chat, &record.run) {
-            (Some(chat), _) => hatchling_core::ui::KeptFrom::Chat { chat: chat.clone() },
-            (None, Some(_)) => hatchling_core::ui::KeptFrom::Run,
-            (None, None) => hatchling_core::ui::KeptFrom::Approval,
-        },
-    };
+    let from = record
+        .as_ref()
+        .map_or(hatchling_core::ui::KeptFrom::NotRecorded, |record| {
+            match (&record.chat, &record.run) {
+                (Some(chat), _) => hatchling_core::ui::KeptFrom::Chat { chat: chat.clone() },
+                (None, Some(_)) => hatchling_core::ui::KeptFrom::Run,
+                (None, None) => hatchling_core::ui::KeptFrom::Approval,
+            }
+        });
     let replaces = record
         .as_ref()
         .and_then(|record| record.supersedes.as_ref())
@@ -837,14 +838,49 @@ mod tests {
         let tea = by("They like tea.");
         assert_eq!(tea.from, hatchling_core::ui::KeptFrom::NotRecorded);
         assert!(tea.approved && tea.confirmed_at.is_none() && tea.kind.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Confirmed, a memory isn't asked about again; one from before records,
+    /// or none at all, has nothing to confirm.
+    #[test]
+    fn the_owner_confirms_a_memory_still_so() {
+        let (config, dir) = config("confirm", &[MemoryAction::Propose]);
+        let due = crate::memory_proposal::Checked {
+            check_by: Some(String::from("2000-01-01")),
+            ..crate::memory_proposal::Checked::owner("Use metric units.")
+        };
+        keep(&config, &due, Some("confirm-1"), &ProposedIn::default(), 10).unwrap();
+        let (principal, store) = open(&config).unwrap();
+        let legacy = [
+            RECALL_TAG.parse().unwrap(),
+            hatchling_memory::LEGACY_APPROVED_TAG.parse().unwrap(),
+        ];
+        store
+            .write(
+                &principal,
+                &MemoryScope::User,
+                &"old".parse().unwrap(),
+                "They like tea.",
+                &legacy,
+                RetentionPolicy::Keep,
+                5,
+            )
+            .unwrap();
+        let listed = listing(handle_kept_op(&config, &KeptOp::List));
+        let by = |content: &str| {
+            listed
+                .iter()
+                .find(|kept| kept.content == content)
+                .unwrap()
+                .clone()
+        };
+        let rule = by("Use metric units.");
+        assert!(rule.due);
+        let tea = by("They like tea.");
         // Confirmed, it isn't asked about again.
         assert_eq!(
-            handle_kept_op(
-                &config,
-                &KeptOp::Confirm {
-                    id: rule.id.clone()
-                }
-            ),
+            handle_kept_op(&config, &KeptOp::Confirm { id: rule.id }),
             KeptResult::Confirmed
         );
         let again = listing(handle_kept_op(&config, &KeptOp::List));
