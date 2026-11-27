@@ -2526,11 +2526,39 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
     },
     "Kept": {
         "properties": {
+            "absence": {
+                "type": "boolean"
+            },
             "approved": {
                 "type": "boolean"
             },
+            "check_by": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "confirmed_at": {
+                "minimum": 0,
+                "type": [
+                    "integer",
+                    "null"
+                ]
+            },
             "content": {
                 "type": "string"
+            },
+            "due": {
+                "type": "boolean"
+            },
+            "from": {
+                "$ref": "#/$defs/KeptFrom"
+            },
+            "how_to_apply": {
+                "type": [
+                    "string",
+                    "null"
+                ]
             },
             "id": {
                 "type": "string"
@@ -2538,6 +2566,24 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "kept_at": {
                 "minimum": 0,
                 "type": "integer"
+            },
+            "kind": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "replaces": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "why": {
+                "type": [
+                    "string",
+                    "null"
+                ]
             }
         },
         "required": [
@@ -2547,6 +2593,62 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "approved"
         ],
         "type": "object"
+    },
+    "KeptFrom": {
+        "oneOf": [
+            {
+                "properties": {
+                    "chat": {
+                        "type": "string"
+                    },
+                    "from": {
+                        "const": "chat",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "from",
+                    "chat"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "from": {
+                        "const": "run",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "from"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "from": {
+                        "const": "approval",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "from"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "from": {
+                        "const": "not_recorded",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "from"
+                ],
+                "type": "object"
+            }
+        ]
     },
     "KeptOp": {
         "oneOf": [
@@ -2569,6 +2671,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "op": {
                         "const": "forget",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "id"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "confirm",
                         "type": "string"
                     }
                 },
@@ -2605,6 +2723,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "properties": {
                     "result": {
                         "const": "forgotten",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "confirmed",
                         "type": "string"
                     }
                 },

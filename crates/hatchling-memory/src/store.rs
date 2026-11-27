@@ -502,6 +502,31 @@ impl MemoryStore {
         })
     }
 
+    /// Rewrites the record of the item under `id` in the principal-bound
+    /// scope to `record`, keeping everything else as it was. `Ok(false)`
+    /// when there's none. The broker's alone, on the owner's word.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Corrupt`] for an unreadable item, or [`Error::Io`].
+    pub fn rerecord(
+        &self,
+        principal: &MemoryPrincipal,
+        scope: &MemoryScope,
+        id: &MemoryId,
+        record: KeptRecord,
+    ) -> Result<bool, Error> {
+        let space = Self::space(principal, scope);
+        let Some(mut item) = self.read_item(&space, id)? else {
+            return Ok(false);
+        };
+        item.record = Some(record);
+        let bytes = serde_json::to_vec(&item).map_err(|_| Error::Corrupt)?;
+        self.reindex(&space, id, Some(RecallEntry::of(&item)))?;
+        self.backing.put(&space, id, &bytes)?;
+        Ok(true)
+    }
+
     /// Rewrites the tags of the item under `id` in the principal-bound
     /// scope to `tags`, keeping everything else as it was: its words, its
     /// times, its retention and its record. `Ok(false)` when there's none.
@@ -1116,6 +1141,58 @@ mod tests {
         assert_eq!(rebuilt, 3, "kept-b and kept-d to build it, kept-d given");
         assert_eq!(given(&store), ["kept-d"]);
         assert_eq!(reads(&counts).0, 1, "built, it's read: only kept-d");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Rerecording changes the record alone: the words, tags and times
+    /// stay, and an item that isn't there is said not to be.
+    #[test]
+    fn rerecord_changes_the_record_alone() {
+        let root = test_root("rerecord");
+        let store = MemoryStore::open(&root).unwrap();
+        let p = principal(7, "sess-rerecord");
+        let id = MemoryId::from_str("kept-1").unwrap();
+        let record = KeptRecord::agent_words(Some(String::from("confirm-1")), None, None, 300);
+        let kept = store
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &id,
+                "Their cat is Biscuit.",
+                &[Tag::from_str("recall").unwrap()],
+                record.clone(),
+            )
+            .unwrap();
+        let confirmed = KeptRecord {
+            confirmed_at_secs: 900,
+            ..record
+        };
+        assert!(
+            store
+                .rerecord(&p, &MemoryScope::User, &id, confirmed.clone())
+                .unwrap()
+        );
+        let read = store
+            .recall(&p, &MemoryScope::User, &id, 1000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read,
+            MemoryItem {
+                record: Some(confirmed.clone()),
+                ..kept
+            }
+        );
+        let none = MemoryId::from_str("kept-none").unwrap();
+        assert!(
+            !store
+                .rerecord(&p, &MemoryScope::User, &none, confirmed)
+                .unwrap()
+        );
+        assert_eq!(
+            store.recall(&p, &MemoryScope::User, &none, 1000).unwrap(),
+            None
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

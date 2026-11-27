@@ -3,7 +3,7 @@
 // Memory page, and every broker answer as a sentence.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { LiveMemory, entryOf, titleOf } from '../../dist/app/adapters/live/memory.js';
+import { LiveMemory, detailOf, entryOf, titleOf } from '../../dist/app/adapters/live/memory.js';
 process.env.TZ = 'UTC';
 /** A client that answers each request from a script, and records it. */
 class FakeClient {
@@ -29,7 +29,7 @@ class FakeClient {
 }
 // Noon, 2026-11-03, UTC.
 const AT = 1793707200;
-const kept = (id, content, approved = true) => ({ id, content, kept_at: AT, approved });
+const kept = (id, content, approved = true, extra = {}) => ({ id, content, kept_at: AT, approved, from: { from: 'not_recorded' }, ...extra });
 const memory = outcome => ({ kind: 'answered', result: { result: 'memory', outcome } });
 const listed = (...items) => memory({ result: 'listed', kept: items });
 const flush = () => new Promise(resolve => setImmediate(resolve));
@@ -95,4 +95,55 @@ test('forgetting reads the list again, and every answer is said', async () => {
         assert.match(result.message, says);
         assert.equal(client.sent.length, relists ? 2 : 1, JSON.stringify(reply));
     }
+});
+test('a kept memory\'s details read in the page\'s words', () => {
+    assert.deepEqual(detailOf(kept('user/a', 'Use metric units.', true, {
+        from: { from: 'chat', chat: 'local' }, kind: 'guidance', why: 'They live in Europe.', how_to_apply: 'Any measurement.',
+        confirmed_at: AT + 86400, check_by: '2000-01-01', due: true, replaces: 'They use miles.',
+    })), {
+        kind: 'How you want it to work', why: 'They live in Europe.', howToApply: 'Any measurement.', absence: false,
+        origin: 'Asked to remember in your chat', confirmed: 'Last confirmed Nov 4, 2026', due: true, replaces: 'They use miles.',
+    });
+    const plain = detailOf(kept('user/b', 'x'));
+    assert.deepEqual(plain, { kind: null, why: null, howToApply: null, absence: false, origin: 'Where it came from isn’t recorded', confirmed: null, due: false, replaces: null });
+    for (const [kind, words] of [['owner', 'About you'], ['work', 'About your work'], ['pointer', 'Where something is'], ['other', null]])
+        assert.equal(detailOf(kept('user/c', 'x', true, { kind })).kind, words, kind);
+    for (const [from, words] of [[{ from: 'chat', chat: 'side-1' }, 'Asked to remember in a chat'], [{ from: 'run' }, 'Asked to remember by a scheduled run'], [{ from: 'approval' }, 'Approved by you']])
+        assert.equal(detailOf(kept('user/d', 'x', true, { from })).origin, words);
+    // Confirmed the day it was kept says nothing more.
+    assert.equal(detailOf(kept('user/e', 'x', true, { confirmed_at: AT })).confirmed, null);
+    assert.equal(detailOf(kept('user/f', 'x', true, { confirmed_at: null })).confirmed, null);
+    assert.equal(detailOf(kept('user/g', 'x', true, { absence: true })).absence, true);
+    // From an older broker, saying nothing of where it came from.
+    const { from: _unsaid, ...older } = kept('user/h', 'x');
+    assert.equal(detailOf(older).origin, 'Where it came from isn’t recorded');
+});
+test('a listed memory\'s details are kept beside it, and confirming reads the list again', async () => {
+    const { client, live } = surface([listed(kept('user/a', 'A', true, { due: true, kind: 'owner' }))]);
+    client.set('ready');
+    await flush();
+    assert.equal(live.of('user/a')?.due, true);
+    assert.equal(live.of('user/none'), undefined);
+    const confirming = surface([memory({ result: 'confirmed' }), listed(kept('user/a', 'A'))]);
+    assert.deepEqual(await confirming.live.confirm('user/a'), { ok: true, message: 'Confirmed: it’s still so, as of today.' });
+    assert.deepEqual(confirming.client.sent[0], { action: 'manage_memory', op: { op: 'confirm', id: 'user/a' } });
+    assert.equal(confirming.client.sent.length, 2);
+    assert.equal(confirming.live.of('user/a')?.due, false);
+    const cases = [
+        [{ kind: 'failed', detail: 'Not connected.' }, /Not connected/, false],
+        [{ kind: 'answered', result: { result: 'refused', reason: 'not_granted' } }, /may not change your memory/, false],
+        [memory({ result: 'not_found' }), /no longer kept/, true],
+        [memory({ result: 'forgotten' }), /something else/, false],
+        [memory({ result: 'off' }), /HATCHLING_MEMORY_DIR/, false],
+    ];
+    for (const [reply, says, relists] of cases) {
+        const { client, live } = surface(relists ? [reply, listed()] : [reply]);
+        const result = await live.confirm('user/a');
+        assert.equal(result.ok, false);
+        assert.match(result.message, says);
+        assert.equal(client.sent.length, relists ? 2 : 1, JSON.stringify(reply));
+    }
+    // Forgetting answered with a confirmation is something else.
+    const odd = surface([memory({ result: 'confirmed' })]);
+    assert.match((await odd.live.forget('user/a')).message, /something else/);
 });

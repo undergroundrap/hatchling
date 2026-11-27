@@ -16,6 +16,7 @@ import type { GoalsPort } from '../session/goals.js';
 import type { FeedPort } from '../session/feed.js';
 import type { IdeasPort } from '../session/ideas.js';
 import type { ReviewPort } from '../session/review.js';
+import type { MemoryDetailsPort } from '../session/memory.js';
 import { ChatDelivery } from '../features/chat/delivery.js';
 import type { ChatSessionPort } from '../session/chat-session.js';
 import { ComposerDrafts } from '../features/chat/drafts.js';
@@ -94,6 +95,9 @@ export class App implements AppContext {
     get review(): ReviewPort | undefined {
         return this.adapter.review;
     }
+    get memoryDetails(): MemoryDetailsPort | undefined {
+        return this.adapter.memoryDetails;
+    }
     get attention(): AttentionPort | undefined {
         return this.adapter.attention;
     }
@@ -129,6 +133,7 @@ export class App implements AppContext {
         readonly feed?: FeedPort;
         readonly ideas?: IdeasPort;
         readonly review?: ReviewPort;
+        readonly memoryDetails?: MemoryDetailsPort;
         readonly attention?: AttentionPort;
     }, private readonly root: HTMLElement, dialogRoot: HTMLElement, private readonly toastRoot: HTMLElement) {
         this.dialogs = new DialogManager(dialogRoot, this.acknowledgeVisible);

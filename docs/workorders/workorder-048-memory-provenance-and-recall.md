@@ -1,6 +1,6 @@
 # WO-048: Memory that knows where it came from: provenance, supersession, bounded retrieval, then search
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-memory` (items, the store, recall), `crates/hatchling-broker` (keeping, the owner's memory ops, the decisions history), `crates/hatchling-agent` (recall), `crates/hatchling-core` (the wire), `frontend/` (the owner's memory list), `docs/`
 **Issue:** [#598](https://github.com/undergroundrap/hatchling/issues/598)
 **Trust boundary:** yes
@@ -46,18 +46,18 @@ The queue named the first part of this as a candidate: *Memory: bounded retrieva
 
 ## Acceptance criteria
 
-- [ ] A kept item's provenance is written by the broker alone: a test has the agent's proposal claim another origin and finds the broker's record unchanged.
-- [ ] A correction approved as superseding an item stops that item being recalled, and the chain is shown; a test covers recall before and after.
-- [ ] A proposal matching a kept item isn't put to the owner again and isn't kept twice (#596); a test proposes the same words twice.
-- [ ] A kept absence is recalled as an absence, marked as one, never as a missing item; a test recalls one beside a query that finds nothing.
-- [ ] Recall reads no more than its budget from the store; a test with many items checks what's read.
-- [ ] Search's design is written and approved by the maintainer before its code; recall by relevance then finds an item outside the newest ten, in a test.
-- [ ] Each item is kept with its kind, and guidance and work facts with their why and how to apply; recall gives them; a test keeps one of each kind.
-- [ ] A proposal whose date isn't a calendar date is refused, and an approved one keeps the date the owner was shown; a test proposes "next Thursday" as text.
-- [ ] Recall gives each item with when it was kept and last confirmed, from the broker's record; a test has a proposal claim another date and finds the broker's unchanged.
-- [ ] A run whose tool results contradict a recalled item proposes a correction naming it, with the contradiction quoted, and the owner's approval supersedes the item. A test runs a scripted model through it, and WO-045 measures how often real models do.
-- [ ] Items from 0.10 load, and say their provenance isn't recorded.
-- [ ] Each new guard fails its test when removed.
+- [x] A kept item's provenance is written by the broker alone: a test has the agent's proposal claim another origin and finds the broker's record unchanged. ([slice 1](../evidence/wo048-kept-record.md): `memory_keep::tests::where_a_kept_item_came_from_is_the_brokers_record_not_its_words`; a run can't write the `approved` tag, #736.)
+- [x] A correction approved as superseding an item stops that item being recalled, and the chain is shown; a test covers recall before and after. ([slice 5](../evidence/wo048-supersession.md): `a_correction_replaces_what_it_corrects_once_the_owner_approves`; the list shows what it replaced, [slice 8](../evidence/wo048-memory-list.md).)
+- [x] A proposal matching a kept item isn't put to the owner again and isn't kept twice (#596); a test proposes the same words twice. ([slice 2](../evidence/wo048-no-duplicates.md).)
+- [x] A kept absence is recalled as an absence, marked as one, never as a missing item; a test recalls one beside a query that finds nothing. ([slice 4](../evidence/wo048-absences.md): `prompt::tests::a_kept_absence_is_recalled_as_known_not_to_be_so`.)
+- [x] Recall reads no more than its budget from the store; a test with many items checks what's read. ([slice 6](../evidence/wo048-recall-index.md): `store::tests::a_budgeted_recall_reads_only_what_it_gives`, 500 items.)
+- [x] Search's design is written and approved by the maintainer before its code; recall by relevance then finds an item outside the newest ten, in a test. (Approved 2026-11-27, [#742](https://github.com/undergroundrap/hatchling/pull/742); [slice 7](../evidence/wo048-recall-search.md): `store::tests::an_ask_finds_a_memory_outside_the_newest_ten`.)
+- [x] Each item is kept with its kind, and guidance and work facts with their why and how to apply; recall gives them; a test keeps one of each kind. ([slice 3](../evidence/wo048-typed-items.md): guidance in `memory_keep`, work through a session in `serve`, owner and pointer elsewhere; recall's kinds in `prompt::tests`.)
+- [x] A proposal whose date isn't a calendar date is refused, and an approved one keeps the date the owner was shown; a test proposes "next Thursday" as text. ([slice 3](../evidence/wo048-typed-items.md): `memory_proposal::tests`, and `guidance_is_shown_and_kept_with_why_when_and_its_day`.)
+- [x] Recall gives each item with when it was kept and last confirmed, from the broker's record; a test has a proposal claim another date and finds the broker's unchanged. ([slice 1](../evidence/wo048-kept-record.md): `prompt::tests::each_item_says_when_it_was_kept_and_on_whose_word`; the provenance test's words claim 2020-01-01, and its record keeps the broker's time. [Slice 8](../evidence/wo048-memory-list.md) confirms an item.)
+- [x] A run whose tool results contradict a recalled item proposes a correction naming it, with the contradiction quoted, and the owner's approval supersedes the item. A test runs a scripted model through it, and WO-045 measures how often real models do. ([slice 5](../evidence/wo048-supersession.md): `tests/memory_recall.rs`, a scripted model against the real broker pipeline. How often real models do it is WO-045's to measure.)
+- [x] Items from 0.10 load, and say their provenance isn't recorded. ([slice 1](../evidence/wo048-kept-record.md): `item::tests::an_item_from_before_records_reads_as_not_recorded`; the list says so, [slice 8](../evidence/wo048-memory-list.md).)
+- [x] Each new guard fails its test when removed. (Each slice's evidence records its hand-breaks, every one caught, and mutation with none missed.)
 
 ## Gates
 
@@ -74,6 +74,7 @@ Each slice commits its evidence under `docs/evidence/`.
 - Slice 5, supersession and contradictions: [wo048-supersession.md](../evidence/wo048-supersession.md).
 - Slice 6, the recall index and a budgeted recall: [wo048-recall-index.md](../evidence/wo048-recall-index.md).
 - Slice 7, relevance, search and read: [wo048-recall-search.md](../evidence/wo048-recall-search.md).
+- Slice 8, the owner's list: [wo048-memory-list.md](../evidence/wo048-memory-list.md).
 
 ## Notes
 

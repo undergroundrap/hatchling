@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 13;
+export const UI_SCHEMA_VERSION = 14;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 39;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -2140,14 +2140,38 @@ export type InspectionVerdict = 'pass' | 'fail';
  */
 export type Kept = {
     /**
+     * Whether it records something known not to be so.
+     */
+    readonly absence?: boolean;
+    /**
      * Whether the owner approved it: what the agent asked to keep, and
      * they approved, is; anything kept some other way isn't.
      */
     readonly approved: boolean;
     /**
+     * The day after which the owner is asked whether it's still so.
+     */
+    readonly check_by?: string | null;
+    /**
+     * When the owner last confirmed it, Unix seconds.
+     */
+    readonly confirmed_at?: number | null;
+    /**
      * The words kept.
      */
     readonly content: string;
+    /**
+     * Whether that day has come: the owner is asked now.
+     */
+    readonly due?: boolean;
+    /**
+     * Where it came from (v14).
+     */
+    readonly from?: KeptFrom;
+    /**
+     * When it applies.
+     */
+    readonly how_to_apply?: string | null;
     /**
      * Its id.
      */
@@ -2156,6 +2180,34 @@ export type Kept = {
      * When it was kept, Unix seconds.
      */
     readonly kept_at: number;
+    /**
+     * What kind of thing it is: `owner`, `guidance`, `work` or `pointer`.
+     */
+    readonly kind?: string | null;
+    /**
+     * The words of the memory it replaced, when it corrects one.
+     */
+    readonly replaces?: string | null;
+    /**
+     * Why, as the owner gave it.
+     */
+    readonly why?: string | null;
+};
+/**
+ * Where a kept memory came from, as the broker recorded it (WO-048).
+ */
+export type KeptFrom = {
+    /**
+     * The chat.
+     */
+    readonly chat: string;
+    readonly from: 'chat';
+} | {
+    readonly from: 'run';
+} | {
+    readonly from: 'approval';
+} | {
+    readonly from: 'not_recorded';
 };
 /**
  * An operation on what the agent is given from the owner's memory, from
@@ -2169,6 +2221,12 @@ export type KeptOp = {
      */
     readonly id: string;
     readonly op: 'forget';
+} | {
+    /**
+     * It, as listed.
+     */
+    readonly id: string;
+    readonly op: 'confirm';
 };
 /**
  * The result of a [`KeptOp`].
@@ -2181,6 +2239,8 @@ export type KeptResult = {
     readonly result: 'listed';
 } | {
     readonly result: 'forgotten';
+} | {
+    readonly result: 'confirmed';
 } | {
     readonly result: 'not_found';
 } | {

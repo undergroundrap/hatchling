@@ -8,6 +8,13 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Your Memory page says where each memory came from** ([WO-048](docs/workorders/workorder-048-memory-provenance-and-recall.md), slice 8). Each memory now shows:
+  - whether it was asked for in your chat or by a scheduled run, or kept before Hatchling recorded that;
+  - what kind of thing it is, why and when it applies, and whether it records something known not to be so;
+  - what it replaced, and when you last confirmed it.
+
+  A memory whose check-again day has come asks whether it's still so, and "Still so" confirms it. Only your click does: an automation can't. **Breaking for the local API:** the UI schema is v14 (`manage_memory`'s `confirm`, and each kept memory's record). **Breaking for `hatchling-memory`:** `MemoryStore` gains `rerecord`. Not in any release.
+
 - **The agent recalls what's relevant to what you asked, and can search its memory** ([WO-048](docs/workorders/workorder-048-memory-provenance-and-recall.md), slice 7). The memories a run is given in full are now chosen by how well they match your message, or the scheduled task, as Hatchling received it, so a web page the agent reads can't change what it remembers. A memory from months ago that fits your question comes before last week's that doesn't. The agent can search its memory by words and read any memory whole, 16 times a run. Nothing is sent anywhere new: the matching is done on your machine, without a model. **Breaking for `hatchling-core`:** the session protocol is v39 (`MemoryOp::RecallBudgeted`'s `query` and `id`). **Breaking for `hatchling-broker`:** `FollowupScope` gains `ask`. **Breaking for `hatchling-memory`:** `MemoryStore::recall_budgeted` takes a `RecallAsk`, and `recall_index::choose` the ask's words. Not in any release.
 
 - **The agent sees everything it remembers, not just the newest ten** ([WO-048](docs/workorders/workorder-048-memory-provenance-and-recall.md), slice 6). Every run now gets an index of what's kept about you, one short line per memory with your guidance first, and the most important memories in full. Hatchling keeps an index of each memory store, so a run reads only the memories it's given, however many you keep. Relevance to what you asked, and tools to read or search memories, follow. **Breaking for `hatchling-core`:** the session protocol is v38 (`MemoryOp::RecallBudgeted`, `MemoryResult::Recalled`). **Breaking for `hatchling-memory`:** `Backing` gains `get_index` and `put_index`, with defaults that keep no index. **Breaking for `hatchling-loop`:** `MemoryProvider` gains `recall_budgeted`, with a default from `recall`. Not in any release.
