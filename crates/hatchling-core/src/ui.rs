@@ -2829,7 +2829,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 13);
+        assert_eq!(UI_SCHEMA_VERSION, 14);
     }
 
     #[test]
