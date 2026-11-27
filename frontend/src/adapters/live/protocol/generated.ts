@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 12;
+export const UI_SCHEMA_VERSION = 13;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 34;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -352,7 +352,7 @@ export type ApiOutcome = 'served' | 'refused';
  * What one API call asked for: the request's kind, never its content
  * (a message's text, a file, a schedule's task).
  */
-export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'stop_run' | 'keep_going' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'manage_skills' | 'list_decisions' | 'list_covered' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
+export type ApiRequest = 'hello' | 'subscribe' | 'send_message' | 'new_conversation' | 'stop_run' | 'keep_going' | 'decide' | 'manage_schedule' | 'manage_grants' | 'invoke_skill' | 'open_artifact' | 'share_artifact' | 'attach_artifact' | 'save_file' | 'take_control' | 'return_control' | 'stop_browser' | 'browser_input' | 'keep_signed_in' | 'manage_profiles' | 'manage_sign_ins' | 'manage_goals' | 'manage_memory' | 'manage_skills' | 'list_decisions' | 'list_covered' | 'read_usage' | 'set_usage_limits' | 'read_model' | 'read_setup' | 'set_model' | 'switch_model_server' | 'read_feed' | 'manage_suggestions' | 'manage_review' | 'give_code' | 'decline_code' | 'begin_file_in' | 'file_in_part' | 'end_file_in' | 'list_inbox' | 'remove_inbox_file' | 'list_library' | 'begin_file_out' | 'file_out_part' | 'remove_library_file' | 'list_folder';
 /**
  * A bearer token, presented in `Hello` for a token provider.
  *
@@ -2853,6 +2853,106 @@ export type QueryResult = {
 } | {
     readonly result: 'query-error';
 };
+/**
+ * What a background loop may not apply itself, waiting for the owner on
+ * their Review page (WO-054): proposed by the loop, never applied by it.
+ */
+export type ReviewItem = {
+    /**
+     * What would change, as the loop proposed it.
+     */
+    readonly change: string;
+    /**
+     * When the owner decided, RFC 3339, once they have.
+     */
+    readonly decided_at?: string | null;
+    /**
+     * Where it came from: the handles it cites.
+     */
+    readonly evidence: readonly (string)[];
+    /**
+     * Its id.
+     */
+    readonly item_id: string;
+    /**
+     * What kind of change it is.
+     */
+    readonly kind: ReviewKind;
+    /**
+     * When it was proposed, RFC 3339.
+     */
+    readonly proposed_at: string;
+    /**
+     * The loop that proposed it, such as `memory`.
+     */
+    readonly proposed_by: string;
+    /**
+     * Where it stands.
+     */
+    readonly state: ReviewState;
+    /**
+     * The record it would change, by its handle (`memory:<id>`), when it
+     * changes one.
+     */
+    readonly target?: string | null;
+    /**
+     * Why, as the loop said it.
+     */
+    readonly why: string;
+};
+/**
+ * What kind of change a review item is: each one a loop may not make
+ * on its own (WO-054).
+ */
+export type ReviewKind = 'replace' | 'remove' | 'identity' | 'unresolved' | 'guidance';
+/**
+ * An operation on the owner's Review page (WO-054).
+ */
+export type ReviewOp = {
+    readonly op: 'list';
+} | {
+    /**
+     * Approve, or reject.
+     */
+    readonly approve: boolean;
+    /**
+     * It, as listed.
+     */
+    readonly item_id: string;
+    readonly op: 'decide';
+};
+/**
+ * The result of a [`ReviewOp`].
+ */
+export type ReviewResult = {
+    /**
+     * They.
+     */
+    readonly items: readonly (ReviewItem)[];
+    readonly result: 'listed';
+} | {
+    /**
+     * It.
+     */
+    readonly item: ReviewItem;
+    readonly result: 'decided';
+} | {
+    readonly result: 'not_found';
+} | {
+    readonly result: 'not_waiting';
+    /**
+     * Where it stands.
+     */
+    readonly state: ReviewState;
+} | {
+    readonly result: 'off';
+} | {
+    readonly result: 'failed';
+};
+/**
+ * Where a review item stands.
+ */
+export type ReviewState = 'waiting' | 'approved' | 'rejected' | 'stale';
 /**
  * How the room disk is.
  */
@@ -5672,6 +5772,12 @@ export type UiAction = {
      */
     readonly op: SuggestionOp;
 } | {
+    readonly action: 'manage_review';
+    /**
+     * The operation.
+     */
+    readonly op: ReviewOp;
+} | {
     readonly action: 'give_code';
     /**
      * The code.
@@ -6004,6 +6110,12 @@ export type UiActionResult = {
      */
     readonly outcome: SuggestionResult;
     readonly result: 'suggestions';
+} | {
+    /**
+     * The result.
+     */
+    readonly outcome: ReviewResult;
+    readonly result: 'review';
 } | {
     readonly result: 'code_taken';
     /**

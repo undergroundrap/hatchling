@@ -123,6 +123,7 @@ Each slice commits its evidence under `docs/evidence/`.
 - Slice 2b, the app's notes: [wo054-app-notes.md](../evidence/wo054-app-notes.md).
 - Slice 3a, the seat's checks: [wo054-seat-checks.md](../evidence/wo054-seat-checks.md).
 - Slice 3b, the seat's cell: [wo054-seat-cell.md](../evidence/wo054-seat-cell.md).
+- Slice 4, the review queue: [wo054-review-queue.md](../evidence/wo054-review-queue.md).
 
 ## Notes
 

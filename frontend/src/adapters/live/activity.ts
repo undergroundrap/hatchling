@@ -375,6 +375,7 @@ const REQUESTS: Readonly<Record<ApiRequest, string>> = {
     switch_model_server: 'Switched the model server',
     read_feed: 'Read the Feed page',
     manage_suggestions: 'Managed the Ideas page',
+    manage_review: 'Managed the Review page',
     manage_goals: 'Managed your goals',
     manage_memory: 'Managed your memory',
     manage_skills: 'Managed your skills',

@@ -611,6 +611,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "type": "string"
             },
             {
+                "const": "manage_review",
+                "type": "string"
+            },
+            {
                 "const": "give_code",
                 "type": "string"
             },
@@ -3208,6 +3212,233 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "result"
                 ],
                 "type": "object"
+            }
+        ]
+    },
+    "ReviewItem": {
+        "properties": {
+            "change": {
+                "type": "string"
+            },
+            "decided_at": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "evidence": {
+                "items": {
+                    "type": "string"
+                },
+                "type": "array"
+            },
+            "item_id": {
+                "type": "string"
+            },
+            "kind": {
+                "$ref": "#/$defs/ReviewKind"
+            },
+            "proposed_at": {
+                "type": "string"
+            },
+            "proposed_by": {
+                "type": "string"
+            },
+            "state": {
+                "$ref": "#/$defs/ReviewState"
+            },
+            "target": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
+            "why": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "item_id",
+            "proposed_by",
+            "kind",
+            "change",
+            "why",
+            "evidence",
+            "proposed_at",
+            "state"
+        ],
+        "type": "object"
+    },
+    "ReviewKind": {
+        "oneOf": [
+            {
+                "const": "replace",
+                "type": "string"
+            },
+            {
+                "const": "remove",
+                "type": "string"
+            },
+            {
+                "const": "identity",
+                "type": "string"
+            },
+            {
+                "const": "unresolved",
+                "type": "string"
+            },
+            {
+                "const": "guidance",
+                "type": "string"
+            }
+        ]
+    },
+    "ReviewOp": {
+        "oneOf": [
+            {
+                "additionalProperties": false,
+                "properties": {
+                    "op": {
+                        "const": "list",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "additionalProperties": false,
+                "properties": {
+                    "approve": {
+                        "type": "boolean"
+                    },
+                    "item_id": {
+                        "type": "string"
+                    },
+                    "op": {
+                        "const": "decide",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "item_id",
+                    "approve"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "ReviewResult": {
+        "oneOf": [
+            {
+                "properties": {
+                    "items": {
+                        "items": {
+                            "$ref": "#/$defs/ReviewItem"
+                        },
+                        "type": "array"
+                    },
+                    "result": {
+                        "const": "listed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "items"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "item": {
+                        "$ref": "#/$defs/ReviewItem"
+                    },
+                    "result": {
+                        "const": "decided",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "item"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_found",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "not_waiting",
+                        "type": "string"
+                    },
+                    "state": {
+                        "$ref": "#/$defs/ReviewState"
+                    }
+                },
+                "required": [
+                    "result",
+                    "state"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "off",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "result": {
+                        "const": "failed",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result"
+                ],
+                "type": "object"
+            }
+        ]
+    },
+    "ReviewState": {
+        "oneOf": [
+            {
+                "const": "waiting",
+                "type": "string"
+            },
+            {
+                "const": "approved",
+                "type": "string"
+            },
+            {
+                "const": "rejected",
+                "type": "string"
+            },
+            {
+                "const": "stale",
+                "type": "string"
             }
         ]
     },
@@ -5946,6 +6177,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "properties": {
                     "action": {
+                        "const": "manage_review",
+                        "type": "string"
+                    },
+                    "op": {
+                        "$ref": "#/$defs/ReviewOp"
+                    }
+                },
+                "required": [
+                    "action",
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "action": {
                         "const": "give_code",
                         "type": "string"
                     },
@@ -6695,6 +6942,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     },
                     "result": {
                         "const": "suggestions",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "outcome"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "outcome": {
+                        "$ref": "#/$defs/ReviewResult"
+                    },
+                    "result": {
+                        "const": "review",
                         "type": "string"
                     }
                 },

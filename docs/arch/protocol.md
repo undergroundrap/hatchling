@@ -13,7 +13,7 @@ There are two versioned protocols. Don't confuse them:
   wire protocol. `PROTOCOL_VERSION` in
   `crates/hatchling-core/src/framing.rs`, which carries the
   authoritative per-version history.
-- **Local API** (currently **v12**): the Unix-socket JSON API
+- **Local API** (currently **v13**): the Unix-socket JSON API
   for external clients. `UI_SCHEMA_VERSION` in
   `crates/hatchling-core/src/ui.rs`.
 

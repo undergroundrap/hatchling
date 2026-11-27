@@ -97,7 +97,7 @@ pub use surfaces::{
 /// 12: Keep going (WO-053): `keep_going`, the owner's, to have the next
 /// run carry on from one that stopped before it was done, answered
 /// `message_accepted` or `nothing_to_continue`.
-pub const UI_SCHEMA_VERSION: u16 = 12;
+pub const UI_SCHEMA_VERSION: u16 = 13;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -715,6 +715,115 @@ pub enum SuggestionResult {
     /// No suggestion has the id.
     NotFound,
     /// The broker keeps no Ideas page: scheduled work is off.
+    Off,
+    /// The broker couldn't read or change the page; its log says why.
+    Failed,
+}
+
+/// What a background loop may not apply itself, waiting for the owner on
+/// their Review page (WO-054): proposed by the loop, never applied by it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ReviewItem {
+    /// Its id.
+    pub item_id: String,
+    /// The loop that proposed it, such as `memory`.
+    pub proposed_by: String,
+    /// What kind of change it is.
+    pub kind: ReviewKind,
+    /// The record it would change, by its handle (`memory:<id>`), when it
+    /// changes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// What would change, as the loop proposed it.
+    pub change: String,
+    /// Why, as the loop said it.
+    pub why: String,
+    /// Where it came from: the handles it cites.
+    pub evidence: Vec<String>,
+    /// When it was proposed, RFC 3339.
+    pub proposed_at: String,
+    /// Where it stands.
+    pub state: ReviewState,
+    /// When the owner decided, RFC 3339, once they have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decided_at: Option<String>,
+}
+
+/// What kind of change a review item is: each one a loop may not make
+/// on its own (WO-054).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewKind {
+    /// Replace one of the owner's preferences, boundaries or commitments.
+    Replace,
+    /// Remove one of them.
+    Remove,
+    /// A fact about who the owner is.
+    Identity,
+    /// Something its checks couldn't resolve.
+    Unresolved,
+    /// Install new guidance: what changes how the agent works.
+    Guidance,
+}
+
+/// Where a review item stands.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewState {
+    /// It waits for the owner.
+    Waiting,
+    /// The owner approved it: its loop applies it, checking its target
+    /// hasn't changed.
+    Approved,
+    /// The owner rejected it: nothing changes.
+    Rejected,
+    /// Its target changed after it was proposed: approving it does
+    /// nothing.
+    Stale,
+}
+
+/// An operation on the owner's Review page (WO-054).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReviewOp {
+    /// List the items, the newest first.
+    List,
+    /// Approve one waiting item, or reject it.
+    Decide {
+        /// It, as listed.
+        item_id: String,
+        /// Approve, or reject.
+        approve: bool,
+    },
+}
+
+/// The result of a [`ReviewOp`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum ReviewResult {
+    /// The items, the newest first.
+    Listed {
+        /// They.
+        items: Vec<ReviewItem>,
+    },
+    /// It was decided: as it now stands.
+    Decided {
+        /// It.
+        item: Box<ReviewItem>,
+    },
+    /// No item has the id.
+    NotFound,
+    /// It isn't waiting: decided already, or stale.
+    NotWaiting {
+        /// Where it stands.
+        state: ReviewState,
+    },
+    /// The broker keeps no Review page: scheduled work is off.
     Off,
     /// The broker couldn't read or change the page; its log says why.
     Failed,
@@ -1891,6 +2000,12 @@ pub enum UiAction {
         /// The operation.
         op: SuggestionOp,
     },
+    /// List or decide what background work waits for the owner on their
+    /// Review page (WO-054, v13): the owner's alone.
+    ManageReview {
+        /// The operation.
+        op: ReviewOp,
+    },
     /// Give the one-time code a browser session's page asks for (WO-030):
     /// typed into the page by the broker, used once and not kept.
     GiveCode {
@@ -2151,6 +2266,11 @@ pub enum UiActionResult {
     Suggestions {
         /// The result.
         outcome: SuggestionResult,
+    },
+    /// A Review page operation's result (WO-054).
+    Review {
+        /// The result.
+        outcome: ReviewResult,
     },
     /// The code was taken: the broker types it into the page next.
     CodeTaken {
@@ -2651,7 +2771,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 12);
+        assert_eq!(UI_SCHEMA_VERSION, 13);
     }
 
     #[test]
