@@ -311,11 +311,10 @@ fn a_contradicted_memory_is_corrected_by_the_id_it_is_recalled_with() {
         .collect();
     assert_eq!(said.len(), 2, "{said:?}");
     let first = said.first().unwrap();
-    assert!(first.contains("\"asked\": Bool(false)"), "{said:?}");
-    assert!(
-        first.contains("no memory the owner approved is recalled with the id kept-none"),
-        "{said:?}"
-    );
+    // Not asked comes back as an error the agent can't take for asked (#751).
+    let not_asked =
+        "Err(\"Not asked: no memory the owner approved is recalled with the id kept-none";
+    assert!(first.contains(not_asked), "{said:?}");
     assert!(
         said.last().unwrap().contains("\"asked\": Bool(true)"),
         "put to the owner: {said:?}"
