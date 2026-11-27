@@ -57,7 +57,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36; an item's `record` (WO-048) |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36, `supersedes` v37; an item's `record` (WO-048) |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -764,3 +764,16 @@ same commit.
 - **`MemoryOp::Propose`** gains `absence` (WO-048), `false` when left out. `true` records a settled negative: a claim found untrue, something that doesn't exist, a thread closed. The words say the negative ("They have no car.").
 - **The owner's card** says, in the broker's words, that it records something isn't so and that the agent takes it as settled. The approval freezes it.
 - **Kept,** it's the item record's `absence`. **Recalled,** its header says `KNOWN NOT TO BE SO`, and the block's intro says what that means: take it as known, not as something missing, and don't work it out again.
+
+## v37 — A memory that corrects another
+
+- **Recall names each item by its id**, at the end of its header (`; id kept-…`), so a run can say which memory it means.
+- **`MemoryOp::Propose`** gains `supersedes` (WO-048): the id of a recalled memory this one corrects.
+  - The broker checks that it names a memory the owner approved, recalled as it is. Anything else is `Unasked { reason }`, saying to name one by the id it's recalled with.
+- **The owner's card** quotes what it replaces, in the broker's words, and says the agent isn't given that any more once they approve. The approval freezes both the id and the words replaced.
+- **Approved:**
+  - the new memory's record names the one it supersedes;
+  - the old one is retagged `superseded` in place of `recall`, so it isn't recalled or listed, while its words and record are kept for the chain;
+  - one kept before records keeps the broker's old `approved` tag.
+- **Changed or forgotten meanwhile:** if the memory it replaces is gone, or no longer in the words the owner was shown, the new one is kept, nothing else changes, and the owner is told.
+- **The agent's guidance:** when what a run finds contradicts a recalled memory, or the conversation's notes record a decision that does, it tells the owner and proposes the correction by that memory's id, quoting what contradicted it.

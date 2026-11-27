@@ -1325,6 +1325,28 @@ mod tests {
             .map(|field| field.label)
             .collect();
         assert_eq!(shown, ["What it is", "Known not to be so"]);
+        let correcting = crate::memory_proposal::Checked {
+            supersedes: Some(crate::memory_proposal::Replaced {
+                id: String::from("kept-1"),
+                content: String::from("They have a car."),
+            }),
+            ..crate::memory_proposal::Checked::owner("They sold their car.")
+        };
+        assert_eq!(
+            memory_action(&correcting, false),
+            json!({"op": "memory.keep", "content": "They sold their car.", "kind": "owner", "supersedes": "kept-1", "replaces": "They have a car."})
+        );
+        let replaces: Vec<(String, String)> = memory_fields(&correcting)
+            .into_iter()
+            .map(|field| (field.label, field.value))
+            .collect();
+        assert_eq!(
+            replaces.last(),
+            Some(&(
+                String::from("What it replaces"),
+                String::from("“They have a car.” The agent isn't given that any more once you approve this.")
+            ))
+        );
         for (kind, name, summary) in [
             (
                 hatchling_memory::MemoryKind::Work,
