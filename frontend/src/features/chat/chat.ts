@@ -292,13 +292,13 @@ function contextRing(share: number | null): SVGSVGElement {
 function contextPanel(context: ContextUse): HTMLElement {
     const share = shareOf(context);
     const rows = contextRows(context);
-    return h('div', { class: 'menu-popover context-panel', id: 'context-panel', role: 'group', 'aria-label': 'Context window' }, h('p', { class: 'context-panel-title' }, 'Context window'), h('p', { class: 'context-panel-headline' }, headline(context)), share === null || context.window === null ? null : h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used: ${share}%` }), rows.length ? h('dl', { class: 'context-panel-rows' }, ...rows.map(row => h('div', { class: `context-panel-row${row.about ? '' : ' exact'}` }, h('dt', {}, row.label), h('dd', {}, row.about ? `about ${row.tokens}` : row.tokens)))) : null, h('p', { class: 'context-panel-note' }, countedNote(context)));
+    return h('div', { class: 'menu-popover window-use-panel', id: 'window-use-panel', role: 'group', 'aria-label': 'Context window' }, h('p', { class: 'window-use-panel-title' }, 'Context window'), h('p', { class: 'window-use-panel-headline' }, headline(context)), share === null || context.window === null ? null : h('meter', { min: 0, max: context.window, value: Math.min(context.tokens, context.window), 'aria-label': `Context used: ${share}%` }), rows.length ? h('dl', { class: 'window-use-panel-rows' }, ...rows.map(row => h('div', { class: `window-use-panel-row${row.about ? '' : ' exact'}` }, h('dt', {}, row.label), h('dd', {}, row.about ? `about ${row.tokens}` : row.tokens)))) : null, h('p', { class: 'window-use-panel-note' }, countedNote(context)));
 }
 /** Under the composer (WO-056): a ring for how full the chat's last answer got, opening its panel, and the model that answered, opening the model setting. */
 export function contextBar(ctx: AppContext, context: ContextUse): HTMLElement {
     const share = shareOf(context);
     const exact = exactWords(context);
-    const summary = h('summary', { class: 'context-ring-trigger', 'aria-label': `${exact}. Show what filled it.`, 'aria-expanded': 'false', 'aria-controls': 'context-panel', 'data-tooltip': exact }, contextRing(share), h('span', { class: 'context-ring-label' }, share === null ? `${context.tokens.toLocaleString('en')} tokens` : `${share}%`));
+    const summary = h('summary', { class: 'context-ring-trigger', 'aria-label': `${exact}. Show what filled it.`, 'aria-expanded': 'false', 'aria-controls': 'window-use-panel', 'data-tooltip': exact }, contextRing(share), h('span', { class: 'context-ring-label' }, share === null ? `${context.tokens.toLocaleString('en')} tokens` : `${share}%`));
     const ring = h('details', { class: 'menu context-menu' }, summary, contextPanel(context));
     // As every menu: the floating layer places it, and Escape or Tab closes it back to the ring.
     summary.addEventListener('click', (event) => {

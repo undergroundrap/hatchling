@@ -839,15 +839,15 @@ button { background-color: transparent; color: inherit; }
 .context-ring-used { stroke: var(--text); stroke-linecap: round; }
 .context-ring.nearly-full .context-ring-used { stroke: var(--attention); }
 .model-chip.button { min-height: 28px; padding: 0 var(--space-2); border-radius: var(--radius-pill); font-size: var(--text-xs); color: var(--muted); }
-.context-panel { width: min(300px, calc(100vw - 32px)); padding: var(--space-3); display: grid; gap: var(--space-2); font-size: var(--text-sm); text-align: left; }
-.context-panel p { margin: 0; }
-.context-panel-title { color: var(--muted); font-size: var(--text-xs); }
-.context-panel-headline { color: var(--text); font-weight: 550; }
-.context-panel meter { width: 100%; height: 6px; }
-.context-panel-rows { display: grid; gap: 4px; margin: 0; }
-.context-panel-row { display: flex; justify-content: space-between; gap: var(--space-3); }
-.context-panel-row dt { color: var(--text); }
-.context-panel-row dd { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
-.context-panel-row.exact { padding-top: 4px; border-top: 1px solid var(--border); }
-.context-panel-note { color: var(--muted); font-size: var(--text-xs); }
+.window-use-panel { width: min(300px, calc(100vw - 32px)); padding: var(--space-3); display: grid; gap: var(--space-2); font-size: var(--text-sm); text-align: left; }
+.window-use-panel p { margin: 0; }
+.window-use-panel-title { color: var(--muted); font-size: var(--text-xs); }
+.window-use-panel-headline { color: var(--text); font-weight: 550; }
+.window-use-panel meter { width: 100%; height: 6px; }
+.window-use-panel-rows { display: grid; gap: 4px; margin: 0; }
+.window-use-panel-row { display: flex; justify-content: space-between; gap: var(--space-3); }
+.window-use-panel-row dt { color: var(--text); }
+.window-use-panel-row dd { margin: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.window-use-panel-row.exact { padding-top: 4px; border-top: 1px solid var(--border); }
+.window-use-panel-note { color: var(--muted); font-size: var(--text-xs); }
 .context-fit { text-align: center; }
