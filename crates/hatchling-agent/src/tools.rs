@@ -564,6 +564,10 @@ impl Tool for MemoryProposeTool<'_> {
                     "type": "string",
                     "description": "Optional: a calendar day, YYYY-MM-DD, after which the owner should be asked whether it's still so."
                 },
+                "supersedes": {
+                    "type": "string",
+                    "description": "The id of a recalled memory this corrects, as it's recalled ('id kept-…'). Once the owner approves, it replaces that one."
+                },
                 "absence": {
                     "type": "boolean",
                     "description": "true when this records that something is NOT so: a claim found untrue, something that doesn't exist, a thread closed. Say the negative in content, such as 'They have no car.'"
@@ -589,6 +593,7 @@ impl Tool for MemoryProposeTool<'_> {
             how_to_apply: text("how_to_apply"),
             check_by: text("check_by"),
             absence: arguments.get("absence").and_then(Value::as_bool).unwrap_or(false),
+            supersedes: text("supersedes"),
         };
         Ok(match crate::memory::propose(self.stream, &asked) {
             Ok(crate::memory::Proposal::Asked) => ToolOutput::Ok(json!({
@@ -4737,7 +4742,8 @@ mod tests {
                 "why": "They live in Europe.",
                 "how_to_apply": "Any measurement.",
                 "check_by": "2027-06-01",
-                "absence": true
+                "absence": true,
+                "supersedes": "kept-1"
             }))
             .unwrap();
         drop(agent);
@@ -4746,6 +4752,7 @@ mod tests {
         assert_eq!(sent.get("how_to_apply"), Some(&json!("Any measurement.")));
         assert_eq!(sent.get("check_by"), Some(&json!("2027-06-01")));
         assert_eq!(sent.get("absence"), Some(&json!(true)));
+        assert_eq!(sent.get("supersedes"), Some(&json!("kept-1")));
         let (agent, broker) = remembered(hatchling_core::MemoryResult::Unasked {
             reason: String::from("the owner said no to keeping this"),
         });

@@ -1065,6 +1065,7 @@ fn serve_session(
                     how_to_apply,
                     check_by,
                     absence,
+                    supersedes,
                 }) => {
                     // Where it was asked, as the broker knows it (WO-048).
                     let from = crate::memory_keep::ProposedIn {
@@ -1083,6 +1084,7 @@ fn serve_session(
                         how_to_apply: how_to_apply.as_deref(),
                         check_by: check_by.as_deref(),
                         absence,
+                        supersedes: supersedes.as_deref(),
                     };
                     SessionResponse::Memory(crate::memory_keep::propose(
                         config,
@@ -3669,6 +3671,7 @@ mod memory_proposal_tests {
                 how_to_apply: Some(String::from("On the release.")),
                 check_by: Some(String::from("2099-01-01")),
                 absence: true,
+                supersedes: None,
             });
             write_frame(&agent, &serde_json::to_vec(&request).unwrap()).unwrap();
             let response: SessionResponse =

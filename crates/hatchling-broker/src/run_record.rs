@@ -459,6 +459,7 @@ mod tests {
             how_to_apply: None,
             check_by: None,
             absence: false,
+            supersedes: None,
         });
         assert_eq!(
             noted_for(&propose, &SessionResponse::Memory(MemoryResult::Proposed)),

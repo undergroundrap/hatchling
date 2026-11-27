@@ -732,6 +732,7 @@ mod tests {
                     how_to_apply: None,
                     check_by: None,
                     absence: false,
+                    supersedes: None,
                 }),
                 Some(ToolUse::MemoryPropose),
             ),
