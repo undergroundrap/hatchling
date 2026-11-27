@@ -172,14 +172,20 @@ fn choosing_puts_guidance_first_then_the_newest_within_each_budget() {
     assert_eq!(ids(&short.index), ["kept-r"]);
     // Whole items: a large one is skipped for smaller ones after it.
     let room = "Use metric units.".len() + "Newer fact.".len();
-    assert_eq!(ids(&choose(&entries, &[], 0, room).whole), ["kept-r", "kept-b"]);
+    assert_eq!(
+        ids(&choose(&entries, &[], 0, room).whole),
+        ["kept-r", "kept-b"]
+    );
     assert_eq!(ids(&choose(&entries, &[], 0, room - 1).whole), ["kept-r"]);
     assert!(choose(&[], &[], 100, 100).index.is_empty());
 }
 
 #[test]
 fn an_ask_is_matched_by_its_words() {
-    assert_eq!(query_terms("When is the DENTIST, and the dentist's address?"), ["when", "dentist", "address"]);
+    assert_eq!(
+        query_terms("When is the DENTIST, and the dentist's address?"),
+        ["when", "dentist", "address"]
+    );
     assert!(query_terms("it is").is_empty());
 }
 
@@ -195,14 +201,29 @@ fn entries_are_scored_by_how_well_they_match() {
         entry("kept-c", "They like tea."),
     ];
     let score = scores(&entries, &query_terms("dentist"));
-    assert!(score[0] > 0.0 && score[1] == 0.0 && score[2] == 0.0, "{score:?}");
+    assert!(
+        matches!(score.as_slice(), [a, b, c] if *a > 0.0 && *b <= 0.0 && *c <= 0.0),
+        "{score:?}"
+    );
     let road = scores(&entries, &query_terms("mill road dentist"));
-    assert!(road[0] > road[1] && road[1] > road[2], "{road:?}");
+    assert!(
+        matches!(road.as_slice(), [a, b, c] if a > b && b > c),
+        "{road:?}"
+    );
     // The rarer word weighs more.
-    let rare = scores(&entries, &query_terms("dentist"))[0];
-    let common = scores(&entries, &query_terms("road"))[0];
+    let first = |query: &str| {
+        scores(&entries, &query_terms(query))
+            .first()
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let (rare, common) = (first("dentist"), first("road"));
     assert!(rare > common, "{rare} {common}");
-    assert_eq!(scores(&entries, &[]), [0.0, 0.0, 0.0]);
+    assert!(
+        scores(&entries, &[])
+            .iter()
+            .all(|score| score.abs() < f64::EPSILON)
+    );
     assert!(scores(&[], &query_terms("dentist")).is_empty());
     // When it applies counts for guidance and work, not for the rest.
     let applied = |kind| {
@@ -217,10 +238,17 @@ fn entries_are_scored_by_how_well_they_match() {
     for kind in [MemoryKind::Guidance, MemoryKind::Work] {
         let rule = applied(kind);
         assert_eq!(rule.apply_terms, ["answer", "about", "dentist"]);
-        let with = scores(&[rule.clone(), entries[0].clone()], &query_terms("dentist"));
-        let as_fact = RecallEntry { kind: Some(MemoryKind::Owner), ..rule };
-        let without = scores(&[as_fact, entries[0].clone()], &query_terms("dentist"));
-        assert!(with[0] > without[0], "{kind:?}: {with:?} {without:?}");
+        let [dentist, ..] = &entries;
+        let with = scores(&[rule.clone(), dentist.clone()], &query_terms("dentist"));
+        let as_fact = RecallEntry {
+            kind: Some(MemoryKind::Owner),
+            ..rule
+        };
+        let without = scores(&[as_fact, dentist.clone()], &query_terms("dentist"));
+        assert!(
+            with.first() > without.first(),
+            "{kind:?}: {with:?} {without:?}"
+        );
     }
 }
 
@@ -253,4 +281,3 @@ fn choosing_ranks_by_the_ask_after_guidance() {
     let unasked = choose(&entries, &[], 10_000, 10_000);
     assert_eq!(ids(&unasked.index), ["kept-r", "kept-new", "kept-old"]);
 }
-

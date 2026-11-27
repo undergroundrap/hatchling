@@ -81,7 +81,9 @@ impl RecallEntry {
             title: title_of(&item.content),
             terms: terms_of(item),
             apply_terms: gather(
-                record.and_then(|record| record.how_to_apply.as_deref()).into_iter(),
+                record
+                    .and_then(|record| record.how_to_apply.as_deref())
+                    .into_iter(),
                 MAX_TERMS / 2,
             ),
             body_bytes: crate::prompt::framed_body(item).len(),
@@ -162,43 +164,65 @@ const K1: f64 = 1.2;
 /// BM25's length normalization.
 const B: f64 = 0.75;
 
-/// How well each of `entries` matches `query` (WO-048): BM25 over their
-/// terms, each term once, plus, for guidance and work facts, the weight of
-/// each asked word their *how to apply* names. Zero for every entry when
-/// nothing is asked.
+/// How well each of `entries` matches `query` (WO-048): BM25 over terms.
+///
+/// Each term counts once. Guidance and work facts add the weight of each
+/// asked word their *how to apply* names. Zero for every entry when nothing
+/// is asked.
 #[must_use]
 pub fn scores(entries: &[RecallEntry], query: &[String]) -> Vec<f64> {
     if query.is_empty() || entries.is_empty() {
         return vec![0.0; entries.len()];
     }
-    let count = entries.len() as f64;
-    let average = entries.iter().map(|entry| entry.terms.len() as f64).sum::<f64>() / count;
-    let weight = |term: &String| {
-        let holding = entries.iter().filter(|entry| entry.terms.contains(term)).count() as f64;
-        ((count - holding + 0.5) / (holding + 0.5) + 1.0).ln()
-    };
-    let weights: Vec<f64> = query.iter().map(weight).collect();
+    let total = counted(entries.len());
+    let average = entries
+        .iter()
+        .map(|entry| counted(entry.terms.len()))
+        .sum::<f64>()
+        / total;
+    // How rare each asked word is among the entries.
+    let rarity: Vec<f64> = query
+        .iter()
+        .map(|term| {
+            let holding = counted(
+                entries
+                    .iter()
+                    .filter(|entry| entry.terms.contains(term))
+                    .count(),
+            );
+            ((total - holding + 0.5) / (holding + 0.5)).ln_1p()
+        })
+        .collect();
     entries
         .iter()
         .map(|entry| {
-            let length = entry.terms.len() as f64;
+            let length = counted(entry.terms.len());
             let norm = K1 * (1.0 - B + B * length / average.max(1.0));
-            let applies = matches!(entry.kind, Some(MemoryKind::Guidance | MemoryKind::Work));
+            let for_use = matches!(entry.kind, Some(MemoryKind::Guidance | MemoryKind::Work));
             query
                 .iter()
-                .zip(&weights)
-                .map(|(term, weight)| {
+                .zip(&rarity)
+                .map(|(term, rare)| {
                     let found = if entry.terms.contains(term) {
-                        weight * (K1 + 1.0) / (1.0 + norm)
+                        rare * (K1 + 1.0) / (1.0 + norm)
                     } else {
                         0.0
                     };
-                    let applied = if applies && entry.apply_terms.contains(term) { *weight } else { 0.0 };
+                    let applied = if for_use && entry.apply_terms.contains(term) {
+                        *rare
+                    } else {
+                        0.0
+                    };
                     found + applied
                 })
                 .sum()
         })
         .collect()
+}
+
+/// `count` as a float: exact for any count an index holds.
+fn counted(count: usize) -> f64 {
+    f64::from(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 /// What a budgeted recall is asked for.

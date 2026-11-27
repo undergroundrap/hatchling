@@ -1923,7 +1923,8 @@ mod tests {
                 grants,
                 channel: String::from("local"),
                 depth: 3,
-                ask: String::new(),
+                // What the run is for, its recall ranked by (WO-048).
+                ask: String::from("t"),
             })
         );
         assert!(
