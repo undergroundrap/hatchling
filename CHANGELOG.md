@@ -8,6 +8,12 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **A memory asked for after reading from outside waits on your Memory page** ([WO-057](docs/workorders/workorder-057-automatic-memory.md), slice 2).
+  - With memory automatic, a memory the agent asks for in a conversation that searched the web, read a page or messages, or used its computer or a skill, or one you sent a file into, no longer stops you with a card. It waits on your Memory page, under "Something to remember about you", with why it waits, and the chat says so.
+  - So does one a scheduled or background run asks for, without a word in the chat.
+  - Approve it there, and it's kept at once, on your word, and the chat says "Remembered: …". Reject it, and those words are never asked for again.
+  - Asked again while it waits, it waits once. With Ask me, every memory is still a card.
+
 - **Memory kept without a card, from what you said** ([WO-057](docs/workorders/workorder-057-automatic-memory.md), slice 1).
   - When the agent asks to remember something you told it in the chat, Hatchling keeps it at once and says so in the chat: "Remembered: …". There's no card to stop for.
   - Only from a conversation that read nothing from outside. Hatchling decides that from what it served, never a model: once any run in the conversation searched the web, read a page or messages, used the browser, the agent's computer, a skill, a subagent, a shared space or an artifact, or you sent a file, every memory asked for in it is a card, as before, until you start a new conversation. A conversation stays so across a restart.

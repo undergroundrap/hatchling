@@ -1105,6 +1105,7 @@ fn serve_session(
                         && crate::conversation_taint::clean(cell_id.as_str());
                     SessionResponse::Memory(crate::memory_keep::propose_in(
                         config,
+                        Some(key),
                         web.task(),
                         &asked,
                         from,
@@ -3841,12 +3842,15 @@ mod recall_ask_tests {
 
     /// Serves `requests` in turn in a chat run's session in `cell`, the
     /// broker's own, with automatic memory kept where `dir` says: what each
-    /// was answered.
+    /// was answered, and what then waits on the owner's Review page.
     fn served_in_chat(
         dir: &std::path::Path,
         cell: &str,
         requests: &[SessionRequest],
-    ) -> Vec<SessionResponse> {
+    ) -> (Vec<SessionResponse>, Vec<String>) {
+        // Each session's own stores, sealed under its own key.
+        let dir = dir.join(cell);
+        std::fs::create_dir_all(&dir).unwrap();
         let mut config = crate::api_auth::tests::owner_config(None);
         config.vault.root = dir.join("vault");
         config.memory.root = dir.join("memory");
@@ -3898,7 +3902,12 @@ mod recall_ask_tests {
                 .collect();
             drop(agent);
             served.join().unwrap().unwrap();
-            answers
+            let waiting = crate::review_queue::list(&config.scheduler, &key)
+                .unwrap()
+                .into_iter()
+                .map(|item| item.change)
+                .collect();
+            (answers, waiting)
         })
     }
 
@@ -3916,13 +3925,15 @@ mod recall_ask_tests {
 
     /// WO-057, end to end: the chat's run in a clean conversation is told
     /// its memory is kept. One that searched the web first, refused or
-    /// not, is a card; so is a run the chat didn't start.
+    /// not, waits on the owner's Review page; so does a run the chat didn't
+    /// start.
     #[test]
     fn a_clean_chat_run_keeps_at_once_and_one_that_read_from_outside_asks() {
         let dir = crate::api_auth::tests::scratch("serve-automatic");
         let clean = "run-0000000000000000000000000000a057";
         crate::conversation_taint::began(clean, false);
-        let answers = served_in_chat(&dir.0, clean, &[proposing("Pepper is a cat.")]);
+        let (answers, waiting) = served_in_chat(&dir.0, clean, &[proposing("Pepper is a cat.")]);
+        assert!(waiting.is_empty());
         assert!(
             matches!(
                 answers.as_slice(),
@@ -3932,7 +3943,7 @@ mod recall_ask_tests {
         );
         let read = "run-0000000000000000000000000000b057";
         crate::conversation_taint::began(read, false);
-        let answers = served_in_chat(
+        let (answers, waiting) = served_in_chat(
             &dir.0,
             read,
             &[
@@ -3947,14 +3958,16 @@ mod recall_ask_tests {
             Some(&SessionResponse::Memory(MemoryResult::Proposed)),
             "{answers:?}"
         );
+        assert_eq!(waiting, ["They live in Bath."]);
         assert!(crate::conversation_taint::ended(read), "the chat is told");
         let unknown = "run-0000000000000000000000000000c057";
-        let answers = served_in_chat(&dir.0, unknown, &[proposing("They like tea.")]);
+        let (answers, waiting) = served_in_chat(&dir.0, unknown, &[proposing("They like tea.")]);
         assert_eq!(
             answers,
             [SessionResponse::Memory(MemoryResult::Proposed)],
             "a run the chat didn't start"
         );
+        assert_eq!(waiting, ["They like tea."]);
         let _ = std::fs::remove_dir_all(&dir.0);
     }
 

@@ -23,7 +23,15 @@
 //! with no card, and the owner is told in the chat. The broker decides that
 //! from what it served, never a model. Its record says it was kept
 //! automatically, and at most [`MAX_AUTOMATIC_PER_DAY`] are in a day: past
-//! that, or in any other conversation, it's a card as before.
+//! that, it's a card as before.
+//!
+//! **Waiting on the owner's Review (WO-057).** In automatic memory, one
+//! asked in a conversation that read from outside, or by a background run,
+//! isn't a card the owner must stop for: it waits on their Review page
+//! ([`crate::review_queue`]), with its whole proposal sealed beside it, and
+//! the agent isn't waiting. Approved there, it's kept at once, on the
+//! owner's word; rejected, its words are refused from then on, as a denied
+//! card's are ([`reviewed`]).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -51,6 +59,23 @@ pub const MAX_AUTOMATIC_PER_DAY: usize = 20;
 /// A day, in seconds: what [`MAX_AUTOMATIC_PER_DAY`] counts over.
 const DAY_SECS: u64 = 86_400;
 
+/// Who a memory waiting on the owner's Review was asked by, as the page
+/// says it.
+const ASKED_IN_CHAT: &str = "chat";
+
+/// A background run's, as the page says it.
+const ASKED_BY_RUN: &str = "run";
+
+/// A memory waiting on the owner's Review, sealed beside its item: what
+/// keeping it needs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Waiting {
+    proposal: crate::memory_proposal::Checked,
+    run: Option<String>,
+    chat: Option<String>,
+}
+
 /// Where a proposal was made, as the broker knows it, never as the agent
 /// says: the run it started, and the chat that run answered.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -61,9 +86,11 @@ pub struct ProposedIn {
     pub chat: Option<String>,
 }
 
-/// Puts `content`, which task `task` asks to keep, to the owner, from a
-/// session configured by `config` that `from` says where: what the agent
-/// is told. Never kept at once: [`propose_in`], not clean.
+/// Puts `content`, which task `task` asks to keep, to the owner on a card.
+///
+/// It's from a session configured by `config` that `from` says where, and
+/// the result is what the agent is told: [`propose_in`], neither clean nor
+/// with a key.
 #[must_use]
 pub fn propose(
     config: &Config,
@@ -71,19 +98,25 @@ pub fn propose(
     asked: &crate::memory_proposal::Asked<'_>,
     from: ProposedIn,
 ) -> MemoryResult {
-    propose_in(config, task, asked, from, false)
+    propose_in(config, None, task, asked, from, false)
 }
 
 /// [`propose`], from a session whose conversation the broker says is
-/// `clean`.
+/// `clean`, with `key` to the schedule store, where the owner's Review is.
 ///
-/// It's kept at once instead when `clean`, which the broker alone says:
-/// the session is a chat run's, and its conversation read nothing from
-/// outside ([`crate::conversation_taint`]). Then the owner's mode must be
-/// Automatic, and fewer than [`MAX_AUTOMATIC_PER_DAY`] kept so in a day.
+/// In automatic memory (the owner's mode), unless the owner said no to
+/// the same words:
+/// - when `clean`, which the broker alone says (the session is a chat
+///   run's, and its conversation read nothing from outside,
+///   [`crate::conversation_taint`]), it's kept at once, while fewer than
+///   [`MAX_AUTOMATIC_PER_DAY`] are kept so in a day;
+/// - otherwise it waits on the owner's Review page, given `key`.
+///
+/// Every other proposal is a card.
 #[must_use]
 pub fn propose_in(
     config: &Config,
+    key: Option<&dyn hatchling_vault::OpensStores>,
     task: &str,
     asked: &crate::memory_proposal::Asked<'_>,
     from: ProposedIn,
@@ -137,17 +170,24 @@ pub fn propose_in(
             content: old.content,
         });
     }
-    // Words the owner said no to are never kept without them: the card
-    // path below tells the agent so.
-    if clean
-        && crate::memory_mode::mode(&config.scheduler) == crate::memory_mode::Mode::Automatic
-        && !board(config).refuses_memory(&proposal)
+    // Words the owner said no to are never kept or queued without them:
+    // the card path below tells the agent so.
+    let automatic = crate::memory_mode::mode(&config.scheduler)
+        == crate::memory_mode::Mode::Automatic
+        && !board(config).refuses_memory(&proposal);
+    if automatic
+        && clean
         && open(config).is_ok_and(|(principal, store)| {
             kept_automatically_since(&store, &principal, now.saturating_sub(DAY_SECS), now)
                 < MAX_AUTOMATIC_PER_DAY
         })
     {
         return keep_at_once(config, &proposal, &from, now);
+    }
+    if automatic && !clean {
+        if let Some(waits) = key.and_then(|key| wait_for_review(config, key, &proposal, &from)) {
+            return waits;
+        }
     }
     let now = i64::try_from(now).unwrap_or(i64::MAX);
     match board(config).propose_memory(&proposal, task, from, now) {
@@ -229,6 +269,153 @@ fn keep_at_once(
             MemoryResult::MemoryError
         }
     }
+}
+
+/// Puts `proposal` on the owner's Review page, asked where `from` says,
+/// with the store `key` opens: what the agent is told, or none when it
+/// couldn't be, and it's a card instead.
+fn wait_for_review(
+    config: &Config,
+    key: &dyn hatchling_vault::OpensStores,
+    proposal: &crate::memory_proposal::Checked,
+    from: &ProposedIn,
+) -> Option<MemoryResult> {
+    let scheduler = &config.scheduler;
+    // The same words waiting already: asked once.
+    let waiting = crate::review_queue::list(scheduler, key).ok()?;
+    if waiting.iter().any(|item| {
+        item.kind == hatchling_core::ui::ReviewKind::Remember
+            && item.state == hatchling_core::ui::ReviewState::Waiting
+            && same_words(&item.change, &proposal.content)
+    }) {
+        return Some(MemoryResult::Proposed);
+    }
+    let evidence: Vec<String> = [
+        from.run.as_ref().map(|run| format!("run:{run}")),
+        from.chat.as_ref().map(|chat| format!("chat:{chat}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let broker_why = if from.chat.is_some() {
+        "Asked in a conversation that read from outside, so it's kept only if you approve it."
+    } else {
+        "Asked by a scheduled or background run, so it's kept only if you approve it."
+    };
+    let why = proposal.why.as_deref().map_or_else(
+        || broker_why.to_owned(),
+        |why| format!("{broker_why} The agent's reason: {why}"),
+    );
+    let target = proposal
+        .supersedes
+        .as_ref()
+        .map(|replaced| format!("memory:{}", replaced.id));
+    let detail = serde_json::to_value(Waiting {
+        proposal: proposal.clone(),
+        run: from.run.clone(),
+        chat: from.chat.clone(),
+    })
+    .ok()?;
+    let queued = crate::review_queue::propose_with(
+        scheduler,
+        key,
+        &crate::review_queue::Proposal {
+            proposed_by: if from.chat.is_some() {
+                ASKED_IN_CHAT
+            } else {
+                ASKED_BY_RUN
+            },
+            kind: hatchling_core::ui::ReviewKind::Remember,
+            target: target.as_deref(),
+            change: &proposal.content,
+            why: &why,
+            evidence: &evidence,
+        },
+        Some(&detail),
+        hatchling_scheduler::Timestamp::now(),
+    );
+    match queued {
+        Ok(crate::review_queue::Proposed::Queued(_)) => {
+            if from.chat.is_some() {
+                board(config).tell_owner(&format!(
+                    "Waiting on your Memory page: “{}” This conversation read from outside, so it's kept only if you approve it there.",
+                    proposal.content
+                ));
+            }
+            Some(MemoryResult::Proposed)
+        }
+        Ok(crate::review_queue::Proposed::Full) => Some(MemoryResult::Unasked {
+            reason: String::from(
+                "too many things already wait on the owner's Memory page: ask again once they've looked",
+            ),
+        }),
+        Ok(crate::review_queue::Proposed::Refused(why)) => {
+            tracing::warn!(
+                why,
+                "a memory couldn't wait on the Review page: it's a card"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::error!(%error, "a memory couldn't wait on the Review page: it's a card");
+            None
+        }
+    }
+}
+
+/// Applies the owner's decision on `item`, a memory that waited on their
+/// Review page (WO-057).
+///
+/// With the store `key` opens: approved, it's kept at once on their word,
+/// and they're told in the chat; rejected, its words are refused from then
+/// on. One whose proposal can't be read is logged, and the owner told it
+/// wasn't kept.
+pub fn reviewed(
+    config: &Config,
+    key: &dyn hatchling_vault::OpensStores,
+    item: &hatchling_core::ui::ReviewItem,
+) {
+    let waiting = crate::review_queue::detail(&config.scheduler, key, &item.item_id)
+        .ok()
+        .flatten()
+        .and_then(|detail| serde_json::from_value::<Waiting>(detail).ok());
+    let Some(waiting) = waiting else {
+        tracing::error!(item = %item.item_id, "a memory on the Review page has no proposal to keep");
+        if item.state == hatchling_core::ui::ReviewState::Approved {
+            board(config).tell_owner(
+                "Approved, but it wasn't kept: what it would keep couldn't be read. The broker's log says why.",
+            );
+        }
+        return;
+    };
+    if item.state != hatchling_core::ui::ReviewState::Approved {
+        board(config).deny_memory(&waiting.proposal);
+        return;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let from = ProposedIn {
+        run: waiting.run,
+        chat: waiting.chat,
+    };
+    let told = keep(
+        config,
+        &waiting.proposal,
+        Some(&item.item_id),
+        &from,
+        i64::try_from(now).unwrap_or(i64::MAX),
+    )
+    .map_or_else(
+        |error| {
+            tracing::error!(%error, "an approved memory wasn't kept");
+            String::from(
+                "Approved, but it wasn't kept: the memory store couldn't be written. The broker's log says why.",
+            )
+        },
+        |keeping| said(&waiting.proposal.content, &keeping),
+    );
+    board(config).tell_owner(&told);
 }
 
 /// What the owner is told of `content`, kept as `keeping` says.
@@ -1988,3 +2175,7 @@ Remembered: “The owner uses metric.” The agent is given it from now on."
 #[cfg(test)]
 #[path = "memory_keep_automatic_tests.rs"]
 mod automatic_tests;
+
+#[cfg(test)]
+#[path = "memory_keep_review_tests.rs"]
+mod review_tests;

@@ -533,6 +533,12 @@ impl Board {
         self.approvals.refuses(&memory_action(proposal, false))
     }
 
+    /// Refuses `proposal`'s words from now on (WO-057): the owner rejected
+    /// them on their Review page, as a denied card's are.
+    pub fn deny_memory(&self, proposal: &crate::memory_proposal::Checked) {
+        self.approvals.deny(&memory_action(proposal, false));
+    }
+
     /// Puts `card` to the owner as a revision of request `revising`, or as
     /// a new request, and shows it when it's new.
     fn put_card(

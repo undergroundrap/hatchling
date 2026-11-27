@@ -61,7 +61,8 @@ impl<'a> Asked<'a> {
 }
 
 /// A recalled memory a proposal would replace, as the owner approved it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Replaced {
     /// Its id.
     pub id: String,
@@ -70,8 +71,10 @@ pub struct Replaced {
 }
 
 /// A proposal the broker checked: what's put to the owner, and what's kept
-/// once they approve.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// once they approve. Sealed whole beside a review item that waits for them
+/// (WO-057).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Checked {
     /// The words, trimmed.
     pub content: String,

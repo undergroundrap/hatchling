@@ -101,7 +101,10 @@ pub use surfaces::{
 /// each memory's fields in order.
 /// 16: the context panel and the model in use (WO-056): a run summary's
 /// `model`, `chat_id` and `context_parts`.
-pub const UI_SCHEMA_VERSION: u16 = 16;
+/// 17: a memory waiting on the owner's Review (WO-057): the review kind
+/// `remember`, for one asked in a conversation that read from outside or by
+/// a background run.
+pub const UI_SCHEMA_VERSION: u16 = 17;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -784,6 +787,10 @@ pub enum ReviewKind {
     Unresolved,
     /// Install new guidance: what changes how the agent works.
     Guidance,
+    /// Remember something about the owner (WO-057): asked in a conversation
+    /// that read from outside, or by a background run, so it's kept only if
+    /// the owner approves. Approved, the broker keeps it at once.
+    Remember,
 }
 
 /// Where a review item stands.
@@ -2856,7 +2863,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 16);
+        assert_eq!(UI_SCHEMA_VERSION, 17);
     }
 
     /// A batch card's items on the wire (WO-055, v15): each memory's fields

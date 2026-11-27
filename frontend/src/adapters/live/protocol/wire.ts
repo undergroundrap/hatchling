@@ -3493,6 +3493,10 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             {
                 "const": "guidance",
                 "type": "string"
+            },
+            {
+                "const": "remember",
+                "type": "string"
             }
         ]
     },

@@ -123,6 +123,7 @@ fn a_clean_chat_proposal_is_kept_at_once_and_the_owner_told() {
     board(&config).attach(Arc::clone(&bus));
     let result = propose_in(
         &config,
+        None,
         "task-a",
         &Asked::about_owner("Pepper is a cat."),
         in_chat(),
@@ -152,7 +153,7 @@ fn a_clean_chat_proposal_is_kept_at_once_and_the_owner_told() {
     );
     // Kept is kept once: asked again, it's said to be.
     assert!(matches!(
-        propose_in(&config, "task-a", &Asked::about_owner("Pepper is a cat."), in_chat(), true),
+        propose_in(&config, None, "task-a", &Asked::about_owner("Pepper is a cat."), in_chat(), true),
         MemoryResult::Unasked { reason } if reason.starts_with("it's already kept")
     ));
     let _ = std::fs::remove_dir_all(&dir);
@@ -168,6 +169,7 @@ fn a_conversation_that_read_from_outside_or_ask_me_puts_it_on_a_card() {
     assert_eq!(
         propose_in(
             &config,
+            None,
             "task-b",
             &Asked::about_owner("They live in Bath."),
             in_chat(),
@@ -181,6 +183,7 @@ fn a_conversation_that_read_from_outside_or_ask_me_puts_it_on_a_card() {
     assert_eq!(
         propose_in(
             &config,
+            None,
             "task-c",
             &Asked::about_owner("They cycle to work."),
             in_chat(),
@@ -195,6 +198,7 @@ fn a_conversation_that_read_from_outside_or_ask_me_puts_it_on_a_card() {
     assert_eq!(
         propose_in(
             &config,
+            None,
             "task-d",
             &Asked::about_owner("They like tea."),
             in_chat(),
@@ -216,6 +220,7 @@ fn past_the_days_cap_it_is_a_card_and_replaced_ones_count() {
     assert_eq!(
         propose_in(
             &config,
+            None,
             "task-e",
             &Asked::about_owner("One too many."),
             in_chat(),
@@ -230,6 +235,7 @@ fn past_the_days_cap_it_is_a_card_and_replaced_ones_count() {
     assert!(matches!(
         propose_in(
             &config,
+            None,
             "task-f",
             &Asked::about_owner("Just under."),
             in_chat(),
@@ -240,6 +246,7 @@ fn past_the_days_cap_it_is_a_card_and_replaced_ones_count() {
     assert_eq!(
         propose_in(
             &config,
+            None,
             "task-f",
             &Asked::about_owner("Now at it."),
             in_chat(),
@@ -269,6 +276,7 @@ fn past_the_days_cap_it_is_a_card_and_replaced_ones_count() {
     assert!(matches!(
         propose_in(
             &config,
+            None,
             "task-g",
             &Asked::about_owner("Not capped."),
             in_chat(),
@@ -286,7 +294,7 @@ fn what_the_owner_said_no_to_or_skipped_is_never_kept_at_once() {
     board(&config).attach(Arc::clone(&bus));
     let asked = Asked::about_owner("They hate mornings.");
     assert_eq!(
-        propose_in(&config, "task-h", &asked, in_chat(), false),
+        propose_in(&config, None, "task-h", &asked, in_chat(), false),
         MemoryResult::Proposed
     );
     let board = board(&config);
@@ -300,7 +308,7 @@ fn what_the_owner_said_no_to_or_skipped_is_never_kept_at_once() {
         .unwrap();
     // Asked again in a clean conversation: refused, as on a card.
     assert!(matches!(
-        propose_in(&config, "task-i", &asked, in_chat(), true),
+        propose_in(&config, None, "task-i", &asked, in_chat(), true),
         MemoryResult::Unasked { reason } if reason == "the owner said no to keeping this"
     ));
     assert!(recalled(&config, RECALL_TAG).is_empty());
@@ -312,6 +320,7 @@ fn a_correction_kept_at_once_retires_what_it_corrects() {
     let (config, dir) = broker("correct");
     let old = kept_as(&propose_in(
         &config,
+        None,
         "task-j",
         &Asked::about_owner("They live in Bath."),
         in_chat(),
@@ -321,7 +330,14 @@ fn a_correction_kept_at_once_retires_what_it_corrects() {
         supersedes: Some(old.as_str()),
         ..Asked::about_owner("They live in Bristol now.")
     };
-    let new = kept_as(&propose_in(&config, "task-j", &correcting, in_chat(), true));
+    let new = kept_as(&propose_in(
+        &config,
+        None,
+        "task-j",
+        &correcting,
+        in_chat(),
+        true,
+    ));
     let recalled_now: Vec<String> = recalled(&config, RECALL_TAG)
         .into_iter()
         .map(|item| item.content)
