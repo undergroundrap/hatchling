@@ -90,6 +90,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **The app asked the broker for the same list several times a second, for as long as it was open** ([#747](https://github.com/undergroundrap/hatchling/issues/747)). Since 0.9.0, every activity event made the app ask again what your standing grants had allowed, and that request was itself kept as activity, so the app asked again, about eight times a second. Each request added a line to the activity log on disk (about 300 MB a day with the app open), filled Activity with "Read what your standing grants allowed", and redrew the page so often that a button could be replaced under your click. Now the app asks again only for what a run did, never for its own requests.
+
 - **What the agent read of its memory was shown as "Wrote to memory"** ([#749](https://github.com/undergroundrap/hatchling/issues/749)). Each run's recall, and the agent's memory search and read, appeared in a chat's "Used:" line and its evidence as writes. They now say "Recalled your memory", so a run that only read is seen to have kept nothing. Not in any release.
 
 - **A run granted memory writes could mark what it wrote as approved by you** ([#736](https://github.com/undergroundrap/hatchling/issues/736)). Before, writing the `approved` tag made an item show as yours on the Memory page and be given to later runs as something you approved. No shipped install grants those writes. Now a write carrying that tag is refused, and approved means the broker kept the item on your approval.

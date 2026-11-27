@@ -5,9 +5,11 @@
 // the broker's, never this app's guess. Shown in Activity as one thread.
 import type { ActivityRow, ActivityThread } from '../../protocol/models.js';
 import type { LiveClient } from './client.js';
-import type { CoveredRecord } from './protocol/generated.js';
+import type { ActivityEvent, CoveredRecord } from './protocol/generated.js';
 import { clockTime } from './text.js';
 const LANE = 'covered:requests';
+/** The run the broker keeps the Local API's own activity under: no grant covers any of it. */
+const API_RUN = 'api';
 /** A grant's scope, in the owner's words. */
 const grantWords = (record: CoveredRecord): string => record.scope === 'day' ? 'your 24-hour grant' : 'your always grant';
 /** The site a grant's key names: what follows its kind. */
@@ -53,9 +55,15 @@ export class LiveCovered {
     covered(): readonly CoveredRecord[] {
         return this.#covered;
     }
-    /** A run went on: a grant may have covered something. Ask again. */
-    observe(): void {
-        void this.refresh();
+    /**
+     * A run went on: a grant may have covered something. Ask again. Not for
+     * what this app's own calls to the broker did (#747): each of those is
+     * kept as activity too, the list's own among them, so asking again for
+     * one would ask forever.
+     */
+    observe(event: ActivityEvent): void {
+        if (event.run_id !== API_RUN)
+            void this.refresh();
     }
     /** Ask the broker for the list; one request at a time, and once more if asked meanwhile. */
     async refresh(): Promise<void> {

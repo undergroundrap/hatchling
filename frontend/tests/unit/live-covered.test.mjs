@@ -32,6 +32,10 @@ class FakeClient {
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const covered = (...records) => ({ kind: 'answered', result: { result: 'covered', covered: records } });
 const record = (count, extra = {}) => ({ key: 'web.visit:https://a.example', scope: 'always', url: `https://a.example/${count}?q=1`, via: 'fetch', task: 't-1', count, at: '2026-11-20T08:00:00Z', ...extra });
+/** Something a run did: a grant may have covered it. */
+const ran = { event: 'egress_request', event_id: 'session-1:3', run_id: 'session-1', ts: '2026-11-20T08:00:00Z' };
+/** What one of this app's own calls did, as the broker keeps it. */
+const called = request => ({ event: 'api_call', event_id: `api-${request}`, run_id: 'api', ts: '2026-11-20T08:00:00Z', caller: 'ui, uid 1000', capabilities: [], request, outcome: 'served' });
 const surface = () => {
     const client = new FakeClient();
     let changes = 0;
@@ -58,9 +62,9 @@ test('covered requests: asked for on connecting, the broker\'s list, and nothing
 });
 test('a run going on asks again, one request at a time, and once more if asked meanwhile', async () => {
     const { client, live } = surface();
-    live.observe();
-    live.observe();
-    live.observe();
+    live.observe(ran);
+    live.observe(ran);
+    live.observe(ran);
     assert.equal(client.sent.length, 1, 'one at a time');
     client.answer(covered(record(1)));
     await flush();
@@ -70,17 +74,32 @@ test('a run going on asks again, one request at a time, and once more if asked m
     assert.equal(client.sent.length, 2);
     assert.equal(live.covered().length, 2);
     // An answer that isn't the list, or none, leaves the list as it was.
-    live.observe();
+    live.observe(ran);
     client.answer({ kind: 'answered', result: { result: 'refused', reason: 'not_granted' } });
     await flush();
-    live.observe();
+    live.observe(ran);
     client.answer({ kind: 'unsent', detail: 'offline' });
     await flush();
     assert.equal(live.covered().length, 2);
 });
+test('the app\'s own calls to the broker don\'t ask again, the list\'s own among them (#747)', async () => {
+    const { client, live } = surface();
+    live.observe(called('list_covered'));
+    live.observe(called('read_usage'));
+    live.observe({ event: 'file_in', event_id: 'api-9', run_id: 'api', ts: '2026-11-20T08:00:00Z', bytes: 1, ended: 'done' });
+    assert.equal(client.sent.length, 0, 'no grant covers what the app itself did');
+    // A run's, asked once; the list's own call that answer is kept as, not again.
+    live.observe(ran);
+    assert.equal(client.sent.length, 1);
+    client.answer(covered(record(1)));
+    await flush();
+    live.observe(called('list_covered'));
+    await flush();
+    assert.equal(client.sent.length, 1, 'no loop');
+});
 test('Activity shows each covered request with its address and the grant that covered it', async () => {
     const { client, live } = surface();
-    live.observe();
+    live.observe(ran);
     client.answer(covered(record(64, { url: null, scope: 'day', at: '2026-11-20T09:30:00Z' }), record(2, { via: 'browser', key: 'web.visit:https://b.example:8443', url: 'https://b.example:8443/x' }), record(1, { at: '2026-11-20T07:00:00Z' })));
     await flush();
     const thread = live.thread();
@@ -96,7 +115,7 @@ test('Activity shows each covered request with its address and the grant that co
     assert.match(rows[2].report, /^Read, the address as the agent asked for it\./);
     assert.ok(rows.every(row => row.icon === 'globe' && row.status === 'success' && row.workId === 't-1'));
     // One request is said as one.
-    live.observe();
+    live.observe(ran);
     client.answer(covered(record(1)));
     await flush();
     assert.equal(live.thread().subtitle, '1 request · newest 08:00');
