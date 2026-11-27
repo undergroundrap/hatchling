@@ -602,6 +602,11 @@ impl Cell<Ready> {
         let asking = hatchling_loop::Loop::new(&registry, kind)
             .with_system_note(&note)
             .with_now(self.config().run_now.as_deref());
+        // Which model runs it, from the broker's settings (WO-056).
+        let asking = asking.with_model(
+            self.config().model_name.as_deref(),
+            self.config().model_endpoint.as_deref(),
+        );
         // The skills the owner enabled, from the broker's list at the
         // run's start, fenced as data (WO-046).
         let skills = self.skills_note();
@@ -906,6 +911,9 @@ mod tests {
             assistant: String::from("1. Tea. 2. Coffee."),
         }];
         config.run_earlier = vec![String::from("I only drink hot drinks.")];
+        // The model the broker's settings name (WO-056).
+        config.model_name = Some(String::from("gemma4:12b"));
+        config.model_endpoint = Some(String::from("http://localhost:11434/v1"));
         // The broker welcomes the cell, then goes: recall finds nothing.
         let welcome = std::thread::spawn(move || -> Result<(), String> {
             read_frame(&broker).map_err(|e| e.to_string())?;
@@ -936,6 +944,12 @@ mod tests {
         let seen = model.seen_histories();
         let history = seen.first().unwrap();
         assert!(matches!(history.first(), Some(Message::System(_))));
+        // The run is told its model, from those settings, in its instructions.
+        let note = hatchling_prompt::model_note("gemma4:12b", "http://localhost:11434/v1");
+        assert!(
+            matches!(history.first(), Some(Message::System(text)) if text.contains(&note)),
+            "the model fact reaches the model"
+        );
         let earlier = hatchling_core::conversation::render_earlier(&[String::from(
             "I only drink hot drinks.",
         )]);
