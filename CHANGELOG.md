@@ -90,6 +90,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **What the agent read of its memory was shown as "Wrote to memory"** ([#749](https://github.com/undergroundrap/hatchling/issues/749)). Each run's recall, and the agent's memory search and read, appeared in a chat's "Used:" line and its evidence as writes. They now say "Recalled your memory", so a run that only read is seen to have kept nothing. Not in any release.
+
 - **A run granted memory writes could mark what it wrote as approved by you** ([#736](https://github.com/undergroundrap/hatchling/issues/736)). Before, writing the `approved` tag made an item show as yours on the Memory page and be given to later runs as something you approved. No shipped install grants those writes. Now a write carrying that tag is refused, and approved means the broker kept the item on your approval.
 
 - **A memory you'd already approved could be asked and kept again** ([#596](https://github.com/undergroundrap/hatchling/issues/596), [WO-048](docs/workorders/workorder-048-memory-provenance-and-recall.md) slice 2). Before, the agent proposing the same words again put them to you again, and approving kept a second copy, which took recall's room twice. Now the same words, however they're spaced, aren't asked again: the agent is told they're already kept. An approval that finds them kept meanwhile says so and keeps one copy. **Breaking for `hatchling-broker`:** `memory_keep::keep` returns `Keeping` (`Kept` or `Already`). Not in any release.
