@@ -453,6 +453,7 @@ pub fn scoped_config(
             grants: request.grants.clone(),
             channel: request.channel.clone(),
             depth: request.depth,
+            ask: request.task.clone(),
         }),
         // A run's model calls are the owner's usage too.
         usage: config.scheduler.usage.clone(),
@@ -1922,6 +1923,7 @@ mod tests {
                 grants,
                 channel: String::from("local"),
                 depth: 3,
+                ask: String::new(),
             })
         );
         assert!(

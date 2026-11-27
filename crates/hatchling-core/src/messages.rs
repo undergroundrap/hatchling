@@ -221,6 +221,13 @@ pub enum MemoryOp {
         index_bytes: u32,
         /// The most the items given whole may take, in bytes.
         full_bytes: u32,
+        /// Words to rank by (v39): a search. Without them, a run's recall
+        /// is ranked by what the run is for, as the broker received it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+        /// One item alone, by its id (v39): a read of it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
     },
     /// Removes the item stored under (`scope`, `id`). Idempotent:
     /// removing a missing item reports
@@ -5735,7 +5742,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 38);
+        assert_eq!(crate::PROTOCOL_VERSION, 39);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5840,7 +5847,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 38);
+        assert_eq!(crate::PROTOCOL_VERSION, 39);
     }
 
     /// A hand-over and its results go on the wire as written, and a field
@@ -5919,7 +5926,7 @@ mod room_tests {
         assert!(
             serde_json::from_str::<LeftOut>(r#"{"links":0,"mounts":0,"others":0,"x":1}"#).is_err()
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 38);
+        assert_eq!(crate::PROTOCOL_VERSION, 39);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5978,6 +5985,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 38);
+        assert_eq!(crate::PROTOCOL_VERSION, 39);
     }
 }

@@ -35,7 +35,7 @@ use crate::item::{
     MAX_CONTENT_BYTES, MAX_ENCODED_ITEM_BYTES, MemoryId, MemoryItem, MemoryPrincipal, MemoryScope,
     Tag, reply_encoded_len,
 };
-use crate::recall_index::{RecallEntry, Recalled};
+use crate::recall_index::{RecallAsk, RecallEntry, Recalled};
 use crate::{Error, KeptRecord, RetentionPolicy, is_expired, owner_dir};
 
 /// Whether `item` has a TTL and `now_secs` is past it: [`is_expired`]'s
@@ -446,9 +446,10 @@ impl MemoryStore {
     }
 
     /// What a run is given of the items carrying `tag` in `scopes`, at
-    /// `now_secs`: the index within `index_bytes` and the items given whole
-    /// within `full_bytes` (WO-048). It reads each scope's recall index and
-    /// then only the items it gives whole.
+    /// `now_secs`, as `ask` says (WO-048): the index within its index
+    /// budget and the items given whole within its full budget, ranked by
+    /// its words, or the one item it names. It reads each scope's recall
+    /// index and then only the items it gives whole.
     ///
     /// # Errors
     ///
@@ -459,21 +460,21 @@ impl MemoryStore {
         scopes: &[MemoryScope],
         tag: &Tag,
         now_secs: u64,
-        index_bytes: usize,
-        full_bytes: usize,
+        ask: &RecallAsk<'_>,
     ) -> Result<Recalled, Error> {
         let mut entries = Vec::new();
         let mut spaces = Vec::new();
         for scope in scopes {
             let space = Self::space(principal, scope);
             for entry in self.index_of(&space)? {
-                if entry.recalled_by(tag, now_secs) {
+                if entry.recalled_by(tag, now_secs) && ask.only.is_none_or(|id| entry.id == *id) {
                     entries.push(entry);
                     spaces.push(space.clone());
                 }
             }
         }
-        let chosen = crate::recall_index::choose(&entries, index_bytes, full_bytes);
+        let chosen =
+            crate::recall_index::choose(&entries, ask.query, ask.index_bytes, ask.full_bytes);
         let mut items = Vec::new();
         for &position in &chosen.whole {
             let (Some(entry), Some(space)) = (entries.get(position), spaces.get(position)) else {
@@ -812,7 +813,7 @@ mod tests {
         }
         let _ = reads(&counts);
         let recalled = store
-            .recall_budgeted(&p, &[MemoryScope::User], &recall, 5_000, 3 * 1024, 5 * 1024)
+            .recall_budgeted(&p, &[MemoryScope::User], &recall, 5_000, &RecallAsk { query: &[], only: None, index_bytes: 3 * 1024, full_bytes: 5 * 1024 })
             .unwrap();
         let (item_reads, index_reads) = reads(&counts);
         assert_eq!(index_reads, 1, "the index, once");
@@ -838,6 +839,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// What the owner asked finds a memory outside the newest ten, and a
+    /// read gives one item alone (WO-048's acceptance).
+    #[test]
+    fn an_ask_finds_a_memory_outside_the_newest_ten() {
+        let (store, _counts, root) = counted("relevance");
+        let p = principal(7, "sess-relevance");
+        let recall = Tag::from_str("recall").unwrap();
+        let keep = |raw: &str, words: &str, at: u64| {
+            store
+                .keep(&p, &MemoryScope::User, &MemoryId::from_str(raw).unwrap(), words, std::slice::from_ref(&recall), KeptRecord::agent_words(None, None, None, at))
+                .unwrap();
+        };
+        keep("kept-dentist", "Their dentist is Dr Lee, on Mill Road.", 1);
+        for n in 0..30u64 {
+            keep(&format!("kept-{n:02}"), &format!("Fact {n} about their garden and the weather."), 100 + n);
+        }
+        let given = |query: &[String], only: Option<&MemoryId>, full: usize| -> Vec<String> {
+            store
+                .recall_budgeted(&p, &[MemoryScope::User], &recall, 500, &RecallAsk { query, only, index_bytes: 0, full_bytes: full })
+                .unwrap()
+                .items
+                .into_iter()
+                .map(|item| item.id.to_string())
+                .collect()
+        };
+        // Room for three whole: the newest, unasked; the dentist, asked.
+        let room = 3 * "Fact 29 about their garden and the weather.".len();
+        assert_eq!(given(&[], None, room), ["kept-29", "kept-28", "kept-27"]);
+        let asked = given(&crate::recall_index::query_terms("when is the dentist?"), None, room);
+        assert_eq!(asked.first().map(String::as_str), Some("kept-dentist"), "{asked:?}");
+        // A read gives the one item it names, and nothing for an id not kept.
+        let dentist = MemoryId::from_str("kept-dentist").unwrap();
+        assert_eq!(given(&[], Some(&dentist), 4096), ["kept-dentist"]);
+        assert!(given(&[], Some(&MemoryId::from_str("kept-none").unwrap()), 4096).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The index follows every change: a keep, a retag, a remove. An entry
     /// whose item went without the index being told is skipped, and an
     /// index that's missing is built from the items once, then read.
@@ -849,7 +887,7 @@ mod tests {
         let id = |raw: &str| MemoryId::from_str(raw).unwrap();
         let given = |store: &MemoryStore| -> Vec<String> {
             store
-                .recall_budgeted(&p, &[MemoryScope::User], &recall, 10, 4096, 4096)
+                .recall_budgeted(&p, &[MemoryScope::User], &recall, 10, &RecallAsk { query: &[], only: None, index_bytes: 4096, full_bytes: 4096 })
                 .unwrap()
                 .items
                 .into_iter()

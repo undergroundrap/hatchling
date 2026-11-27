@@ -57,6 +57,9 @@ pub struct RecallEntry {
     pub title: String,
     /// The words it can be found by.
     pub terms: Vec<String>,
+    /// The words of when it applies, for guidance and work facts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub apply_terms: Vec<String>,
     /// The size of its words as a run is given them whole.
     pub body_bytes: usize,
 }
@@ -77,6 +80,10 @@ impl RecallEntry {
             expires_at_secs: crate::item::expires_at(item),
             title: title_of(&item.content),
             terms: terms_of(item),
+            apply_terms: gather(
+                record.and_then(|record| record.how_to_apply.as_deref()).into_iter(),
+                MAX_TERMS / 2,
+            ),
             body_bytes: crate::prompt::framed_body(item).len(),
         }
     }
@@ -119,15 +126,21 @@ pub fn terms_of(item: &MemoryItem) -> Vec<String> {
         record.and_then(|record| record.why.as_deref()),
         record.and_then(|record| record.how_to_apply.as_deref()),
     ];
+    gather(texts.into_iter().flatten(), MAX_TERMS)
+}
+
+/// The words of `texts` a recall finds by, by [`terms_of`]'s rule, at most
+/// `most` of them.
+fn gather<'t>(texts: impl Iterator<Item = &'t str>, most: usize) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
-    for text in texts.into_iter().flatten() {
+    for text in texts {
         for word in text.split(|c: char| !c.is_alphanumeric()) {
             let word = word.to_lowercase();
             if word.chars().count() >= 3
                 && !STOP_WORDS.contains(&word.as_str())
                 && !terms.contains(&word)
             {
-                if terms.len() == MAX_TERMS {
+                if terms.len() == most {
                     return terms;
                 }
                 terms.push(word);
@@ -135,6 +148,70 @@ pub fn terms_of(item: &MemoryItem) -> Vec<String> {
         }
     }
     terms
+}
+
+/// The words an ask is matched by: `text`'s, by [`terms_of`]'s rule.
+#[must_use]
+pub fn query_terms(text: &str) -> Vec<String> {
+    gather(std::iter::once(text), MAX_TERMS)
+}
+
+/// BM25's term saturation.
+const K1: f64 = 1.2;
+
+/// BM25's length normalization.
+const B: f64 = 0.75;
+
+/// How well each of `entries` matches `query` (WO-048): BM25 over their
+/// terms, each term once, plus, for guidance and work facts, the weight of
+/// each asked word their *how to apply* names. Zero for every entry when
+/// nothing is asked.
+#[must_use]
+pub fn scores(entries: &[RecallEntry], query: &[String]) -> Vec<f64> {
+    if query.is_empty() || entries.is_empty() {
+        return vec![0.0; entries.len()];
+    }
+    let count = entries.len() as f64;
+    let average = entries.iter().map(|entry| entry.terms.len() as f64).sum::<f64>() / count;
+    let weight = |term: &String| {
+        let holding = entries.iter().filter(|entry| entry.terms.contains(term)).count() as f64;
+        ((count - holding + 0.5) / (holding + 0.5) + 1.0).ln()
+    };
+    let weights: Vec<f64> = query.iter().map(weight).collect();
+    entries
+        .iter()
+        .map(|entry| {
+            let length = entry.terms.len() as f64;
+            let norm = K1 * (1.0 - B + B * length / average.max(1.0));
+            let applies = matches!(entry.kind, Some(MemoryKind::Guidance | MemoryKind::Work));
+            query
+                .iter()
+                .zip(&weights)
+                .map(|(term, weight)| {
+                    let found = if entry.terms.contains(term) {
+                        weight * (K1 + 1.0) / (1.0 + norm)
+                    } else {
+                        0.0
+                    };
+                    let applied = if applies && entry.apply_terms.contains(term) { *weight } else { 0.0 };
+                    found + applied
+                })
+                .sum()
+        })
+        .collect()
+}
+
+/// What a budgeted recall is asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecallAsk<'a> {
+    /// The words it's ranked by; none ranks by kind and time alone.
+    pub query: &'a [String],
+    /// One item alone, by its id: a read of it.
+    pub only: Option<&'a MemoryId>,
+    /// The most the index's lines may take, in bytes.
+    pub index_bytes: usize,
+    /// The most the items given whole may take, in bytes.
+    pub full_bytes: usize,
 }
 
 /// What a budgeted recall gives a run.
@@ -151,17 +228,26 @@ pub struct Recalled {
 /// Chooses, from `entries`, what a run is given: the index within
 /// `index_bytes`, and the items to give whole within `full_bytes`.
 ///
-/// Guidance comes first, then the most recently changed, then by id. The
-/// index lists as many entries as fit; the whole items are those whose
-/// words fit what's left of `full_bytes`, in the same order, a large one
-/// skipped for smaller ones after it.
+/// Guidance comes first, then the best match for `query` ([`scores`]),
+/// then the most recently changed, then by id. The index lists as many
+/// entries as fit; the whole items are those whose words fit what's left of
+/// `full_bytes`, in the same order, a large one skipped for smaller ones
+/// after it.
 #[must_use]
-pub fn choose(entries: &[RecallEntry], index_bytes: usize, full_bytes: usize) -> Chosen {
+pub fn choose(
+    entries: &[RecallEntry],
+    query: &[String],
+    index_bytes: usize,
+    full_bytes: usize,
+) -> Chosen {
+    let score = scores(entries, query);
     let mut ordered: Vec<(usize, &RecallEntry)> = entries.iter().enumerate().collect();
-    ordered.sort_by(|(_, a), (_, b)| {
+    ordered.sort_by(|&(at_a, a), &(at_b, b)| {
         let guidance = |entry: &RecallEntry| entry.kind != Some(MemoryKind::Guidance);
+        let of = |at: usize| score.get(at).copied().unwrap_or(0.0);
         guidance(a)
             .cmp(&guidance(b))
+            .then_with(|| of(at_b).total_cmp(&of(at_a)))
             .then_with(|| b.updated_at_secs.cmp(&a.updated_at_secs))
             .then_with(|| a.id.as_str().cmp(b.id.as_str()))
     });

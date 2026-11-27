@@ -484,6 +484,16 @@ impl Cell<Ready> {
             registry.register(Box::new(crate::tools::MemoryProposeTool::new(
                 self.connection(),
             )));
+            // Reads and searches share the run's bound (WO-048).
+            let looks = std::sync::Arc::new(crate::tools::MemoryLooks::default());
+            registry.register(Box::new(crate::tools::MemorySearchTool::new(
+                self.connection(),
+                std::sync::Arc::clone(&looks),
+            )));
+            registry.register(Box::new(crate::tools::MemoryReadTool::new(
+                self.connection(),
+                looks,
+            )));
         }
         if on(hatchling_core::run_tools::ToolGroup::Suggest) {
             registry.register(Box::new(crate::tools::IdeaSuggestTool::new(
