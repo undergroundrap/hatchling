@@ -21,7 +21,7 @@ Decided by the maintainer (2026-11-27): **one batch card.** A turn's memory requ
 | **Bait and switch.** An item is added while the owner reads, and their approval covers it unseen. | Each item added is a new **revision** of the request, with its own digest and the card shown again. A decision names the revision and digest it was shown, and the ledger refuses any other (`DecisionRejection::Changed`, already enforced). |
 | **Smuggling through a partial yes.** The owner keeps two items and a third is kept as well, or another item than the one they ticked. | The decision names the kept items by their place on the revision it was shown, bound by that revision's digest. The broker keeps exactly those, as the frozen action holds them, and nothing else. |
 | **Asking again what was skipped.** | Each item has its own fingerprint. Skipping an item refuses it for the broker's life, as a denial does now, however it's worded and from whichever task. Denying the whole card denies every item, and the task waits out the denial cooldown as before. Skipping some items while keeping others doesn't start the cooldown: the owner said yes to the task. |
-| **Contradictory items.** Two items correct the same memory, or one is on the card twice. | Refused when added: the agent is told it's already on the card. |
+| **Contradictory items.** Two items correct the same memory. | The second is refused when added, and the agent is told why. The same words asked again are the item already waiting, not a second one. |
 | **A card that never ends.** Items keep the request alive past its time. | Adding an item doesn't extend the request's deadline: the card lapses when the first proposal's would have. |
 
 Unchanged: only the owner decides; only the broker keeps; a memory proposal is checked (fit, kind, dates, `supersedes`) before it's put on a card; anything other than a memory proposal stays one request per task.
@@ -51,7 +51,7 @@ Unchanged: only the owner decides; only the broker keeps; a memory proposal is c
 
 - [ ] A chat turn that asks to remember three things puts one card to the owner, with three items. Keeping two keeps exactly those two, each as its own memory, and the third is never asked again.
 - [ ] An item added while the card is shown makes a new revision. A decision on the old revision is refused, and the app shows the new card.
-- [ ] A sixth item, a duplicate, or a second correction of the same memory is refused when added, and the agent is told why as an error, not a result (#751).
+- [ ] A sixth item, or a second correction of the same memory, is refused when added, and the agent is told why as an error, not a result (#751). The same words asked again are the item already waiting.
 - [ ] Denying the card refuses every item, for every task, and starts the task's cooldown. Skipping some items refuses those alone.
 - [ ] Adding items doesn't extend the card's deadline, and each one counts against the hourly limit.
 - [ ] `keep` is refused on a request without items, and when empty, out of range or repeated. Nothing is kept on a refused decision.
@@ -72,6 +72,7 @@ All must pass before the WO closes:
 ## Evidence
 
 - Slice 1, the ledger: [wo055-ledger.md](../evidence/wo055-ledger.md).
+- Slice 2, the card: [wo055-card.md](../evidence/wo055-card.md).
 
 The rest is filled in at close.
 

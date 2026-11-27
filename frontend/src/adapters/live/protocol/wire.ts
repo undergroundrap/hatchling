@@ -1221,6 +1221,20 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
         ],
         "type": "object"
     },
+    "ConfirmationItem": {
+        "properties": {
+            "fields": {
+                "items": {
+                    "$ref": "#/$defs/ConfirmationField"
+                },
+                "type": "array"
+            }
+        },
+        "required": [
+            "fields"
+        ],
+        "type": "object"
+    },
     "ConfirmationRequest": {
         "properties": {
             "approve": {
@@ -1258,6 +1272,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "string",
                     "null"
                 ]
+            },
+            "items": {
+                "items": {
+                    "$ref": "#/$defs/ConfirmationItem"
+                },
+                "type": "array"
             },
             "revision": {
                 "minimum": 0,

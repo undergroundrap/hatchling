@@ -53,6 +53,10 @@ export function revealedValue(value: string): HTMLElement {
         : segment.text);
     return h('bdi', { dir: 'auto', class: 'task-approval-value' }, ...parts);
 }
+/** A batch's items (WO-055), numbered in order, each with its own fields in review order. */
+export function reviewItems(items: readonly (readonly ReviewField[])[]): HTMLElement {
+    return h('ol', { class: 'task-approval-items' }, ...items.map(fields => h('li', { class: 'task-approval-item' }, reviewFields(fields))));
+}
 /** A request's fields, in review order, the agent's labeled as the agent's. */
 export function reviewFields(fields: readonly ReviewField[]): HTMLElement {
     const list = h('dl', { class: 'task-approval-fields' });

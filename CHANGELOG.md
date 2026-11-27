@@ -8,6 +8,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Several memories asked for at once are one card** ([WO-055](docs/workorders/workorder-055-several-memories-one-card.md), slice 2). Before, the agent could ask to remember only one thing at a time: ask it to remember three things and the second and third were refused while the first waited, so they were lost. Now what one chat answer asks to keep gathers on one card, "Remember these 3 things?", up to five, each with its own words, kind and reasons. A memory asked for while you're looking at the card makes a new version of it, and an answer to the version you saw before is refused, so nothing is approved that you didn't see. The card keeps its first deadline. Approving it keeps each memory as its own, and approval history records each. One memory is still asked as it always was. Choosing which to keep follows. **Breaking for the local API:** the UI schema is v15 (a confirmation's `items`). **Breaking for `hatchling-broker`:** `ApprovalBoard::propose_memory` returns a `CardRefusal`, and `MemoryKeep` gains `more`. Not in any release.
+
 - **Your Memory page says where each memory came from** ([WO-048](docs/workorders/workorder-048-memory-provenance-and-recall.md), slice 8). Each memory now shows:
   - whether it was asked for in your chat or by a scheduled run, or kept before Hatchling recorded that;
   - what kind of thing it is, why and when it applies, and whether it records something known not to be so;

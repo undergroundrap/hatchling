@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 14;
+export const UI_SCHEMA_VERSION = 15;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 39;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -1113,6 +1113,16 @@ export type ConfirmationField = {
     readonly value: string;
 };
 /**
+ * One thing a batch confirmation asks for (WO-055): its fields, in review
+ * order, each labeled with who stated it.
+ */
+export type ConfirmationItem = {
+    /**
+     * Its fields.
+     */
+    readonly fields: readonly (ConfirmationField)[];
+};
+/**
  * The agent asks the user to approve or deny something.
  *
  * What is asked is the broker's record of one frozen action (WO-027): its
@@ -1153,6 +1163,12 @@ export type ConfirmationRequest = {
      * request only ever approved once. Never the agent's words.
      */
     readonly grant_key?: string | null;
+    /**
+     * Each thing a batch asks for, in order (WO-055, v15): the memories a
+     * task asked to keep, gathered on one card, each with its own fields.
+     * Empty for any request that isn't a batch, whose `fields` say it all.
+     */
+    readonly items?: readonly (ConfirmationItem)[];
     /**
      * Bumped when the request changes. A decision names the revision
      * it applies to, and a stale one is rejected.

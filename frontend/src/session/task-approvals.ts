@@ -30,6 +30,8 @@ export interface TaskApproval {
     readonly report: string;
     /** The request's fields, when its source states them: shown whole, in review order. */
     readonly fields?: readonly ReviewField[];
+    /** Each thing a batch asks for, in order, with its own fields (WO-055): the memories on one card. */
+    readonly items?: readonly (readonly ReviewField[])[];
 }
 export interface ApprovalAttempt {
     readonly id: string;

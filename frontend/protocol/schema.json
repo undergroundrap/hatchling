@@ -2738,6 +2738,22 @@
       ],
       "type": "object"
     },
+    "ConfirmationItem": {
+      "description": "One thing a batch confirmation asks for (WO-055): its fields, in review\norder, each labeled with who stated it.",
+      "properties": {
+        "fields": {
+          "description": "Its fields.",
+          "items": {
+            "$ref": "#/$defs/ConfirmationField"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "fields"
+      ],
+      "type": "object"
+    },
     "ConfirmationRequest": {
       "description": "The agent asks the user to approve or deny something.\n\nWhat is asked is the broker's record of one frozen action (WO-027): its\ndigest, and its fields in the order the owner reviews them, the broker's\nfirst and the agent's after, each labeled with who stated it.",
       "properties": {
@@ -2783,6 +2799,13 @@
             "string",
             "null"
           ]
+        },
+        "items": {
+          "description": "Each thing a batch asks for, in order (WO-055, v15): the memories a\ntask asked to keep, gathered on one card, each with its own fields.\nEmpty for any request that isn't a batch, whose `fields` say it all.",
+          "items": {
+            "$ref": "#/$defs/ConfirmationItem"
+          },
+          "type": "array"
         },
         "revision": {
           "description": "Bumped when the request changes. A decision names the revision\nit applies to, and a stale one is rejected.",
@@ -17330,7 +17353,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 39,
-    "ui_schema_version": 14
+    "ui_schema_version": 15
   },
   "x-roots": {
     "ActivityEvent": {
