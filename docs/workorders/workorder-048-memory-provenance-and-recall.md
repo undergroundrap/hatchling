@@ -46,7 +46,7 @@ The queue named the first part of this as a candidate: *Memory: bounded retrieva
 
 ## Recall and search design (slices 6 and 7)
 
-Written on 2026-11-27 for the maintainer's approval before any code, as the scope requires.
+Written on 2026-11-27 for the maintainer's approval before any code, as the scope requires. **The maintainer approved it as written on 2026-11-27**, with the budgets below.
 
 **Where recall stands.** A run is given the user and project items tagged `recall`, newest first, cut at 10 items and 8 KiB:
 - the store reads and decrypts every item in the scope to find them;
