@@ -2185,6 +2185,7 @@ mod tests {
             grants: send.clone(),
             channel: String::from("local"),
             depth: 0,
+            ask: String::new(),
         };
         let now = Timestamp::now();
         let unheld = hatchling_vault::StoreKeys::unwrap(&master, &[]).unwrap();
@@ -2542,6 +2543,7 @@ mod tests {
             grants: send.clone(),
             channel: String::from("local"),
             depth: 0,
+            ask: String::new(),
         };
         let asked_at = Timestamp::from_second(1_790_003_000).unwrap();
         let created = request_followup(&scope, &master, "check again", 600, &send, asked_at);
@@ -2597,6 +2599,7 @@ mod tests {
                 grants: send.clone(),
                 channel: String::from("local"),
                 depth: 0,
+                ask: String::new(),
             };
             let created = request_followup(&scope, &master, "check again", 600, &send, asked_at);
             release_followup(run);

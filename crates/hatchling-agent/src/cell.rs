@@ -481,9 +481,7 @@ impl Cell<Ready> {
             )));
         }
         if on(hatchling_core::run_tools::ToolGroup::Memory) {
-            registry.register(Box::new(crate::tools::MemoryProposeTool::new(
-                self.connection(),
-            )));
+            crate::tools::register_memory(registry, self.connection());
         }
         if on(hatchling_core::run_tools::ToolGroup::Suggest) {
             registry.register(Box::new(crate::tools::IdeaSuggestTool::new(

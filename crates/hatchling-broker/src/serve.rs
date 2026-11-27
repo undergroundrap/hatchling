@@ -1093,6 +1093,20 @@ fn serve_session(
                         from,
                     ))
                 }
+                // A run's recall is ranked by what it's for, as the broker
+                // received it (WO-048).
+                SessionRequest::Memory(op @ MemoryOp::RecallBudgeted { .. }) => {
+                    SessionResponse::Memory(crate::memory_ops::recall_budgeted(
+                        &config.memory,
+                        &principal,
+                        &op,
+                        config
+                            .scheduler
+                            .followup
+                            .as_ref()
+                            .map(|scope| scope.ask.as_str()),
+                    )?)
+                }
                 SessionRequest::Memory(op) => {
                     SessionResponse::Memory(crate::memory_ops::handle_memory_op(
                         &config.memory,
@@ -2730,6 +2744,7 @@ mod gate_scope_tests {
             grants: Vec::new(),
             channel: String::from("local"),
             depth: 0,
+            ask: String::new(),
         });
         config
     }
@@ -2897,6 +2912,7 @@ mod gate_scope_tests {
                 grants: Vec::new(),
                 channel: String::from("local"),
                 depth: 0,
+                ask: String::new(),
             });
             let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
             crate::app_stream::stream(&config).attach(Arc::clone(&bus));
@@ -3635,6 +3651,7 @@ mod memory_proposal_tests {
             grants: Vec::new(),
             channel: String::from("side-7"),
             depth: 0,
+            ask: String::new(),
         });
         let key = MasterKey::generate().unwrap();
         let skills = Skills::default();
@@ -3781,5 +3798,113 @@ mod memory_proposal_tests {
                 chat: Some(String::from("side-7")),
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod recall_ask_tests {
+    use hatchling_core::{MemoryOp, MemoryResult};
+    use hatchling_vault::MasterKey;
+
+    use super::*;
+    use crate::config::{MemoryAction, MemoryGrant};
+
+    /// A run's own recall, served as the broker serves one, is ranked by
+    /// what the run is for as the broker received it (WO-048): the run
+    /// names no words, and an older match comes before newer notes.
+    #[test]
+    fn a_runs_recall_is_ranked_by_what_the_broker_received() {
+        let dir = crate::api_auth::tests::scratch("recall-ask");
+        let mut config = crate::api_auth::tests::owner_config(None);
+        config.vault.root = dir.0.join("vault");
+        config.memory.root = dir.0.join("memory");
+        config.memory.grants = vec![MemoryGrant {
+            scope: String::from("user"),
+            action: MemoryAction::Recall,
+        }];
+        let run = "run-0000000000000000000000dd";
+        config.scheduler.followup = Some(crate::FollowupScope {
+            root: dir.0.join("schedules"),
+            run: String::from(run),
+            grants: Vec::new(),
+            channel: String::from("local"),
+            depth: 0,
+            ask: String::from("When is my dentist appointment?"),
+        });
+        if let Ok(shared) = MasterKey::generate() {
+            crate::held_keys::publish(Box::new(shared));
+        }
+        let principal = MemoryPrincipal {
+            peer_uid: rustix::process::getuid().as_raw(),
+            session_id: SessionId::generate().unwrap(),
+        };
+        let store = crate::memory_sealed::open_published(&config.memory.root).unwrap();
+        let recall: hatchling_memory::Tag = crate::memory_keep::RECALL_TAG.parse().unwrap();
+        let keep = |id: &str, words: &str, at: u64| {
+            store
+                .keep(
+                    &principal,
+                    &hatchling_memory::MemoryScope::User,
+                    &id.parse().unwrap(),
+                    words,
+                    std::slice::from_ref(&recall),
+                    hatchling_memory::KeptRecord::agent_words(None, None, None, at),
+                )
+                .unwrap();
+        };
+        keep("kept-dentist", "Their dentist is Dr Lee.", 1);
+        for n in 0..5 {
+            keep(
+                &format!("kept-{n}"),
+                &format!("A note about tea, number {n}."),
+                10 + n,
+            );
+        }
+        let key = MasterKey::generate().unwrap();
+        let skills = Skills::default();
+        let (agent, broker) = UnixStream::pair().unwrap();
+        agent
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let creds = peer_credentials(&broker).unwrap();
+        let cell_id: CellId = run.parse().unwrap();
+        std::thread::scope(|scope| {
+            let served = scope.spawn(|| {
+                serve_session(
+                    &broker,
+                    &config,
+                    &key,
+                    &skills,
+                    &cell_id,
+                    true,
+                    creds,
+                    None,
+                    None,
+                    &HeldHit::default(),
+                    None,
+                    SkillReach::WithHarnesses,
+                )
+            });
+            let request = SessionRequest::Memory(MemoryOp::RecallBudgeted {
+                tag: String::from(crate::memory_keep::RECALL_TAG),
+                index_bytes: 4096,
+                full_bytes: 4096,
+                query: None,
+                id: None,
+            });
+            write_frame(&agent, &serde_json::to_vec(&request).unwrap()).unwrap();
+            let response: SessionResponse =
+                serde_json::from_slice(&read_frame(&agent).unwrap()).unwrap();
+            let SessionResponse::Memory(MemoryResult::Recalled { items_json, .. }) = response
+            else {
+                unreachable!("a recall's answer: {response:?}");
+            };
+            let first: hatchling_memory::MemoryItem =
+                serde_json::from_str(items_json.first().unwrap()).unwrap();
+            assert_eq!(first.id.as_str(), "kept-dentist");
+            drop(agent);
+            served.join().unwrap().unwrap();
+        });
+        let _ = std::fs::remove_dir_all(&dir.0);
     }
 }

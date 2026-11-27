@@ -243,6 +243,15 @@ pub enum Proposal {
     Unasked(String),
 }
 
+/// A recall narrowed (v39): ranked by `query`'s words, or one item by `id`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Narrowed<'a> {
+    /// The words to rank by.
+    pub query: Option<&'a str>,
+    /// The item to read.
+    pub id: Option<&'a str>,
+}
+
 /// What a run is given of the items tagged `tag` (v38): the index within
 /// `index_bytes` and the items given whole within `full_bytes`.
 ///
@@ -254,11 +263,14 @@ pub fn recall_budgeted(
     tag: &str,
     index_bytes: u32,
     full_bytes: u32,
+    narrowed: Narrowed<'_>,
 ) -> Result<hatchling_memory::Recalled, Error> {
     let op = MemoryOp::RecallBudgeted {
         tag: tag.to_owned(),
         index_bytes,
         full_bytes,
+        query: narrowed.query.map(str::to_owned),
+        id: narrowed.id.map(str::to_owned),
     };
     match request(stream, &op)? {
         MemoryResult::Recalled {

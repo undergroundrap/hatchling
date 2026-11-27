@@ -261,6 +261,10 @@ pub struct FollowupScope {
     pub channel: String,
     /// The run's depth in its follow-up chain.
     pub depth: u32,
+    /// What the run is for, as the broker received it: the owner's message
+    /// for a chat turn, the task for a scheduled run. Its recall is ranked
+    /// by it (WO-048), so nothing the run reads can steer what it's given.
+    pub ask: String,
 }
 
 /// The directory of the owner's records beside the schedule store at

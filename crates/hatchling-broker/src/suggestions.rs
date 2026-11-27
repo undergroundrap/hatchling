@@ -817,6 +817,7 @@ pub(crate) mod tests {
             grants: Vec::new(),
             channel: channel.to_owned(),
             depth: 0,
+            ask: String::new(),
         });
         config
     }

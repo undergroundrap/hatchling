@@ -93,8 +93,14 @@ impl MemoryProvider for BrokerMemoryProvider<'_> {
     /// items given whole within [`FULL_BYTES`], the broker reading only
     /// what it gives (v38).
     fn recall_budgeted(&self) -> Result<hatchling_memory::Recalled, RecallError> {
-        memory::recall_budgeted(self.stream, RECALL_TAG, INDEX_BYTES, FULL_BYTES)
-            .map_err(|error| RecallError(format!("broker budgeted recall failed: {error}")))
+        memory::recall_budgeted(
+            self.stream,
+            RECALL_TAG,
+            INDEX_BYTES,
+            FULL_BYTES,
+            memory::Narrowed::default(),
+        )
+        .map_err(|error| RecallError(format!("broker budgeted recall failed: {error}")))
     }
 
     fn recall(&self) -> Result<Vec<MemoryItem>, RecallError> {

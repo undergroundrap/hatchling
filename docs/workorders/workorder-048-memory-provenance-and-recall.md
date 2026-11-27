@@ -73,6 +73,7 @@ Each slice commits its evidence under `docs/evidence/`.
 - Slice 4, absences: [wo048-absences.md](../evidence/wo048-absences.md).
 - Slice 5, supersession and contradictions: [wo048-supersession.md](../evidence/wo048-supersession.md).
 - Slice 6, the recall index and a budgeted recall: [wo048-recall-index.md](../evidence/wo048-recall-index.md).
+- Slice 7, relevance, search and read: [wo048-recall-search.md](../evidence/wo048-recall-search.md).
 
 ## Notes
 

@@ -15,6 +15,9 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v39 ranks a run's recall by what it's for, and lets it search its
+/// memory by words or read one item whole (`MemoryOp::RecallBudgeted`'s
+/// `query` and `id`, WO-048).
 /// v38 gives a run its recalled memory within a budget
 /// (`MemoryOp::RecallBudgeted`, `MemoryResult::Recalled`, WO-048): an index
 /// of every recalled item and the items given whole, the broker reading only
@@ -122,7 +125,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 38;
+pub const PROTOCOL_VERSION: u16 = 39;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

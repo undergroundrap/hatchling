@@ -149,7 +149,7 @@ fn choosing_puts_guidance_first_then_the_newest_within_each_budget() {
             .map(|entry| entry.id.as_str())
             .collect()
     };
-    let all = choose(&entries, 10_000, 10_000);
+    let all = choose(&entries, &[], 10_000, 10_000);
     assert_eq!(
         ids(&all.index),
         ["kept-r", "kept-c", "kept-b", "kept-d", "kept-a"]
@@ -164,15 +164,187 @@ fn choosing_puts_guidance_first_then_the_newest_within_each_budget() {
         .filter_map(|&at| entries.get(at))
         .map(|entry| crate::prompt::index_line(entry).len() + 1)
         .sum();
-    let cut = choose(&entries, first_two, 0);
+    let cut = choose(&entries, &[], first_two, 0);
     assert_eq!(ids(&cut.index), ["kept-r", "kept-c"]);
     assert_eq!(cut.left_out, 3);
     assert!(cut.whole.is_empty());
-    let short = choose(&entries, first_two - 1, 0);
+    let short = choose(&entries, &[], first_two - 1, 0);
     assert_eq!(ids(&short.index), ["kept-r"]);
     // Whole items: a large one is skipped for smaller ones after it.
     let room = "Use metric units.".len() + "Newer fact.".len();
-    assert_eq!(ids(&choose(&entries, 0, room).whole), ["kept-r", "kept-b"]);
-    assert_eq!(ids(&choose(&entries, 0, room - 1).whole), ["kept-r"]);
-    assert!(choose(&[], 100, 100).index.is_empty());
+    assert_eq!(
+        ids(&choose(&entries, &[], 0, room).whole),
+        ["kept-r", "kept-b"]
+    );
+    assert_eq!(ids(&choose(&entries, &[], 0, room - 1).whole), ["kept-r"]);
+    assert!(choose(&[], &[], 100, 100).index.is_empty());
+}
+
+#[test]
+fn an_ask_is_matched_by_its_words() {
+    assert_eq!(
+        query_terms("When is the DENTIST, and the dentist's address?"),
+        ["when", "dentist", "address"]
+    );
+    assert!(query_terms("it is").is_empty());
+}
+
+/// BM25: an entry holding an asked word scores above one that doesn't,
+/// a rare word above a common one, and guidance or work whose *how to
+/// apply* names the word above one that only mentions it.
+#[test]
+fn entries_are_scored_by_how_well_they_match() {
+    let entry = |id: &str, content: &str| RecallEntry::of(&item(id, content, 1));
+    let entries = [
+        entry("kept-a", "The dentist is Dr Lee on Mill Road."),
+        entry("kept-b", "They walk on Mill Road."),
+        entry("kept-c", "They like tea."),
+    ];
+    let score = scores(&entries, &query_terms("dentist"));
+    assert!(
+        matches!(score.as_slice(), [a, b, c] if *a > 0.0 && *b <= 0.0 && *c <= 0.0),
+        "{score:?}"
+    );
+    let road = scores(&entries, &query_terms("mill road dentist"));
+    assert!(
+        matches!(road.as_slice(), [a, b, c] if a > b && b > c),
+        "{road:?}"
+    );
+    // The rarer word weighs more.
+    let first = |query: &str| {
+        scores(&entries, &query_terms(query))
+            .first()
+            .copied()
+            .unwrap_or(0.0)
+    };
+    let (rare, common) = (first("dentist"), first("road"));
+    assert!(rare > common, "{rare} {common}");
+    assert!(
+        scores(&entries, &[])
+            .iter()
+            .all(|score| score.abs() < f64::EPSILON)
+    );
+    assert!(scores(&[], &query_terms("dentist")).is_empty());
+    // When it applies counts for guidance and work, not for the rest.
+    let applied = |kind| {
+        let mut rule = item("kept-r", "Keep answers short.", 1);
+        rule.record = Some(KeptRecord {
+            kind: Some(kind),
+            how_to_apply: Some(String::from("Any answer about the dentist.")),
+            ..KeptRecord::agent_words(None, None, None, 1)
+        });
+        RecallEntry::of(&rule)
+    };
+    for kind in [MemoryKind::Guidance, MemoryKind::Work] {
+        let rule = applied(kind);
+        assert_eq!(rule.apply_terms, ["answer", "about", "dentist"]);
+        let [dentist, ..] = &entries;
+        let with = scores(&[rule.clone(), dentist.clone()], &query_terms("dentist"));
+        let as_fact = RecallEntry {
+            kind: Some(MemoryKind::Owner),
+            ..rule
+        };
+        let without = scores(&[as_fact, dentist.clone()], &query_terms("dentist"));
+        assert!(
+            with.first() > without.first(),
+            "{kind:?}: {with:?} {without:?}"
+        );
+    }
+}
+
+/// With an ask, the best match comes before what's newer; guidance still
+/// comes first.
+#[test]
+fn choosing_ranks_by_the_ask_after_guidance() {
+    let mut rule = item("kept-r", "Use metric units.", 1);
+    rule.record = Some(KeptRecord {
+        kind: Some(MemoryKind::Guidance),
+        ..KeptRecord::agent_words(None, None, None, 1)
+    });
+    let entries: Vec<RecallEntry> = [
+        item("kept-old", "The dentist is Dr Lee.", 1),
+        item("kept-new", "They like tea.", 50),
+        rule,
+    ]
+    .iter()
+    .map(RecallEntry::of)
+    .collect();
+    let ids = |positions: &[usize]| -> Vec<&str> {
+        positions
+            .iter()
+            .filter_map(|&at| entries.get(at))
+            .map(|entry| entry.id.as_str())
+            .collect()
+    };
+    let asked = choose(&entries, &query_terms("the dentist"), 10_000, 10_000);
+    assert_eq!(ids(&asked.index), ["kept-r", "kept-old", "kept-new"]);
+    let unasked = choose(&entries, &[], 10_000, 10_000);
+    assert_eq!(ids(&unasked.index), ["kept-r", "kept-new", "kept-old"]);
+}
+
+/// The scores themselves, worked out by hand from BM25 (k1 1.2, b 0.75):
+/// a change to how they're reckoned changes them.
+#[test]
+fn scores_are_bm25_to_the_digit() {
+    let entry = |id: &str, content: &str| RecallEntry::of(&item(id, content, 1));
+    let entries = [
+        entry("kept-a", "The dentist is Dr Lee on Mill Road."),
+        entry("kept-b", "They walk on Mill Road."),
+        entry("kept-c", "They like tea."),
+    ];
+    let near = |got: &[f64], want: &[f64]| {
+        got.len() == want.len()
+            && got
+                .iter()
+                .zip(want)
+                .all(|(got, want)| (got - want).abs() < 1e-9)
+    };
+    let one = scores(&entries, &query_terms("dentist"));
+    assert!(near(&one, &[0.863_129_742_650_319_2, 0.0, 0.0]), "{one:?}");
+    let three = scores(&entries, &query_terms("mill road dentist"));
+    assert!(
+        near(
+            &three,
+            &[1.690_336_130_122_813_7, 0.940_007_258_491_471, 0.0]
+        ),
+        "{three:?}"
+    );
+    let mut rule = item("kept-r", "Keep answers short.", 1);
+    rule.record = Some(KeptRecord {
+        kind: Some(MemoryKind::Guidance),
+        how_to_apply: Some(String::from("Any answer about the dentist.")),
+        ..KeptRecord::agent_words(None, None, None, 1)
+    });
+    let [dentist, ..] = &entries;
+    let boosted = scores(
+        &[RecallEntry::of(&rule), dentist.clone()],
+        &query_terms("dentist"),
+    );
+    assert!(
+        near(
+            &boosted,
+            &[0.350_854_088_284_164_87, 0.198_568_032_151_831_8]
+        ),
+        "{boosted:?}"
+    );
+    assert!(scores(&[], &query_terms("dentist")).is_empty());
+    assert!(near(&scores(&entries, &[]), &[0.0, 0.0, 0.0]));
+}
+
+#[test]
+fn when_it_applies_keeps_at_most_sixteen_words() {
+    let words = (0..20).fold(String::new(), |mut words, n| {
+        use std::fmt::Write as _;
+        let _ = write!(words, "word{n:02} ");
+        words
+    });
+    let mut rule = item("kept-r", "x", 1);
+    rule.record = Some(KeptRecord {
+        kind: Some(MemoryKind::Guidance),
+        how_to_apply: Some(words),
+        ..KeptRecord::agent_words(None, None, None, 1)
+    });
+    let entry = RecallEntry::of(&rule);
+    assert_eq!(entry.apply_terms.len(), MAX_TERMS / 2);
+    assert_eq!(entry.apply_terms.last().map(String::as_str), Some("word15"));
 }

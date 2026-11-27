@@ -1344,6 +1344,7 @@ mod tests {
             grants: Vec::new(),
             channel: s("local"),
             depth: 0,
+            ask: String::new(),
         });
         assert_eq!(
             activity_log(&config),

@@ -9147,6 +9147,13 @@
                   "minimum": 0,
                   "type": "integer"
                 },
+                "id": {
+                  "description": "One item alone, by its id (v39): a read of it.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "index_bytes": {
                   "description": "The most the index's lines may take, in bytes.",
                   "format": "uint32",
@@ -9156,6 +9163,13 @@
                 "op": {
                   "const": "recall-budgeted",
                   "type": "string"
+                },
+                "query": {
+                  "description": "Words to rank by (v39): a search. Without them, a run's recall\nis ranked by what the run is for, as the broker received it.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "tag": {
                   "description": "The tag to match.",
@@ -17163,7 +17177,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 38,
+    "session_protocol": 39,
     "ui_schema_version": 13
   },
   "x-roots": {

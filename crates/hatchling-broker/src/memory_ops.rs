@@ -39,13 +39,8 @@ pub fn handle_memory_op(
     principal: &MemoryPrincipal,
     session_id: &SessionId,
 ) -> Result<MemoryResult, Error> {
-    if let MemoryOp::RecallBudgeted {
-        tag,
-        index_bytes,
-        full_bytes,
-    } = op
-    {
-        return recall_budgeted(config, principal, tag, *index_bytes, *full_bytes);
+    if let MemoryOp::RecallBudgeted { .. } = op {
+        return recall_budgeted(config, principal, op, None);
     }
     let action = memory_action(op);
     let scope_str = op_scope_str(op);
@@ -154,16 +149,33 @@ pub const MAX_INDEX_BYTES: u32 = 6 * 1024;
 /// The most a budgeted recall's whole items may take, in bytes.
 pub const MAX_FULL_BYTES: u32 = 12 * 1024;
 
-/// What a run is given of its recalled memory (v38): the index and the
-/// items given whole, in the user and project scopes it may recall, each
-/// bounded, and the whole reply within one frame.
-fn recall_budgeted(
+/// What a run is given of its recalled memory (v38, `op`'s).
+///
+/// It's the index and the items given whole, in the user and project
+/// scopes it may recall, each bounded, and the whole reply within one
+/// frame. A search is ranked by its words (v39), a read gives one item, and
+/// otherwise it's ranked by `ask`, what the run is for as the broker
+/// received it.
+///
+/// # Errors
+///
+/// [`Error`] when the store can't be read or the op is malformed.
+pub fn recall_budgeted(
     config: &MemoryConfig,
     principal: &MemoryPrincipal,
-    tag: &str,
-    index_bytes: u32,
-    full_bytes: u32,
+    op: &MemoryOp,
+    ask: Option<&str>,
 ) -> Result<MemoryResult, Error> {
+    let MemoryOp::RecallBudgeted {
+        tag,
+        index_bytes,
+        full_bytes,
+        query,
+        id,
+    } = op
+    else {
+        return Ok(MemoryResult::Denied);
+    };
     let mut scopes = Vec::new();
     for name in ["user", "project"] {
         if is_granted(config, name, MemoryAction::Recall) {
@@ -178,6 +190,9 @@ fn recall_budgeted(
         return Ok(MemoryResult::Denied);
     }
     let tag = parse_tag(tag)?;
+    let only = id.as_deref().map(parse_id).transpose()?;
+    let words =
+        hatchling_memory::recall_index::query_terms(query.as_deref().or(ask).unwrap_or_default());
     let store = crate::memory_sealed::open_published(&config.root)
         .map_err(|source| Error::Memory { source })?;
     let now_secs = SystemTime::now()
@@ -189,8 +204,12 @@ fn recall_budgeted(
             &scopes,
             &tag,
             now_secs,
-            usize::try_from(index_bytes.min(MAX_INDEX_BYTES)).unwrap_or(0),
-            usize::try_from(full_bytes.min(MAX_FULL_BYTES)).unwrap_or(0),
+            &hatchling_memory::RecallAsk {
+                query: &words,
+                only: only.as_ref(),
+                index_bytes: usize::try_from((*index_bytes).min(MAX_INDEX_BYTES)).unwrap_or(0),
+                full_bytes: usize::try_from((*full_bytes).min(MAX_FULL_BYTES)).unwrap_or(0),
+            },
         )
         .map_err(|source| Error::Memory { source })?;
     let corrupt = || Error::Memory {
@@ -780,6 +799,8 @@ mod paging_tests {
             tag: String::from("t"),
             index_bytes,
             full_bytes,
+            query: None,
+            id: None,
         };
         let MemoryResult::Recalled {
             index_json,
@@ -845,6 +866,8 @@ mod paging_tests {
             tag: String::from("t"),
             index_bytes,
             full_bytes,
+            query: None,
+            id: None,
         };
         let MemoryResult::Recalled {
             index_json,
@@ -878,6 +901,97 @@ mod paging_tests {
             .filter(|json| json.contains("escapes-"))
             .count();
         assert!((1..8).contains(&escaping), "{escaping} of 8 given whole");
+        let _ = std::fs::remove_dir_all(&config.root);
+    }
+
+    /// A search ranks by its words, a read gives the one item it names, and
+    /// what the run is for ranks the rest (v39).
+    #[test]
+    fn a_recall_is_ranked_by_its_words_or_reads_one_item() {
+        let config = config("ranked");
+        let (p, s) = principal();
+        write(
+            &config,
+            "zz-dentist",
+            "Their dentist is Dr Lee, on Mill Road.",
+        );
+        for n in 0..12 {
+            write(
+                &config,
+                &format!("note-{n:02}"),
+                &format!("A note about the garden, entry n{n:02}."),
+            );
+        }
+        let ask = |query: Option<&str>, id: Option<&str>, full_bytes| MemoryOp::RecallBudgeted {
+            tag: String::from("t"),
+            index_bytes: 4096,
+            full_bytes,
+            query: query.map(str::to_owned),
+            id: id.map(str::to_owned),
+        };
+        let first = |reply: MemoryResult| -> Option<String> {
+            let MemoryResult::Recalled { index_json, .. } = reply else {
+                unreachable!("a recall's answer");
+            };
+            index_json.first().map(|json| {
+                serde_json::from_str::<hatchling_memory::RecallEntry>(json)
+                    .unwrap()
+                    .id
+                    .to_string()
+            })
+        };
+        // Unasked, the old note doesn't come first; searched, it does.
+        assert_ne!(
+            first(handle_memory_op(&config, &ask(None, None, 0), &p, &s).unwrap()).as_deref(),
+            Some("zz-dentist")
+        );
+        assert_eq!(
+            first(handle_memory_op(&config, &ask(Some("zz-dentist"), None, 0), &p, &s).unwrap())
+                .as_deref(),
+            Some("zz-dentist")
+        );
+        // What the run is for ranks it too, as the broker received it.
+        assert_eq!(
+            first(
+                super::recall_budgeted(&config, &p, &ask(None, None, 0), Some("Book the dentist"))
+                    .unwrap()
+            )
+            .as_deref(),
+            Some("zz-dentist")
+        );
+        // A search's own words come before the run's.
+        assert_eq!(
+            first(
+                super::recall_budgeted(
+                    &config,
+                    &p,
+                    &ask(Some("garden n03"), None, 0),
+                    Some("zz-dentist")
+                )
+                .unwrap()
+            )
+            .as_deref(),
+            Some("note-03")
+        );
+        // A read: the one item, whole; an id nothing is kept with, nothing.
+        let MemoryResult::Recalled { items_json, .. } =
+            handle_memory_op(&config, &ask(None, Some("zz-dentist"), 2048), &p, &s).unwrap()
+        else {
+            unreachable!("a recall's answer");
+        };
+        assert_eq!(items_json.len(), 1);
+        assert!(items_json.first().unwrap().contains("Dr Lee"));
+        let MemoryResult::Recalled {
+            items_json,
+            index_json,
+            ..
+        } = handle_memory_op(&config, &ask(None, Some("kept-none"), 2048), &p, &s).unwrap()
+        else {
+            unreachable!("a recall's answer");
+        };
+        assert!(items_json.is_empty() && index_json.is_empty());
+        // A malformed id ends the session, as every op's does.
+        assert!(handle_memory_op(&config, &ask(None, Some("../x"), 2048), &p, &s).is_err());
         let _ = std::fs::remove_dir_all(&config.root);
     }
 }

@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 13;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 38;
+export const SESSION_PROTOCOL_VERSION = 39;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -3791,10 +3791,19 @@ export type SessionRequest = {
      */
     readonly full_bytes: number;
     /**
+     * One item alone, by its id (v39): a read of it.
+     */
+    readonly id?: string | null;
+    /**
      * The most the index's lines may take, in bytes.
      */
     readonly index_bytes: number;
     readonly op: 'recall-budgeted';
+    /**
+     * Words to rank by (v39): a search. Without them, a run's recall
+     * is ranked by what the run is for, as the broker received it.
+     */
+    readonly query?: string | null;
     /**
      * The tag to match.
      */
