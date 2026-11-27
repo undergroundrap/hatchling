@@ -19,4 +19,15 @@ In `hatchling-broker`'s `memory_keep::tests`:
 
 ## The gate
 
-RESULTS
+The gate script (`dr-k2.sh`) on tree `b010b260`, the slice's code and docs on slice 1:
+- fmt passes, clippy passes on 1.98.1 and 1.85.0, and the workspace builds;
+- the workspace's tests: 4633 passed, 0 failed;
+- `hatchling-dev audit`: all checks passed.
+
+**Four hand-breaks of `memory_keep.rs`, each caught by its tests:**
+- a proposal of what's kept is asked again;
+- an approval keeps a second copy;
+- what a run wrote counts as approved;
+- spacing makes the same words different.
+
+**Mutation** on the slice's own diff (`memory_keep.rs`, `approval_board.rs`, the broker's `memory` tests): 9 mutants, 7 caught, 2 unviable, none missed, and none timed out.
