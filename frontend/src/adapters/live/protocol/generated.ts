@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 13;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 37;
+export const SESSION_PROTOCOL_VERSION = 38;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -2413,6 +2413,20 @@ export type MemoryResult = {
     readonly next?: string | null;
     readonly result: 'items';
 } | {
+    /**
+     * The index's entries, each JSON-encoded, in the order given.
+     */
+    readonly index_json: readonly (string)[];
+    /**
+     * The items given whole, each JSON-encoded, in the order given.
+     */
+    readonly items_json: readonly (string)[];
+    /**
+     * How many recalled items the index had no room for.
+     */
+    readonly left_out: number;
+    readonly result: 'recalled';
+} | {
     readonly result: 'not-found';
 } | {
     /**
@@ -3767,6 +3781,20 @@ export type SessionRequest = {
      * `user`, `project`, or `session`.
      */
     readonly scope: string;
+    /**
+     * The tag to match.
+     */
+    readonly tag: string;
+} | {
+    /**
+     * The most the items given whole may take, in bytes.
+     */
+    readonly full_bytes: number;
+    /**
+     * The most the index's lines may take, in bytes.
+     */
+    readonly index_bytes: number;
+    readonly op: 'recall-budgeted';
     /**
      * The tag to match.
      */

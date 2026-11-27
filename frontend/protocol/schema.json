@@ -5871,6 +5871,42 @@
           "type": "object"
         },
         {
+          "description": "What a budgeted recall gives (v38).",
+          "properties": {
+            "index_json": {
+              "description": "The index's entries, each JSON-encoded, in the order given.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "items_json": {
+              "description": "The items given whole, each JSON-encoded, in the order given.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "left_out": {
+              "description": "How many recalled items the index had no room for.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "result": {
+              "const": "recalled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "index_json",
+            "items_json",
+            "left_out"
+          ],
+          "type": "object"
+        },
+        {
           "description": "No item is stored under the id.",
           "properties": {
             "result": {
@@ -9099,6 +9135,38 @@
                 "op",
                 "scope",
                 "tag"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "What a run is given of the items carrying `tag` (v38, WO-048), in\neach of the user and project scopes it may recall: an index, one\nentry each, within `index_bytes`, and the items given whole within\n`full_bytes`. The broker reads only what it gives. It bounds both.",
+              "properties": {
+                "full_bytes": {
+                  "description": "The most the items given whole may take, in bytes.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "index_bytes": {
+                  "description": "The most the index's lines may take, in bytes.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "op": {
+                  "const": "recall-budgeted",
+                  "type": "string"
+                },
+                "tag": {
+                  "description": "The tag to match.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "op",
+                "tag",
+                "index_bytes",
+                "full_bytes"
               ],
               "type": "object"
             },
@@ -17095,7 +17163,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 37,
+    "session_protocol": 38,
     "ui_schema_version": 13
   },
   "x-roots": {

@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v37 (current). This doc is the human-readable reference
+**Status:** v38 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -57,7 +57,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36, `supersedes` v37; an item's `record` (WO-048) |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36, `supersedes` v37, `RecallBudgeted` v38; an item's `record` (WO-048) |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -777,3 +777,15 @@ same commit.
   - one kept before records keeps the broker's old `approved` tag.
 - **Changed or forgotten meanwhile:** if the memory it replaces is gone, or no longer in the words the owner was shown, the new one is kept, nothing else changes, and the owner is told.
 - **The agent's guidance:** when what a run finds contradicts a recalled memory, or the conversation's notes record a decision that does, it tells the owner and proposes the correction by that memory's id, quoting what contradicted it.
+
+## v38 — Recall within a budget
+
+- **`MemoryOp::RecallBudgeted { tag, index_bytes, full_bytes }`** (WO-048) asks for what a run is given of the items carrying `tag`, in each of the user and project scopes the session may recall. With neither granted, it's `Denied`.
+- **`MemoryResult::Recalled { index_json, items_json, left_out }`** answers it:
+  - an index of the recalled items, one entry each, within `index_bytes`: id, tags, kind, absence, approval, times, title, terms and the size of its words;
+  - the items given whole within `full_bytes`, without the ids of where they came from;
+  - how many the index had no room for.
+
+  Guidance comes first, then the most recently changed. The broker bounds `index_bytes` to 6 KiB and `full_bytes` to 12 KiB, and fits the reply to one frame.
+- **The broker reads only what it gives.** Each space's recall index is sealed beside its items and kept current on every write, keep, retag and remove. A space without one has it built from its items once.
+- **The agent** asks once at a run's start for a 3 KiB index and 5 KiB of items given whole. Its recalled block gives the index, one line per item, before the items given whole.
