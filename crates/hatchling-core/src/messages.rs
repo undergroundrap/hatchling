@@ -238,11 +238,32 @@ pub enum MemoryOp {
     /// the owner approves it, in the app; then the broker keeps it, in the
     /// user scope, recalled into later runs. The agent never writes there
     /// itself.
+    ///
+    /// From v35 (WO-048) it says what kind of thing it is, and for guidance
+    /// or a fact about ongoing work, why and when it applies. The broker
+    /// checks each, shows them to the owner with the words, and keeps the
+    /// ones they approve in the item's record.
     #[serde(rename = "propose")]
     Propose {
         /// What to keep. Untrusted text: shown to the owner as the
         /// agent's words.
         content: String,
+        /// `owner` (about the owner), `guidance` (how they want the agent
+        /// to work), `work` (a fact about ongoing work) or `pointer` (where
+        /// something lives). Required from v35.
+        /// (Not `kind`: that names the request's family on the wire.)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_kind: Option<String>,
+        /// Why, as the owner gave it: required for `guidance` and `work`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
+        /// When it matters: required for `guidance` and `work`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        how_to_apply: Option<String>,
+        /// A calendar day, `YYYY-MM-DD`, after which the owner is asked to
+        /// confirm it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        check_by: Option<String>,
     },
 }
 

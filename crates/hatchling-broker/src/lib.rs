@@ -109,6 +109,7 @@ pub mod listener;
 pub mod machine;
 pub mod memory_keep;
 pub mod memory_ops;
+pub mod memory_proposal;
 pub mod memory_sealed;
 pub mod model_choice;
 pub mod model_switch;

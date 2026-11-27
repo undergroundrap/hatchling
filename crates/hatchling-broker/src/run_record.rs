@@ -454,6 +454,10 @@ mod tests {
     fn an_approval_asked_and_a_refusal_are_noted_by_the_tool() {
         let propose = SessionRequest::Memory(MemoryOp::Propose {
             content: String::from("x"),
+            memory_kind: None,
+            why: None,
+            how_to_apply: None,
+            check_by: None,
         });
         assert_eq!(
             noted_for(&propose, &SessionResponse::Memory(MemoryResult::Proposed)),

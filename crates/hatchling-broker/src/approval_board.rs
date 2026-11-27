@@ -92,8 +92,9 @@ pub struct ScheduleCreate {
 /// were shown it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryKeep {
-    /// The words kept, the agent's.
-    pub content: String,
+    /// The words kept, the agent's, with what kind of thing they are, and
+    /// why and when they apply, as the broker checked them (v35).
+    pub proposal: crate::memory_proposal::Checked,
     /// Where they were proposed, as the broker knows it: kept with them.
     pub from: crate::memory_keep::ProposedIn,
 }
@@ -434,19 +435,20 @@ impl Board {
     /// or full, or the record has no canonical form.
     pub fn propose_memory(
         &self,
-        content: &str,
+        proposal: &crate::memory_proposal::Checked,
         task: &str,
         from: crate::memory_keep::ProposedIn,
         now: i64,
     ) -> Result<Requested, Refusal> {
+        let content = proposal.content.as_str();
         let requested = self.approvals.propose(
             Proposal {
                 run: Approved::Memory(MemoryKeep {
-                    content: content.to_owned(),
+                    proposal: proposal.clone(),
                     from,
                 }),
-                action: json!({ "format": 1, "op": "memory.keep", "scope": "user", "content": content }),
-                fingerprint: json!({ "op": "memory.keep", "content": content }),
+                action: memory_action(proposal, true),
+                fingerprint: memory_action(proposal, false),
                 task: task.to_owned(),
                 decide_secs: UNWAITED_DECIDE_SECS,
                 scopes: vec![GrantScope::Once],
@@ -459,7 +461,7 @@ impl Board {
                 confirmation_id: requested.id.clone(),
                 revision: requested.revision,
                 chat_id: Some(String::from(CONFIRMATION_CHAT)),
-                summary: String::from("Remember this about you?"),
+                summary: String::from(memory_summary(proposal.kind)),
                 expires_at: Timestamp::from_second(requested.expires_at)
                     .ok()
                     .map(|at| at.to_string()),
@@ -477,7 +479,10 @@ impl Board {
                         value: content.to_owned(),
                         source: FieldSource::Agent,
                     },
-                ],
+                ]
+                .into_iter()
+                .chain(memory_fields(proposal))
+                .collect(),
                 grant_key: requested.grant_key.clone(),
                 scopes: requested.scopes.clone(),
                 approve: Some(String::from("Remember it")),
@@ -1039,11 +1044,88 @@ fn settled(
     }
 }
 
+/// What approving `proposal` would keep, as the approval freezes it: its
+/// words, its kind, and the reasons and day it gives, none of them null
+/// (the frozen form has no nulls). `action` adds the format and scope.
+fn memory_action(proposal: &crate::memory_proposal::Checked, action: bool) -> serde_json::Value {
+    let mut frozen = serde_json::Map::new();
+    if action {
+        frozen.insert(String::from("format"), json!(2));
+        frozen.insert(String::from("scope"), json!("user"));
+    }
+    frozen.insert(String::from("op"), json!("memory.keep"));
+    frozen.insert(String::from("content"), json!(proposal.content));
+    frozen.insert(String::from("kind"), json!(kind_name(proposal.kind)));
+    for (name, value) in [
+        ("why", &proposal.why),
+        ("how_to_apply", &proposal.how_to_apply),
+        ("check_by", &proposal.check_by),
+    ] {
+        if let Some(value) = value {
+            frozen.insert(String::from(name), json!(value));
+        }
+    }
+    serde_json::Value::Object(frozen)
+}
+
+/// A memory's kind as the wire and the record name it.
+const fn kind_name(kind: hatchling_memory::MemoryKind) -> &'static str {
+    match kind {
+        hatchling_memory::MemoryKind::Owner => "owner",
+        hatchling_memory::MemoryKind::Guidance => "guidance",
+        hatchling_memory::MemoryKind::Work => "work",
+        hatchling_memory::MemoryKind::Pointer => "pointer",
+    }
+}
+
+/// What the owner is asked, for a memory of `kind`.
+const fn memory_summary(kind: hatchling_memory::MemoryKind) -> &'static str {
+    match kind {
+        hatchling_memory::MemoryKind::Owner => "Remember this about you?",
+        hatchling_memory::MemoryKind::Guidance => "Remember how you want the agent to work?",
+        hatchling_memory::MemoryKind::Work => "Remember this about your work?",
+        hatchling_memory::MemoryKind::Pointer => "Remember where this is?",
+    }
+}
+
+/// What the owner is shown of `proposal` beside its words: what kind of
+/// thing it is, in the broker's words, and why, when it applies and the
+/// day to check it again, as the agent gave them.
+fn memory_fields(proposal: &crate::memory_proposal::Checked) -> Vec<ConfirmationField> {
+    let kind = match proposal.kind {
+        hatchling_memory::MemoryKind::Owner => "Something about you.",
+        hatchling_memory::MemoryKind::Guidance => {
+            "Your guidance on how the agent should work: it weighs this when it applies."
+        }
+        hatchling_memory::MemoryKind::Work => "A fact about ongoing work.",
+        hatchling_memory::MemoryKind::Pointer => "Where something lives.",
+    };
+    let mut fields = vec![ConfirmationField {
+        label: String::from("What it is"),
+        value: String::from(kind),
+        source: FieldSource::Broker,
+    }];
+    for (label, value) in [
+        ("Why", &proposal.why),
+        ("When it applies", &proposal.how_to_apply),
+        ("Ask you to check it again after", &proposal.check_by),
+    ] {
+        if let Some(value) = value {
+            fields.push(ConfirmationField {
+                label: String::from(label),
+                value: value.clone(),
+                source: FieldSource::Agent,
+            });
+        }
+    }
+    fields
+}
+
 /// Keeps `content`, which the owner approved in request `id`, at `now`:
 /// what they're told, either way.
 fn kept(config: &Config, id: &str, keep: &MemoryKeep, now: i64) -> Result<String, String> {
-    let content = &keep.content;
-    crate::memory_keep::keep(config, content, Some(id), &keep.from, now)
+    let content = &keep.proposal.content;
+    crate::memory_keep::keep(config, &keep.proposal, Some(id), &keep.from, now)
         .map(|keeping| match keeping {
             crate::memory_keep::Keeping::Kept => {
                 format!("Remembered: “{content}” The agent is given it from now on.")
@@ -1386,7 +1468,7 @@ mod tests {
             .unwrap();
         let memory = board
             .propose_memory(
-                "likes teal",
+                &crate::memory_proposal::Checked::owner("likes teal"),
                 "t2",
                 crate::memory_keep::ProposedIn::default(),
                 100,
@@ -1394,7 +1476,7 @@ mod tests {
             .unwrap();
         let late = board
             .propose_memory(
-                "has a corgi",
+                &crate::memory_proposal::Checked::owner("has a corgi"),
                 "t3",
                 crate::memory_keep::ProposedIn::default(),
                 100,

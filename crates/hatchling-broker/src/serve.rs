@@ -1058,7 +1058,13 @@ fn serve_session(
                 SessionRequest::Channel(op) => SessionResponse::Channel(
                     crate::channel::handle_channel_op(&mut channels, &op, creds.uid().as_u32())?,
                 ),
-                SessionRequest::Memory(MemoryOp::Propose { content }) => {
+                SessionRequest::Memory(MemoryOp::Propose {
+                    content,
+                    memory_kind,
+                    why,
+                    how_to_apply,
+                    check_by,
+                }) => {
                     // Where it was asked, as the broker knows it (WO-048).
                     let from = crate::memory_keep::ProposedIn {
                         run: run_cell.map(|cell| cell.as_str().to_owned()),
@@ -1069,10 +1075,17 @@ fn serve_session(
                             .filter(|_| chat_run)
                             .map(|scope| scope.channel.clone()),
                     };
+                    let asked = crate::memory_proposal::Asked {
+                        content: &content,
+                        kind: memory_kind.as_deref(),
+                        why: why.as_deref(),
+                        how_to_apply: how_to_apply.as_deref(),
+                        check_by: check_by.as_deref(),
+                    };
                     SessionResponse::Memory(crate::memory_keep::propose(
                         config,
                         web.task(),
-                        &content,
+                        &asked,
                         from,
                     ))
                 }
@@ -3649,6 +3662,10 @@ mod memory_proposal_tests {
             });
             let request = SessionRequest::Memory(MemoryOp::Propose {
                 content: content.clone(),
+                memory_kind: Some(String::from("owner")),
+                why: None,
+                how_to_apply: None,
+                check_by: None,
             });
             write_frame(&agent, &serde_json::to_vec(&request).unwrap()).unwrap();
             let response: SessionResponse =
