@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v34 (current). This doc is the human-readable reference
+**Status:** v37 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on

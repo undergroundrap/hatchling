@@ -71,7 +71,11 @@ fn provenance(item: &MemoryItem) -> String {
     match &item.record {
         Some(record) => format!(
             "{}{}kept {}, approved by the owner, last confirmed {}",
-            if record.absence { "KNOWN NOT TO BE SO; " } else { "" },
+            if record.absence {
+                "KNOWN NOT TO BE SO; "
+            } else {
+                ""
+            },
             record
                 .kind
                 .map_or_else(String::new, |kind| format!("{}; ", kind_words(kind))),
@@ -216,17 +220,27 @@ mod tests {
         });
         let block = render_recalled_block(&[absent]);
         assert!(
-            block.contains("item 1 (17 bytes; KNOWN NOT TO BE SO; about the owner; kept 2026-11-26"),
+            block
+                .contains("item 1 (17 bytes; KNOWN NOT TO BE SO; about the owner; kept 2026-11-26"),
             "{block}"
         );
         let nothing = render_recalled_block(&[]);
         assert!(!nothing.contains("item 1"));
-        assert_eq!(nothing.matches("KNOWN NOT TO BE SO").count(), 1, "only the intro says what it means");
+        assert_eq!(
+            nothing.matches("KNOWN NOT TO BE SO").count(),
+            1,
+            "only the intro says what it means"
+        );
         assert_eq!(block.matches("KNOWN NOT TO BE SO").count(), 2);
         // A kept item that isn't an absence isn't marked as one.
         let mut present = item("They have a bike.");
         present.record = Some(crate::KeptRecord::agent_words(None, None, None, 0));
-        assert_eq!(render_recalled_block(&[present]).matches("KNOWN NOT TO BE SO").count(), 1);
+        assert_eq!(
+            render_recalled_block(&[present])
+                .matches("KNOWN NOT TO BE SO")
+                .count(),
+            1
+        );
     }
 
     #[test]

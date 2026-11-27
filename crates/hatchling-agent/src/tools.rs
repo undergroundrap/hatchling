@@ -592,7 +592,10 @@ impl Tool for MemoryProposeTool<'_> {
             why: text("why"),
             how_to_apply: text("how_to_apply"),
             check_by: text("check_by"),
-            absence: arguments.get("absence").and_then(Value::as_bool).unwrap_or(false),
+            absence: arguments
+                .get("absence")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             supersedes: text("supersedes"),
         };
         Ok(match crate::memory::propose(self.stream, &asked) {
