@@ -44,6 +44,89 @@ The queue named the first part of this as a candidate: *Memory: bounded retrieva
 
 **Not in scope:** the agent writing memory without approval; a model summarizing memory; a people model; importing memory from another agent (it builds on this provenance); sealing (WO-047).
 
+## Recall and search design (slices 6 and 7)
+
+Written on 2026-11-27 for the maintainer's approval before any code, as the scope requires. **The maintainer approved it as written on 2026-11-27**, with the budgets below.
+
+**Where recall stands.** A run is given the user and project items tagged `recall`, newest first, cut at 10 items and 8 KiB:
+- the store reads and decrypts every item in the scope to find them;
+- an item outside the newest ten is never seen, however relevant;
+- the agent can't ask for more.
+
+**What it has to do:**
+- every kept memory is reachable;
+- recall never reads more than it can give;
+- relevance to what the owner asked decides what a run sees in full;
+- nothing goes anywhere memory doesn't go today: no embeddings service, no model call to rank;
+- small local models can use it;
+- each part is testable.
+
+### Two tiers: an index always, the full words where they matter
+
+1. **The index.** One line per recalled item, given to every run within 3 KiB (about 60 items):
+   - its id;
+   - `KNOWN NOT TO BE SO` for an absence;
+   - its kind and kept date;
+   - its title, the first words of the memory (at most 60 characters), made inert as recalled data is now.
+
+   Guidance comes first, since a rule matters wherever it applies, then items by relevance, then the newest. When there are more items than fit, the index says how many it leaves out and that `memory_search` finds them.
+2. **The full items.** Within the remaining 5 KiB, the most relevant items are given whole: words, why, how to apply, check-again day, provenance header. This is today's block, chosen by relevance instead of age.
+3. **Two read tools, both owner-scoped and labelled as data:**
+   - `memory_read { id }` gives one recalled item whole;
+   - `memory_search { query }` gives the index lines of the items that best match `query`, at most 20.
+
+   A run may read or search 16 times in all, each answer at most 2 KiB. Only items recall would give can be read: an id nothing is recalled with is said so, as a correction's is now.
+
+### The store never reads more than it gives (slice 6)
+
+- **A recall index per space.** It's sealed beside each space's existing index of ids, written by the broker on every write, keep, retag and remove, value first and index after, as now. Each entry holds:
+  - id, kind, absence, kept and updated times;
+  - the title;
+  - the item's terms: its words, why and how-to-apply, lowercased, split on non-letters, without a short stop list, deduplicated, at most 64.
+
+  It's split into segments of 64 entries, so a segment always fits one sealed entry, as WO-047 split large items.
+- **One recall op carries the budget.** It's a new `MemoryOp::Recall { query, index_bytes, full_bytes }` (session protocol v38). The broker:
+  1. reads the recall index segments;
+  2. scores each entry;
+  3. builds the index within `index_bytes`;
+  4. reads only the items it gives whole within `full_bytes`.
+
+  The agent asks once, at the run's start, and the read tools use the same op with a narrower ask. The old `RecallByTag` stays for compatibility, with no change.
+- **Rebuilt when missing.** A space with no recall index (0.10's, or one a crash left behind) has it built once from its items. That's the only time every item is read, and the next recall reads the index.
+
+### Relevance, without a model (slice 7)
+
+- **The query** is what the run is for: the owner's message for a chat turn, or the task for a scheduled run, as the broker received them. The run doesn't supply it, so a page the run read can't steer what it's given. A read tool's `query` is the run's own, and it only ranks what the owner's memory already holds.
+- **The score:**
+  - BM25 over the entries' terms, so rare shared words count most;
+  - plus a boost for guidance and work facts whose `how_to_apply` terms match;
+  - and a small boost for recency.
+
+  It's deterministic, needs no network, and can be tested against fixed fixtures. Ties go to the newest, then the id.
+- **Later, optionally:** embeddings from the owner's own local model endpoint, ranked the same way. That's a separate decision, because it sends memory to the model server. It's not in this work order.
+
+### Tests that hold it to this
+
+- **Budget at the store:** with 500 kept items, recall's backing reads are counted. The segments and the items given whole are read, and nothing else.
+- **Relevance:** an item outside the newest ten that matches the owner's ask is given whole, and one that doesn't isn't.
+- **The index:** every item's line is given while they fit. Past the budget, the count of the rest is given and `memory_search` finds a left-out item by its words.
+- **Reads:**
+  - `memory_read` gives a recalled item whole;
+  - it refuses an id nothing is recalled with, a superseded item and another scope's;
+  - the 16-read bound holds.
+- **The index is kept current:** a write, a keep, a retag and a remove each change it, and a crash between value and index leaves recall right, either skipping an entry whose item is gone or rebuilding.
+- **Compatibility:** a space without a recall index is rebuilt once, and 0.10's items are indexed as not recorded.
+- **Quality:** WO-045 measures recall on real models, because the tests above prove the mechanism, not how often a model uses it well.
+
+### What it decides, for approval
+
+- Two tiers: an index always given, and the full words chosen by relevance.
+- `memory_read` and `memory_search`, bounded per run.
+- A sealed recall index per space, kept by the broker, so recall reads only what it gives.
+- A new recall op carrying the budget (session protocol v38).
+- Lexical relevance (BM25) on what the broker received, no embeddings.
+- The budgets: 3 KiB index, 5 KiB full, 16 reads of 2 KiB.
+
 ## Acceptance criteria
 
 - [ ] A kept item's provenance is written by the broker alone: a test has the agent's proposal claim another origin and finds the broker's record unchanged.
