@@ -270,11 +270,17 @@ pub trait Keeps {
         run: Option<&str>,
         record: Option<&RunRecord>,
     );
+
+    /// Keeps that the conversation `sent_in` read from outside (WO-057),
+    /// while it's still the chat's.
+    fn taint(&self, sent_in: u64);
 }
 
 /// Nowhere: the conversation lives in the broker's memory alone.
 impl Keeps for () {
     fn keep(&self, _: u64, _: &Conversation, _: Option<&str>, _: Option<&RunRecord>) {}
+
+    fn taint(&self, _: u64) {}
 }
 
 impl<K: Keeps> Keeps for Option<K> {
@@ -287,6 +293,12 @@ impl<K: Keeps> Keeps for Option<K> {
     ) {
         if let Some(keeps) = self {
             keeps.keep(sent_in, kept, run, record);
+        }
+    }
+
+    fn taint(&self, sent_in: u64) {
+        if let Some(keeps) = self {
+            keeps.taint(sent_in);
         }
     }
 }
@@ -305,6 +317,9 @@ pub struct Chat<R, K = ()> {
     grants: Vec<ScheduleGrant>,
     /// The conversation kept is in.
     conversation: u64,
+    /// Whether that conversation read from outside (WO-057): a run in it
+    /// did, or a file was sent into it. Until a new conversation starts.
+    tainted: bool,
     /// The conversation kept: no more than a run is given.
     kept: Conversation,
     /// Where each exchange is kept beyond memory.
@@ -385,6 +400,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             running: None,
             grants,
             conversation,
+            tainted: false,
             told: Told::of(&kept),
             kept,
             keeps,
@@ -428,6 +444,29 @@ impl<R: Run, K: Keeps> Chat<R, K> {
     /// answered, since this was last asked.
     pub const fn take_offer(&mut self) -> Option<Offer> {
         self.offer.take()
+    }
+
+    /// The chat, going on with a conversation that read from outside
+    /// before, when `tainted` (WO-057).
+    #[must_use]
+    pub const fn tainted(mut self, tainted: bool) -> Self {
+        self.tainted = tainted;
+        self
+    }
+
+    /// Whether the conversation open now read from outside (WO-057).
+    #[must_use]
+    pub const fn is_tainted(&self) -> bool {
+        self.tainted
+    }
+
+    /// Marks the conversation `sent_in` tainted, when it's the one open
+    /// now: here, and where it's kept.
+    fn taint(&mut self, sent_in: u64) {
+        if sent_in == self.conversation {
+            self.tainted = true;
+            self.keeps.taint(sent_in);
+        }
     }
 
     /// The chat, naming `model` when it tells the person a run failed.
@@ -596,6 +635,7 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             self.conversation = conversation;
             self.kept = Conversation::default();
             self.told = Told::default();
+            self.tainted = false;
             self.settled();
         }
         if let Some((run, _, _, _)) = &mut self.running {
@@ -612,6 +652,11 @@ impl<R: Run, K: Keeps> Chat<R, K> {
             // when it stopped before it was done.
             let record = cell.as_deref().and_then(crate::run_record::take);
             let current = sent_in == self.conversation;
+            // What it read from outside taints its conversation, however
+            // it ended (WO-057). A run with no cell to tell by did.
+            if cell.as_deref().is_none_or(crate::conversation_taint::ended) {
+                self.taint(sent_in);
+            }
             // What the run was given of the owner's further messages is
             // part of what they said in this exchange. The run is given no
             // more, however it ended.
@@ -742,6 +787,16 @@ impl<R: Run, K: Keeps> Chat<R, K> {
         );
         match launcher.launch(request) {
             Ok(run) => {
+                // Files sent in taint the conversation they're given in
+                // (WO-057): the run reads them in its own computer.
+                let files = !given.is_empty();
+                if files {
+                    self.taint(sent_in);
+                }
+                if let Some(cell) = run.cell_id() {
+                    let tainted = files || (sent_in == self.conversation && self.tainted);
+                    crate::conversation_taint::began(&cell, tainted);
+                }
                 if let (Some(hub), Some(cell)) = (&self.waiting, run.cell_id()) {
                     crate::follow_ups::began(&cell, hub, sent_in);
                 }
@@ -841,8 +896,10 @@ pub fn chat_forever<'scope, 'env>(
         Some(Resumed::Kept(kept)) => kept.clone(),
         Some(Resumed::Unreadable) | None => Conversation::default(),
     };
+    let tainted = conversation_store::resumes_tainted(store.as_ref());
     let keeps = store.map(|store| SealedConversation::new(store, hub));
     let mut chat = Chat::resuming(grants, hub.conversation(), kept, keeps)
+        .tainted(tainted)
         .with_model(config.scheduler.model_name.clone())
         .with_other(config.scheduler.other_model.clone())
         .with_window(config.scheduler.model_context_window)
@@ -1222,6 +1279,7 @@ mod tests {
     struct Recorded(
         RefCell<Vec<(u64, Conversation)>>,
         RefCell<Vec<Option<String>>>,
+        RefCell<Vec<u64>>,
     );
 
     impl Keeps for &Recorded {
@@ -1234,6 +1292,10 @@ mod tests {
         ) {
             self.0.borrow_mut().push((sent_in, kept.clone()));
             self.1.borrow_mut().push(run.map(str::to_owned));
+        }
+
+        fn taint(&self, sent_in: u64) {
+            self.2.borrow_mut().push(sent_in);
         }
     }
 
@@ -2354,6 +2416,152 @@ mod tests {
         fn launch(&self, _: RunRequest) -> Result<AnswersIn, String> {
             self.0.borrow_mut().take().ok_or_else(String::new)
         }
+    }
+
+    /// WO-057: a run that read from outside taints its conversation, kept
+    /// where the conversation is. The next run in it starts tainted, though
+    /// it uses no tool, and a new conversation starts clean.
+    #[test]
+    fn a_run_that_read_from_outside_taints_its_conversation_until_a_new_one() {
+        let recorded = Recorded::default();
+        // Kept as the broker keeps it, in a store it may not have.
+        let mut chat = Chat::resuming(
+            vec![send_local()],
+            4,
+            Conversation::default(),
+            Some(&recorded),
+        );
+        let answers = Answers::default();
+        let now = Timestamp::now();
+        let run = |cell: &'static str| OneAnswersIn(RefCell::new(Some(AnswersIn(cell))));
+        let first = run("run-wo057-first");
+        let said = |text: &'static str, sent_in: u64| move || Some((message(text), sent_in));
+        assert_eq!(
+            chat.step(said("look it up", 4), 4, &first, &answers, now),
+            Step::Started
+        );
+        assert!(crate::conversation_taint::clean("run-wo057-first"));
+        // Its session served a web page.
+        crate::conversation_taint::read("run-wo057-first");
+        assert!(!chat.is_tainted(), "not until it ends");
+        assert_eq!(chat.step(|| None, 4, &first, &answers, now), Step::Answered);
+        assert!(chat.is_tainted());
+        assert_eq!(*recorded.2.borrow(), [4]);
+        let second = run("run-wo057-second");
+        assert_eq!(
+            chat.step(said("remember that", 4), 4, &second, &answers, now),
+            Step::Started
+        );
+        assert!(!crate::conversation_taint::clean("run-wo057-second"));
+        assert_eq!(
+            chat.step(|| None, 4, &second, &answers, now),
+            Step::Answered
+        );
+        assert!(chat.is_tainted());
+        // The owner starts a new conversation.
+        let third = run("run-wo057-third");
+        assert_eq!(
+            chat.step(said("hello", 5), 5, &third, &answers, now),
+            Step::Started
+        );
+        assert!(!chat.is_tainted());
+        assert!(crate::conversation_taint::clean("run-wo057-third"));
+        assert_eq!(chat.step(|| None, 5, &third, &answers, now), Step::Answered);
+        assert!(!chat.is_tainted(), "a clean run leaves it clean");
+        assert_eq!(*recorded.2.borrow(), [4, 4], "nothing kept for the new one");
+    }
+
+    /// WO-057: a run that failed after reading taints its conversation too,
+    /// and one ended in a conversation the owner has left marks nothing.
+    #[test]
+    fn a_failed_run_taints_and_a_left_conversation_isnt_marked() {
+        let recorded = Recorded::default();
+        let mut chat = Chat::resuming(vec![send_local()], 2, Conversation::default(), &recorded);
+        let answers = Answers::default();
+        let now = Timestamp::now();
+        let failing = OneEndedIn(RefCell::new(Some(EndedIn(
+            hatchling_scheduler::Ending::Exited(1),
+            "run-wo057-failed",
+        ))));
+        assert_eq!(
+            chat.step(|| Some((message("read it"), 2)), 2, &failing, &answers, now),
+            Step::Started
+        );
+        crate::conversation_taint::read("run-wo057-failed");
+        chat.step(|| None, 2, &failing, &answers, now);
+        assert!(chat.is_tainted());
+        assert_eq!(*recorded.2.borrow(), [2]);
+        let left = OneEndedIn(RefCell::new(Some(EndedIn(
+            hatchling_scheduler::Ending::Exited(1),
+            "run-wo057-left",
+        ))));
+        assert_eq!(
+            chat.step(|| Some((message("again"), 2)), 2, &left, &answers, now),
+            Step::Started
+        );
+        crate::conversation_taint::read("run-wo057-left");
+        // The owner starts a new conversation while it runs.
+        chat.step(|| None, 3, &left, &answers, now);
+        assert!(!chat.is_tainted());
+        assert_eq!(*recorded.2.borrow(), [2], "the left one isn't marked again");
+    }
+
+    /// WO-057: files sent in taint the conversation they're given in, and
+    /// the run given them starts tainted.
+    #[test]
+    fn files_sent_in_taint_the_conversation_they_are_given_in() {
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        hub.note(String::from("0001-a"), String::from("[a file: notes.txt]"));
+        let recorded = Recorded::default();
+        let mut chat = Chat::resuming(vec![send_local()], 7, Conversation::default(), &recorded);
+        let answers = Answers::default();
+        let now = Timestamp::now();
+        let given = OneAnswersIn(RefCell::new(Some(AnswersIn("run-wo057-files"))));
+        assert_eq!(
+            chat.step_noted(
+                || Some((message("read this"), 7)),
+                &hub,
+                7,
+                &given,
+                &answers,
+                now
+            ),
+            Step::Started
+        );
+        assert!(chat.is_tainted(), "at hand-over");
+        assert_eq!(*recorded.2.borrow(), [7]);
+        assert!(!crate::conversation_taint::clean("run-wo057-files"));
+        // With no file, a clean conversation's run starts clean.
+        let mut clean = Chat::resuming(vec![send_local()], 8, Conversation::default(), ());
+        let plain = OneAnswersIn(RefCell::new(Some(AnswersIn("run-wo057-plain"))));
+        assert_eq!(
+            clean.step_noted(|| Some((message("hi"), 8)), &hub, 8, &plain, &answers, now),
+            Step::Started
+        );
+        assert!(!clean.is_tainted());
+        assert!(crate::conversation_taint::clean("run-wo057-plain"));
+    }
+
+    /// WO-057: a conversation that read from outside before a restart is
+    /// still tainted after it, and its runs start so.
+    #[test]
+    fn a_conversation_tainted_before_a_restart_stays_tainted() {
+        let mut chat =
+            Chat::resuming(vec![send_local()], 0, Conversation::default(), ()).tainted(true);
+        assert!(chat.is_tainted());
+        let answers = Answers::default();
+        let resumed = OneAnswersIn(RefCell::new(Some(AnswersIn("run-wo057-resumed"))));
+        assert_eq!(
+            chat.step(
+                || Some((message("hi"), 0)),
+                0,
+                &resumed,
+                &answers,
+                Timestamp::now()
+            ),
+            Step::Started
+        );
+        assert!(!crate::conversation_taint::clean("run-wo057-resumed"));
     }
 
     /// What the owner sends while a run works is that run's, once the chat

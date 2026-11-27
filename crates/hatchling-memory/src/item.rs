@@ -250,15 +250,35 @@ pub struct MemoryItem {
 pub const LEGACY_APPROVED_TAG: &str = "approved";
 
 impl MemoryItem {
-    /// Whether the owner approved keeping it: its record says so, or, from
-    /// before records were kept, the broker's tag does.
+    /// Whether the broker kept it: it has a record, written only when the
+    /// owner approved it or the broker kept it automatically, or, from
+    /// before records were kept, the broker's tag. Never what a run wrote.
     #[must_use]
-    pub fn approved_by_owner(&self) -> bool {
+    pub fn kept(&self) -> bool {
         self.record.is_some()
             || self
                 .tags
                 .iter()
                 .any(|tag| tag.as_str() == LEGACY_APPROVED_TAG)
+    }
+
+    /// Whether the owner approved keeping it: its record says so, or, from
+    /// before records were kept, the broker's tag does.
+    #[must_use]
+    pub fn approved_by_owner(&self) -> bool {
+        self.record.as_ref().map_or_else(
+            || self.kept(),
+            |record| record.kept_by == crate::KeptBy::Owner,
+        )
+    }
+
+    /// Whether the broker kept it automatically (WO-057): from what the
+    /// owner said, with no card.
+    #[must_use]
+    pub fn kept_automatically(&self) -> bool {
+        self.record
+            .as_ref()
+            .is_some_and(|record| record.kept_by == crate::KeptBy::Automatic)
     }
 
     /// The item as a run is given it: its record without the ids of where

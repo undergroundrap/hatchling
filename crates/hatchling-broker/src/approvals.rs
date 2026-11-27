@@ -280,6 +280,15 @@ impl<A: Clone> Approvals<A> {
         self.propose_items(proposal, &[], now)
     }
 
+    /// Whether the owner denied the effect `fingerprint`, on a request of
+    /// its own or as an item of one (WO-057): what's done without a request
+    /// checks first, so a denial or a skip still holds. One that can't be
+    /// digested is refused.
+    #[must_use]
+    pub fn refuses(&self, fingerprint: &Value) -> bool {
+        action::digest(fingerprint).map_or(true, |digest| self.ledger().refuses(&digest, &[]))
+    }
+
     /// [`Approvals::propose`] for a request made of items (WO-055), each
     /// with its fingerprint in `items`: refused if any was denied, and a
     /// denial refuses each.

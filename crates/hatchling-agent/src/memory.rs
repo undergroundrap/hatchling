@@ -82,6 +82,7 @@ pub fn store(
         | MemoryResult::ContextAppended
         | MemoryResult::ContextEntries { .. }
         | MemoryResult::Proposed
+        | MemoryResult::Kept { .. }
         | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
@@ -115,6 +116,7 @@ pub fn recall(stream: &UnixStream, scope: MemoryScope, id: &str) -> Result<Optio
         | MemoryResult::ContextAppended
         | MemoryResult::ContextEntries { .. }
         | MemoryResult::Proposed
+        | MemoryResult::Kept { .. }
         | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
@@ -172,6 +174,7 @@ pub fn recall_by_tag(
             | MemoryResult::ContextAppended
             | MemoryResult::ContextEntries { .. }
             | MemoryResult::Proposed
+            | MemoryResult::Kept { .. }
             | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
         }
     }
@@ -203,6 +206,7 @@ pub fn remove(stream: &UnixStream, scope: MemoryScope, id: &str) -> Result<bool,
         | MemoryResult::ContextAppended
         | MemoryResult::ContextEntries { .. }
         | MemoryResult::Proposed
+        | MemoryResult::Kept { .. }
         | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
@@ -230,6 +234,7 @@ pub fn context_append(stream: &UnixStream, text: &str) -> Result<(), Error> {
         | MemoryResult::Removed { .. }
         | MemoryResult::ContextEntries { .. }
         | MemoryResult::Proposed
+        | MemoryResult::Kept { .. }
         | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
@@ -239,6 +244,8 @@ pub fn context_append(stream: &UnixStream, text: &str) -> Result<(), Error> {
 pub enum Proposal {
     /// Put to the owner: kept only if they approve.
     Asked,
+    /// Kept at once, as the memory with this id (v40, WO-057).
+    Kept(String),
     /// Not put to them, and why.
     Unasked(String),
 }
@@ -301,6 +308,7 @@ pub fn recall_budgeted(
         | MemoryResult::ContextAppended
         | MemoryResult::ContextEntries { .. }
         | MemoryResult::Proposed
+        | MemoryResult::Kept { .. }
         | MemoryResult::Unasked { .. }) => Err(unexpected_reply(&op, &other)),
     }
 }
@@ -324,8 +332,8 @@ pub struct Proposing<'a> {
     pub supersedes: Option<&'a str>,
 }
 
-/// Asks the owner to keep `content` about them (v18). Nothing is kept
-/// unless they approve, in the app.
+/// Asks the owner to keep `content` about them (v18): kept when they
+/// approve, in the app, or at once when the broker's rule holds (v40).
 ///
 /// # Errors
 ///
@@ -346,6 +354,7 @@ pub fn propose(stream: &UnixStream, asked: &Proposing<'_>) -> Result<Proposal, E
     };
     match request(stream, &op)? {
         MemoryResult::Proposed => Ok(Proposal::Asked),
+        MemoryResult::Kept { id } => Ok(Proposal::Kept(id)),
         MemoryResult::Unasked { reason } => Ok(Proposal::Unasked(reason)),
         MemoryResult::Denied => Err(denied(&op)),
         MemoryResult::MemoryError => Err(Error::MemoryFailed),
@@ -403,6 +412,7 @@ pub fn context_read(stream: &UnixStream) -> Result<Vec<String>, Error> {
             | MemoryResult::Removed { .. }
             | MemoryResult::ContextAppended
             | MemoryResult::Proposed
+            | MemoryResult::Kept { .. }
             | MemoryResult::Unasked { .. }) => return Err(unexpected_reply(&op, &other)),
         }
     }

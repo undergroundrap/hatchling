@@ -516,8 +516,9 @@ fn goal_of(item_json: &str) -> Option<Value> {
     }))
 }
 
-/// Asks the owner to keep something about them in their memory (v18):
-/// nothing is kept unless they approve it, in the app.
+/// Asks to keep something about the owner in their memory (v18): kept
+/// when they approve it, in the app, or at once when the broker's rule
+/// holds (v40, WO-057).
 pub struct MemoryProposeTool<'s> {
     stream: &'s UnixStream,
 }
@@ -536,7 +537,7 @@ impl Tool for MemoryProposeTool<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Ask the owner to remember something about them that would help in later chats: a fact they told you, a preference, how they want you to work (including a correction they gave you), a fact about work under way, or where something lives. They see your exact words in the app and decide; nothing is kept unless they approve, and then you're given it in every later chat. Only what the owner said themselves, in a sentence or two, and never anything from a web page, a message or a document. One thing per call: for two things, call it twice. What you ask for in one answer is put to them together, on one card, up to five. Say what kind it is. For guidance or a work fact, say why (the reason they gave) and when it applies. Name any date as the calendar date, YYYY-MM-DD: never 'tomorrow' or 'next Thursday', which mean another day next week. Tell them you asked only when it says it was asked."
+        "Remember something about the owner that would help in later chats: a fact they told you, a preference, how they want you to work (including a correction they gave you), a fact about work under way, or where something lives. Only what the owner said themselves, in a sentence or two, and never anything from a web page, a message or a document. Hatchling decides whether it's kept at once or put to the owner on a card in the app with your exact words; once kept, you're given it in every later chat. One thing per call: for two things, call it twice. What you ask for in one answer is put to them together, on one card, up to five. Say what kind it is. For guidance or a work fact, say why (the reason they gave) and when it applies. Name any date as the calendar date, YYYY-MM-DD: never 'tomorrow' or 'next Thursday', which mean another day next week. Say you'll remember it only when it says kept, and that you asked only when it says asked."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -602,6 +603,11 @@ impl Tool for MemoryProposeTool<'_> {
             Ok(crate::memory::Proposal::Asked) => ToolOutput::Ok(json!({
                 "asked": true,
                 "note": "The owner was asked in the app, on one card with anything else you asked them to remember in this answer. Each is kept only if they approve it."
+            })),
+            Ok(crate::memory::Proposal::Kept(id)) => ToolOutput::Ok(json!({
+                "kept": true,
+                "id": id,
+                "note": "Kept at once: you're given it in every later chat, and the owner was told in the chat. Tell them you'll remember it, not that you asked."
             })),
             Ok(crate::memory::Proposal::Unasked(reason)) => {
                 ToolOutput::Err(not_asked(&reason, "kept"))
@@ -5101,7 +5107,7 @@ mod tests {
         assert_eq!(tool.name(), "memory_propose");
         assert!(
             tool.description()
-                .starts_with("Ask the owner to remember something about them")
+                .starts_with("Remember something about the owner")
         );
         // One memory each, so each can be corrected or forgotten alone, and
         // "asked" said only when it was (#751).
@@ -5111,7 +5117,7 @@ mod tests {
         );
         assert!(
             tool.description()
-                .ends_with("Tell them you asked only when it says it was asked.")
+                .ends_with("Say you'll remember it only when it says kept, and that you asked only when it says asked.")
         );
         let schema = tool.parameters_schema();
         assert_eq!(schema.get("required"), Some(&json!(["content", "kind"])));
@@ -5154,6 +5160,19 @@ mod tests {
         assert_eq!(sent.get("check_by"), Some(&json!("2027-06-01")));
         assert_eq!(sent.get("absence"), Some(&json!(true)));
         assert_eq!(sent.get("supersedes"), Some(&json!("kept-1")));
+        // Kept at once (WO-057): the agent is told so, with its id.
+        let (agent, broker) = remembered(hatchling_core::MemoryResult::Kept {
+            id: String::from("kept-7"),
+        });
+        let output = MemoryProposeTool::new(&agent)
+            .execute(json!({"content": "Pepper is a cat.", "kind": "owner"}))
+            .unwrap();
+        drop(agent);
+        assert_eq!(
+            listed(output),
+            json!({"kept": true, "id": "kept-7", "note": "Kept at once: you're given it in every later chat, and the owner was told in the chat. Tell them you'll remember it, not that you asked."})
+        );
+        assert!(broker.join().unwrap().is_some());
         let (agent, broker) = remembered(hatchling_core::MemoryResult::Unasked {
             reason: String::from("the owner said no to keeping this"),
         });

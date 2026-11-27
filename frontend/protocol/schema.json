@@ -6259,6 +6259,24 @@
           "type": "object"
         },
         {
+          "description": "A proposal was kept at once (v40, WO-057): the owner chose automatic\nmemory, and the conversation it came from read nothing from outside,\nas the broker recorded it. The owner is told in the chat, and may\nforget it.",
+          "properties": {
+            "id": {
+              "description": "The kept memory's id: what a later correction names.",
+              "type": "string"
+            },
+            "result": {
+              "const": "kept",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "A proposal wasn't put to the owner (v18): they said no to the same\none already, or their requests are paused or full. `reason` says\nwhich, for the agent to tell them.",
           "properties": {
             "reason": {
@@ -17430,7 +17448,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 39,
+    "session_protocol": 40,
     "ui_schema_version": 16
   },
   "x-roots": {

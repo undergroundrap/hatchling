@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v39 (current). This doc is the human-readable reference
+**Status:** v40 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -57,7 +57,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36, `supersedes` v37, `RecallBudgeted` v38, its `query` and `id` v39; an item's `record` (WO-048) |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36, `supersedes` v37, `RecallBudgeted` v38, its `query` and `id` v39, `Kept` v40; an item's `record` (WO-048), its `kept_by` (WO-057) |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -807,3 +807,17 @@ same commit.
   - `memory_read { id }` gives one item whole, within 2 KiB, or says it isn't recalled or is longer than a read gives.
 
   Both answer in the recalled-memory block, as data, and a run makes 16 of them in all.
+
+## v40 — A memory kept at once
+
+- **`MemoryResult::Kept { id }`** answers `MemoryOp::Propose` when the broker kept the memory without a card (WO-057). `id` is the kept memory's, for a later correction to name.
+- **The broker alone decides, never a model.** It keeps at once when all of these hold:
+  - the owner chose automatic memory (the default; absent, it's automatic);
+  - the run is a chat's, so the owner was there and the memory comes from what they said;
+  - the conversation is clean: no run in it, from its start, used anything that reads from outside (a web search or page, the browser, messages, a network request, the agent's computer, a skill, a subagent, a shared space or an artifact), and no file was sent into it. A recall or goals read counts too where runs may write memory or goals;
+  - fewer than 20 memories were kept automatically in the last day.
+
+  Otherwise it's `Proposed`, a card, as before.
+- **The record** says `kept_by: "automatic"`, with the run, the chat and the time. A run's recalled block says it was kept automatically from what the owner said, not approved by them.
+- **The owner is told in the chat:** "Remembered: …", as the broker's notice.
+- **The agent** tells the owner it'll remember, not that it asked.

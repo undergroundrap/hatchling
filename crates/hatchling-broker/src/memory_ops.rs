@@ -511,6 +511,7 @@ mod paging_tests {
                 | MemoryResult::Denied
                 | MemoryResult::MemoryError
                 | MemoryResult::Proposed
+                | MemoryResult::Kept { .. }
                 | MemoryResult::Recalled { .. }
                 | MemoryResult::Unasked { .. }) => {
                     unreachable!("page {pages}: not a page but {other:?}")
@@ -742,6 +743,7 @@ mod paging_tests {
                 | MemoryResult::Denied
                 | MemoryResult::MemoryError
                 | MemoryResult::Proposed
+                | MemoryResult::Kept { .. }
                 | MemoryResult::Recalled { .. }
                 | MemoryResult::Unasked { .. }) => unreachable!("{other:?}"),
             }

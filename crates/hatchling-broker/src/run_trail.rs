@@ -506,7 +506,8 @@ const fn memory_ending(result: &MemoryResult) -> Ending {
         MemoryResult::Proposed => Asked,
         MemoryResult::Denied | MemoryResult::Unasked { .. } => Refused,
         MemoryResult::MemoryError => Failed,
-        MemoryResult::Stored
+        MemoryResult::Kept { .. }
+        | MemoryResult::Stored
         | MemoryResult::Item { .. }
         | MemoryResult::Items { .. }
         | MemoryResult::NotFound

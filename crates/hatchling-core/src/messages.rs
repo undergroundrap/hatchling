@@ -367,6 +367,15 @@ pub enum MemoryResult {
     /// approve it.
     #[serde(rename = "proposed")]
     Proposed,
+    /// A proposal was kept at once (v40, WO-057): the owner chose automatic
+    /// memory, and the conversation it came from read nothing from outside,
+    /// as the broker recorded it. The owner is told in the chat, and may
+    /// forget it.
+    #[serde(rename = "kept")]
+    Kept {
+        /// The kept memory's id: what a later correction names.
+        id: String,
+    },
     /// A proposal wasn't put to the owner (v18): they said no to the same
     /// one already, or their requests are paused or full. `reason` says
     /// which, for the agent to tell them.
@@ -5742,7 +5751,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 39);
+        assert_eq!(crate::PROTOCOL_VERSION, 40);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5847,7 +5856,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 39);
+        assert_eq!(crate::PROTOCOL_VERSION, 40);
     }
 
     /// A hand-over and its results go on the wire as written, and a field
@@ -5926,7 +5935,7 @@ mod room_tests {
         assert!(
             serde_json::from_str::<LeftOut>(r#"{"links":0,"mounts":0,"others":0,"x":1}"#).is_err()
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 39);
+        assert_eq!(crate::PROTOCOL_VERSION, 40);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5985,6 +5994,20 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 39);
+        assert_eq!(crate::PROTOCOL_VERSION, 40);
+    }
+
+    /// v40 (WO-057): a proposal kept at once is answered `kept`, with the
+    /// id it was kept as, and nothing else is read as one.
+    #[test]
+    fn a_memory_kept_at_once_is_said_with_its_id() {
+        let kept = MemoryResult::Kept {
+            id: String::from("kept-0a1b"),
+        };
+        let json = serde_json::to_string(&kept).unwrap();
+        assert_eq!(json, r#"{"result":"kept","id":"kept-0a1b"}"#);
+        assert_eq!(serde_json::from_str::<MemoryResult>(&json).unwrap(), kept);
+        assert!(serde_json::from_str::<MemoryResult>(r#"{"result":"kept"}"#).is_err());
+        assert_eq!(crate::PROTOCOL_VERSION, 40);
     }
 }

@@ -1,11 +1,16 @@
 //! Where a kept item came from (WO-048): its record, written by the broker
-//! alone, when the owner approves keeping it.
+//! alone.
+//!
+//! The broker writes one when the owner approves keeping an item, or when
+//! it keeps one automatically (WO-057), from a conversation that read
+//! nothing from outside.
 //!
 //! Nothing the agent or a cell says sets or changes a record:
 //! - [`MemoryStore::write`](crate::MemoryStore::write), the cell's path,
 //!   writes none, and replacing a kept item through it drops its record;
 //! - [`MemoryStore::keep`](crate::MemoryStore::keep), the broker's path
-//!   after the owner's approval, is the only way one is written.
+//!   after the owner's approval or its own rule, is the only way one is
+//!   written.
 //!
 //! An item kept before records were (Hatchling 0.10 and earlier) has none,
 //! and says its provenance isn't recorded rather than guessing.
@@ -24,6 +29,27 @@ use crate::MemoryId;
 pub enum Words {
     /// The agent proposed them, and the owner approved them as shown.
     Agent,
+}
+
+/// Who decided an item is kept (WO-057).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeptBy {
+    /// The owner, approving its words: what every record before WO-057
+    /// says.
+    #[default]
+    Owner,
+    /// The broker, by its rule: the owner chose automatic memory, and the
+    /// conversation it came from read nothing from outside.
+    Automatic,
+}
+
+impl KeptBy {
+    /// Whether it's [`KeptBy::Owner`]: what a record leaves unsaid.
+    #[must_use]
+    pub const fn is_owner(&self) -> bool {
+        matches!(self, Self::Owner)
+    }
 }
 
 /// What kind of thing an item is.
@@ -45,6 +71,9 @@ pub enum MemoryKind {
 pub struct KeptRecord {
     /// Whose words they are.
     pub words: Words,
+    /// Who decided it's kept: the owner, unless it says (WO-057).
+    #[serde(default, skip_serializing_if = "KeptBy::is_owner")]
+    pub kept_by: KeptBy,
     /// The approval it was kept by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<String>,
@@ -91,6 +120,7 @@ impl KeptRecord {
     ) -> Self {
         Self {
             words: Words::Agent,
+            kept_by: KeptBy::Owner,
             approval,
             run,
             chat,
@@ -103,6 +133,15 @@ impl KeptRecord {
             absence: false,
             supersedes: None,
         }
+    }
+
+    /// A record of the agent's words kept automatically (WO-057), proposed
+    /// by `run` in `chat`, at `now_secs`: no approval, since none was asked.
+    #[must_use]
+    pub const fn automatic(run: Option<String>, chat: Option<String>, now_secs: u64) -> Self {
+        let mut record = Self::agent_words(None, run, chat, now_secs);
+        record.kept_by = KeptBy::Automatic;
+        record
     }
 
     /// The record as a run is given it: without the ids of the run, chat
@@ -189,6 +228,23 @@ mod tests {
         let json = serde_json::to_string(&full).unwrap();
         assert!(json.contains(r#""kind":"guidance""#) && json.contains(r#""absence":true"#));
         assert_eq!(serde_json::from_str::<KeptRecord>(&json).unwrap(), full);
+    }
+
+    #[test]
+    fn a_record_says_it_was_kept_automatically_and_older_ones_read_as_the_owners() {
+        let record = KeptRecord::automatic(Some(String::from("run-1")), None, 100);
+        let json = serde_json::to_string(&record).unwrap();
+        assert_eq!(
+            json,
+            r#"{"words":"agent","kept_by":"automatic","run":"run-1","kept_at_secs":100,"confirmed_at_secs":100}"#
+        );
+        assert_eq!(serde_json::from_str::<KeptRecord>(&json).unwrap(), record);
+        // A record from before WO-057 says nothing, and was the owner's.
+        let older: KeptRecord =
+            serde_json::from_str(r#"{"words":"agent","kept_at_secs":1,"confirmed_at_secs":1}"#)
+                .unwrap();
+        assert_eq!(older.kept_by, KeptBy::Owner);
+        assert_eq!(record.shareable().kept_by, KeptBy::Automatic);
     }
 
     #[test]

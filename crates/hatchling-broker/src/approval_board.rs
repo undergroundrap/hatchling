@@ -525,6 +525,14 @@ impl Board {
         }
     }
 
+    /// Whether the owner said no to keeping `proposal`'s words (WO-057), on
+    /// a card of its own or by skipping it on one: then it's never kept
+    /// without a card either.
+    #[must_use]
+    pub fn refuses_memory(&self, proposal: &crate::memory_proposal::Checked) -> bool {
+        self.approvals.refuses(&memory_action(proposal, false))
+    }
+
     /// Puts `card` to the owner as a revision of request `revising`, or as
     /// a new request, and shows it when it's new.
     fn put_card(
@@ -1379,20 +1387,7 @@ fn kept_one(
 ) -> Result<String, String> {
     let content = &proposal.content;
     crate::memory_keep::keep(config, proposal, Some(id), from, now)
-        .map(|keeping| match keeping {
-            crate::memory_keep::Keeping::Kept => {
-                format!("Remembered: “{content}” The agent is given it from now on.")
-            }
-            crate::memory_keep::Keeping::Already => {
-                format!("Already remembered: “{content}” It's kept once.")
-            }
-            crate::memory_keep::Keeping::Replaced { retired: true } => format!(
-                "Remembered: “{content}” It replaces what it corrects, which the agent isn't given any more."
-            ),
-            crate::memory_keep::Keeping::Replaced { retired: false } => format!(
-                "Remembered: “{content}” What it would replace had changed or been forgotten meanwhile, so nothing else changed."
-            ),
-        })
+        .map(|keeping| crate::memory_keep::said(content, &keeping))
         .map_err(|error| {
             tracing::error!(%id, %error, "an approved memory wasn't kept");
             String::from(

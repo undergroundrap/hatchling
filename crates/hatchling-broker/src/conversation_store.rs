@@ -30,6 +30,9 @@
 //! - **Read once, at the broker's start** ([`at_start`]): the chat resumes
 //!   it, and the app is shown it, under a notice. One that can't be read
 //!   is removed, and the owner is told a new conversation started.
+//! - **Whether it read from outside** (WO-057) is in the index too
+//!   ([`ConversationStore::taint_if`]): a conversation tainted before a
+//!   restart is still tainted after it, and a new one isn't.
 
 use std::path::Path;
 use std::sync::{Mutex, OnceLock, PoisonError};
@@ -114,6 +117,10 @@ struct Index {
     /// index from before runs were kept.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     runs: Vec<String>,
+    /// Whether a run in the conversation read from outside, or a file was
+    /// sent into it (WO-057): none in an index from before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tainted: bool,
 }
 
 impl Default for Index {
@@ -125,6 +132,7 @@ impl Default for Index {
             slots: SLOTS,
             earlier: Vec::new(),
             runs: Vec::new(),
+            tainted: false,
         }
     }
 }
@@ -383,6 +391,7 @@ impl<'k> ConversationStore<'k> {
                 slots: SLOTS,
                 earlier: index.earlier.clone(),
                 runs: index.runs.clone(),
+                tainted: index.tainted,
             },
         )?;
         for old in 0..index.slots {
@@ -471,6 +480,7 @@ impl<'k> ConversationStore<'k> {
                 slots: index.slots,
                 earlier,
                 runs,
+                tainted: index.tainted,
             },
         )?;
         // The exchanges the conversation no longer holds.
@@ -530,6 +540,43 @@ impl<'k> ConversationStore<'k> {
             .collect()
     }
 
+    /// Marks the conversation tainted (WO-057), if `current` says, with the
+    /// store locked, that it's still the chat's: whether it did. A store
+    /// with nothing kept yet is given an index that says so.
+    ///
+    /// # Errors
+    ///
+    /// Why it can't be marked: the store's failure.
+    pub fn taint_if(&self, current: impl FnOnce() -> bool) -> Result<bool, String> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        if !current() {
+            return Ok(false);
+        }
+        let vault = self.vault()?;
+        let index = Self::read_index(&vault)?.unwrap_or_default();
+        if !index.tainted {
+            Self::write_index(
+                &vault,
+                &Index {
+                    tainted: true,
+                    ..index
+                },
+            )?;
+        }
+        Ok(true)
+    }
+
+    /// Whether the conversation kept read from outside (WO-057).
+    ///
+    /// # Errors
+    ///
+    /// Why it can't be read.
+    pub fn tainted(&self) -> Result<bool, String> {
+        let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
+        let vault = self.vault()?;
+        Ok(Self::read_index(&vault)?.is_some_and(|index| index.tainted))
+    }
+
     /// Starts a new conversation: every slot is removed, whatever the
     /// index says, and then `start` runs, with the store locked.
     ///
@@ -584,6 +631,17 @@ pub fn at_start(store: &ConversationStore<'_>) -> &'static Resumed {
         let _ = RUNS_AT_START.set(runs);
         resumed
     })
+}
+
+/// Whether the chat goes on with a conversation that read from outside
+/// (WO-057).
+///
+/// It's what `store` keeps, read once [`at_start`] has. With no store, the
+/// conversation starts new; one whose mark can't be read is tainted, so
+/// nothing is kept from it without the owner.
+#[must_use]
+pub fn resumes_tainted(store: Option<&ConversationStore<'_>>) -> bool {
+    store.is_some_and(|store| store.tainted().unwrap_or(true))
 }
 
 /// Shows the app what was kept across a restart, on the local chat: what
@@ -665,6 +723,13 @@ impl Keeps for SealedConversation<'_> {
             tracing::warn!(%error, "the conversation can't be kept");
         }
     }
+
+    fn taint(&self, sent_in: u64) {
+        let current = || self.hub.conversation() == sent_in;
+        if let Err(error) = self.store.taint_if(current) {
+            tracing::warn!(%error, "the conversation's taint can't be kept");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -743,6 +808,54 @@ mod tests {
                 &Secret::new(bytes.to_vec()).unwrap(),
             )
             .unwrap();
+    }
+
+    /// WO-057: the chat's store marks the conversation a run was sent in
+    /// only while it's the hub's, and a chat resumes tainted when the store
+    /// says so or its mark can't be read.
+    #[test]
+    fn the_chat_marks_its_conversation_and_resumes_as_it_was() {
+        let (config, _scratch, key) = kept("sealed-taint");
+        let hub = LocalHub::new(hatchling_channel::OutputGate::disabled());
+        let store = ConversationStore::of(&config, &key).unwrap();
+        assert!(!resumes_tainted(None), "no store: a new conversation");
+        assert!(!resumes_tainted(Some(&store)));
+        let sealed = SealedConversation::new(ConversationStore::of(&config, &key).unwrap(), &hub);
+        let open = hub.conversation();
+        hub.new_conversation();
+        sealed.taint(open);
+        assert!(!store.tainted().unwrap(), "the one left isn't marked");
+        sealed.taint(hub.conversation());
+        assert!(store.tainted().unwrap());
+        assert!(resumes_tainted(Some(&store)));
+        // A mark that can't be read is tainted.
+        ConversationStore::write(&store.vault().unwrap(), INDEX, b"not an index".to_vec()).unwrap();
+        assert!(resumes_tainted(Some(&store)));
+    }
+
+    /// WO-057: whether the conversation read from outside is kept with
+    /// it: marked only while it's the chat's, carried by each keep, and
+    /// cleared by a new conversation.
+    #[test]
+    fn the_taint_is_kept_with_the_conversation_and_a_new_one_clears_it() {
+        let (config, _scratch, key) = kept("taint");
+        let store = ConversationStore::of(&config, &key).unwrap();
+        assert!(!store.tainted().unwrap());
+        assert!(!store.taint_if(|| false).unwrap());
+        assert!(
+            !store.tainted().unwrap(),
+            "not for a conversation the owner left"
+        );
+        assert!(store.taint_if(|| true).unwrap());
+        assert!(store.tainted().unwrap(), "with nothing kept yet");
+        assert!(store.taint_if(|| true).unwrap(), "again, unchanged");
+        let kept = keep_all(&store, &[exchange("a", "b"), exchange("c", "d")]);
+        assert!(store.tainted().unwrap(), "each keep carries it");
+        assert_eq!(store.resume().unwrap(), kept);
+        store.start_new(|| {}).unwrap();
+        assert!(!store.tainted().unwrap());
+        keep_all(&store, &[exchange("e", "f")]);
+        assert!(!store.tainted().unwrap(), "the new one is clean");
     }
 
     #[test]
@@ -925,6 +1038,7 @@ mod tests {
             slots: SLOTS,
             earlier: said(&["Call me Sam."]),
             runs: Vec::new(),
+            tainted: true,
         };
         ConversationStore::write_index(&vault, &index).unwrap();
         assert_eq!(ConversationStore::read_index(&vault).unwrap(), Some(index));
