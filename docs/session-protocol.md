@@ -1,6 +1,6 @@
 # Hatchling session protocol
 
-**Status:** v38 (current). This doc is the human-readable reference
+**Status:** v39 (current). This doc is the human-readable reference
 for the broker session wire protocol. The Rust types live in
 `crates/hatchling-core/src/messages.rs` (op families). The
 authoritative version history is the doc comment on
@@ -57,7 +57,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36, `supersedes` v37, `RecallBudgeted` v38; an item's `record` (WO-048) |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35, `absence` v36, `supersedes` v37, `RecallBudgeted` v38, its `query` and `id` v39; an item's `record` (WO-048) |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -789,3 +789,21 @@ same commit.
   Guidance comes first, then the most recently changed. The broker bounds `index_bytes` to 6 KiB and `full_bytes` to 12 KiB, and fits the reply to one frame.
 - **The broker reads only what it gives.** Each space's recall index is sealed beside its items and kept current on every write, keep, retag and remove. A space without one has it built from its items once.
 - **The agent** asks once at a run's start for a 3 KiB index and 5 KiB of items given whole. Its recalled block gives the index, one line per item, before the items given whole.
+
+## v39 — Recall by relevance, search and read
+
+- **A run's recall is ranked by what the run is for**, as the broker received it: the owner's message for a chat turn, or the task for a scheduled run (`FollowupScope::ask`, set by the broker when it starts the run). The run doesn't supply it, so nothing it reads can steer what it's given.
+- **`MemoryOp::RecallBudgeted`** gains `query` and `id` (WO-048):
+  - with `query`, it's a search: ranked by those words instead;
+  - with `id`, it's a read: the one item, when recall would give it.
+- **The ranking:**
+  - guidance first;
+  - then BM25 over each entry's terms, each term once, plus, for guidance and work facts, the weight of each asked word their *how to apply* names;
+  - then the most recently changed, then by id.
+
+  It's deterministic, and nothing goes anywhere memory doesn't already go.
+- **The agent's tools:**
+  - `memory_search { query }` gives the index lines that best match, within 2 KiB;
+  - `memory_read { id }` gives one item whole, within 2 KiB, or says it isn't recalled or is longer than a read gives.
+
+  Both answer in the recalled-memory block, as data, and a run makes 16 of them in all.
