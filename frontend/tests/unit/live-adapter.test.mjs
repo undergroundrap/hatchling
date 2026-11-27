@@ -972,6 +972,20 @@ test('what the standing grants covered is asked for on connecting and shown in A
     assert.equal(covered?.name, 'Allowed by your standing grants');
     assert.equal(covered?.lanes[0].rows[0].title, 'https://a.example/x');
 });
+test('the list of covered requests isn\'t asked for again for its own call, kept as activity (#747)', async () => {
+    const { transport } = connected();
+    const listings = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'list_covered');
+    answer(transport, listings()[0].request_id, { result: 'covered', covered: [] });
+    await flush();
+    // The broker keeps the list's own call as activity, and sends it back.
+    transport.deliver(sampleEvent(2, 2, { kind: 'activity', state: 'success', event: { event: 'api_call', event_id: 'api-2', run_id: 'api', ts: sampleTime(2), caller: 'ui, uid 1000', capabilities: [], request: 'list_covered', outcome: 'served' } }));
+    await flush();
+    assert.equal(listings().length, 1, 'asked once, not in a loop');
+    // A run's step can be one a grant covered: that asks again.
+    transport.deliver(sampleEvent(3, 3, { kind: 'activity', state: 'pending', event: { event: 'subagent_progress', child_id: 'x', note: 'n', steps_spent: 1, event_id: 'e', run_id: 'run-sample-3', ts: sampleTime(3) } }));
+    await flush();
+    assert.equal(listings().length, 2);
+});
 test('allowed sites: the broker\'s list, loaded on connecting; revoked by the owner, and listed again', async () => {
     const { transport, adapter } = connected();
     const listing = transport.sent.find(frame => frame.type === 'action' && frame.action.action === 'manage_grants');

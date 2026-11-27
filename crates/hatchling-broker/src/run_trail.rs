@@ -380,11 +380,18 @@ pub fn tool_of(request: &SessionRequest) -> Option<ToolUse> {
         SessionRequest::Channel(ChannelOp::Send { .. }) => ToolUse::MessageSend,
         SessionRequest::Channel(_) => ToolUse::MessageRead,
         SessionRequest::Memory(MemoryOp::Propose { .. }) => ToolUse::MemoryPropose,
+        // Each op by name, so a new one is placed here on purpose: a read
+        // told as a write misstates what the agent did (#749).
         SessionRequest::Memory(
-            MemoryOp::Recall { .. } | MemoryOp::RecallByTag { .. } | MemoryOp::ContextRead { .. },
+            MemoryOp::Recall { .. }
+            | MemoryOp::RecallByTag { .. }
+            | MemoryOp::RecallBudgeted { .. }
+            | MemoryOp::ContextRead { .. },
         )
         | SessionRequest::Query(QueryOp::Memory { .. }) => ToolUse::MemoryRecall,
-        SessionRequest::Memory(_) => ToolUse::MemoryWrite,
+        SessionRequest::Memory(
+            MemoryOp::Write { .. } | MemoryOp::Remove { .. } | MemoryOp::ContextAppend { .. },
+        ) => ToolUse::MemoryWrite,
         SessionRequest::Skill(_) => ToolUse::Skill,
         SessionRequest::Goals(_) => ToolUse::GoalsWrite,
         SessionRequest::Query(_) => ToolUse::GoalsRead,
@@ -787,6 +794,70 @@ mod tests {
             (egress("GET", "/v1/models"), Some(ToolUse::Network)),
             (egress("POST", "/v1/chat/completions"), None),
             (SessionRequest::Egress(EgressOp::Read {}), None),
+        ];
+        for (request, tool) in cases {
+            assert_eq!(tool_of(&request), tool, "{request:?}");
+        }
+    }
+
+    /// Every memory op is told as a read or a write by what it does: a
+    /// run's recall, and the agent's search and read, are reads (#749).
+    #[test]
+    fn each_memory_op_is_told_as_a_read_or_a_write() {
+        let cases = [
+            (
+                SessionRequest::Memory(MemoryOp::RecallBudgeted {
+                    tag: s("approved"),
+                    index_bytes: 3072,
+                    full_bytes: 5120,
+                    query: None,
+                    id: None,
+                }),
+                Some(ToolUse::MemoryRecall),
+            ),
+            (
+                SessionRequest::Memory(MemoryOp::RecallBudgeted {
+                    tag: s("approved"),
+                    index_bytes: 2048,
+                    full_bytes: 0,
+                    query: Some(s("pepper")),
+                    id: None,
+                }),
+                Some(ToolUse::MemoryRecall),
+            ),
+            (
+                SessionRequest::Memory(MemoryOp::RecallByTag {
+                    scope: s("user"),
+                    tag: s("approved"),
+                    after: None,
+                }),
+                Some(ToolUse::MemoryRecall),
+            ),
+            (
+                SessionRequest::Memory(MemoryOp::ContextRead { after: None }),
+                Some(ToolUse::MemoryRecall),
+            ),
+            (
+                SessionRequest::Memory(MemoryOp::Write {
+                    scope: s("user"),
+                    id: s("m1"),
+                    content: s("likes tea"),
+                    tags: Vec::new(),
+                    retention: s("keep"),
+                }),
+                Some(ToolUse::MemoryWrite),
+            ),
+            (
+                SessionRequest::Memory(MemoryOp::Remove {
+                    scope: s("user"),
+                    id: s("m1"),
+                }),
+                Some(ToolUse::MemoryWrite),
+            ),
+            (
+                SessionRequest::Memory(MemoryOp::ContextAppend { text: s("noted") }),
+                Some(ToolUse::MemoryWrite),
+            ),
         ];
         for (request, tool) in cases {
             assert_eq!(tool_of(&request), tool, "{request:?}");
