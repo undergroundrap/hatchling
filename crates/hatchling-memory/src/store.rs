@@ -1144,6 +1144,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Rerecording changes the record alone: the words, tags and times
+    /// stay, and an item that isn't there is said not to be.
+    #[test]
+    fn rerecord_changes_the_record_alone() {
+        let root = test_root("rerecord");
+        let store = MemoryStore::open(&root).unwrap();
+        let p = principal(7, "sess-rerecord");
+        let id = MemoryId::from_str("kept-1").unwrap();
+        let record = KeptRecord::agent_words(Some(String::from("confirm-1")), None, None, 300);
+        let kept = store
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &id,
+                "Their cat is Biscuit.",
+                &[Tag::from_str("recall").unwrap()],
+                record.clone(),
+            )
+            .unwrap();
+        let confirmed = KeptRecord {
+            confirmed_at_secs: 900,
+            ..record
+        };
+        assert!(
+            store
+                .rerecord(&p, &MemoryScope::User, &id, confirmed.clone())
+                .unwrap()
+        );
+        let read = store
+            .recall(&p, &MemoryScope::User, &id, 1000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read,
+            MemoryItem {
+                record: Some(confirmed.clone()),
+                ..kept
+            }
+        );
+        let none = MemoryId::from_str("kept-none").unwrap();
+        assert!(
+            !store
+                .rerecord(&p, &MemoryScope::User, &none, confirmed)
+                .unwrap()
+        );
+        assert_eq!(
+            store.recall(&p, &MemoryScope::User, &none, 1000).unwrap(),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Retagging changes the tags alone: the words, times and record stay,
     /// and an item that isn't there is said not to be.
     #[test]

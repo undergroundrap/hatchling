@@ -32,11 +32,35 @@ Part of [WO-048](../workorders/workorder-048-memory-provenance-and-recall.md), i
   - a day is due only after it.
 
   The provenance test's words now also claim a date the record doesn't keep.
+- **`hatchling-memory`, `store::tests`:** rerecording changes the record alone, and an item that isn't there is said not to be.
+- **`hatchling-core`, `ui::tests`:** the v14 wire is pinned: a full record, one from before records, an older broker's listing read as not recorded, the confirm op and its answer.
 - **The frontend, `live-memory.test.mjs`:**
   - a kept memory's details read in the page's words, for every kind and origin;
   - they're kept beside the list;
-  - confirming reads the list again, and every answer is said.
+  - confirming reads the list again, and every answer is said;
+  - an older broker's listing, saying nothing of where a memory came from, reads as not recorded.
+
+  The live adapters keep full line, branch and function coverage. A change's answer is typed so it can't be a listing, which leaves no unreachable case.
 
 ## The gate
 
-RESULTS
+**The gate script** (`dr-k8.sh`) on tree `8b34d9be`:
+- fmt passes, clippy passes on 1.98.1 and 1.85.0, and the workspace builds;
+- the workspace's tests: 4674 passed, 0 failed;
+- `hatchling-dev audit`: all checks passed.
+
+The protocol schema and the frontend's wire are regenerated at UI v14, and the frontend's check passes: 629, 273 and 16 tests.
+
+**Six hand-breaks of `memory_keep.rs`, each caught by its tests:**
+- confirming doesn't clear the day it's asked about;
+- confirming doesn't say when;
+- one from before records is confirmed as if it had one;
+- it's due on the day itself;
+- where it came from loses its chat;
+- what it replaced isn't said.
+
+**Mutation** on the slice's diff:
+- broker (`memory_keep.rs`): 11 mutants, 7 caught, 4 unviable;
+- memory (`store.rs`'s `rerecord`): the first run missed both of its mutants, since it was tested only through the broker. With its own test, 2 mutants, 2 caught.
+
+None were missed in the end, and none timed out.
