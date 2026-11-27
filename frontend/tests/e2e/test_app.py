@@ -103,7 +103,8 @@ class FrontendTests(TouchupCases, ReleaseCases, NavigationCases, PolishCases, Co
 
     def test_02_all_settings_sections_and_labeled_meters(self):
         self.open_settings()
-        expect(self.page.locator('meter[aria-label]')).to_have_count(2)
+        # Settings' own meters: the composer's context panel has one of its own (WO-056).
+        expect(self.page.locator('dialog.settings-dialog meter[aria-label]')).to_have_count(2)
         self.screenshot('settings-desktop')
         sections = self.page.get_by_role('navigation', name='Settings sections')
         for title in ['Connectors', 'Wallet', 'Secure store', 'Permissions', 'Skills', 'Messaging channels', 'Devices', 'Data controls', 'Help & support', 'Legal info', 'General']:

@@ -55,7 +55,7 @@ Without a window there's no arc, bar or Free row. Without the broker's split, th
 
 CI runs it. Its steps were also driven by hand in a browser on the built demo, and each matched.
 
-CI's e2e suite then caught a name collision. The popover was first classed `.context-panel`, the name of the app's existing right-hand panel, so 8 tests that check that panel is closed found the popover instead, and the side panel's width rules reached it. It's now `.window-use-panel` (its id and parts too). The side panel's tests and styles are untouched. That run found that Escape didn't close the panel, so the ring was given the menus' own keyboard handling, and then it did. It was also checked at phone width (375 px), with no overflow and the panel inside the screen.
+CI's e2e suite then caught a name collision. The popover was first classed `.context-panel`, the name of the app's existing right-hand panel, so 8 tests that check that panel is closed found the popover instead, and the side panel's width rules reached it. It's now `.window-use-panel` (its id and parts too). The side panel's tests and styles are untouched. One more test, `test_02_all_settings_sections_and_labeled_meters`, counted every labelled meter on the page, meaning Settings' two. The preview's composer now has one too, in its panel, so the count is now scoped to the Settings dialog. That run found that Escape didn't close the panel, so the ring was given the menus' own keyboard handling, and then it did. It was also checked at phone width (375 px), with no overflow and the panel inside the screen.
 
 ## Hand-breaks
 
