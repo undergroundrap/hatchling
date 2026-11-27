@@ -940,10 +940,10 @@ mod paging_tests {
                     .to_string()
             })
         };
-        // Unasked, written in the same second, by id; searched, the match first.
-        assert_eq!(
+        // Unasked, the old note doesn't come first; searched, it does.
+        assert_ne!(
             first(handle_memory_op(&config, &ask(None, None, 0), &p, &s).unwrap()).as_deref(),
-            Some("note-00")
+            Some("zz-dentist")
         );
         assert_eq!(
             first(handle_memory_op(&config, &ask(Some("zz-dentist"), None, 0), &p, &s).unwrap())

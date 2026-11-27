@@ -171,9 +171,6 @@ const B: f64 = 0.75;
 /// is asked.
 #[must_use]
 pub fn scores(entries: &[RecallEntry], query: &[String]) -> Vec<f64> {
-    if query.is_empty() || entries.is_empty() {
-        return vec![0.0; entries.len()];
-    }
     let total = counted(entries.len());
     let average = entries
         .iter()

@@ -4918,8 +4918,13 @@ mod tests {
 
     #[test]
     fn memory_search_and_read_look_through_the_owners_memory_within_a_bound() {
+        assert_eq!((MEMORY_LOOKS, SEARCH_BYTES, READ_BYTES), (16, 2048, 2048));
         let looks = Arc::new(MemoryLooks::default());
-        let (a, _b) = socket_pair();
+        let (a, b) = socket_pair();
+        // A look that isn't refused asks over a socket nobody answers: it
+        // fails at once, never waits.
+        bounded(&a);
+        drop(b);
         let search = MemorySearchTool::new(&a, Arc::clone(&looks));
         let read = MemoryReadTool::new(&a, Arc::clone(&looks));
         assert_eq!(
@@ -4963,6 +4968,16 @@ mod tests {
         drop(agent);
         broker.join().unwrap();
         assert_eq!(none.get("found"), Some(&json!(0)));
+        assert_eq!(none.get("note"), Some(&json!("Nothing kept matches.")));
+        assert!(
+            search
+                .description()
+                .starts_with("Search what you remember about the owner by words")
+        );
+        assert!(
+            read.description()
+                .starts_with("Read one item of what you remember about the owner whole")
+        );
         let (agent, broker) = remembered(hatchling_core::MemoryResult::Denied);
         assert!(matches!(
             MemorySearchTool::new(&agent, Arc::clone(&looks))
@@ -4977,7 +4992,9 @@ mod tests {
     #[test]
     fn memory_read_gives_one_item_whole_and_both_share_their_bound() {
         let looks = Arc::new(MemoryLooks::default());
-        let (a, _b) = socket_pair();
+        let (a, b) = socket_pair();
+        bounded(&a);
+        drop(b);
         let search = MemorySearchTool::new(&a, Arc::clone(&looks));
         let read = MemoryReadTool::new(&a, Arc::clone(&looks));
         assert_eq!(read.name(), "memory_read");
