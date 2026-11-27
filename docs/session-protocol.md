@@ -57,7 +57,7 @@ holding a secret. An owner invoking a harness themselves is only refused.
 | Vault | `VaultOp` | `VaultResult` | v2; denied here wherever a vault keeper runs, as on every install: a cell's vault ops go on its own vault channel |
 | Egress | `EgressOp` | `EgressResult` | v3 |
 | Channel | `ChannelOp` | `ChannelResult` | v4 |
-| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18; an item's `record` (WO-048) |
+| Memory | `MemoryOp` | `MemoryResult` | v1; `Propose` v18, its kind, reasons and day v35; an item's `record` (WO-048) |
 | Skill | `SkillOp` | `SkillResult` | v5 |
 | Goals | `GoalsOp` | `GoalsResult` | v6 |
 | Query | `QueryOp` | `QueryResult` | v6 |
@@ -746,3 +746,15 @@ same commit.
 - At a run's start the agent lists them, and its prompt says which are
   enabled, fenced as data, within 12 KiB; `skill_list` and `skill_read`
   are its tools for them.
+
+## v35 — What a memory proposal is, and why
+
+- **`MemoryOp::Propose`** gains `memory_kind`, `why`, `how_to_apply` and `check_by` (WO-048). The field isn't named `kind`, which names the request's family on the wire. The broker checks them before the owner is asked:
+  - `memory_kind` is required: `owner` (about the owner), `guidance` (how they want the agent to work: a correction, or an approach they confirmed), `work` (a fact about ongoing work) or `pointer` (where something lives);
+  - `guidance` and `work` need `why` (the reason the owner gave) and `how_to_apply` (when it matters), each at most 500 bytes;
+  - `check_by`, if given, is a real calendar day after today, `YYYY-MM-DD`, after which the owner is asked to confirm the memory;
+  - the words, the reason and when it applies may not use a relative date ("tomorrow", "next Thursday", "in two weeks", "two days ago"): a kept memory is read in later weeks.
+
+  Each failed check is `Unasked { reason }`, saying what to change.
+- **The owner's card** says what kind of thing it is in the broker's words, and shows the reason, when it applies and the day as the agent's. What they approve is kept in the item's `record` (`kind`, `why`, `how_to_apply`, `check_by`).
+- **Recall** gives each kept item with its kind in its header, and its reason, when it applies and its day after its words, all inside the item's length frame.
