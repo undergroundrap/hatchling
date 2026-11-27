@@ -281,3 +281,70 @@ fn choosing_ranks_by_the_ask_after_guidance() {
     let unasked = choose(&entries, &[], 10_000, 10_000);
     assert_eq!(ids(&unasked.index), ["kept-r", "kept-new", "kept-old"]);
 }
+
+/// The scores themselves, worked out by hand from BM25 (k1 1.2, b 0.75):
+/// a change to how they're reckoned changes them.
+#[test]
+fn scores_are_bm25_to_the_digit() {
+    let entry = |id: &str, content: &str| RecallEntry::of(&item(id, content, 1));
+    let entries = [
+        entry("kept-a", "The dentist is Dr Lee on Mill Road."),
+        entry("kept-b", "They walk on Mill Road."),
+        entry("kept-c", "They like tea."),
+    ];
+    let near = |got: &[f64], want: &[f64]| {
+        got.len() == want.len()
+            && got
+                .iter()
+                .zip(want)
+                .all(|(got, want)| (got - want).abs() < 1e-9)
+    };
+    let one = scores(&entries, &query_terms("dentist"));
+    assert!(near(&one, &[0.863_129_742_650_319_2, 0.0, 0.0]), "{one:?}");
+    let three = scores(&entries, &query_terms("mill road dentist"));
+    assert!(
+        near(
+            &three,
+            &[1.690_336_130_122_813_7, 0.940_007_258_491_471, 0.0]
+        ),
+        "{three:?}"
+    );
+    let mut rule = item("kept-r", "Keep answers short.", 1);
+    rule.record = Some(KeptRecord {
+        kind: Some(MemoryKind::Guidance),
+        how_to_apply: Some(String::from("Any answer about the dentist.")),
+        ..KeptRecord::agent_words(None, None, None, 1)
+    });
+    let [dentist, ..] = &entries;
+    let boosted = scores(
+        &[RecallEntry::of(&rule), dentist.clone()],
+        &query_terms("dentist"),
+    );
+    assert!(
+        near(
+            &boosted,
+            &[0.350_854_088_284_164_87, 0.198_568_032_151_831_8]
+        ),
+        "{boosted:?}"
+    );
+    assert!(scores(&[], &query_terms("dentist")).is_empty());
+    assert!(near(&scores(&entries, &[]), &[0.0, 0.0, 0.0]));
+}
+
+#[test]
+fn when_it_applies_keeps_at_most_sixteen_words() {
+    let words = (0..20).fold(String::new(), |mut words, n| {
+        use std::fmt::Write as _;
+        let _ = write!(words, "word{n:02} ");
+        words
+    });
+    let mut rule = item("kept-r", "x", 1);
+    rule.record = Some(KeptRecord {
+        kind: Some(MemoryKind::Guidance),
+        how_to_apply: Some(words),
+        ..KeptRecord::agent_words(None, None, None, 1)
+    });
+    let entry = RecallEntry::of(&rule);
+    assert_eq!(entry.apply_terms.len(), MAX_TERMS / 2);
+    assert_eq!(entry.apply_terms.last().map(String::as_str), Some("word15"));
+}
