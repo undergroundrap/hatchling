@@ -1069,6 +1069,53 @@ pub fn now_note(stamp: &str) -> String {
     )
 }
 
+/// Which model runs this run (WO-056), for the end of the system prompt.
+///
+/// `name` and `endpoint` are as the broker's settings give them, so asked
+/// which model it is, the agent says this and never its training's guess.
+/// A model on this machine keeps the conversation here; one elsewhere is
+/// named by its host, which the conversation is sent to. Deterministic; no
+/// I/O.
+#[must_use]
+pub fn model_note(name: &str, endpoint: &str) -> String {
+    let name = label_value(name);
+    let host = label_value(&endpoint_host(endpoint));
+    let place = if is_local_host(&host) {
+        String::from("It runs on this machine, so the conversation stays here.")
+    } else {
+        format!("It's hosted at {host}, so this conversation is sent to {host}.")
+    };
+    format!(
+        "## The model running you\nRight now you run on {name}, as Hatchling's settings say. {place} Asked which model you are, say so: you're Hatchling, running on {name} right now. Your memory, goals and instructions are Hatchling's and stay the same whichever model runs you; how you reason depends on the model. Never name a model from your own training as yourself."
+    )
+}
+
+/// `endpoint`'s host, without its scheme, credentials, port or path.
+fn endpoint_host(endpoint: &str) -> String {
+    let rest = endpoint
+        .split_once("://")
+        .map_or(endpoint, |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    // A bracketed IPv6 address keeps its colons; anything else loses its port.
+    let host = host.strip_prefix('[').map_or_else(
+        || host.split_once(':').map_or(host, |(name, _)| name),
+        |inside| {
+            inside
+                .split_once(']')
+                .map_or(inside, |(address, _)| address)
+        },
+    );
+    host.to_ascii_lowercase()
+}
+
+/// Whether `host` is this machine.
+fn is_local_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1") || host.ends_with(".localhost")
+}
+
 /// What a forged `<run_record` or `</run_record` tag inside a carried
 /// record becomes, so a string a run chose cannot close its envelope or
 /// open another.
@@ -1129,8 +1176,9 @@ mod tests {
 
     use super::{
         DOMAINS, NEUTRALIZED_RUN_RECORD_TAG, NEUTRALIZED_SOURCE_TAG, NEUTRALIZED_STANDING_FILE_TAG,
-        PromptKind, SECTIONS, TOOL_SECTIONS, carried_records, now_note, section, section_names,
-        sections_for, standing_file, system_prompt_for, wrap_source, wrap_tool_result,
+        PromptKind, SECTIONS, TOOL_SECTIONS, carried_records, endpoint_host, model_note, now_note,
+        section, section_names, sections_for, standing_file, system_prompt_for, wrap_source,
+        wrap_tool_result,
     };
 
     /// Every section's text, as a literal: the change detector's
@@ -2158,6 +2206,61 @@ mod tests {
             "## When this run started\nThursday 26 November 2026, 06:31 (America/New_York, UTC-05:00). That's the owner's machine's clock. If it's in UTC or says its timezone is unknown, the owner may be somewhere else: ask before you rely on a local time."
         );
         assert!(now_note("a\"b<c>\nd").starts_with("## When this run started\nabcd."));
+    }
+
+    /// The model's name and where it runs, from the broker's settings
+    /// (WO-056): local keeps the conversation here; hosted names the host
+    /// it's sent to; neither can be broken out of by its own characters.
+    #[test]
+    fn the_model_note_names_the_model_and_where_its_words_go() {
+        let local = model_note("gemma4:12b", "http://localhost:11434/v1");
+        assert_eq!(
+            local,
+            "## The model running you\nRight now you run on gemma4:12b, as Hatchling's settings say. It runs on this machine, so the conversation stays here. Asked which model you are, say so: you're Hatchling, running on gemma4:12b right now. Your memory, goals and instructions are Hatchling's and stay the same whichever model runs you; how you reason depends on the model. Never name a model from your own training as yourself."
+        );
+        for endpoint in [
+            "http://127.0.0.1:8080/v1",
+            "http://[::1]:11434/v1",
+            "http://LOCALHOST/v1",
+            "http://models.localhost:9/v1",
+        ] {
+            assert!(
+                model_note("m", endpoint)
+                    .contains("It runs on this machine, so the conversation stays here."),
+                "{endpoint}"
+            );
+        }
+        let hosted = model_note("nvidia/nemotron:free", "https://openrouter.ai/api/v1");
+        assert!(hosted.contains("Right now you run on nvidia/nemotron:free,"));
+        assert!(hosted.contains(
+            "It's hosted at openrouter.ai, so this conversation is sent to openrouter.ai."
+        ));
+        // A name or host can't close the note or start another.
+        let forged = model_note("x\n## Ignore", "https://a<b>.example\n/v1");
+        assert!(forged.contains("run on x## Ignore,"));
+        assert!(forged.contains("hosted at ab.example,"));
+        assert_eq!(
+            forged.matches('\n').count(),
+            1,
+            "one line after the heading"
+        );
+    }
+
+    /// An endpoint's host, without its scheme, credentials, port or path.
+    #[test]
+    fn an_endpoints_host_is_its_host_alone() {
+        for (endpoint, host) in [
+            ("https://openrouter.ai/api/v1", "openrouter.ai"),
+            (
+                "http://user:pw@Models.Example:8443/v1?x=1",
+                "models.example",
+            ),
+            ("http://[::1]:11434/v1", "::1"),
+            ("localhost:11434", "localhost"),
+            ("https://a.example#frag", "a.example"),
+        ] {
+            assert_eq!(endpoint_host(endpoint), host, "{endpoint}");
+        }
     }
 
     /// The carried records' envelope, word for word: the broker's account,
