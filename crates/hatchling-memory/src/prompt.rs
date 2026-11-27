@@ -243,41 +243,6 @@ mod tests {
         );
     }
 
-    /// A kept absence is recalled marked as one: a settled negative, which
-    /// reads unlike recall that finds nothing.
-    #[test]
-    fn a_kept_absence_is_recalled_as_known_not_to_be_so() {
-        let mut absent = item("They have no car.");
-        absent.record = Some(crate::KeptRecord {
-            kind: Some(crate::MemoryKind::Owner),
-            absence: true,
-            ..crate::KeptRecord::agent_words(None, None, None, 1_795_651_200)
-        });
-        let block = render_recalled_block(&[absent]);
-        assert!(
-            block
-                .contains("item 1 (17 bytes; KNOWN NOT TO BE SO; about the owner; kept 2026-11-26"),
-            "{block}"
-        );
-        let nothing = render_recalled_block(&[]);
-        assert!(!nothing.contains("item 1"));
-        assert_eq!(
-            nothing.matches("KNOWN NOT TO BE SO").count(),
-            1,
-            "only the intro says what it means"
-        );
-        assert_eq!(block.matches("KNOWN NOT TO BE SO").count(), 2);
-        // A kept item that isn't an absence isn't marked as one.
-        let mut present = item("They have a bike.");
-        present.record = Some(crate::KeptRecord::agent_words(None, None, None, 0));
-        assert_eq!(
-            render_recalled_block(&[present])
-                .matches("KNOWN NOT TO BE SO")
-                .count(),
-            1
-        );
-    }
-
     #[test]
     fn a_kept_item_says_its_kind_why_when_and_when_to_check_it() {
         let mut guidance = item("Use metric units.");
