@@ -87,13 +87,9 @@ fn entry(id: &str) -> String {
     format!("review-{id}")
 }
 
-/// Whether `id` can name an item: what [`propose`] makes.
-fn is_item_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 64
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b'-' || byte.is_ascii_lowercase())
+/// Whether an item written out as `bytes` fits one sealed entry.
+const fn fits(bytes: usize) -> bool {
+    bytes <= hatchling_core::MAX_SECRET_BYTES
 }
 
 /// Why `proposal` can't be kept, if it can't.
@@ -178,9 +174,7 @@ pub fn propose(
     };
     // Within its bounds, its text may still be escaped past what one
     // sealed entry holds: refused, never failed on.
-    if serde_json::to_vec(&item)
-        .map_or(true, |bytes| bytes.len() > hatchling_core::MAX_SECRET_BYTES)
-    {
+    if !serde_json::to_vec(&item).is_ok_and(|bytes| fits(bytes.len())) {
         return Ok(Proposed::Refused("too long to keep, written out"));
     }
     write_json(&vault, &entry(&id), &item)?;
@@ -218,9 +212,6 @@ pub fn decide(
     approve: bool,
     now: Timestamp,
 ) -> Result<ReviewResult, Error> {
-    if !is_item_id(id) {
-        return Ok(ReviewResult::NotFound);
-    }
     let _serial = STORE.lock().unwrap_or_else(PoisonError::into_inner);
     let vault = vault(scheduler, key)?;
     let index: Vec<String> = read_json(&vault, INDEX)?.unwrap_or_default();

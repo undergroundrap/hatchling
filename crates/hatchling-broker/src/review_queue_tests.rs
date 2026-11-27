@@ -275,6 +275,8 @@ fn what_cant_be_kept_whole_is_refused_and_the_index_fits() {
         propose(&scheduler, &key, &escaped, at(T0)).unwrap(),
         Proposed::Refused("too long to keep, written out")
     );
+    assert!(fits(hatchling_core::MAX_SECRET_BYTES));
+    assert!(!fits(hatchling_core::MAX_SECRET_BYTES + 1));
     let ids = vec!["f".repeat(64); MAX_ITEMS];
     assert!(serde_json::to_vec(&ids).unwrap().len() <= hatchling_core::MAX_SECRET_BYTES);
 }
