@@ -481,11 +481,12 @@ impl MemoryStore {
             };
             // An entry whose item is gone, or changed to no longer be
             // recalled, is skipped.
-            if let Some(item) = self.read_item(space, &entry.id)?
-                && crate::recall_index::still_given(&item, now_secs)
-                && item.tags.iter().any(|kept| kept == tag)
-            {
-                items.push(item);
+            if let Some(item) = self.read_item(space, &entry.id)? {
+                if crate::recall_index::still_given(&item, now_secs)
+                    && item.tags.iter().any(|kept| kept == tag)
+                {
+                    items.push(item);
+                }
             }
         }
         let index = chosen
@@ -838,6 +839,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// An item past its TTL found by a tag recall is removed, from the
+    /// items and from the index.
+    #[test]
+    fn a_tag_recall_removes_what_is_past_its_ttl() {
+        let (store, _counts, root) = counted("ttl");
+        let p = principal(7, "sess-ttl");
+        let recall = Tag::from_str("recall").unwrap();
+        let id = MemoryId::from_str("brief").unwrap();
+        store
+            .write(
+                &p,
+                &MemoryScope::User,
+                &id,
+                "brief",
+                std::slice::from_ref(&recall),
+                RetentionPolicy::Ttl { ttl_secs: 10 },
+                0,
+            )
+            .unwrap();
+        assert!(
+            store
+                .recall_by_tag(&p, &MemoryScope::User, &recall, 100)
+                .unwrap()
+                .is_empty()
+        );
+        let space = MemoryStore::space(&p, &MemoryScope::User);
+        assert!(
+            store.backing.ids(&space).unwrap().is_empty(),
+            "removed from the items"
+        );
+        let index = store
+            .recall_budgeted(&p, &[MemoryScope::User], &recall, 5, 4096, 0)
+            .unwrap();
+        assert!(index.index.is_empty(), "and from the index");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The index follows every change: a keep, a retag, a remove. An entry
     /// whose item went without the index being told is skipped, and an
     /// index that's missing is built from the items once, then read.
@@ -847,6 +885,15 @@ mod tests {
         let p = principal(7, "sess-follows");
         let recall = Tag::from_str("recall").unwrap();
         let id = |raw: &str| MemoryId::from_str(raw).unwrap();
+        let listed = |store: &MemoryStore| -> Vec<String> {
+            store
+                .recall_budgeted(&p, &[MemoryScope::User], &recall, 10, 4096, 0)
+                .unwrap()
+                .index
+                .into_iter()
+                .map(|entry| entry.id.to_string())
+                .collect()
+        };
         let given = |store: &MemoryStore| -> Vec<String> {
             store
                 .recall_budgeted(&p, &[MemoryScope::User], &recall, 10, 4096, 4096)
@@ -881,6 +928,11 @@ mod tests {
         );
         assert!(store.remove(&p, &MemoryScope::User, &id("kept-c")).unwrap());
         assert_eq!(given(&store), ["kept-a"]);
+        assert_eq!(
+            listed(&store),
+            ["kept-a"],
+            "the index lists neither the retagged nor the removed"
+        );
         // Gone without the index being told: skipped.
         let space = MemoryStore::space(&p, &MemoryScope::User);
         assert!(store.backing.remove(&space, &id("kept-a")).unwrap());

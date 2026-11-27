@@ -31,6 +31,21 @@ fn a_title_is_the_first_line_cut_at_a_word() {
     assert_eq!(title_of(&one), format!("{}…", "x".repeat(60)));
     let exact = "y".repeat(60);
     assert_eq!(title_of(&exact), exact);
+    // Cut mid-word, at the last space before it.
+    let mid = format!("{}longwordlongword more", "word ".repeat(11));
+    assert_eq!(
+        title_of(&mid),
+        format!("{}…", "word ".repeat(11).trim_end())
+    );
+    // A last space at 20 characters or before cuts at 60 instead: a word
+    // cut there would leave too little.
+    let early = format!("{} {}", "x".repeat(20), "y".repeat(50));
+    assert_eq!(
+        title_of(&early),
+        format!("{} {}…", "x".repeat(20), "y".repeat(39))
+    );
+    let later = format!("{} {}", "x".repeat(30), "y".repeat(40));
+    assert_eq!(title_of(&later), format!("{}…", "x".repeat(30)));
     // Characters, not bytes: an accented title of 60 isn't cut.
     let accented = "é".repeat(60);
     assert_eq!(title_of(&accented), accented);

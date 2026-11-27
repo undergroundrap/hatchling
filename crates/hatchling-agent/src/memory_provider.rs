@@ -166,6 +166,11 @@ mod tests {
     }
 
     #[test]
+    fn a_budgeted_recall_asks_for_a_3_kib_index_and_5_kib_whole() {
+        assert_eq!((super::INDEX_BYTES, super::FULL_BYTES), (3072, 5120));
+    }
+
+    #[test]
     fn newest_first_with_id_breaking_ties() {
         let out = bound_recalled(vec![
             item("old", 1, 1),

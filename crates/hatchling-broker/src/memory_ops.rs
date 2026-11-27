@@ -211,18 +211,25 @@ fn recall_budgeted(
     let left_out = u32::try_from(recalled.left_out).unwrap_or(u32::MAX);
     // Escaping can grow an item past what its words measure: the reply is
     // fitted to one frame, the last items given whole dropped first.
-    loop {
+    let given = items_json.len();
+    for _ in 0..given {
         let reply = MemoryResult::Recalled {
             index_json: index_json.clone(),
             items_json: items_json.clone(),
             left_out,
         };
-        let fits = serde_json::to_vec(&hatchling_core::SessionResponse::Memory(reply.clone()))
-            .is_ok_and(|frame| frame.len() <= hatchling_core::MAX_FRAME_BYTES);
-        if fits || items_json.pop().is_none() {
+        if serde_json::to_vec(&hatchling_core::SessionResponse::Memory(reply.clone()))
+            .is_ok_and(|frame| frame.len() <= hatchling_core::MAX_FRAME_BYTES)
+        {
             return Ok(reply);
         }
+        items_json.pop();
     }
+    Ok(MemoryResult::Recalled {
+        index_json,
+        items_json,
+        left_out,
+    })
 }
 
 /// Maps a write's backend failure onto the session.
@@ -848,6 +855,11 @@ mod paging_tests {
             unreachable!("a recall's answer");
         };
         assert!(left_out > 0, "held to 6 KiB");
+        assert!(
+            index_json.len() > 40,
+            "as much as 6 KiB holds: {}",
+            index_json.len()
+        );
         assert_eq!(index_json.len() + usize::try_from(left_out).unwrap(), 150);
         // Eight items whose words are small but escape large: all of them
         // whole would be past one frame, so fewer are given.

@@ -469,3 +469,46 @@ fn every_key_is_a_name_of_its_own() {
     assert_eq!(distinct.len(), keys.len());
     assert_eq!(registry_key(), sealed_blobs::key_of(&[b"spaces"]));
 }
+
+/// Each space's recall index is sealed and read back as written, its
+/// own, and apart from the items: one space's isn't another's, and an
+/// item named like it isn't it.
+#[test]
+fn a_spaces_recall_index_is_kept_apart() {
+    let (_scratch, key, root) = sealed("recall-index");
+    // Opened as the broker opens it, its root made.
+    let _store = open(&root, &key).unwrap();
+    let backing = SealedMemory::new(&root, &key).unwrap();
+    let one = Space::new(vec![String::from("user"), String::from("7")]);
+    let other = Space::new(vec![
+        String::from("project"),
+        String::from("7"),
+        String::from("p"),
+    ]);
+    assert_eq!(backing.get_index(&one).unwrap(), None);
+    backing.put_index(&one, b"one's index").unwrap();
+    backing.put_index(&other, b"the other's").unwrap();
+    assert_eq!(
+        backing.get_index(&one).unwrap().as_deref(),
+        Some(&b"one's index"[..])
+    );
+    assert_eq!(
+        backing.get_index(&other).unwrap().as_deref(),
+        Some(&b"the other's"[..])
+    );
+    backing.put(&one, &id("recall-index"), b"an item").unwrap();
+    assert_eq!(
+        backing.get_index(&one).unwrap().as_deref(),
+        Some(&b"one's index"[..])
+    );
+    assert_eq!(
+        backing.get(&one, &id("recall-index")).unwrap().as_deref(),
+        Some(&b"an item"[..])
+    );
+    // The bytes on disk aren't the index's words.
+    assert!(
+        every_file(&root)
+            .iter()
+            .all(|(_, bytes)| !bytes.windows(11).any(|window| window == b"one's index"))
+    );
+}
