@@ -288,6 +288,7 @@ mod tests {
                     revision: 1,
                     digest: id(),
                     decision: Decision::Approve,
+                    keep: None,
                 }),
                 ApiRequest::Decide,
             ),

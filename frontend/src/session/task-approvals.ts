@@ -38,12 +38,14 @@ export interface ApprovalAttempt {
     readonly requestId: string;
     readonly revision: number;
     readonly decision: ApprovalDecision;
+    /** The items kept of a batch, by place on this revision (WO-055); none named keeps them all. */
+    readonly keep?: readonly number[];
 }
 export interface ApprovalResult {
     readonly state: 'accepted' | 'rejected' | 'unknown';
     readonly detail: string;
 }
-export type ApprovalScenario = 'network' | 'multiple' | 'expired' | 'failed' | 'unknown' | 'lapsed';
+export type ApprovalScenario = 'network' | 'multiple' | 'batch' | 'expired' | 'failed' | 'unknown' | 'lapsed';
 export interface TaskApprovalPort {
     getSnapshot(): readonly TaskApproval[];
     subscribe(listener: () => void): () => void;

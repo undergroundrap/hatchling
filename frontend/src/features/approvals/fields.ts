@@ -53,9 +53,23 @@ export function revealedValue(value: string): HTMLElement {
         : segment.text);
     return h('bdi', { dir: 'auto', class: 'task-approval-value' }, ...parts);
 }
-/** A batch's items (WO-055), numbered in order, each with its own fields in review order. */
-export function reviewItems(items: readonly (readonly ReviewField[])[]): HTMLElement {
-    return h('ol', { class: 'task-approval-items' }, ...items.map(fields => h('li', { class: 'task-approval-item' }, reviewFields(fields))));
+/** Which of a batch's items are kept, and how to change that: the card's Keep boxes (WO-055). */
+export interface ItemChoice {
+    readonly kept: ReadonlySet<number>;
+    readonly choose: (place: number, keep: boolean) => void;
+    readonly disabled: boolean;
+}
+/** A batch's items (WO-055), numbered in order, each with its own fields in review order, and a Keep box on each when they can be chosen. */
+export function reviewItems(items: readonly (readonly ReviewField[])[], choice?: ItemChoice): HTMLElement {
+    return h('ol', { class: 'task-approval-items' }, ...items.map((fields, place) => {
+        const item = h('li', { class: 'task-approval-item' }, reviewFields(fields));
+        if (choice !== undefined) {
+            const box = h('input', { type: 'checkbox', checked: choice.kept.has(place), disabled: choice.disabled, 'aria-label': `Keep memory ${place + 1}` });
+            box.addEventListener('change', () => choice.choose(place, box.checked));
+            item.append(h('label', { class: 'task-approval-keep' }, box, h('span', {}, 'Keep')));
+        }
+        return item;
+    }));
 }
 /** A request's fields, in review order, the agent's labeled as the agent's. */
 export function reviewFields(fields: readonly ReviewField[]): HTMLElement {

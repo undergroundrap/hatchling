@@ -931,9 +931,9 @@ pub(crate) mod tests {
             config,
             keys,
             &id,
-            1,
-            &digest,
+            (1, &digest),
             decision,
+            None,
             Timestamp::now().as_second(),
         )
         .unwrap();
@@ -2354,9 +2354,9 @@ pub(crate) mod tests {
                 &config,
                 keys,
                 &id,
-                1,
-                &digest,
+                (1, &digest),
                 decision,
+                None,
                 Timestamp::now().as_second(),
             )
             .unwrap()

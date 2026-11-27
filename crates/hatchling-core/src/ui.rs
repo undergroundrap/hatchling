@@ -1915,6 +1915,12 @@ pub enum UiAction {
         digest: String,
         /// The decision.
         decision: Decision,
+        /// The items kept, by their place on the revision shown (WO-055,
+        /// v15): an approval of some of a batch's memories, the rest
+        /// skipped. `None` keeps them all. Refused on a request without
+        /// items, with a denial, and when empty, out of range or repeated.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keep: Option<Vec<u32>>,
     },
     /// List or revoke the owner's standing grants (WO-036): the owner's
     /// alone.
@@ -2535,6 +2541,9 @@ pub enum DecisionRejection {
     /// The request doesn't offer that decision: approving for the session
     /// what can only be approved once.
     NotOffered,
+    /// The items it names to keep can't be kept (WO-055): the request has
+    /// no items, it's a denial, or they're none, out of range or repeated.
+    InvalidKeep,
 }
 
 /// Why an action was refused before anything ran.
@@ -2899,6 +2908,31 @@ mod tests {
                 .unwrap()
                 .items
                 .is_empty()
+        );
+    }
+
+    /// A decision that keeps some of a batch (WO-055, v15): `keep` names
+    /// the places kept; without it, it's left out, and a decision from
+    /// before v15 reads as keeping them all. Its rejection has its name.
+    #[test]
+    fn a_decision_keeping_some_items_has_its_wire_form() {
+        let some = UiAction::Decide {
+            confirmation_id: s("k1"),
+            revision: 3,
+            digest: s("ab12"),
+            decision: Decision::Approve,
+            keep: Some(vec![0, 2]),
+        };
+        let wire = json!({"action": "decide", "confirmation_id": "k1", "revision": 3, "digest": "ab12", "decision": "approve", "keep": [0, 2]});
+        assert_eq!(serde_json::to_value(&some).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<UiAction>(wire).unwrap(), some);
+        let all = json!({"action": "decide", "confirmation_id": "k1", "revision": 3, "digest": "ab12", "decision": "approve"});
+        let read = serde_json::from_value::<UiAction>(all.clone()).unwrap();
+        assert!(matches!(&read, UiAction::Decide { keep: None, .. }));
+        assert_eq!(serde_json::to_value(&read).unwrap(), all);
+        assert_eq!(
+            serde_json::to_value(DecisionRejection::InvalidKeep).unwrap(),
+            json!("invalid_keep")
         );
     }
 
@@ -3479,6 +3513,7 @@ mod tests {
                     revision: 2,
                     digest: String::from("ab12"),
                     decision: Decision::Approve,
+                    keep: None,
                 },
             },
             &json!({"type": "action", "request_id": "r1", "action": {"action": "decide", "confirmation_id": "k1", "revision": 2, "digest": "ab12", "decision": "approve"}}),
@@ -3489,6 +3524,7 @@ mod tests {
                 revision: 2,
                 digest: String::from("ab12"),
                 decision: Decision::ApproveSession,
+                keep: None,
             },
             &json!({"action": "decide", "confirmation_id": "k1", "revision": 2, "digest": "ab12", "decision": "approve_session"}),
         );

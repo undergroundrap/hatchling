@@ -29,6 +29,7 @@
 .task-approval-item:first-child { border-top: 0; padding-top: 0; }
 .task-approval-item .task-approval-fields { margin: 0; }
 .approval-report .task-approval-items { margin: 0 0 6px; }
+.task-approval-keep { display: inline-flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); min-height: 28px; cursor: pointer; font-size: var(--text-xs); }
 .task-approval-details { margin: 8px 0 10px 48px; color: var(--muted); font-size: calc(12px * var(--ui-scale)); }
 .task-approval-details > summary { display: flex; align-items: center; gap: 6px; width: fit-content; cursor: pointer; min-height: 28px; list-style: none; }
 .task-approval-details > summary::-webkit-details-marker { display: none; }

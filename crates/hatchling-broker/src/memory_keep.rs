@@ -700,6 +700,95 @@ Remembered: “The owner uses metric.” The agent is given it from now on."
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The owner keeps two of a card's three (WO-055 slice 3): the worker
+    /// keeps those alone, the record says which was skipped, and the
+    /// skipped one isn't asked again.
+    #[test]
+    fn keeping_some_of_a_card_keeps_those_alone() {
+        let (config, dir) = config("keep-some", &[MemoryAction::Propose]);
+        let history = dir.join("schedules.decisions");
+        board(&config).keep_decisions(history.clone());
+        let words = [
+            "Pepper is a cat.",
+            "Pepper is a dog.",
+            "The owner uses metric.",
+        ];
+        for said in words {
+            let asked = crate::memory_proposal::Asked::about_owner(said);
+            assert_eq!(
+                propose(&config, "task-1", &asked, ProposedIn::default()),
+                MemoryResult::Proposed
+            );
+        }
+        let board = board(&config);
+        let id = board
+            .approvals()
+            .find_run("task-1", crate::approvals::State::Pending, |run| {
+                matches!(run, crate::approval_board::Approved::Memory(keep) if keep.more.len() == 2)
+            })
+            .unwrap();
+        let request = board.approvals().get(&id).unwrap();
+        board
+            .decide_items(
+                &id,
+                request.revision,
+                &request.digest,
+                Decision::Approve,
+                Some(&[0, 2]),
+                1,
+            )
+            .unwrap();
+        let said = crate::approval_board::run_approved(
+            &board,
+            &id,
+            &config,
+            &hatchling_vault::MasterKey::generate().unwrap(),
+            &crate::Skills::default(),
+            None,
+            1_793_707_200,
+        );
+        assert_eq!(
+            said,
+            "Remembered: “Pepper is a cat.” The agent is given it from now on.
+Remembered: “The owner uses metric.” The agent is given it from now on."
+        );
+        let mut kept_words: Vec<String> =
+            kept(&config).into_iter().map(|(words, _)| words).collect();
+        kept_words.sort();
+        assert_eq!(kept_words, ["Pepper is a cat.", "The owner uses metric."]);
+        let decided = crate::decisions::list(&history);
+        let fields: Vec<(&str, &str)> = decided
+            .first()
+            .unwrap()
+            .fields
+            .iter()
+            .map(|field| (field.label.as_str(), field.value.as_str()))
+            .collect();
+        assert!(
+            fields.contains(&("Memory 1: What it would remember", "Pepper is a cat.")),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&(
+                "Memory 2, skipped: What it would remember",
+                "Pepper is a dog."
+            )),
+            "{fields:?}"
+        );
+        assert!(
+            fields.contains(&("Memory 3: What it would remember", "The owner uses metric.")),
+            "{fields:?}"
+        );
+        let skipped = crate::memory_proposal::Asked::about_owner("Pepper is a dog.");
+        assert_eq!(
+            propose(&config, "task-2", &skipped, ProposedIn::default()),
+            MemoryResult::Unasked {
+                reason: String::from("the owner said no to keeping this")
+            }
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The first card put to the owner on `bus`.
     fn first_card(bus: &crate::api_stream::Bus) -> hatchling_core::ui::ConfirmationRequest {
         bus.after(None)

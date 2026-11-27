@@ -19,6 +19,21 @@ function openHistory(ctx: AppContext): void {
     ctx.render();
     document.getElementById('context-tab-approvals')?.focus({ preventScroll: true });
 }
+/** Each batch card's Keep boxes, by request, for the revision they were chosen on: a new revision starts with every item kept. */
+const keeping = new Map<string, {
+    readonly revision: number;
+    readonly kept: Set<number>;
+}>();
+/** The items kept of `request`, a batch, as chosen on its current revision. */
+function keptOf(request: TaskApproval): Set<number> {
+    const count = request.items?.length ?? 0;
+    const chosen = keeping.get(request.id);
+    if (chosen !== undefined && chosen.revision === request.revision)
+        return chosen.kept;
+    const all = new Set(Array.from({ length: count }, (_, place) => place));
+    keeping.set(request.id, { revision: request.revision, kept: all });
+    return all;
+}
 function decisionActions(ctx: AppContext, request: TaskApproval): HTMLElement {
     const feedback = ctx.approvals.state(request.id);
     const offline = ctx.delivery.connection.kind !== 'ready';
@@ -29,10 +44,10 @@ function decisionActions(ctx: AppContext, request: TaskApproval): HTMLElement {
         actions.append(button(feedback.phase === 'checking' ? 'Checking status…' : 'Check status', () => { void ctx.approvals.check(request.id); }, { id: `approval-check-${request.id}`, icon: 'refresh', disabled: offline || busy, variant: 'primary' }));
         return actions;
     }
-    const decide = (decision: ApprovalDecision): void => {
+    const decide = (decision: ApprovalDecision, keep?: readonly number[]): void => {
         if (ctx.delivery.connection.kind !== 'ready' || ctx.state.chats.find(chat => chat.id === request.chatId)?.archived)
             return;
-        void ctx.approvals.respond(request, decision).then(() => {
+        void ctx.approvals.respond(request, decision, keep).then(() => {
             // Never steal focus from a new draft or another conversation on a late response.
             if (ctx.ui.chatId === request.chatId && document.activeElement === document.body)
                 document.getElementById('message-input')?.focus({ preventScroll: true });
@@ -45,8 +60,14 @@ function decisionActions(ctx: AppContext, request: TaskApproval): HTMLElement {
         actions.append(button('Allow for 24 hours', () => decide('day'), { id: `approval-day-${request.id}`, disabled: offline || blocked || busy }));
     if (request.scopes.includes('task'))
         actions.append(button('Allow for task', () => decide('task'), { id: `approval-task-${request.id}`, disabled: offline || blocked || busy }));
-    if (request.scopes.includes('once'))
-        actions.append(button(request.approveLabel ?? 'Allow once', () => decide('once'), { id: `approval-once-${request.id}`, disabled: offline || blocked || busy, variant: 'primary' }));
+    if (request.scopes.includes('once')) {
+        // A batch keeps what's ticked: all of it as the broker words it, some as how many (WO-055).
+        const count = request.items?.length ?? 0;
+        const kept = count === 0 ? undefined : [...keptOf(request)].sort((a, b) => a - b);
+        const some = kept !== undefined && kept.length < count;
+        const label = some ? `Keep ${kept.length}` : request.approveLabel ?? 'Allow once';
+        actions.append(button(label, () => decide('once', some ? kept : undefined), { id: `approval-once-${request.id}`, disabled: offline || blocked || busy || kept?.length === 0, variant: 'primary' }));
+    }
     return actions;
 }
 /** Composer and history refer to the same adapter request, never duplicated state. */
@@ -74,8 +95,20 @@ export function renderTaskApprovalQueue(ctx: AppContext): HTMLElement | null {
     const card = h('section', { class: 'task-approval-card', 'data-task-approval': request.id, 'aria-labelledby': `approval-title-${request.id}`, 'aria-busy': feedback?.phase === 'submitting' || feedback?.phase === 'checking' }, header, h('div', { class: 'task-approval-request' }, h('span', { class: 'task-approval-icon' }, icon(glyph(request), 20)), copy));
     if (request.fields?.length)
         card.append(reviewFields(request.fields));
-    if (request.items?.length)
-        card.append(reviewItems(request.items));
+    if (request.items?.length) {
+        const kept = keptOf(request);
+        card.append(reviewItems(request.items, {
+            kept,
+            disabled: feedback?.phase === 'submitting' || feedback?.phase === 'checking',
+            choose: (place, keep) => {
+                if (keep)
+                    kept.add(place);
+                else
+                    kept.delete(place);
+                ctx.render();
+            },
+        }));
+    }
     const details = h('details', { class: 'task-approval-details', id: `approval-details-${request.id}` }, h('summary', { id: `approval-scope-${request.id}` }, 'Review scope', icon('chevron', 12)), h('p', { class: 'task-approval-resource' }, request.resource), h('p', {}, request.detail));
     const previousDetails = document.getElementById(details.id);
     details.open = previousDetails instanceof HTMLDetailsElement && previousDetails.open;

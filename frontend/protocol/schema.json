@@ -3102,6 +3102,11 @@
           "const": "not_offered",
           "description": "The request doesn't offer that decision: approving for the session\nwhat can only be approved once.",
           "type": "string"
+        },
+        {
+          "const": "invalid_keep",
+          "description": "The items it names to keep can't be kept (WO-055): the request has\nno items, it's a denial, or they're none, out of range or repeated.",
+          "type": "string"
         }
       ]
     },
@@ -14110,6 +14115,18 @@
             "digest": {
               "description": "The digest of the action the user saw.",
               "type": "string"
+            },
+            "keep": {
+              "description": "The items kept, by their place on the revision shown (WO-055,\nv15): an approval of some of a batch's memories, the rest\nskipped. `None` keeps them all. Refused on a request without\nitems, with a denial, and when empty, out of range or repeated.",
+              "items": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
             },
             "revision": {
               "description": "The revision the user saw.",
