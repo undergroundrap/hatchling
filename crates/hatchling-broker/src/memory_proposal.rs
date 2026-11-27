@@ -295,7 +295,14 @@ mod tests {
                 absence: false,
             }
         );
-        let absent = check(&Asked { absence: true, ..Asked::about_owner("They have no car.") }, NOW).unwrap();
+        let absent = check(
+            &Asked {
+                absence: true,
+                ..Asked::about_owner("They have no car.")
+            },
+            NOW,
+        )
+        .unwrap();
         assert!(absent.absence, "a settled negative is kept as one");
         assert_eq!(
             check(&asked("The plan is in docs/.", "pointer"), NOW)

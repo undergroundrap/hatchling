@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 13;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 35;
+export const SESSION_PROTOCOL_VERSION = 36;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -3795,6 +3795,11 @@ export type SessionRequest = {
     readonly after?: string | null;
     readonly op: 'context-read';
 } | {
+    /**
+     * Whether it records a settled negative (v36): a claim found
+     * untrue, something that doesn't exist, a thread closed.
+     */
+    readonly absence?: boolean;
     /**
      * A calendar day, `YYYY-MM-DD`, after which the owner is asked to
      * confirm it.

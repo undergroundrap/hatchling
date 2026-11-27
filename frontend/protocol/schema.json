@@ -9166,6 +9166,10 @@
             {
               "description": "Ask the owner to keep `content` about them in their memory (v18):\none line or a few, in the agent's words. Nothing is written until\nthe owner approves it, in the app; then the broker keeps it, in the\nuser scope, recalled into later runs. The agent never writes there\nitself.\n\nFrom v35 (WO-048) it says what kind of thing it is, and for guidance\nor a fact about ongoing work, why and when it applies. The broker\nchecks each, shows them to the owner with the words, and keeps the\nones they approve in the item's record.",
               "properties": {
+                "absence": {
+                  "description": "Whether it records a settled negative (v36): a claim found\nuntrue, something that doesn't exist, a thread closed.",
+                  "type": "boolean"
+                },
                 "check_by": {
                   "description": "A calendar day, `YYYY-MM-DD`, after which the owner is asked to\nconfirm it.",
                   "type": [
@@ -17084,7 +17088,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 35,
+    "session_protocol": 36,
     "ui_schema_version": 13
   },
   "x-roots": {

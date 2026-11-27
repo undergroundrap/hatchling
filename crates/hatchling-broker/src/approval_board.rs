@@ -1300,7 +1300,10 @@ mod tests {
             memory_action(&absent, false),
             json!({"op": "memory.keep", "content": "They have no car.", "kind": "owner", "absence": true})
         );
-        let shown: Vec<String> = memory_fields(&absent).into_iter().map(|field| field.label).collect();
+        let shown: Vec<String> = memory_fields(&absent)
+            .into_iter()
+            .map(|field| field.label)
+            .collect();
         assert_eq!(shown, ["What it is", "Known not to be so"]);
         for (kind, name, summary) in [
             (
