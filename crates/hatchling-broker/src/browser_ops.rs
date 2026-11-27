@@ -1921,7 +1921,8 @@ fn owner_approves(
                 refusal @ (Refusal::Paused
                 | Refusal::QueueFull
                 | Refusal::Unfrozen(_)
-                | Refusal::Entropy),
+                | Refusal::Entropy
+                | Refusal::NotWaiting),
             ) => {
                 return Some(BrowserResult::Unasked {
                     reason: crate::approval_board::refused_as(&refusal),

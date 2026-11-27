@@ -26,6 +26,13 @@
 //!   identical pending proposal gets the request that's already waiting. A
 //!   task's waiting requests are withdrawn when its session ends
 //!   ([`Approvals::withdraw_task`]), so one that's gone holds no place.
+//! - **A waiting request can grow, never quietly** (WO-055). Its task may
+//!   revise it ([`Approvals::revise`]) with a new action, such as one more
+//!   memory on the card: a new revision and digest, so a decision on what
+//!   the owner was shown before is refused. A revision keeps the request's
+//!   scopes, grant and deadline, so it can't widen what a yes allows or
+//!   ask for longer, and it counts against the hourly limit as a new
+//!   request would.
 //! - **A request that stops waiting says so.** One that lapses or is
 //!   withdrawn while it waited for the owner is kept for whoever shows
 //!   requests to the owner ([`Approvals::take_closed`]): the owner is never
@@ -34,7 +41,9 @@
 //!   timestamps or a rationale) is refused for the broker's life, however
 //!   it's worded and from whichever cell, and the task it denied waits out
 //!   [`DENIAL_COOLDOWN_SECS`] before asking again. Other tasks don't: one
-//!   that's denied can't keep the owner's own from asking.
+//!   that's denied can't keep the owner's own from asking. A request made
+//!   of items (WO-055) has each item's fingerprint too, and a denial
+//!   refuses every one of them, alone or on another card.
 //!
 //! The ledger lives in the broker's memory: a restart withdraws every
 //! request, which fails safe, and forgets denials, which a cell can't
@@ -141,6 +150,8 @@ pub struct Request<A> {
     pub decision: Option<Decision>,
     run: A,
     fingerprint: String,
+    /// Each item's fingerprint, for a request made of items (WO-055).
+    parts: Vec<String>,
     scopes: Vec<GrantScope>,
     grant_key: Option<String>,
 }
@@ -198,6 +209,10 @@ pub enum Refusal {
     /// No id could be made.
     #[error("no request id could be made")]
     Entropy,
+    /// The request to revise isn't one of the task's that waits for the
+    /// owner: it was decided, lapsed or withdrawn, or isn't the task's.
+    #[error("the request isn't waiting")]
+    NotWaiting,
 }
 
 /// The ledger: one per broker, shared by the owner's sockets and the
@@ -252,9 +267,52 @@ impl<A: Clone> Approvals<A> {
     ///
     /// [`Refusal`], before anything is recorded.
     pub fn propose(&self, proposal: Proposal<A>, now: i64) -> Result<Requested, Refusal> {
+        self.propose_items(proposal, &[], now)
+    }
+
+    /// [`Approvals::propose`] for a request made of items (WO-055), each
+    /// with its fingerprint in `items`: refused if any was denied, and a
+    /// denial refuses each.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`], before anything is recorded.
+    pub fn propose_items(
+        &self,
+        proposal: Proposal<A>,
+        items: &[Value],
+        now: i64,
+    ) -> Result<Requested, Refusal> {
         let digest = action::digest(&proposal.action)?;
         let fingerprint = action::digest(&proposal.fingerprint)?;
-        self.ledger().propose(proposal, digest, fingerprint, now)
+        let parts = digests(items)?;
+        self.ledger()
+            .propose(proposal, digest, fingerprint, parts, now)
+    }
+
+    /// Revises request `id`, which `proposal`'s task has waiting, to
+    /// `proposal` with its `items`, at `now` (WO-055): a new revision,
+    /// digest and fingerprints, and the run replaced. The request's scopes,
+    /// grant and deadline stay as they were. The same action again changes
+    /// nothing and isn't new.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal`], and the request stays as it was: not one of the task's
+    /// waiting ([`Refusal::NotWaiting`]), a denied item or effect, the task
+    /// paused or the hour's requests made.
+    pub fn revise(
+        &self,
+        id: &str,
+        proposal: Proposal<A>,
+        items: &[Value],
+        now: i64,
+    ) -> Result<Requested, Refusal> {
+        let digest = action::digest(&proposal.action)?;
+        let fingerprint = action::digest(&proposal.fingerprint)?;
+        let parts = digests(items)?;
+        self.ledger()
+            .revise(id, proposal, digest, fingerprint, parts, now)
     }
 
     /// The owner's `decision` on request `id`, at the `revision` and with
@@ -399,11 +457,12 @@ impl<A: Clone> Ledger<A> {
         proposal: Proposal<A>,
         digest: String,
         fingerprint: String,
+        parts: Vec<String>,
         now: i64,
     ) -> Result<Requested, Refusal> {
         let ledger = self;
         ledger.expire(now);
-        if ledger.denied.contains(&fingerprint) {
+        if ledger.refuses(&fingerprint, &parts) {
             return Err(Refusal::Denied);
         }
         if let Some(waiting) = ledger.requests.values().find(|request| {
@@ -440,9 +499,7 @@ impl<A: Clone> Ledger<A> {
         {
             ledger.made.pop_front();
         }
-        ledger.paused.retain(|_, until| now < *until);
-        if ledger.paused.contains_key(&proposal.task) || ledger.made.len() >= MAX_REQUESTS_PER_HOUR
-        {
+        if ledger.paused_at(&proposal.task, now) {
             return Err(Refusal::Paused);
         }
         let id = crate::approval::random_hex(REQUEST_PREFIX).map_err(|_| Refusal::Entropy)?;
@@ -460,6 +517,7 @@ impl<A: Clone> Ledger<A> {
                 decision: None,
                 run: proposal.run,
                 fingerprint,
+                parts,
                 scopes: proposal.scopes.clone(),
                 grant_key: proposal.grant_key.clone(),
             },
@@ -472,6 +530,73 @@ impl<A: Clone> Ledger<A> {
             new: true,
             scopes: proposal.scopes,
             grant_key: proposal.grant_key,
+        })
+    }
+
+    /// Whether `task` may not ask at `now`: paused by a denial of its own,
+    /// or the hour's requests made. Forgets what's past first.
+    fn paused_at(&mut self, task: &str, now: i64) -> bool {
+        while self
+            .made
+            .front()
+            .is_some_and(|made| now.saturating_sub(*made) >= 3600)
+        {
+            self.made.pop_front();
+        }
+        self.paused.retain(|_, until| now < *until);
+        self.paused.contains_key(task) || self.made.len() >= MAX_REQUESTS_PER_HOUR
+    }
+
+    /// Whether the owner denied the effect `fingerprint`, or any of `parts`.
+    fn refuses(&self, fingerprint: &str, parts: &[String]) -> bool {
+        self.denied.contains(fingerprint) || parts.iter().any(|part| self.denied.contains(part))
+    }
+
+    /// [`Approvals::revise`].
+    fn revise(
+        &mut self,
+        id: &str,
+        proposal: Proposal<A>,
+        digest: String,
+        fingerprint: String,
+        parts: Vec<String>,
+        now: i64,
+    ) -> Result<Requested, Refusal> {
+        self.expire(now);
+        let waiting = self.requests.get(id).is_some_and(|request| {
+            request.state == State::Pending && request.task == proposal.task
+        });
+        if !waiting {
+            return Err(Refusal::NotWaiting);
+        }
+        if self.refuses(&fingerprint, &parts) {
+            return Err(Refusal::Denied);
+        }
+        let unchanged = self
+            .requests
+            .get(id)
+            .is_some_and(|request| request.digest == digest);
+        if !unchanged && self.paused_at(&proposal.task, now) {
+            return Err(Refusal::Paused);
+        }
+        let request = self.requests.get_mut(id).ok_or(Refusal::NotWaiting)?;
+        if !unchanged {
+            request.revision = request.revision.saturating_add(1);
+            request.digest = digest;
+            request.run = proposal.run;
+            request.fingerprint = fingerprint;
+            request.parts = parts;
+            self.made.push_back(now);
+        }
+        let request = self.requests.get(id).ok_or(Refusal::NotWaiting)?;
+        Ok(Requested {
+            id: request.id.clone(),
+            revision: request.revision,
+            digest: request.digest.clone(),
+            expires_at: request.expires_at,
+            new: !unchanged,
+            scopes: request.scopes.clone(),
+            grant_key: request.grant_key.clone(),
         })
     }
 
@@ -513,6 +638,7 @@ impl<A: Clone> Ledger<A> {
             return Err(DecisionRejection::NotOffered);
         }
         let fingerprint = request.fingerprint.clone();
+        let parts = request.parts.clone();
         let decided = match decision {
             Decision::Approve
             | Decision::ApproveSession
@@ -524,6 +650,7 @@ impl<A: Clone> Ledger<A> {
         request.decision = Some(decision);
         if decided == State::Denied {
             ledger.denied.insert(fingerprint);
+            ledger.denied.extend(parts);
             let task = request.task.clone();
             ledger
                 .paused
@@ -613,6 +740,14 @@ impl<A: Clone> Ledger<A> {
             }
         }
     }
+}
+
+/// Each of `items`' digests: their fingerprints as the ledger keeps them.
+fn digests(items: &[Value]) -> Result<Vec<String>, Refusal> {
+    items
+        .iter()
+        .map(|item| action::digest(item).map_err(Refusal::from))
+        .collect()
 }
 
 /// One claimed run. [`Claim::succeeded`] or [`Claim::failed`] records how
@@ -1245,5 +1380,187 @@ mod tests {
             Ok(State::Denied),
             "a denial always is the owner's"
         );
+    }
+
+    /// A card of `items` (WO-055): its action and fingerprint name them all,
+    /// and each is a part of its own.
+    fn card(items: &[&str], task: &str) -> (Proposal<String>, Vec<Value>) {
+        let proposal = Proposal {
+            run: format!("keep {}", items.join(", ")),
+            action: json!({ "op": "keep", "items": items, "task": task }),
+            fingerprint: json!({ "op": "keep", "items": items }),
+            task: task.to_owned(),
+            decide_secs: UNWAITED_DECIDE_SECS,
+            scopes: vec![GrantScope::Once],
+            grant_key: None,
+        };
+        let parts = items
+            .iter()
+            .map(|item| json!({ "op": "keep", "item": item }))
+            .collect();
+        (proposal, parts)
+    }
+
+    /// An item added is a new revision with its own digest: a decision on
+    /// the card the owner saw before is refused, and the run is the new
+    /// one. The deadline, scopes and grant stay the first's, whatever the
+    /// revision asks.
+    #[test]
+    fn a_waiting_card_grows_by_revision_and_never_quietly() {
+        let ledger = Approvals::new();
+        let (one, parts) = card(&["a"], "t1");
+        let first = ledger.propose_items(one, &parts, 1000).unwrap();
+        assert!(first.new);
+        let (mut two, parts) = card(&["a", "b"], "t1");
+        // A revision that asks for more scope, a grant and longer gets none.
+        two.scopes = vec![GrantScope::Once, GrantScope::Always];
+        two.grant_key = Some(String::from("memory:any"));
+        two.decide_secs = UNWAITED_DECIDE_SECS * 10;
+        let second = ledger.revise(&first.id, two, &parts, 2000).unwrap();
+        assert!(second.new, "put to the owner again");
+        assert_eq!(second.id, first.id, "the same card");
+        assert_eq!(second.revision, 2);
+        assert_ne!(second.digest, first.digest);
+        assert_eq!(
+            second.digest,
+            action::digest(&json!({ "op": "keep", "items": ["a", "b"], "task": "t1" })).unwrap()
+        );
+        assert_eq!(second.expires_at, first.expires_at, "no longer to decide");
+        assert_eq!(second.scopes, vec![GrantScope::Once]);
+        assert_eq!(second.grant_key, None);
+        let held = ledger.get(&first.id).unwrap();
+        assert_eq!(held.scopes(), [GrantScope::Once]);
+        assert_eq!(held.run(), "keep a, b");
+        // What the owner was shown first is refused; what's shown now isn't.
+        assert_eq!(
+            approve(&ledger, &first, 2001),
+            Err(DecisionRejection::StaleRevision)
+        );
+        assert_eq!(approve(&ledger, &second, 2002), Ok(State::Approved));
+        let (run, claim) = ledger.claim(&first.id).unwrap();
+        assert_eq!(run, "keep a, b");
+        claim.succeeded();
+        // The deadline is the first proposal's: revised late, it still lapses then.
+        let (late, parts) = card(&["c"], "t2");
+        let late = ledger.propose_items(late, &parts, 0).unwrap();
+        let (more, parts) = card(&["c", "d"], "t2");
+        ledger
+            .revise(&late.id, more, &parts, UNWAITED_DECIDE_SECS - 1)
+            .unwrap();
+        ledger.lapse(UNWAITED_DECIDE_SECS);
+        assert_eq!(ledger.get(&late.id).unwrap().state, State::Expired);
+    }
+
+    /// The same card again changes nothing: no new revision, nothing asked.
+    #[test]
+    fn revising_a_card_to_what_it_is_changes_nothing() {
+        let ledger = Approvals::new();
+        let (one, parts) = card(&["a"], "t1");
+        let first = ledger.propose_items(one.clone(), &parts, 0).unwrap();
+        let again = ledger.revise(&first.id, one, &parts, 1).unwrap();
+        assert!(!again.new);
+        assert_eq!(again.revision, 1);
+        assert_eq!(again.digest, first.digest);
+        assert_eq!(approve(&ledger, &first, 2), Ok(State::Approved));
+    }
+
+    /// Only the task's own waiting card is revised: another task's, one
+    /// decided, lapsed or unknown is refused, and stays as it was.
+    #[test]
+    fn only_a_tasks_own_waiting_card_is_revised() {
+        let ledger = Approvals::new();
+        let (one, parts) = card(&["a"], "t1");
+        let first = ledger.propose_items(one, &parts, 0).unwrap();
+        let (theirs, parts) = card(&["a", "x"], "t2");
+        assert_eq!(
+            ledger.revise(&first.id, theirs, &parts, 1),
+            Err(Refusal::NotWaiting)
+        );
+        let (unknown, parts) = card(&["a"], "t1");
+        assert_eq!(
+            ledger.revise("approval-none", unknown, &parts, 1),
+            Err(Refusal::NotWaiting)
+        );
+        assert_eq!(ledger.get(&first.id).unwrap().revision, 1, "unchanged");
+        approve(&ledger, &first, 2).unwrap();
+        let (decided, parts) = card(&["a", "b"], "t1");
+        assert_eq!(
+            ledger.revise(&first.id, decided, &parts, 3),
+            Err(Refusal::NotWaiting)
+        );
+        let (lapsing, parts) = card(&["c"], "t3");
+        let lapsing = ledger.propose_items(lapsing, &parts, 0).unwrap();
+        let (late, parts) = card(&["c", "d"], "t3");
+        assert_eq!(
+            ledger.revise(&lapsing.id, late, &parts, UNWAITED_DECIDE_SECS),
+            Err(Refusal::NotWaiting)
+        );
+    }
+
+    /// A denied card refuses each of its items, alone or on another card,
+    /// from any task: a revision that adds one too, leaving the card as it
+    /// was.
+    #[test]
+    fn a_denied_card_refuses_each_item_on_any_card() {
+        let ledger = Approvals::new();
+        let (two, parts) = card(&["a", "b"], "t1");
+        let denied = ledger.propose_items(two, &parts, 0).unwrap();
+        assert_eq!(
+            ledger.decide(&denied.id, 1, &denied.digest, Decision::Deny, 1),
+            Ok(State::Denied)
+        );
+        let (with_b, parts) = card(&["b", "c"], "t2");
+        assert_eq!(
+            ledger.propose_items(with_b, &parts, 2),
+            Err(Refusal::Denied)
+        );
+        let (fresh, parts) = card(&["c"], "t2");
+        let fresh = ledger.propose_items(fresh, &parts, 2).unwrap();
+        let (adds_a, parts) = card(&["c", "a"], "t2");
+        assert_eq!(
+            ledger.revise(&fresh.id, adds_a, &parts, 3),
+            Err(Refusal::Denied)
+        );
+        let held = ledger.get(&fresh.id).unwrap();
+        assert_eq!((held.revision, held.run().as_str()), (1, "keep c"));
+        // A card without items is as it was: its effect alone is refused.
+        let plain = ledger.propose(proposal("one", "t4"), 4).unwrap();
+        ledger
+            .decide(&plain.id, 1, &plain.digest, Decision::Deny, 5)
+            .unwrap();
+        assert_eq!(
+            ledger.propose(proposal("one", "t5"), 6),
+            Err(Refusal::Denied)
+        );
+        assert!(ledger.propose(proposal("two", "t5"), 6).is_ok());
+    }
+
+    /// Each item added counts against the hour as a new request would: the
+    /// card can't be grown past the limit.
+    #[test]
+    fn each_revision_counts_against_the_hour() {
+        let ledger = Approvals::new();
+        let (one, parts) = card(&["0"], "t1");
+        let first = ledger.propose_items(one, &parts, 0).unwrap();
+        let mut items = vec![String::from("0")];
+        for n in 1..MAX_REQUESTS_PER_HOUR {
+            items.push(n.to_string());
+            let named: Vec<&str> = items.iter().map(String::as_str).collect();
+            let (more, parts) = card(&named, "t1");
+            ledger.revise(&first.id, more, &parts, 1).unwrap();
+        }
+        items.push(String::from("over"));
+        let named: Vec<&str> = items.iter().map(String::as_str).collect();
+        let (over, parts) = card(&named, "t1");
+        assert_eq!(
+            ledger.revise(&first.id, over.clone(), &parts, 2),
+            Err(Refusal::Paused)
+        );
+        assert_eq!(
+            ledger.get(&first.id).unwrap().revision,
+            u64::try_from(MAX_REQUESTS_PER_HOUR).unwrap()
+        );
+        // An hour after the first, its place in the hour is free again.
+        assert!(ledger.revise(&first.id, over, &parts, 3600).unwrap().new);
     }
 }

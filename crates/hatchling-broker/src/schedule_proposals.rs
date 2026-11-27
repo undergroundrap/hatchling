@@ -96,7 +96,7 @@ fn propose_at(
             Refusal::Denied => "the owner said no to scheduling this",
             Refusal::Paused => "the owner's approval requests are paused for now",
             Refusal::QueueFull => "too many requests already wait for the owner",
-            Refusal::Unfrozen(_) | Refusal::Entropy => {
+            Refusal::Unfrozen(_) | Refusal::Entropy | Refusal::NotWaiting => {
                 tracing::error!(error = %refusal, "a schedule proposal couldn't be put to the owner");
                 "it couldn't be put to the owner"
             }

@@ -682,7 +682,8 @@ fn ask_owner(
             refusal @ (Refusal::Paused
             | Refusal::QueueFull
             | Refusal::Unfrozen(_)
-            | Refusal::Entropy) => WebResult::Unasked {
+            | Refusal::Entropy
+            | Refusal::NotWaiting) => WebResult::Unasked {
                 reason: refused_as(&refusal),
             },
         })?;

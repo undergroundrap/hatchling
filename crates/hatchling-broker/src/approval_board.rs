@@ -1010,7 +1010,7 @@ pub fn refused_as(refusal: &Refusal) -> ApprovalRefusal {
         Refusal::Denied => ApprovalRefusal::Denied,
         Refusal::Paused => ApprovalRefusal::Paused,
         Refusal::QueueFull => ApprovalRefusal::QueueFull,
-        Refusal::Unfrozen(_) | Refusal::Entropy => {
+        Refusal::Unfrozen(_) | Refusal::Entropy | Refusal::NotWaiting => {
             tracing::error!(error = %refusal, "an action could not be put to the owner");
             ApprovalRefusal::Unavailable
         }
