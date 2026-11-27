@@ -1,6 +1,6 @@
 # WO-055: Several memories, one card
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-broker` (approvals, approval board, memory keep), `crates/hatchling-core` (UI protocol), `crates/hatchling-agent` (memory_propose), `frontend/` (approval card)
 **Issue:** [#753](https://github.com/undergroundrap/hatchling/issues/753)
 **Trust boundary:** yes (approvals: what the owner is asked, and what their decision keeps)
@@ -36,9 +36,11 @@ Unchanged: only the owner decides; only the broker keeps; a memory proposal is c
   - `UiAction::Decide` gains `keep`: the places of the items kept. Without it, an approval keeps every item. It's refused on a request without items, empty, out of range or repeated.
   - UI schema v15. The session protocol is unchanged.
 - `hatchling-agent`'s `memory_propose`:
-  - says when a proposal joined a card already waiting ("on the card with 2 others"), and when the card is full;
-  - says to ask for each thing on its own, since they gather on one card.
-- The app's approval card shows the items, each with Keep (on by default) and Skip, and the button says how many are kept ("Keep 2"). A card whose items change while open shows the new revision before anything can be decided.
+  - says that what it asks for in one answer goes to the owner together, on one card, up to five, and asks for one thing per call;
+  - is told, as an error (#751), when the card is full or another memory on it already corrects the same one.
+
+  Telling the agent how many others share its card would need the session protocol to carry the count, so it's left out: the protocol is unchanged.
+- The app's approval card shows the items, each with a Keep box (ticked to begin with; unticking it is the skip), and the button says how many are kept ("Keep 2"). A card whose items change while open shows the new revision before anything can be decided, with every item ticked again.
 - `docs/local-api.md`, `docs/session-protocol.md` (if the agent's result text is documented), `docs/arch/protocol.md`, the CHANGELOG.
 
 **Not in scope:**
@@ -49,31 +51,32 @@ Unchanged: only the owner decides; only the broker keeps; a memory proposal is c
 
 ## Acceptance criteria
 
-- [ ] A chat turn that asks to remember three things puts one card to the owner, with three items. Keeping two keeps exactly those two, each as its own memory, and the third is never asked again.
-- [ ] An item added while the card is shown makes a new revision. A decision on the old revision is refused, and the app shows the new card.
-- [ ] A sixth item, or a second correction of the same memory, is refused when added, and the agent is told why as an error, not a result (#751). The same words asked again are the item already waiting.
-- [ ] Denying the card refuses every item, for every task, and starts the task's cooldown. Skipping some items refuses those alone.
-- [ ] Adding items doesn't extend the card's deadline, and each one counts against the hourly limit.
-- [ ] `keep` is refused on a request without items, and when empty, out of range or repeated. Nothing is kept on a refused decision.
-- [ ] A single memory proposal still shows as one card. Approving it keeps it as before.
-- [ ] Each change has its evidence record under `docs/evidence/`, with hand-breaks of each defense above.
+- [x] A chat turn that asks to remember three things puts one card to the owner, with three items. Keeping two keeps exactly those two, each as its own memory, and the third is never asked again. ([card](../evidence/wo055-card.md): `a_tasks_memories_gather_on_one_card_shown_at_each_revision`; [keep](../evidence/wo055-keep.md): `keeping_some_of_a_card_keeps_those_alone`)
+- [x] An item added while the card is shown makes a new revision. A decision on the old revision is refused, and the app shows the new card. ([ledger](../evidence/wo055-ledger.md): `a_waiting_card_grows_by_revision_and_never_quietly`; [card](../evidence/wo055-card.md): `StaleRevision` at revision 2. The app replaces a card by its newer revision and refuses a stale answer, as it did before.)
+- [x] A sixth item, or a second correction of the same memory, is refused when added, and the agent is told why as an error, not a result (#751). The same words asked again are the item already waiting. ([card](../evidence/wo055-card.md): `a_card_holds_five_and_no_more`, `one_card_corrects_a_memory_once`, `the_same_words_again_are_the_memory_already_waiting`; [agent](../evidence/wo055-agent.md): `a_full_card_and_a_second_correction_are_told_to_the_agent`)
+- [x] Denying the card refuses every item, for every task, and starts the task's cooldown. Skipping some items refuses those alone. ([ledger](../evidence/wo055-ledger.md): `a_denied_card_refuses_each_item_on_any_card`; [keep](../evidence/wo055-keep.md): `keeping_some_items_refuses_the_rest_and_pauses_nothing`)
+- [x] Adding items doesn't extend the card's deadline, and each one counts against the hourly limit. ([ledger](../evidence/wo055-ledger.md): `a_waiting_card_grows_by_revision_and_never_quietly`, `each_revision_counts_against_the_hour`)
+- [x] `keep` is refused on a request without items, and when empty, out of range or repeated. Nothing is kept on a refused decision. ([keep](../evidence/wo055-keep.md): `a_keep_that_cant_be_kept_is_refused_and_changes_nothing`, and through the API, `the_owners_keep_reaches_the_card_it_decides`)
+- [x] A single memory proposal still shows as one card. Approving it keeps it as before. ([card](../evidence/wo055-card.md): a card of one has no items and is frozen as before; `a_proposal_is_kept_only_once_the_owner_approves` unchanged)
+- [x] Each change has its evidence record under `docs/evidence/`, with hand-breaks of each defense above (below).
 
 ## Gates
 
 All must pass before the WO closes:
 
-- [ ] `bash scripts/check.sh` green on the pinned toolchain **and** 1.85.0.
-- [ ] Real-cell tests ran rather than skipped (`HATCHLING_REQUIRE_CELL=1`).
-- [ ] **Mutation, kill floor 1.0** on each changed `.rs` file.
-- [ ] `cd frontend && npm ci && npm run check`.
-- [ ] Wire types regenerated (`protocol-schema --write`, `npm run protocol:generate`) and committed.
-- [ ] Docs that describe the changed behavior updated in the same change.
+- [x] `bash scripts/check.sh` green on the pinned toolchain **and** 1.85.0: CI's gate on each slice's pull request (#754, #756, #757 and slice 4's). Locally, each slice ran the workspace's tests and clippy on both toolchains.
+- [x] Real-cell tests ran rather than skipped (`HATCHLING_REQUIRE_CELL=1`), on the WSL2 sandbox, for each slice.
+- [x] **Mutation, kill floor 1.0** on each slice's change, with `cargo mutants --in-diff`: slice 1, 36 mutants (26 caught, 10 unviable); slice 2, 29 (16, 13); slice 3, 35 (26, 9). None missed in any. Slice 4 changes only strings, which are pinned by tests and hand-broken instead.
+- [x] `cd frontend && npm ci && npm run check`: green on slices 2 and 3, with live coverage at 100%.
+- [x] Wire types regenerated (`protocol-schema --write`, `npm run protocol:generate`) and committed, in slices 2 and 3.
+- [x] Docs that describe the changed behavior updated in the same change: `local-api.md`, `arch/protocol.md`, `arch/distribution.md` and the CHANGELOG.
 
 ## Evidence
 
 - Slice 1, the ledger: [wo055-ledger.md](../evidence/wo055-ledger.md).
 - Slice 2, the card: [wo055-card.md](../evidence/wo055-card.md).
 - Slice 3, Keep and Skip: [wo055-keep.md](../evidence/wo055-keep.md).
+- Slice 4, the agent: [wo055-agent.md](../evidence/wo055-agent.md).
 
 The rest is filled in at close.
 
