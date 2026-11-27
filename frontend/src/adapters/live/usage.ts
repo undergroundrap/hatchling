@@ -6,6 +6,7 @@
 import type { LiveClient } from './client.js';
 import type { ActionRefusal, ActivityEvent, ChatMessage, UsageReport } from './protocol/generated.js';
 import type { CommandResult } from '../../protocol/models.js';
+import { MAIN_CHAT, appChat } from './chat.js';
 import type { ContextUse, Usage, UsageLimits, UsagePort, UsageState } from '../../session/usage.js';
 const REFUSED = 'This connection may not read the usage.';
 const UNEXPECTED = 'Hatchling answered with something else.';
@@ -26,31 +27,57 @@ export function usageOf(report: UsageReport): Usage {
         spent: { today: report.spent.today, month: report.spent.month, monthOf: report.spent.month_of },
     };
 }
+/** How long a burst of run summaries is gathered before the composer repaints: a replay's arrive together. */
+export const SETTLE_MS = 50;
 export class LiveUsage implements UsagePort {
     readonly #client: LiveClient;
     readonly #changed: () => void;
     readonly #nextId: () => string;
+    readonly #later: (run: () => void) => void;
     #state: UsageState = { kind: 'unread' };
-    #context: ContextUse | null = null;
+    /** Each chat's last answer's context, by the app's chat id (WO-056). */
+    readonly #contexts = new Map<string, ContextUse>();
+    #settling = false;
     #ready = false;
-    constructor(client: LiveClient, changed: () => void, nextId: () => string) {
+    constructor(client: LiveClient, changed: () => void, nextId: () => string, later: (run: () => void) => void = run => { setTimeout(run, SETTLE_MS); }) {
         this.#client = client;
         this.#changed = changed;
         this.#nextId = nextId;
+        this.#later = later;
         client.subscribe(() => this.#watch());
     }
     current(): UsageState {
         return this.#state;
     }
-    context(): ContextUse | null {
-        return this.#context;
+    context(chatId: string): ContextUse | null {
+        return this.#contexts.get(chatId) ?? null;
     }
-    /** A run's record: a chat answer's model calls say how full the context got. */
+    /**
+     * A run's record: a chat answer's model calls say how full the context got,
+     * in the chat it answered (WO-056). A record from before it named its chat
+     * is the main chat's. A burst of them, as a replay brings, repaints once,
+     * when it settles: the composer never flickers through older answers.
+     */
     observeRun(event: ActivityEvent): void {
         if (event.event !== 'run_summary' || !event.chat || event.model_calls === 0)
             return;
-        this.#context = { tokens: event.peak_input_tokens, window: event.context_window ?? null, onCpu: event.model_on_cpu ?? null, memoryLow: event.memory_low ?? false };
-        this.#changed();
+        const parts = event.context_parts ?? null;
+        const chat = event.chat_id ?? null;
+        this.#contexts.set(chat === null ? MAIN_CHAT : appChat(chat), {
+            tokens: event.peak_input_tokens,
+            window: event.context_window ?? null,
+            onCpu: event.model_on_cpu ?? null,
+            memoryLow: event.memory_low ?? false,
+            model: event.model ?? null,
+            parts: parts === null ? null : { system: parts.system, tools: parts.tools, memory: parts.memory, conversation: parts.conversation },
+        });
+        if (this.#settling)
+            return;
+        this.#settling = true;
+        this.#later(() => {
+            this.#settling = false;
+            this.#changed();
+        });
     }
     /** An answer from the agent, or Hatchling's own word, came after model calls: read again. */
     observe(message: ChatMessage): void {
