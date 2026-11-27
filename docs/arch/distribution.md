@@ -23,7 +23,7 @@ What ships, where, and what each part promises.
 
 | Surface | Promise before 1.0 |
 | --- | --- |
-| **The local API** (`docs/local-api.md`) | Versioned: the UI schema is version 14 (`UI_SCHEMA_VERSION`), and the broker's session protocol version 39 (`PROTOCOL_VERSION`). A breaking change bumps the version, and a client and broker that disagree refuse each other. |
+| **The local API** (`docs/local-api.md`) | Versioned: the UI schema is version 15 (`UI_SCHEMA_VERSION`), and the broker's session protocol version 39 (`PROTOCOL_VERSION`). A breaking change bumps the version, and a client and broker that disagree refuse each other. |
 | **Configuration** (the `HATCHLING_*` variables, `--help`) | A breaking change is a minor version, and the changelog says how to move. |
 | **The command lines** (`hatchling-broker`, `hatchling-agent`, `hatchling`) | Subcommand names are kept; a rename is a breaking change. |
 | **The crates' Rust APIs** | Semver, checked by CI, but no stability beyond it: any 0.x minor may break any crate. They're published so that Hatchling can be installed from crates.io. Depend on one directly only if you'll follow Hatchling's releases. |

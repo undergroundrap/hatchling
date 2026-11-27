@@ -23,6 +23,12 @@
 .task-approval-source { padding: 0 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-pill); color: var(--text); font-size: var(--text-xs); }
 .task-approval-hidden { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--attention); }
 .approval-report .task-approval-fields { margin: 0 0 6px; }
+/* A batch's items (WO-055): numbered, each its own fields. */
+.task-approval-items { display: grid; gap: var(--space-2); margin: 10px 0 0 48px; padding: 0 0 0 18px; min-width: 0; }
+.task-approval-item { min-width: 0; padding: var(--space-2) 0 0; border-top: 1px solid var(--border); }
+.task-approval-item:first-child { border-top: 0; padding-top: 0; }
+.task-approval-item .task-approval-fields { margin: 0; }
+.approval-report .task-approval-items { margin: 0 0 6px; }
 .task-approval-details { margin: 8px 0 10px 48px; color: var(--muted); font-size: calc(12px * var(--ui-scale)); }
 .task-approval-details > summary { display: flex; align-items: center; gap: 6px; width: fit-content; cursor: pointer; min-height: 28px; list-style: none; }
 .task-approval-details > summary::-webkit-details-marker { display: none; }

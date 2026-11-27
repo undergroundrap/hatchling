@@ -26,7 +26,7 @@ use hatchling_memory::{
 };
 
 use crate::Config;
-use crate::approval_board::board;
+use crate::approval_board::{CardRefusal, board};
 use crate::approvals::Refusal;
 use crate::config::MemoryAction;
 
@@ -109,10 +109,22 @@ pub fn propose(
         Ok(_) => MemoryResult::Proposed,
         Err(refusal) => MemoryResult::Unasked {
             reason: String::from(match refusal {
-                Refusal::Denied => "the owner said no to keeping this",
-                Refusal::Paused => "the owner's approval requests are paused for now",
-                Refusal::QueueFull => "too many requests already wait for the owner",
-                Refusal::Unfrozen(_) | Refusal::Entropy | Refusal::NotWaiting => {
+                CardRefusal::Full => {
+                    "the card waiting for the owner already holds five memories: ask for the rest once they've answered"
+                }
+                CardRefusal::CorrectsTheSame => {
+                    "another memory waiting for the owner already corrects that one"
+                }
+                CardRefusal::Ledger(Refusal::Denied) => "the owner said no to keeping this",
+                CardRefusal::Ledger(Refusal::Paused) => {
+                    "the owner's approval requests are paused for now"
+                }
+                CardRefusal::Ledger(Refusal::QueueFull) => {
+                    "too many requests already wait for the owner"
+                }
+                CardRefusal::Ledger(
+                    refusal @ (Refusal::Unfrozen(_) | Refusal::Entropy | Refusal::NotWaiting),
+                ) => {
                     tracing::error!(error = %refusal, "a memory proposal couldn't be put to the owner");
                     "it couldn't be put to the owner"
                 }
@@ -619,6 +631,71 @@ mod tests {
         assert_eq!(
             (record.kept_at_secs, record.confirmed_at_secs),
             (1_793_707_200, 1_793_707_200)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two asks from one run are one card (WO-055): approved once, each is
+    /// kept as its own memory, with its own record of that one approval.
+    #[test]
+    fn a_card_of_two_keeps_each_as_its_own() {
+        let (config, dir) = config("batch", &[MemoryAction::Propose]);
+        for words in [
+            "The owner's cat is called Biscuit.",
+            "The owner uses metric.",
+        ] {
+            assert_eq!(
+                propose(
+                    &config,
+                    "task-1",
+                    &crate::memory_proposal::Asked::about_owner(words),
+                    ProposedIn::default()
+                ),
+                MemoryResult::Proposed
+            );
+        }
+        let board = board(&config);
+        let id = board
+            .approvals()
+            .find_run("task-1", crate::approvals::State::Pending, |run| {
+                matches!(run, crate::approval_board::Approved::Memory(keep) if keep.more.len() == 1)
+            })
+            .unwrap();
+        let request = board.approvals().get(&id).unwrap();
+        assert_eq!(request.revision, 2);
+        board
+            .decide(&id, request.revision, &request.digest, Decision::Approve, 1)
+            .unwrap();
+        let said = crate::approval_board::run_approved(
+            &board,
+            &id,
+            &config,
+            &hatchling_vault::MasterKey::generate().unwrap(),
+            &crate::Skills::default(),
+            None,
+            1_793_707_200,
+        );
+        assert_eq!(
+            said,
+            "Remembered: “The owner's cat is called Biscuit.” The agent is given it from now on.
+Remembered: “The owner uses metric.” The agent is given it from now on."
+        );
+        let mut kept_words: Vec<String> =
+            kept(&config).into_iter().map(|(words, _)| words).collect();
+        kept_words.sort();
+        assert_eq!(
+            kept_words,
+            [
+                "The owner uses metric.",
+                "The owner's cat is called Biscuit."
+            ]
+        );
+        let kept_records = records(&config);
+        assert_eq!(kept_records.len(), 2);
+        assert!(
+            kept_records
+                .iter()
+                .all(|record| record.approval.as_deref() == Some(id.as_str()))
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

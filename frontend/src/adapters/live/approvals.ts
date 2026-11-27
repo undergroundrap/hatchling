@@ -71,9 +71,12 @@ const rejected = (detail: string): ApprovalResult => ({ state: 'rejected', detai
  * The request's fields as plain text, in the broker's review order: what the
  * broker resolved, then the agent's own words, labeled as the agent's.
  */
-export const reviewText = (request: ConfirmationRequest): string => request.fields
-    .map((field) => field.source === 'agent' ? `From the agent, ${field.label}: ${field.value}` : `${field.label}: ${field.value}`)
-    .join('\n');
+const fieldText = (field: ConfirmationRequest['fields'][number]): string => field.source === 'agent' ? `From the agent, ${field.label}: ${field.value}` : `${field.label}: ${field.value}`;
+export const reviewText = (request: ConfirmationRequest): string => [
+    ...request.fields.map(fieldText),
+    // A batch's items, each named by its place (WO-055).
+    ...(request.items ?? []).flatMap((item, index) => item.fields.map(field => `${index + 1}. ${fieldText(field)}`)),
+].join('\n');
 const unknown = (detail: string): ApprovalResult => ({ state: 'unknown', detail });
 export class LiveApprovals implements TaskApprovalPort {
     readonly #client: LiveClient;
@@ -192,6 +195,7 @@ export class LiveApprovals implements TaskApprovalPort {
             time: clockTime(at),
             report: reviewText(request),
             fields: request.fields,
+            ...(request.items?.length ? { items: request.items.map(item => item.fields) } : {}),
         };
     }
     async #dispatch(attempt: ApprovalAttempt): Promise<ApprovalResult> {

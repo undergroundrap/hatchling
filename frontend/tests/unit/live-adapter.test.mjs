@@ -1706,6 +1706,20 @@ test('an approval that says what approving does is labelled so; one that doesn\'
     assert.equal('approveLabel' in plain, false);
     assert.match(plain.detail, /^Allow once answers/);
 });
+test('a batch card lists each memory on it, in order, each with its own fields (WO-055)', () => {
+    const { transport, adapter } = connected();
+    const memory = (words, kind) => ({ fields: [{ label: 'What it would remember', value: words, source: 'agent' }, { label: 'What it is', value: kind, source: 'broker' }] });
+    transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'keep-2', revision: 3, chat_id: 'main', summary: 'Remember these 2 things?', expires_at: null, digest: 'digest-3', fields: [{ label: 'Operation', value: 'Keep each of these.', source: 'broker' }], approve: 'Remember them', items: [memory('Pepper is a cat.', 'Something about you.'), memory('Use metric.', 'Your guidance.')] }));
+    const [card] = adapter.taskApprovals.getSnapshot();
+    assert.equal(card.revision, 3);
+    assert.equal(card.approveLabel, 'Remember them');
+    assert.deepEqual(card.items.map(fields => fields.map(field => field.value)), [['Pepper is a cat.', 'Something about you.'], ['Use metric.', 'Your guidance.']]);
+    assert.equal(card.report, 'Operation: Keep each of these.\n1. From the agent, What it would remember: Pepper is a cat.\n1. What it is: Something about you.\n2. From the agent, What it would remember: Use metric.\n2. What it is: Your guidance.');
+    // A card that isn't a batch has none.
+    const other = connected();
+    other.transport.deliver(sampleEvent(1, 1, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: 'keep-1', revision: 1, chat_id: 'main', summary: 'Remember this about you?', expires_at: null, digest: 'digest-1', fields: [{ label: 'What it would remember', value: 'Their cat is Biscuit.', source: 'agent' }], approve: 'Remember it' }));
+    assert.equal('items' in other.adapter.taskApprovals.getSnapshot()[0], false);
+});
 test('Hatchling\'s own word reads the schedules again: a schedule the owner approved appears', async () => {
     const { transport } = connected();
     const lists = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_schedule' && frame.action.op.op === 'list').length;

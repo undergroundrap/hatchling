@@ -97,7 +97,9 @@ pub use surfaces::{
 /// 12: Keep going (WO-053): `keep_going`, the owner's, to have the next
 /// run carry on from one that stopped before it was done, answered
 /// `message_accepted` or `nothing_to_continue`.
-pub const UI_SCHEMA_VERSION: u16 = 14;
+/// 15: several memories on one card (WO-055): a confirmation's `items`,
+/// each memory's fields in order.
+pub const UI_SCHEMA_VERSION: u16 = 15;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -568,6 +570,20 @@ pub struct ConfirmationRequest {
     /// keep. The broker's, never the agent's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approve: Option<String>,
+    /// Each thing a batch asks for, in order (WO-055, v15): the memories a
+    /// task asked to keep, gathered on one card, each with its own fields.
+    /// Empty for any request that isn't a batch, whose `fields` say it all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<ConfirmationItem>,
+}
+
+/// One thing a batch confirmation asks for (WO-055): its fields, in review
+/// order, each labeled with who stated it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ConfirmationItem {
+    /// Its fields.
+    pub fields: Vec<ConfirmationField>,
 }
 
 /// The owner's Feed page as a schedule's delivery target: a run delivering
@@ -2829,7 +2845,61 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 14);
+        assert_eq!(UI_SCHEMA_VERSION, 15);
+    }
+
+    /// A batch card's items on the wire (WO-055, v15): each memory's fields
+    /// in order; a card without any says none, and one from before v15
+    /// reads as none.
+    #[test]
+    fn a_batch_cards_items_have_their_wire_form() {
+        let field = |label: &str, value: &str, source| ConfirmationField {
+            label: label.to_owned(),
+            value: value.to_owned(),
+            source,
+        };
+        let card = ConfirmationRequest {
+            confirmation_id: s("k1"),
+            revision: 2,
+            chat_id: Some(s("main")),
+            summary: s("Remember these 2 things?"),
+            expires_at: None,
+            digest: s("ab12"),
+            fields: vec![field("Operation", "Keep each.", FieldSource::Broker)],
+            grant_key: None,
+            scopes: vec![GrantScope::Once],
+            approve: Some(s("Remember them")),
+            items: vec![
+                ConfirmationItem {
+                    fields: vec![field(
+                        "What it would remember",
+                        "A cat.",
+                        FieldSource::Agent,
+                    )],
+                },
+                ConfirmationItem {
+                    fields: vec![field(
+                        "What it would remember",
+                        "Metric.",
+                        FieldSource::Agent,
+                    )],
+                },
+            ],
+        };
+        let wire = json!({"confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "Remember these 2 things?", "expires_at": null, "digest": "ab12", "fields": [{"label": "Operation", "value": "Keep each.", "source": "broker"}], "grant_key": null, "scopes": ["once"], "approve": "Remember them", "items": [{"fields": [{"label": "What it would remember", "value": "A cat.", "source": "agent"}]}, {"fields": [{"label": "What it would remember", "value": "Metric.", "source": "agent"}]}]});
+        assert_eq!(serde_json::to_value(&card).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ConfirmationRequest>(wire).unwrap(),
+            card
+        );
+        let mut before = serde_json::to_value(&card).unwrap();
+        before.as_object_mut().unwrap().remove("items");
+        assert!(
+            serde_json::from_value::<ConfirmationRequest>(before)
+                .unwrap()
+                .items
+                .is_empty()
+        );
     }
 
     #[test]
@@ -3354,6 +3424,7 @@ mod tests {
                     grant_key: None,
                     scopes: vec![GrantScope::Once],
                     approve: None,
+                    items: Vec::new(),
                 }),
             ),
             &json!({"seq": 5, "ts": "t", "body": {"kind": "confirmation", "confirmation_id": "k1", "revision": 2, "chat_id": "main", "summary": "send the email", "expires_at": null, "digest": "ab12", "fields": [{"label": "To", "value": "pat@example.com", "source": "broker"}, {"label": "Text", "value": "Hello", "source": "agent"}], "grant_key": null, "scopes": ["once"]}}),

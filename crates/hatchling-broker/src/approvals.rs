@@ -427,6 +427,27 @@ impl<A: Clone> Approvals<A> {
             .map(|request| request.id.clone())
     }
 
+    /// The request `task` has waiting for the owner whose run `matches`, as
+    /// it stands at `now` (lapsed ones aren't waiting): what a revision of
+    /// it builds on (WO-055).
+    #[must_use]
+    pub fn waiting(
+        &self,
+        task: &str,
+        now: i64,
+        matches: impl Fn(&A) -> bool,
+    ) -> Option<Request<A>> {
+        let mut ledger = self.ledger();
+        ledger.expire(now);
+        ledger
+            .requests
+            .values()
+            .find(|request| {
+                request.state == State::Pending && request.task == task && matches(&request.run)
+            })
+            .cloned()
+    }
+
     /// The id of a request of `task`'s in `state` whose run `matches`: for
     /// tests, which find a request by what it runs rather than its record.
     #[cfg(test)]

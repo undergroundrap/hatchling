@@ -33,8 +33,8 @@ use std::time::Duration;
 use hatchling_artifact::PinnedRequest;
 use hatchling_channel::LocalHub;
 use hatchling_core::ui::{
-    ChatAuthor, ChatMessage, ConfirmationField, ConfirmationRequest, Decision, DecisionRecord,
-    DecisionRejection, FieldSource, GrantScope, UiEventBody,
+    ChatAuthor, ChatMessage, ConfirmationField, ConfirmationItem, ConfirmationRequest, Decision,
+    DecisionRecord, DecisionRejection, FieldSource, GrantScope, UiEventBody,
 };
 use hatchling_core::{ActivationProposal, ApprovalRefusal, ArtifactResult};
 use hatchling_scheduler::Timestamp;
@@ -95,8 +95,32 @@ pub struct MemoryKeep {
     /// The words kept, the agent's, with what kind of thing they are, and
     /// why and when they apply, as the broker checked them (v35).
     pub proposal: crate::memory_proposal::Checked,
+    /// The memories its task asked for after it, on the same card
+    /// (WO-055), in order: each kept as its own.
+    pub more: Vec<crate::memory_proposal::Checked>,
     /// Where they were proposed, as the broker knows it: kept with them.
     pub from: crate::memory_keep::ProposedIn,
+}
+
+impl MemoryKeep {
+    /// Every memory on the card, in order.
+    pub fn items(&self) -> impl Iterator<Item = &crate::memory_proposal::Checked> {
+        std::iter::once(&self.proposal).chain(&self.more)
+    }
+}
+
+/// Most memories on one card (WO-055): one task's asks, gathered.
+pub const MAX_BATCH: usize = 5;
+
+/// Why a memory wasn't put to the owner on its task's card (WO-055).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardRefusal {
+    /// The ledger's reason.
+    Ledger(Refusal),
+    /// The task's card has [`MAX_BATCH`] memories on it already.
+    Full,
+    /// A memory on the card already corrects the one this corrects.
+    CorrectsTheSame,
 }
 
 /// The owner's signed-in profile the agent asks to use.
@@ -423,70 +447,122 @@ impl Board {
         Ok(requested)
     }
 
-    /// Puts `content`, which task `task` asks to keep in the owner's memory,
+    /// Puts `proposal`, which task `task` asks to keep in the owner's memory,
     /// to the owner at `now` (v18). Approved, the worker keeps exactly those
-    /// words; nothing is kept before. The same words asked again while they
-    /// wait are the same request, and words the owner said no to aren't
+    /// words; nothing is kept before. Words the owner said no to aren't
     /// asked again.
+    ///
+    /// A task's memories gather on one card (WO-055): while it has one
+    /// waiting, this one joins it as a new revision, so a decision on the
+    /// card as it was is refused. The same words again are the memory
+    /// already on it.
     ///
     /// # Errors
     ///
-    /// [`Refusal`]: the owner said no to these words, requests are paused
-    /// or full, or the record has no canonical form.
+    /// [`CardRefusal`]: the card is full, another memory on it corrects
+    /// the same one, or the ledger's reason (the owner said no, requests
+    /// are paused or full, or the record has no canonical form).
     pub fn propose_memory(
         &self,
         proposal: &crate::memory_proposal::Checked,
         task: &str,
         from: crate::memory_keep::ProposedIn,
         now: i64,
-    ) -> Result<Requested, Refusal> {
-        let content = proposal.content.as_str();
-        let requested = self.approvals.propose(
-            Proposal {
-                run: Approved::Memory(MemoryKeep {
-                    proposal: proposal.clone(),
-                    from,
-                }),
-                action: memory_action(proposal, true),
-                fingerprint: memory_action(proposal, false),
-                task: task.to_owned(),
-                decide_secs: UNWAITED_DECIDE_SECS,
-                scopes: vec![GrantScope::Once],
-                grant_key: None,
-            },
-            now,
-        )?;
+    ) -> Result<Requested, CardRefusal> {
+        let single = MemoryKeep {
+            proposal: proposal.clone(),
+            more: Vec::new(),
+            from,
+        };
+        let waiting = self
+            .approvals
+            .waiting(task, now, |run| matches!(run, Approved::Memory(_)));
+        let Some((id, Approved::Memory(card))) = waiting
+            .as_ref()
+            .map(|request| (request.id.as_str(), request.run()))
+        else {
+            return self.put_card(&single, None, task, now);
+        };
+        if card.items().any(|item| item.content == proposal.content) {
+            return waiting.map_or(Err(CardRefusal::Ledger(Refusal::NotWaiting)), |request| {
+                Ok(Requested {
+                    revision: request.revision,
+                    digest: request.digest.clone(),
+                    expires_at: request.expires_at,
+                    new: false,
+                    scopes: request.scopes().to_vec(),
+                    grant_key: None,
+                    id: request.id,
+                })
+            });
+        }
+        if card.items().count() >= MAX_BATCH {
+            return Err(CardRefusal::Full);
+        }
+        let corrected = |item: &crate::memory_proposal::Checked| {
+            item.supersedes.as_ref().map(|replaced| replaced.id.clone())
+        };
+        if corrected(proposal).is_some()
+            && card
+                .items()
+                .any(|item| corrected(item) == corrected(proposal))
+        {
+            return Err(CardRefusal::CorrectsTheSame);
+        }
+        let mut more = card.more.clone();
+        more.push(proposal.clone());
+        let grown = MemoryKeep {
+            proposal: card.proposal.clone(),
+            more,
+            from: card.from.clone(),
+        };
+        match self.put_card(&grown, Some(id), task, now) {
+            // Decided or lapsed since it was read: this one starts a card.
+            Err(CardRefusal::Ledger(Refusal::NotWaiting)) => {
+                self.put_card(&single, None, task, now)
+            }
+            put => put,
+        }
+    }
+
+    /// Puts `card` to the owner as a revision of request `revising`, or as
+    /// a new request, and shows it when it's new.
+    fn put_card(
+        &self,
+        card: &MemoryKeep,
+        revising: Option<&str>,
+        task: &str,
+        now: i64,
+    ) -> Result<Requested, CardRefusal> {
+        let items: Vec<&crate::memory_proposal::Checked> = card.items().collect();
+        let parts: Vec<serde_json::Value> = items
+            .iter()
+            .map(|item| memory_action(item, false))
+            .collect();
+        let (action, fingerprint) = if let [only] = items.as_slice() {
+            (memory_action(only, true), memory_action(only, false))
+        } else {
+            (
+                json!({ "format": 3, "scope": "user", "op": "memory.keep", "items": parts }),
+                json!({ "op": "memory.keep", "items": parts }),
+            )
+        };
+        let proposal = Proposal {
+            run: Approved::Memory(card.clone()),
+            action,
+            fingerprint,
+            task: task.to_owned(),
+            decide_secs: UNWAITED_DECIDE_SECS,
+            scopes: vec![GrantScope::Once],
+            grant_key: None,
+        };
+        let requested = match revising {
+            Some(id) => self.approvals.revise(id, proposal, &parts, now),
+            None => self.approvals.propose_items(proposal, &parts, now),
+        }
+        .map_err(CardRefusal::Ledger)?;
         if requested.new {
-            self.publish(UiEventBody::Confirmation(ConfirmationRequest {
-                confirmation_id: requested.id.clone(),
-                revision: requested.revision,
-                chat_id: Some(String::from(CONFIRMATION_CHAT)),
-                summary: String::from(memory_summary(proposal.kind)),
-                expires_at: Timestamp::from_second(requested.expires_at)
-                    .ok()
-                    .map(|at| at.to_string()),
-                digest: requested.digest.clone(),
-                fields: vec![
-                    ConfirmationField {
-                        label: String::from("Operation"),
-                        value: String::from(
-                            "Keep this in your memory. The agent is given it in every chat and scheduled run from now on, as something you approved. You can forget it in Memory (Settings, then Data controls).",
-                        ),
-                        source: FieldSource::Broker,
-                    },
-                    ConfirmationField {
-                        label: String::from("What it would remember"),
-                        value: content.to_owned(),
-                        source: FieldSource::Agent,
-                    },
-                ]
-                .into_iter()
-                .chain(memory_fields(proposal))
-                .collect(),
-                grant_key: requested.grant_key.clone(),
-                scopes: requested.scopes.clone(),
-                approve: Some(String::from("Remember it")),
-            }));
+            self.publish(UiEventBody::Confirmation(memory_card(card, &requested)));
         }
         Ok(requested)
     }
@@ -554,6 +630,7 @@ impl Board {
                 grant_key: requested.grant_key.clone(),
                 scopes: requested.scopes.clone(),
                 approve: Some(String::from("Schedule it")),
+                items: Vec::new(),
             }));
         }
         Ok(requested)
@@ -607,6 +684,7 @@ impl Board {
                 grant_key: requested.grant_key.clone(),
                 scopes: requested.scopes.clone(),
                 approve: None,
+                items: Vec::new(),
             }));
         }
         Ok(requested)
@@ -736,7 +814,19 @@ impl Board {
                 &DecisionRecord {
                     confirmation_id: card.confirmation_id,
                     summary: card.summary,
-                    fields: card.fields,
+                    // A batch's items are kept in its record as fields,
+                    // each named by its place (WO-055): what was decided,
+                    // whole.
+                    fields: card
+                        .fields
+                        .into_iter()
+                        .chain(card.items.into_iter().zip(1_usize..).flat_map(|(item, n)| {
+                            item.fields.into_iter().map(move |field| ConfirmationField {
+                                label: format!("Memory {n}: {}", field.label),
+                                ..field
+                            })
+                        }))
+                        .collect(),
                     decision,
                     decided_at,
                 },
@@ -863,6 +953,7 @@ fn site_confirmation(
         grant_key: requested.grant_key.clone(),
         scopes: requested.scopes.clone(),
         approve: None,
+        items: Vec::new(),
     }
 }
 
@@ -942,6 +1033,7 @@ fn confirmation(
         grant_key: requested.grant_key.clone(),
         scopes: requested.scopes.clone(),
         approve: None,
+        items: Vec::new(),
     }
 }
 
@@ -1075,6 +1167,69 @@ fn memory_action(proposal: &crate::memory_proposal::Checked, action: bool) -> se
     serde_json::Value::Object(frozen)
 }
 
+/// The card the owner is shown for `card`, as `requested`: one memory as
+/// it always was, several as a batch, each with its own fields (WO-055).
+fn memory_card(card: &MemoryKeep, requested: &Requested) -> ConfirmationRequest {
+    let words = |item: &crate::memory_proposal::Checked| ConfirmationField {
+        label: String::from("What it would remember"),
+        value: item.content.clone(),
+        source: FieldSource::Agent,
+    };
+    let operation = |value: &str| ConfirmationField {
+        label: String::from("Operation"),
+        value: String::from(value),
+        source: FieldSource::Broker,
+    };
+    let items: Vec<&crate::memory_proposal::Checked> = card.items().collect();
+    let (summary, fields, items, approve) = if let [only] = items.as_slice() {
+        (
+            String::from(memory_summary(only.kind)),
+            [
+                operation(
+                    "Keep this in your memory. The agent is given it in every chat and scheduled run from now on, as something you approved. You can forget it in Memory (Settings, then Data controls).",
+                ),
+                words(only),
+            ]
+            .into_iter()
+            .chain(memory_fields(only))
+            .collect(),
+            Vec::new(),
+            "Remember it",
+        )
+    } else {
+        (
+            format!("Remember these {} things?", items.len()),
+            vec![operation(
+                "Keep each of these in your memory. The agent is given them in every chat and scheduled run from now on, as things you approved. You can forget any of them in Memory (Settings, then Data controls).",
+            )],
+            items
+                .iter()
+                .map(|item| ConfirmationItem {
+                    fields: std::iter::once(words(item))
+                        .chain(memory_fields(item))
+                        .collect(),
+                })
+                .collect(),
+            "Remember them",
+        )
+    };
+    ConfirmationRequest {
+        confirmation_id: requested.id.clone(),
+        revision: requested.revision,
+        chat_id: Some(String::from(CONFIRMATION_CHAT)),
+        summary,
+        expires_at: Timestamp::from_second(requested.expires_at)
+            .ok()
+            .map(|at| at.to_string()),
+        digest: requested.digest.clone(),
+        fields,
+        grant_key: requested.grant_key.clone(),
+        scopes: requested.scopes.clone(),
+        approve: Some(String::from(approve)),
+        items,
+    }
+}
+
 /// A memory's kind as the wire and the record name it.
 const fn kind_name(kind: hatchling_memory::MemoryKind) -> &'static str {
     match kind {
@@ -1147,11 +1302,36 @@ fn memory_fields(proposal: &crate::memory_proposal::Checked) -> Vec<Confirmation
     fields
 }
 
-/// Keeps `content`, which the owner approved in request `id`, at `now`:
-/// what they're told, either way.
+/// Keeps each memory on `keep`'s card, which the owner approved in request
+/// `id`, at `now`: what they're told, either way.
 fn kept(config: &Config, id: &str, keep: &MemoryKeep, now: i64) -> Result<String, String> {
-    let content = &keep.proposal.content;
-    crate::memory_keep::keep(config, &keep.proposal, Some(id), &keep.from, now)
+    // Each memory on the card is kept as its own, under the one approval,
+    // and each is said: one that couldn't be kept doesn't hide the others.
+    let mut said = Vec::new();
+    let mut failed = false;
+    for item in keep.items() {
+        match kept_one(config, id, item, &keep.from, now) {
+            Ok(text) => said.push(text),
+            Err(text) => {
+                failed = true;
+                said.push(text);
+            }
+        }
+    }
+    let said = said.join("\n");
+    if failed { Err(said) } else { Ok(said) }
+}
+
+/// Keeps `proposal`, one memory the owner approved in request `id`.
+fn kept_one(
+    config: &Config,
+    id: &str,
+    proposal: &crate::memory_proposal::Checked,
+    from: &crate::memory_keep::ProposedIn,
+    now: i64,
+) -> Result<String, String> {
+    let content = &proposal.content;
+    crate::memory_keep::keep(config, proposal, Some(id), from, now)
         .map(|keeping| match keeping {
             crate::memory_keep::Keeping::Kept => {
                 format!("Remembered: “{content}” The agent is given it from now on.")
@@ -2198,3 +2378,7 @@ mod tests {
         assert_eq!(shown.digest, requested.digest);
     }
 }
+
+#[cfg(test)]
+#[path = "approval_board_batch_tests.rs"]
+mod batch_tests;
