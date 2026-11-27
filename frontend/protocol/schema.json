@@ -9164,15 +9164,43 @@
               "type": "object"
             },
             {
-              "description": "Ask the owner to keep `content` about them in their memory (v18):\none line or a few, in the agent's words. Nothing is written until\nthe owner approves it, in the app; then the broker keeps it, in the\nuser scope, recalled into later runs. The agent never writes there\nitself.",
+              "description": "Ask the owner to keep `content` about them in their memory (v18):\none line or a few, in the agent's words. Nothing is written until\nthe owner approves it, in the app; then the broker keeps it, in the\nuser scope, recalled into later runs. The agent never writes there\nitself.\n\nFrom v35 (WO-048) it says what kind of thing it is, and for guidance\nor a fact about ongoing work, why and when it applies. The broker\nchecks each, shows them to the owner with the words, and keeps the\nones they approve in the item's record.",
               "properties": {
+                "check_by": {
+                  "description": "A calendar day, `YYYY-MM-DD`, after which the owner is asked to\nconfirm it.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "content": {
                   "description": "What to keep. Untrusted text: shown to the owner as the\nagent's words.",
                   "type": "string"
                 },
+                "how_to_apply": {
+                  "description": "When it matters: required for `guidance` and `work`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "memory_kind": {
+                  "description": "`owner` (about the owner), `guidance` (how they want the agent\nto work), `work` (a fact about ongoing work) or `pointer` (where\nsomething lives). Required from v35.\n(Not `kind`: that names the request's family on the wire.)",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "op": {
                   "const": "propose",
                   "type": "string"
+                },
+                "why": {
+                  "description": "Why, as the owner gave it: required for `guidance` and `work`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -17056,7 +17084,7 @@
       "backend_newer": "broker v{backend} needs frontend ≥ v{backend}; frontend is v{frontend} — reload the frontend to update",
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
-    "session_protocol": 34,
+    "session_protocol": 35,
     "ui_schema_version": 13
   },
   "x-roots": {

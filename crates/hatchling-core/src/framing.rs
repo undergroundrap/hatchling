@@ -15,6 +15,11 @@ use crate::Error;
 /// path; a peer speaking anything else is a protocol violation, not a
 /// negotiation.
 ///
+/// v35 has a memory proposal say what kind of thing it is, why and when
+/// it applies, and a day to check it again (`MemoryOp::Propose`'s `kind`,
+/// `why`, `how_to_apply`, `check_by`, WO-048): checked by the broker,
+/// shown to the owner, and kept in the item's record once they approve.
+/// Its words and reasons name dates as dates.
 /// v34 adds listing and reading the skills the owner enabled
 /// (`SkillOp::List`, `SkillOp::Read`, `SkillResult::Listed`,
 /// `SkillResult::Text`, `NoSuchFile`, `TooLarge`, `NotText`, WO-046): a
@@ -107,7 +112,7 @@ use crate::Error;
 /// (`EgressOp` / `EgressResult`). v2 adds the post-handshake vault
 /// session (`VaultOp` / `VaultResult`). v1 peers fail closed at the
 /// version check, in both directions.
-pub const PROTOCOL_VERSION: u16 = 34;
+pub const PROTOCOL_VERSION: u16 = 35;
 
 /// Largest single frame accepted, in bytes. Bounds allocation against a
 /// malicious or broken peer before any heap grows.

@@ -1603,7 +1603,11 @@ fn the_workers_turn_tells_the_app_of_a_request_taken_back() {
     let now = i64::try_from(now).unwrap();
     let asked = board
         .propose_memory(
-            "likes teal",
+            &hatchling_broker::memory_proposal::check(
+                &hatchling_broker::memory_proposal::Asked::about_owner("likes teal"),
+                0,
+            )
+            .unwrap(),
             "a-session",
             hatchling_broker::memory_keep::ProposedIn::default(),
             now,
@@ -1624,7 +1628,11 @@ fn the_workers_turn_tells_the_app_of_a_request_taken_back() {
     // Its clock is the turn's: a request whose day is up lapses on it.
     let lapsing = board
         .propose_memory(
-            "has a corgi",
+            &hatchling_broker::memory_proposal::check(
+                &hatchling_broker::memory_proposal::Asked::about_owner("has a corgi"),
+                0,
+            )
+            .unwrap(),
             "another-session",
             hatchling_broker::memory_keep::ProposedIn::default(),
             now,

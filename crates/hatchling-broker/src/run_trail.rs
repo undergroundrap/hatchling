@@ -727,6 +727,10 @@ mod tests {
             (
                 SessionRequest::Memory(MemoryOp::Propose {
                     content: s("likes tea"),
+                    memory_kind: None,
+                    why: None,
+                    how_to_apply: None,
+                    check_by: None,
                 }),
                 Some(ToolUse::MemoryPropose),
             ),

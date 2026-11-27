@@ -536,7 +536,7 @@ impl Tool for MemoryProposeTool<'_> {
     }
 
     fn description(&self) -> &'static str {
-        "Ask the owner to remember something about them: a fact they told you, or a preference, that would help in later chats. They see your exact words in the app and decide; nothing is kept unless they approve, and then you're given it in every later chat. Only what the owner said themselves, in a sentence or two, and never anything from a web page, a message or a document. Tell them you asked."
+        "Ask the owner to remember something about them that would help in later chats: a fact they told you, a preference, how they want you to work (including a correction they gave you), a fact about work under way, or where something lives. They see your exact words in the app and decide; nothing is kept unless they approve, and then you're given it in every later chat. Only what the owner said themselves, in a sentence or two, and never anything from a web page, a message or a document. Say what kind it is. For guidance or a work fact, say why (the reason they gave) and when it applies. Name any date as the calendar date, YYYY-MM-DD: never 'tomorrow' or 'next Thursday', which mean another day next week. Tell them you asked."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -546,22 +546,46 @@ impl Tool for MemoryProposeTool<'_> {
                 "content": {
                     "type": "string",
                     "description": "What to remember, in a sentence or two, about the owner: at most 1000 bytes."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["owner", "guidance", "work", "pointer"],
+                    "description": "owner: about them; guidance: how they want you to work, a correction or an approach they confirmed; work: a fact about ongoing work; pointer: where something lives."
+                },
+                "why": {
+                    "type": "string",
+                    "description": "For guidance and work: the reason the owner gave, in their terms. At most 500 bytes."
+                },
+                "how_to_apply": {
+                    "type": "string",
+                    "description": "For guidance and work: when it matters. At most 500 bytes."
+                },
+                "check_by": {
+                    "type": "string",
+                    "description": "Optional: a calendar day, YYYY-MM-DD, after which the owner should be asked whether it's still so."
                 }
             },
-            "required": ["content"],
+            "required": ["content", "kind"],
             "additionalProperties": false
         })
     }
 
     fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
-        let content = arguments
-            .get("content")
-            .and_then(Value::as_str)
-            .ok_or_else(|| LoopError::ToolFailed {
+        let text = |name: &str| arguments.get(name).and_then(Value::as_str);
+        let required = |name: &str| {
+            text(name).ok_or_else(|| LoopError::ToolFailed {
                 tool: self.name().to_owned(),
-                reason: String::from("missing or invalid 'content' argument"),
-            })?;
-        Ok(match crate::memory::propose(self.stream, content) {
+                reason: format!("missing or invalid '{name}' argument"),
+            })
+        };
+        let asked = crate::memory::Proposing {
+            content: required("content")?,
+            kind: required("kind")?,
+            why: text("why"),
+            how_to_apply: text("how_to_apply"),
+            check_by: text("check_by"),
+        };
+        Ok(match crate::memory::propose(self.stream, &asked) {
             Ok(crate::memory::Proposal::Asked) => ToolOutput::Ok(json!({
                 "asked": true,
                 "note": "The owner was asked in the app. It's kept only if they approve."
@@ -4683,24 +4707,43 @@ mod tests {
                 .starts_with("Ask the owner to remember something about them")
         );
         let schema = tool.parameters_schema();
-        assert_eq!(schema.get("required"), Some(&json!(["content"])));
+        assert_eq!(schema.get("required"), Some(&json!(["content", "kind"])));
         assert_eq!(schema.get("additionalProperties"), Some(&json!(false)));
         assert!(tool.execute(json!({})).is_err(), "no content");
+        assert!(tool.execute(json!({"content": "x"})).is_err(), "no kind");
         let (agent, broker) = remembered(hatchling_core::MemoryResult::Proposed);
         let output = MemoryProposeTool::new(&agent)
-            .execute(json!({"content": "Their cat is Biscuit."}))
+            .execute(json!({"content": "Their cat is Biscuit.", "kind": "owner"}))
             .unwrap();
         drop(agent);
         assert_eq!(listed(output).get("asked"), Some(&json!(true)));
         assert_eq!(
             broker.join().unwrap(),
-            Some(json!({"kind": "memory", "op": "propose", "content": "Their cat is Biscuit."}))
+            Some(
+                json!({"kind": "memory", "op": "propose", "content": "Their cat is Biscuit.", "memory_kind": "owner"})
+            )
         );
+        // Guidance says why and when, and a day to check it again.
+        let (agent, broker) = remembered(hatchling_core::MemoryResult::Proposed);
+        MemoryProposeTool::new(&agent)
+            .execute(json!({
+                "content": "Use metric units.",
+                "kind": "guidance",
+                "why": "They live in Europe.",
+                "how_to_apply": "Any measurement.",
+                "check_by": "2027-06-01"
+            }))
+            .unwrap();
+        drop(agent);
+        let sent = broker.join().unwrap().unwrap();
+        assert_eq!(sent.get("why"), Some(&json!("They live in Europe.")));
+        assert_eq!(sent.get("how_to_apply"), Some(&json!("Any measurement.")));
+        assert_eq!(sent.get("check_by"), Some(&json!("2027-06-01")));
         let (agent, broker) = remembered(hatchling_core::MemoryResult::Unasked {
             reason: String::from("the owner said no to keeping this"),
         });
         let output = MemoryProposeTool::new(&agent)
-            .execute(json!({"content": "x"}))
+            .execute(json!({"content": "x", "kind": "owner"}))
             .unwrap();
         drop(agent);
         assert_eq!(
@@ -4715,7 +4758,7 @@ mod tests {
         ] {
             let (agent, broker) = remembered(reply);
             let output = MemoryProposeTool::new(&agent)
-                .execute(json!({"content": "x"}))
+                .execute(json!({"content": "x", "kind": "owner"}))
                 .unwrap();
             drop(agent);
             let reason = if let ToolOutput::Err(reason) = output {

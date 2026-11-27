@@ -77,7 +77,7 @@ pub fn note(run_tools: Option<&BTreeSet<ToolGroup>>) -> String {
         "- You can't see the owner's goals here. If they mention one, take it from what they say."
     }));
     lines.push(String::from(if on(ToolGroup::Memory) {
-        "- When the owner tells you something about themselves worth keeping, ask to remember it with memory_propose. They approve it in the app; you can't keep anything yourself, and anything already kept is given to you as recalled memory."
+        "- When the owner tells you something about themselves worth keeping, ask to remember it with memory_propose. They approve it in the app; you can't keep anything yourself, and anything already kept is given to you as recalled memory. When they correct how you work, or confirm an approach, propose it as guidance, with their reason and when it applies. Name dates as calendar dates."
     } else {
         "- You can't keep anything from this conversation for later chats here."
     }));

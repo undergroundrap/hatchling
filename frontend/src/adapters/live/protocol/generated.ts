@@ -4,7 +4,7 @@
 /** The frontend protocol version this build speaks. */
 export const UI_SCHEMA_VERSION = 13;
 /** The broker session protocol version the schema was generated at. */
-export const SESSION_PROTOCOL_VERSION = 34;
+export const SESSION_PROTOCOL_VERSION = 35;
 /** The mismatch sentence when this frontend is the newer side. */
 export const INCOMPATIBLE_FRONTEND_NEWER = 'frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update';
 /** The mismatch sentence when the backend is the newer side. */
@@ -3796,11 +3796,31 @@ export type SessionRequest = {
     readonly op: 'context-read';
 } | {
     /**
+     * A calendar day, `YYYY-MM-DD`, after which the owner is asked to
+     * confirm it.
+     */
+    readonly check_by?: string | null;
+    /**
      * What to keep. Untrusted text: shown to the owner as the
      * agent's words.
      */
     readonly content: string;
+    /**
+     * When it matters: required for `guidance` and `work`.
+     */
+    readonly how_to_apply?: string | null;
+    /**
+     * `owner` (about the owner), `guidance` (how they want the agent
+     * to work), `work` (a fact about ongoing work) or `pointer` (where
+     * something lives). Required from v35.
+     * (Not `kind`: that names the request's family on the wire.)
+     */
+    readonly memory_kind?: string | null;
     readonly op: 'propose';
+    /**
+     * Why, as the owner gave it: required for `guidance` and `work`.
+     */
+    readonly why?: string | null;
 }) | {
     readonly kind: 'skill';
 } & ({

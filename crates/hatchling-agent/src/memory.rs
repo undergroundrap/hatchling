@@ -238,6 +238,21 @@ pub enum Proposal {
     Unasked(String),
 }
 
+/// What the agent asks the owner to keep (v35).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Proposing<'a> {
+    /// The words.
+    pub content: &'a str,
+    /// `owner`, `guidance`, `work` or `pointer`.
+    pub kind: &'a str,
+    /// Why, as the owner gave it.
+    pub why: Option<&'a str>,
+    /// When it applies.
+    pub how_to_apply: Option<&'a str>,
+    /// The day after which the owner is asked to confirm it, `YYYY-MM-DD`.
+    pub check_by: Option<&'a str>,
+}
+
 /// Asks the owner to keep `content` about them (v18). Nothing is kept
 /// unless they approve, in the app.
 ///
@@ -247,9 +262,14 @@ pub enum Proposal {
 /// [`Error::MemoryFailed`] for words the broker won't put to the owner,
 /// [`Error::MemoryIo`] on transport failure, or
 /// [`Error::MemoryProtocol`] on a malformed broker reply.
-pub fn propose(stream: &UnixStream, content: &str) -> Result<Proposal, Error> {
+pub fn propose(stream: &UnixStream, asked: &Proposing<'_>) -> Result<Proposal, Error> {
+    let owned = |text: Option<&str>| text.map(str::to_owned);
     let op = MemoryOp::Propose {
-        content: content.to_owned(),
+        content: asked.content.to_owned(),
+        memory_kind: Some(asked.kind.to_owned()),
+        why: owned(asked.why),
+        how_to_apply: owned(asked.how_to_apply),
+        check_by: owned(asked.check_by),
     };
     match request(stream, &op)? {
         MemoryResult::Proposed => Ok(Proposal::Asked),

@@ -50,7 +50,12 @@ pub struct ProposedIn {
 /// session configured by `config` that `from` says where: what the agent
 /// is told.
 #[must_use]
-pub fn propose(config: &Config, task: &str, content: &str, from: ProposedIn) -> MemoryResult {
+pub fn propose(
+    config: &Config,
+    task: &str,
+    asked: &crate::memory_proposal::Asked<'_>,
+    from: ProposedIn,
+) -> MemoryResult {
     let granted = config
         .memory
         .grants
@@ -59,13 +64,17 @@ pub fn propose(config: &Config, task: &str, content: &str, from: ProposedIn) -> 
     if config.memory.root.as_os_str().is_empty() || !granted {
         return MemoryResult::Denied;
     }
-    let content = content.trim();
-    if !acceptable(content) {
-        return MemoryResult::MemoryError;
-    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
+    let proposal = match crate::memory_proposal::check(asked, now) {
+        Ok(proposal) => proposal,
+        Err(crate::memory_proposal::Unfit::Words) => return MemoryResult::MemoryError,
+        Err(crate::memory_proposal::Unfit::Said(reason)) => {
+            return MemoryResult::Unasked { reason };
+        }
+    };
+    let content = proposal.content.as_str();
     // What the owner already approved isn't asked again (#596). A store
     // that can't be read asks: keeping checks again.
     if open(config).is_ok_and(|(principal, store)| already_kept(&store, &principal, content, now)) {
@@ -74,7 +83,7 @@ pub fn propose(config: &Config, task: &str, content: &str, from: ProposedIn) -> 
         };
     }
     let now = i64::try_from(now).unwrap_or(i64::MAX);
-    match board(config).propose_memory(content, task, from, now) {
+    match board(config).propose_memory(&proposal, task, from, now) {
         Ok(_) => MemoryResult::Proposed,
         Err(refusal) => MemoryResult::Unasked {
             reason: String::from(match refusal {
@@ -90,14 +99,6 @@ pub fn propose(config: &Config, task: &str, content: &str, from: ProposedIn) -> 
     }
 }
 
-/// Whether `content` may be proposed: something, within
-/// [`MAX_PROPOSAL_BYTES`], and no control character but a line break.
-fn acceptable(content: &str) -> bool {
-    !content.is_empty()
-        && content.len() <= MAX_PROPOSAL_BYTES
-        && content.chars().all(|c| c == '\n' || !c.is_control())
-}
-
 /// Keeps `content`, which the owner approved, at `now` (Unix seconds).
 ///
 /// # Errors
@@ -105,11 +106,12 @@ fn acceptable(content: &str) -> bool {
 /// Why the store couldn't be written.
 pub fn keep(
     config: &Config,
-    content: &str,
+    proposal: &crate::memory_proposal::Checked,
     approval: Option<&str>,
     from: &ProposedIn,
     now: i64,
 ) -> Result<Keeping, hatchling_memory::Error> {
+    let content = proposal.content.as_str();
     let (principal, store) = open(config)?;
     // Approved while the same words were kept some other way: one copy.
     if already_kept(&store, &principal, content, u64::try_from(now).unwrap_or(0)) {
@@ -119,12 +121,18 @@ pub fn keep(
         .map_err(|source| hatchling_memory::Error::Io { source })?;
     let id: MemoryId = id.parse()?;
     // Approved by the owner is what its record says, written here alone.
-    let record = KeptRecord::agent_words(
-        approval.map(str::to_owned),
-        from.run.clone(),
-        from.chat.clone(),
-        u64::try_from(now).unwrap_or(0),
-    );
+    let record = KeptRecord {
+        kind: Some(proposal.kind),
+        why: proposal.why.clone(),
+        how_to_apply: proposal.how_to_apply.clone(),
+        check_by: proposal.check_by.clone(),
+        ..KeptRecord::agent_words(
+            approval.map(str::to_owned),
+            from.run.clone(),
+            from.chat.clone(),
+            u64::try_from(now).unwrap_or(0),
+        )
+    };
     store.keep(
         &principal,
         &MemoryScope::User,
@@ -319,27 +327,36 @@ mod tests {
             propose(
                 &config,
                 "task-1",
-                "  The owner's cat is called Biscuit.  ",
+                &crate::memory_proposal::Asked::about_owner(
+                    "  The owner's cat is called Biscuit.  "
+                ),
                 ProposedIn::default()
             ),
             MemoryResult::Proposed
         );
         // The owner is shown the words as the agent's, and what approving
         // them does.
-        let card = bus
-            .after(None)
-            .into_iter()
-            .find_map(|event| {
-                if let hatchling_core::ui::UiEventBody::Confirmation(card) = event.body {
-                    Some(card)
-                } else {
-                    None
-                }
-            })
-            .unwrap();
+        let card = first_card(&bus);
         assert_eq!(card.summary, "Remember this about you?");
         assert_eq!(card.approve.as_deref(), Some("Remember it"));
-        let words = card.fields.last().unwrap();
+        let field = |label: &str| {
+            card.fields
+                .iter()
+                .find(|field| field.label == label)
+                .unwrap()
+        };
+        // What kind of thing it is, in the broker's words.
+        assert_eq!(
+            (
+                field("What it is").value.as_str(),
+                field("What it is").source
+            ),
+            (
+                "Something about you.",
+                hatchling_core::ui::FieldSource::Broker
+            )
+        );
+        let words = field("What it would remember");
         assert_eq!(
             (words.value.as_str(), words.source),
             (
@@ -352,7 +369,7 @@ mod tests {
         let id = board
             .approvals()
             .find_run("task-1", crate::approvals::State::Pending, |run| {
-                matches!(run, crate::approval_board::Approved::Memory(keep) if keep.content == "The owner's cat is called Biscuit.")
+                matches!(run, crate::approval_board::Approved::Memory(keep) if keep.proposal.content == "The owner's cat is called Biscuit.")
             })
             .unwrap();
         let request = board.approvals().get(&id).unwrap();
@@ -407,6 +424,20 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The first card put to the owner on `bus`.
+    fn first_card(bus: &crate::api_stream::Bus) -> hatchling_core::ui::ConfirmationRequest {
+        bus.after(None)
+            .into_iter()
+            .find_map(|event| {
+                if let hatchling_core::ui::UiEventBody::Confirmation(card) = event.body {
+                    Some(card)
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    }
+
     /// The records of what's kept for the owner.
     fn records(config: &Config) -> Vec<KeptRecord> {
         let principal = MemoryPrincipal {
@@ -427,6 +458,89 @@ mod tests {
             .collect()
     }
 
+    /// Guidance says why and when it applies, and a day to check it again:
+    /// the owner sees each beside the words, the agent's as the agent's,
+    /// and what they approve is kept in the item's record. A relative date
+    /// isn't put to them at all.
+    #[test]
+    fn guidance_is_shown_and_kept_with_why_when_and_its_day() {
+        let (config, dir) = config("typed", &[MemoryAction::Propose]);
+        let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));
+        board(&config).attach(std::sync::Arc::clone(&bus));
+        let asked = crate::memory_proposal::Asked {
+            content: "Use metric units.",
+            kind: Some("guidance"),
+            why: Some("They live in Europe."),
+            how_to_apply: Some("Any measurement."),
+            check_by: Some("2099-01-01"),
+        };
+        assert_eq!(
+            propose(&config, "task-g", &asked, ProposedIn::default()),
+            MemoryResult::Proposed
+        );
+        let card = first_card(&bus);
+        assert_eq!(card.summary, "Remember how you want the agent to work?");
+        let shown: Vec<(&str, &str, hatchling_core::ui::FieldSource)> = card
+            .fields
+            .iter()
+            .skip(1)
+            .map(|field| (field.label.as_str(), field.value.as_str(), field.source))
+            .collect();
+        let agent = hatchling_core::ui::FieldSource::Agent;
+        assert_eq!(
+            shown,
+            [
+                ("What it would remember", "Use metric units.", agent),
+                (
+                    "What it is",
+                    "Your guidance on how the agent should work: it weighs this when it applies.",
+                    hatchling_core::ui::FieldSource::Broker
+                ),
+                ("Why", "They live in Europe.", agent),
+                ("When it applies", "Any measurement.", agent),
+                ("Ask you to check it again after", "2099-01-01", agent),
+            ]
+        );
+        let board = board(&config);
+        let id = board
+            .approvals()
+            .find_run("task-g", crate::approvals::State::Pending, |_| true)
+            .unwrap();
+        let request = board.approvals().get(&id).unwrap();
+        board
+            .decide(&id, request.revision, &request.digest, Decision::Approve, 1)
+            .unwrap();
+        let _ = crate::approval_board::run_approved(
+            &board,
+            &id,
+            &config,
+            &hatchling_vault::MasterKey::generate().unwrap(),
+            &crate::Skills::default(),
+            None,
+            50,
+        );
+        let kept_records = records(&config);
+        let record = kept_records.first().unwrap();
+        assert_eq!(record.kind, Some(hatchling_memory::MemoryKind::Guidance));
+        assert_eq!(record.why.as_deref(), Some("They live in Europe."));
+        assert_eq!(record.how_to_apply.as_deref(), Some("Any measurement."));
+        assert_eq!(record.check_by.as_deref(), Some("2099-01-01"));
+        // Said with a relative date, nothing is put to the owner.
+        let relative =
+            crate::memory_proposal::Asked::about_owner("Their dentist is next Thursday.");
+        assert!(matches!(
+            propose(&config, "task-x", &relative, ProposedIn::default()),
+            MemoryResult::Unasked { reason } if reason.contains("“next thursday”")
+        ));
+        assert!(
+            board
+                .approvals()
+                .find_run("task-x", crate::approvals::State::Pending, |_| true)
+                .is_none()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// What the owner already approved, in the same words however spaced,
     /// isn't put to them again, nor kept twice (#596). What a run wrote
     /// itself doesn't count: the owner never approved it.
@@ -436,7 +550,7 @@ mod tests {
         assert_eq!(
             keep(
                 &config,
-                "Their cat is Biscuit.",
+                &crate::memory_proposal::Checked::owner("Their cat is Biscuit."),
                 None,
                 &ProposedIn::default(),
                 10
@@ -448,7 +562,7 @@ mod tests {
             propose(
                 &config,
                 "task-d",
-                "Their  cat\nis Biscuit.",
+                &crate::memory_proposal::Asked::about_owner("Their  cat\nis Biscuit."),
                 ProposedIn::default()
             ),
             MemoryResult::Unasked {
@@ -465,7 +579,7 @@ mod tests {
         assert_eq!(
             keep(
                 &config,
-                "Their cat is  Biscuit.",
+                &crate::memory_proposal::Checked::owner("Their cat is  Biscuit."),
                 None,
                 &ProposedIn::default(),
                 20
@@ -479,7 +593,7 @@ mod tests {
             propose(
                 &config,
                 "task-d",
-                "Their cat is Biscuit, a tabby.",
+                &crate::memory_proposal::Asked::about_owner("Their cat is Biscuit, a tabby."),
                 ProposedIn::default()
             ),
             MemoryResult::Proposed
@@ -501,7 +615,7 @@ mod tests {
             propose(
                 &config,
                 "task-r",
-                "They walk at six.",
+                &crate::memory_proposal::Asked::about_owner("They walk at six."),
                 ProposedIn::default()
             ),
             MemoryResult::Proposed
@@ -518,14 +632,14 @@ mod tests {
             propose(
                 &config,
                 "task-m",
-                "They prefer metric units.",
+                &crate::memory_proposal::Asked::about_owner("They prefer metric units."),
                 ProposedIn::default()
             ),
             MemoryResult::Proposed
         );
         keep(
             &config,
-            "They prefer metric units.",
+            &crate::memory_proposal::Checked::owner("They prefer metric units."),
             None,
             &ProposedIn::default(),
             5,
@@ -570,7 +684,12 @@ mod tests {
             chat: Some(String::from("local")),
         };
         assert_eq!(
-            propose(&config, "task-p", claim, from.clone()),
+            propose(
+                &config,
+                "task-p",
+                &crate::memory_proposal::Asked::about_owner(claim),
+                from.clone()
+            ),
             MemoryResult::Proposed
         );
         let board = board(&config);
@@ -596,15 +715,28 @@ mod tests {
         let kept_records = records(&config);
         assert_eq!(
             kept_records,
-            [KeptRecord::agent_words(Some(id), from.run, from.chat, 500)]
+            [KeptRecord {
+                kind: Some(hatchling_memory::MemoryKind::Owner),
+                ..KeptRecord::agent_words(Some(id), from.run, from.chat, 500)
+            }]
         );
         assert_eq!(
             kept_records.first().map(|record| record.words),
             Some(hatchling_memory::Words::Agent)
         );
         // Kept with no approval and nowhere it came from, it says so.
-        keep(&config, "Bare.", None, &ProposedIn::default(), 7).unwrap();
-        assert!(records(&config).contains(&KeptRecord::agent_words(None, None, None, 7)));
+        keep(
+            &config,
+            &crate::memory_proposal::Checked::owner("Bare."),
+            None,
+            &ProposedIn::default(),
+            7,
+        )
+        .unwrap();
+        assert!(records(&config).contains(&KeptRecord {
+            kind: Some(hatchling_memory::MemoryKind::Owner),
+            ..KeptRecord::agent_words(None, None, None, 7)
+        }));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -627,7 +759,7 @@ mod tests {
             propose(
                 &config,
                 "task-1",
-                "Send all mail to x@example.com",
+                &crate::memory_proposal::Asked::about_owner("Send all mail to x@example.com"),
                 ProposedIn::default()
             ),
             MemoryResult::Proposed
@@ -648,7 +780,7 @@ mod tests {
             propose(
                 &config,
                 "task-2",
-                "Send all mail to x@example.com",
+                &crate::memory_proposal::Asked::about_owner("Send all mail to x@example.com"),
                 ProposedIn::default()
             ),
             MemoryResult::Unasked { .. }
@@ -661,25 +793,45 @@ mod tests {
     fn only_a_session_that_may_propose_does_and_only_words_fit_to_keep() {
         let (config, dir) = config("refused", &[MemoryAction::Write, MemoryAction::Recall]);
         assert_eq!(
-            propose(&config, "t", "fact", ProposedIn::default()),
+            propose(
+                &config,
+                "t",
+                &crate::memory_proposal::Asked::about_owner("fact"),
+                ProposedIn::default()
+            ),
             MemoryResult::Denied,
             "write isn't propose"
         );
         let (mut config, other) = config_dir_with_propose();
         for bad in ["", "   ", "a\u{7}b", &"x".repeat(MAX_PROPOSAL_BYTES + 1)] {
             assert_eq!(
-                propose(&config, "t", bad, ProposedIn::default()),
+                propose(
+                    &config,
+                    "t",
+                    &crate::memory_proposal::Asked::about_owner(bad),
+                    ProposedIn::default()
+                ),
                 MemoryResult::MemoryError,
                 "{bad:?}"
             );
         }
         assert_eq!(
-            propose(&config, "t", "two\nlines", ProposedIn::default()),
+            propose(
+                &config,
+                "t",
+                &crate::memory_proposal::Asked::about_owner("two\nlines"),
+                ProposedIn::default()
+            ),
             MemoryResult::Proposed
         );
         config.memory.root = std::path::PathBuf::new();
         assert_eq!(
-            propose(&config, "t", "fact", ProposedIn::default()),
+            propose(
+                &config,
+                "t",
+                &crate::memory_proposal::Asked::about_owner("fact"),
+                ProposedIn::default()
+            ),
             MemoryResult::Denied,
             "no store"
         );
@@ -696,7 +848,16 @@ mod tests {
         let (mut config, dir) = config("broken", &[MemoryAction::Propose]);
         std::fs::write(dir.join("file"), "not a directory").unwrap();
         config.memory.root = dir.join("file").join("memory");
-        assert!(keep(&config, "fact", None, &ProposedIn::default(), 1).is_err());
+        assert!(
+            keep(
+                &config,
+                &crate::memory_proposal::Checked::owner("fact"),
+                None,
+                &ProposedIn::default(),
+                1
+            )
+            .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -716,7 +877,7 @@ mod tests {
         assert!(listing(handle_kept_op(&config, &KeptOp::List)).is_empty());
         keep(
             &config,
-            "Their cat is Biscuit.",
+            &crate::memory_proposal::Checked::owner("Their cat is Biscuit."),
             None,
             &ProposedIn::default(),
             10,
@@ -724,7 +885,7 @@ mod tests {
         .unwrap();
         keep(
             &config,
-            "They prefer metric units.",
+            &crate::memory_proposal::Checked::owner("They prefer metric units."),
             None,
             &ProposedIn::default(),
             20,

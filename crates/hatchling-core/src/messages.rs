@@ -238,11 +238,32 @@ pub enum MemoryOp {
     /// the owner approves it, in the app; then the broker keeps it, in the
     /// user scope, recalled into later runs. The agent never writes there
     /// itself.
+    ///
+    /// From v35 (WO-048) it says what kind of thing it is, and for guidance
+    /// or a fact about ongoing work, why and when it applies. The broker
+    /// checks each, shows them to the owner with the words, and keeps the
+    /// ones they approve in the item's record.
     #[serde(rename = "propose")]
     Propose {
         /// What to keep. Untrusted text: shown to the owner as the
         /// agent's words.
         content: String,
+        /// `owner` (about the owner), `guidance` (how they want the agent
+        /// to work), `work` (a fact about ongoing work) or `pointer` (where
+        /// something lives). Required from v35.
+        /// (Not `kind`: that names the request's family on the wire.)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        memory_kind: Option<String>,
+        /// Why, as the owner gave it: required for `guidance` and `work`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
+        /// When it matters: required for `guidance` and `work`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        how_to_apply: Option<String>,
+        /// A calendar day, `YYYY-MM-DD`, after which the owner is asked to
+        /// confirm it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        check_by: Option<String>,
     },
 }
 
@@ -5683,7 +5704,7 @@ mod room_tests {
             serde_json::from_str::<SessionResponse>(&json).unwrap(),
             none
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 34);
+        assert_eq!(crate::PROTOCOL_VERSION, 35);
     }
 
     /// A write, an edit and what they come to go as the protocol document
@@ -5788,7 +5809,7 @@ mod room_tests {
             },
             r#"{"kind":"room","result":"no-change","reason":"the Room has no such file"}"#,
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 34);
+        assert_eq!(crate::PROTOCOL_VERSION, 35);
     }
 
     /// A hand-over and its results go on the wire as written, and a field
@@ -5867,7 +5888,7 @@ mod room_tests {
         assert!(
             serde_json::from_str::<LeftOut>(r#"{"links":0,"mounts":0,"others":0,"x":1}"#).is_err()
         );
-        assert_eq!(crate::PROTOCOL_VERSION, 34);
+        assert_eq!(crate::PROTOCOL_VERSION, 35);
     }
 
     /// A suggested idea says what it needs and the goal it comes from
@@ -5926,6 +5947,6 @@ mod room_tests {
         ] {
             assert!(asked(&format!("{start}{rest}")).is_err(), "{why}");
         }
-        assert_eq!(crate::PROTOCOL_VERSION, 34);
+        assert_eq!(crate::PROTOCOL_VERSION, 35);
     }
 }
