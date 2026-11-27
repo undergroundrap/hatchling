@@ -3799,6 +3799,7 @@ mod memory_proposal_tests {
             }
         );
     }
+}
 
 #[cfg(test)]
 mod recall_ask_tests {
@@ -3833,9 +3834,9 @@ mod recall_ask_tests {
         if let Ok(shared) = MasterKey::generate() {
             crate::held_keys::publish(Box::new(shared));
         }
-        let principal = hatchling_memory::MemoryPrincipal {
+        let principal = MemoryPrincipal {
             peer_uid: rustix::process::getuid().as_raw(),
-            session_id: hatchling_memory::SessionId::generate().unwrap(),
+            session_id: SessionId::generate().unwrap(),
         };
         let store = crate::memory_sealed::open_published(&config.memory.root).unwrap();
         let recall: hatchling_memory::Tag = crate::memory_keep::RECALL_TAG.parse().unwrap();
@@ -3853,7 +3854,11 @@ mod recall_ask_tests {
         };
         keep("kept-dentist", "Their dentist is Dr Lee.", 1);
         for n in 0..5 {
-            keep(&format!("kept-{n}"), &format!("A note about tea, number {n}."), 10 + n);
+            keep(
+                &format!("kept-{n}"),
+                &format!("A note about tea, number {n}."),
+                10 + n,
+            );
         }
         let key = MasterKey::generate().unwrap();
         let skills = Skills::default();
@@ -3890,7 +3895,8 @@ mod recall_ask_tests {
             write_frame(&agent, &serde_json::to_vec(&request).unwrap()).unwrap();
             let response: SessionResponse =
                 serde_json::from_slice(&read_frame(&agent).unwrap()).unwrap();
-            let SessionResponse::Memory(MemoryResult::Recalled { items_json, .. }) = response else {
+            let SessionResponse::Memory(MemoryResult::Recalled { items_json, .. }) = response
+            else {
                 unreachable!("a recall's answer: {response:?}");
             };
             let first: hatchling_memory::MemoryItem =

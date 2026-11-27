@@ -839,7 +839,18 @@ mod tests {
         }
         let _ = reads(&counts);
         let recalled = store
-            .recall_budgeted(&p, &[MemoryScope::User], &recall, 5_000, &RecallAsk { query: &[], only: None, index_bytes: 3 * 1024, full_bytes: 5 * 1024 })
+            .recall_budgeted(
+                &p,
+                &[MemoryScope::User],
+                &recall,
+                5_000,
+                &RecallAsk {
+                    query: &[],
+                    only: None,
+                    index_bytes: 3 * 1024,
+                    full_bytes: 5 * 1024,
+                },
+            )
             .unwrap();
         let (item_reads, index_reads) = reads(&counts);
         assert_eq!(index_reads, 1, "the index, once");
@@ -874,16 +885,38 @@ mod tests {
         let recall = Tag::from_str("recall").unwrap();
         let keep = |raw: &str, words: &str, at: u64| {
             store
-                .keep(&p, &MemoryScope::User, &MemoryId::from_str(raw).unwrap(), words, std::slice::from_ref(&recall), KeptRecord::agent_words(None, None, None, at))
+                .keep(
+                    &p,
+                    &MemoryScope::User,
+                    &MemoryId::from_str(raw).unwrap(),
+                    words,
+                    std::slice::from_ref(&recall),
+                    KeptRecord::agent_words(None, None, None, at),
+                )
                 .unwrap();
         };
         keep("kept-dentist", "Their dentist is Dr Lee, on Mill Road.", 1);
         for n in 0..30u64 {
-            keep(&format!("kept-{n:02}"), &format!("Fact {n} about their garden and the weather."), 100 + n);
+            keep(
+                &format!("kept-{n:02}"),
+                &format!("Fact {n} about their garden and the weather."),
+                100 + n,
+            );
         }
         let given = |query: &[String], only: Option<&MemoryId>, full: usize| -> Vec<String> {
             store
-                .recall_budgeted(&p, &[MemoryScope::User], &recall, 500, &RecallAsk { query, only, index_bytes: 0, full_bytes: full })
+                .recall_budgeted(
+                    &p,
+                    &[MemoryScope::User],
+                    &recall,
+                    500,
+                    &RecallAsk {
+                        query,
+                        only,
+                        index_bytes: 0,
+                        full_bytes: full,
+                    },
+                )
                 .unwrap()
                 .items
                 .into_iter()
@@ -891,14 +924,28 @@ mod tests {
                 .collect()
         };
         // Room for three whole: the newest, unasked; the dentist, asked.
-        let room = 3 * "Fact 29 about their garden and the weather.".len();
-        assert_eq!(given(&[], None, room), ["kept-29", "kept-28", "kept-27"]);
-        let asked = given(&crate::recall_index::query_terms("when is the dentist?"), None, room);
-        assert_eq!(asked.first().map(String::as_str), Some("kept-dentist"), "{asked:?}");
+        let three_whole = 3 * "Fact 29 about their garden and the weather.".len();
+        assert_eq!(
+            given(&[], None, three_whole),
+            ["kept-29", "kept-28", "kept-27"]
+        );
+        let asked = given(
+            &crate::recall_index::query_terms("when is the dentist?"),
+            None,
+            three_whole,
+        );
+        assert_eq!(
+            asked.first().map(String::as_str),
+            Some("kept-dentist"),
+            "{asked:?}"
+        );
         // A read gives the one item it names, and nothing for an id not kept.
         let dentist = MemoryId::from_str("kept-dentist").unwrap();
         assert_eq!(given(&[], Some(&dentist), 4096), ["kept-dentist"]);
         assert!(given(&[], Some(&MemoryId::from_str("kept-none").unwrap()), 4096).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// An item past its TTL found by a tag recall is removed, from the
     /// items and from the index.
     #[test]
@@ -930,9 +977,66 @@ mod tests {
             "removed from the items"
         );
         let index = store
-            .recall_budgeted(&p, &[MemoryScope::User], &recall, 5, &RecallAsk { query: &[], only: None, index_bytes: 4096, full_bytes: 0 })
+            .recall_budgeted(
+                &p,
+                &[MemoryScope::User],
+                &recall,
+                5,
+                &RecallAsk {
+                    query: &[],
+                    only: None,
+                    index_bytes: 4096,
+                    full_bytes: 0,
+                },
+            )
             .unwrap();
         assert!(index.index.is_empty(), "and from the index");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// An item changed to no longer be recalled, without the index being
+    /// told, isn't given: its own tags decide.
+    #[test]
+    fn an_item_retagged_behind_the_index_is_not_given() {
+        let (store, _counts, root) = counted("behind");
+        let p = principal(7, "sess-behind");
+        let recall = Tag::from_str("recall").unwrap();
+        let id = MemoryId::from_str("kept-d").unwrap();
+        store
+            .keep(
+                &p,
+                &MemoryScope::User,
+                &id,
+                "kept-d",
+                std::slice::from_ref(&recall),
+                KeptRecord::agent_words(None, None, None, 1),
+            )
+            .unwrap();
+        let mut retagged = store
+            .recall(&p, &MemoryScope::User, &id, 10)
+            .unwrap()
+            .unwrap();
+        retagged.tags = vec![Tag::from_str("superseded").unwrap()];
+        let space = MemoryStore::space(&p, &MemoryScope::User);
+        store
+            .backing
+            .put(&space, &id, &serde_json::to_vec(&retagged).unwrap())
+            .unwrap();
+        let given = store
+            .recall_budgeted(
+                &p,
+                &[MemoryScope::User],
+                &recall,
+                10,
+                &RecallAsk {
+                    query: &[],
+                    only: None,
+                    index_bytes: 4096,
+                    full_bytes: 4096,
+                },
+            )
+            .unwrap();
+        assert!(given.items.is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -947,7 +1051,18 @@ mod tests {
         let id = |raw: &str| MemoryId::from_str(raw).unwrap();
         let listed = |store: &MemoryStore| -> Vec<String> {
             store
-                .recall_budgeted(&p, &[MemoryScope::User], &recall, 10, &RecallAsk { query: &[], only: None, index_bytes: 4096, full_bytes: 0 })
+                .recall_budgeted(
+                    &p,
+                    &[MemoryScope::User],
+                    &recall,
+                    10,
+                    &RecallAsk {
+                        query: &[],
+                        only: None,
+                        index_bytes: 4096,
+                        full_bytes: 0,
+                    },
+                )
                 .unwrap()
                 .index
                 .into_iter()
@@ -956,7 +1071,18 @@ mod tests {
         };
         let given = |store: &MemoryStore| -> Vec<String> {
             store
-                .recall_budgeted(&p, &[MemoryScope::User], &recall, 10, &RecallAsk { query: &[], only: None, index_bytes: 4096, full_bytes: 4096 })
+                .recall_budgeted(
+                    &p,
+                    &[MemoryScope::User],
+                    &recall,
+                    10,
+                    &RecallAsk {
+                        query: &[],
+                        only: None,
+                        index_bytes: 4096,
+                        full_bytes: 4096,
+                    },
+                )
                 .unwrap()
                 .items
                 .into_iter()

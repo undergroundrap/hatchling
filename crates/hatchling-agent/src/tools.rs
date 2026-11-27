@@ -644,6 +644,18 @@ fn no_looks_left() -> ToolOutput {
     }))
 }
 
+/// Registers the memory tools over `stream`: proposing, and reading and
+/// searching, which share the run's bound (WO-048).
+pub fn register_memory<'s>(
+    registry: &mut hatchling_loop::ToolRegistry<'s>,
+    stream: &'s UnixStream,
+) {
+    registry.register(Box::new(MemoryProposeTool::new(stream)));
+    let looks = Arc::new(MemoryLooks::default());
+    registry.register(Box::new(MemorySearchTool::new(stream, Arc::clone(&looks))));
+    registry.register(Box::new(MemoryReadTool::new(stream, looks)));
+}
+
 /// Searches the owner's memory by words (v39): the index lines of what
 /// best matches, as recalled data.
 pub struct MemorySearchTool<'s> {
@@ -756,13 +768,14 @@ impl Tool for MemoryReadTool<'_> {
     }
 
     fn execute(&self, arguments: Value) -> Result<ToolOutput, LoopError> {
-        let id = arguments
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| LoopError::ToolFailed {
-                tool: self.name().to_owned(),
-                reason: String::from("missing or invalid 'id' argument"),
-            })?;
+        let id =
+            arguments
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| LoopError::ToolFailed {
+                    tool: self.name().to_owned(),
+                    reason: String::from("missing or invalid 'id' argument"),
+                })?;
         if !self.looks.take() {
             return Ok(no_looks_left());
         }
@@ -4876,7 +4889,7 @@ mod tests {
         broker.join().unwrap();
     }
 
-/// An index entry and an item, as a budgeted recall gives them.
+    /// An index entry and an item, as a budgeted recall gives them.
     fn recalled(index: &[&str], items: &[&str]) -> hatchling_core::MemoryResult {
         let item = |id: &str| hatchling_memory::MemoryItem {
             id: id.parse().unwrap(),
@@ -4891,9 +4904,14 @@ mod tests {
         hatchling_core::MemoryResult::Recalled {
             index_json: index
                 .iter()
-                .map(|id| serde_json::to_string(&hatchling_memory::RecallEntry::of(&item(id))).unwrap())
+                .map(|id| {
+                    serde_json::to_string(&hatchling_memory::RecallEntry::of(&item(id))).unwrap()
+                })
                 .collect(),
-            items_json: items.iter().map(|id| serde_json::to_string(&item(id)).unwrap()).collect(),
+            items_json: items
+                .iter()
+                .map(|id| serde_json::to_string(&item(id)).unwrap())
+                .collect(),
             left_out: 0,
         }
     }
@@ -4904,66 +4922,132 @@ mod tests {
         let (a, _b) = socket_pair();
         let search = MemorySearchTool::new(&a, Arc::clone(&looks));
         let read = MemoryReadTool::new(&a, Arc::clone(&looks));
-        assert_eq!((search.name(), read.name()), ("memory_search", "memory_read"));
-        assert_eq!(search.parameters_schema().get("required"), Some(&json!(["query"])));
-        assert_eq!(read.parameters_schema().get("required"), Some(&json!(["id"])));
+        assert_eq!(
+            (search.name(), read.name()),
+            ("memory_search", "memory_read")
+        );
+        assert_eq!(
+            search.parameters_schema().get("required"),
+            Some(&json!(["query"]))
+        );
+        assert_eq!(
+            read.parameters_schema().get("required"),
+            Some(&json!(["id"]))
+        );
         assert!(search.execute(json!({})).is_err(), "no query");
         assert!(read.execute(json!({})).is_err(), "no id");
         // A search: its words on the wire, the index lines it found.
         let (agent, broker) = remembered(recalled(&["kept-1"], &[]));
-        let found = listed(MemorySearchTool::new(&agent, Arc::clone(&looks)).execute(json!({"query": "dentist"})).unwrap());
+        let found = listed(
+            MemorySearchTool::new(&agent, Arc::clone(&looks))
+                .execute(json!({"query": "dentist"}))
+                .unwrap(),
+        );
         drop(agent);
         let asked = broker.join().unwrap().unwrap();
         assert_eq!(asked.get("query"), Some(&json!("dentist")));
         assert_eq!(asked.get("full_bytes"), Some(&json!(0)));
         assert_eq!(found.get("found"), Some(&json!(1)));
-        assert!(found.get("recalled").and_then(Value::as_str).is_some_and(|block| block.contains("- id kept-1;")));
+        assert!(
+            found
+                .get("recalled")
+                .and_then(Value::as_str)
+                .is_some_and(|block| block.contains("- id kept-1;"))
+        );
         let (agent, broker) = remembered(recalled(&[], &[]));
-        let none = listed(MemorySearchTool::new(&agent, Arc::clone(&looks)).execute(json!({"query": "x"})).unwrap());
+        let none = listed(
+            MemorySearchTool::new(&agent, Arc::clone(&looks))
+                .execute(json!({"query": "x"}))
+                .unwrap(),
+        );
         drop(agent);
         broker.join().unwrap();
         assert_eq!(none.get("found"), Some(&json!(0)));
+        let (agent, broker) = remembered(hatchling_core::MemoryResult::Denied);
+        assert!(matches!(
+            MemorySearchTool::new(&agent, Arc::clone(&looks))
+                .execute(json!({"query": "x"}))
+                .unwrap(),
+            ToolOutput::Err(_)
+        ));
+        drop(agent);
+        broker.join().unwrap();
+    }
+
+    #[test]
+    fn memory_read_gives_one_item_whole_and_both_share_their_bound() {
+        let looks = Arc::new(MemoryLooks::default());
+        let (a, _b) = socket_pair();
+        let search = MemorySearchTool::new(&a, Arc::clone(&looks));
+        let read = MemoryReadTool::new(&a, Arc::clone(&looks));
+        assert_eq!(read.name(), "memory_read");
+        assert_eq!(
+            read.parameters_schema().get("required"),
+            Some(&json!(["id"]))
+        );
+        assert!(read.execute(json!({})).is_err(), "no id");
         // A read: its id on the wire, the item whole; or why not.
         let (agent, broker) = remembered(recalled(&["kept-1"], &["kept-1"]));
-        let whole = listed(MemoryReadTool::new(&agent, Arc::clone(&looks)).execute(json!({"id": "kept-1"})).unwrap());
+        let whole = listed(
+            MemoryReadTool::new(&agent, Arc::clone(&looks))
+                .execute(json!({"id": "kept-1"}))
+                .unwrap(),
+        );
         drop(agent);
-        assert_eq!(broker.join().unwrap().unwrap().get("id"), Some(&json!("kept-1")));
+        assert_eq!(
+            broker.join().unwrap().unwrap().get("id"),
+            Some(&json!("kept-1"))
+        );
         let block = whole.get("recalled").and_then(Value::as_str).unwrap();
-        assert!(block.contains("The words of kept-1.") && !block.contains("- id kept-1;"), "{block}");
+        assert!(
+            block.contains("The words of kept-1.") && !block.contains("- id kept-1;"),
+            "{block}"
+        );
         for (reply, says) in [
-            (recalled(&[], &[]), "nothing you remember is recalled with that id"),
-            (recalled(&["kept-1"], &[]), "it's longer than a read gives (2048 bytes)"),
+            (
+                recalled(&[], &[]),
+                "nothing you remember is recalled with that id",
+            ),
+            (
+                recalled(&["kept-1"], &[]),
+                "it's longer than a read gives (2048 bytes)",
+            ),
         ] {
             let (agent, broker) = remembered(reply);
-            let output = listed(MemoryReadTool::new(&agent, Arc::clone(&looks)).execute(json!({"id": "kept-1"})).unwrap());
+            let output = listed(
+                MemoryReadTool::new(&agent, Arc::clone(&looks))
+                    .execute(json!({"id": "kept-1"}))
+                    .unwrap(),
+            );
             drop(agent);
             broker.join().unwrap();
             assert_eq!(output.get("reason"), Some(&json!(says)));
         }
         let (agent, broker) = remembered(hatchling_core::MemoryResult::Denied);
         assert!(matches!(
-            MemoryReadTool::new(&agent, Arc::clone(&looks)).execute(json!({"id": "kept-1"})).unwrap(),
+            MemoryReadTool::new(&agent, Arc::clone(&looks))
+                .execute(json!({"id": "kept-1"}))
+                .unwrap(),
             ToolOutput::Err(_)
         ));
         drop(agent);
         broker.join().unwrap();
-        let (agent, broker) = remembered(hatchling_core::MemoryResult::Denied);
-        assert!(matches!(
-            MemorySearchTool::new(&agent, Arc::clone(&looks)).execute(json!({"query": "x"})).unwrap(),
-            ToolOutput::Err(_)
-        ));
-        drop(agent);
-        broker.join().unwrap();
-        // Seven looks taken; nine more, then none, for both tools at once.
-        for _ in 7..MEMORY_LOOKS {
+        // Four looks taken; twelve more, then none, for both tools at once.
+        for _ in 4..MEMORY_LOOKS {
             assert!(looks.take());
         }
         let refused = json!({"refused": "16 memory reads and searches per run, and they're used: work with what you have"});
-        assert_eq!(listed(search.execute(json!({"query": "x"})).unwrap()), refused);
-        assert_eq!(listed(read.execute(json!({"id": "kept-1"})).unwrap()), refused);
+        assert_eq!(
+            listed(search.execute(json!({"query": "x"})).unwrap()),
+            refused
+        );
+        assert_eq!(
+            listed(read.execute(json!({"id": "kept-1"})).unwrap()),
+            refused
+        );
     }
 
-        /// A broker stand-in answering one memory op with `reply`, and handing
+    /// A broker stand-in answering one memory op with `reply`, and handing
     /// back what it was asked.
     fn remembered(
         reply: hatchling_core::MemoryResult,

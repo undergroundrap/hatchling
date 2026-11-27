@@ -100,7 +100,7 @@ impl MemoryProvider for BrokerMemoryProvider<'_> {
             FULL_BYTES,
             memory::Narrowed::default(),
         )
-            .map_err(|error| RecallError(format!("broker budgeted recall failed: {error}")))
+        .map_err(|error| RecallError(format!("broker budgeted recall failed: {error}")))
     }
 
     fn recall(&self) -> Result<Vec<MemoryItem>, RecallError> {
