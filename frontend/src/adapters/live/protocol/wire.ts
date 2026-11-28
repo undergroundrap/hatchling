@@ -7933,6 +7933,19 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                         "const": "agent_step",
                         "type": "string"
                     },
+                    "loading": {
+                        "type": [
+                            "string",
+                            "null"
+                        ]
+                    },
+                    "tokens": {
+                        "minimum": 0,
+                        "type": [
+                            "integer",
+                            "null"
+                        ]
+                    },
                     "tool": {
                         "anyOf": [
                             {

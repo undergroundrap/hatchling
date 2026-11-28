@@ -95,6 +95,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **The chat says what the agent is doing, and what it has written** ([#775](https://github.com/undergroundrap/hatchling/issues/775)). While it waits for its model, the status line says "Thinking", not "Asking the model", and after each reply it adds what the model has written so far: "Thinking · 1 min 56 s · 2.1K tokens". When the model's server on this machine is still loading the model (the first answer after a restart can take a minute or two), it says so by name: "Loading gemma4:12b". Hatchling asks Ollama's own list of loaded models, and says nothing when it can't tell. UI schema v19: an `agent_step`'s `tokens` and `loading`.
+
 - **Breaking for hatchling-broker:** `approvals::Refusal` gains `NotWaiting`, and `Approvals` gains `propose_items` and `revise` ([WO-055](docs/workorders/workorder-055-several-memories-one-card.md), slice 1). A request waiting for the owner can be revised by its task: a new revision and digest, keeping its scopes, grant and deadline, so a decision on what the owner saw before is refused. A request made of items refuses each item once it's denied. Nothing uses it yet: the memory card that does follows. Not in any release.
 
 - **Breaking for hatchling-isolation:** `IsolationBackend::supervise` takes the helper's `std::process::Child` by value, not `&mut` ([#688](https://github.com/undergroundrap/hatchling/issues/688)). Once supervised, nothing else can wait on the helper or signal it by its pid. Callers pass the child instead of a reference, and drop nothing after.

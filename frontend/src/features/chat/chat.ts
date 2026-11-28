@@ -243,7 +243,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         // Live, the broker says what the run is doing: the chat says that, and how long it has been.
         const running = ctx.state.mode === 'live' && ctx.state.turn === 'working' ? ctx.state.threads.find((thread) => thread.state === 'running' && thread.chatId === ctx.ui.chatId) : undefined;
         const stateLabel = ctx.state.turn === 'working' ? running?.statusTitle ?? 'Working on it' : ctx.state.turn === 'awaiting' ? 'Waiting for your confirmation' : ctx.state.turn === 'interrupted' ? 'Interrupted — context saved' : 'Stalled — waiting on a source';
-        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, running?.startedAt ? elapsedSince(running.startedAt) : null, turnButton(ctx)));
+        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, running?.startedAt ? elapsedSince(running.startedAt) : null, writtenWords(ctx), turnButton(ctx)));
     }
     if (ctx.ui.attachmentNames.length)
         area.append(h('div', { class: 'attached-files' }, ...ctx.ui.attachmentNames.map((id) => h('span', { class: 'attachment-chip' }, icon('file', 14), ctx.state.artifacts.find((item) => item.id === id)?.title ?? 'Local file', iconButton('close', 'Remove attachment', () => { ctx.ui.attachmentNames = ctx.ui.attachmentNames.filter((item) => item !== id); ctx.render(); })))));
@@ -261,6 +261,13 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     }
     return area;
 }
+/** What the model has written so far for the run working in this chat, as the broker counted it (#775). */
+function writtenWords(ctx: AppContext): HTMLElement | null {
+    const written = ctx.state.turn === 'working' ? ctx.usage?.written(ctx.ui.chatId) ?? null : null;
+    return written === null ? null : h('span', { class: 'turn-tokens' }, `· ${TOKENS.format(written)} tokens`);
+}
+/** Tokens, as the status line says them: 2.1K. */
+const TOKENS = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
 /** What the chat offers for the run in flight: Stop while it works, and, in the demo, Resume once it's paused. Connected to Hatchling a stopped run is over, so there's nothing to resume (WO-051). */
 export function turnAction(mode: AppContext['state']['mode'], turn: AppContext['state']['turn']): 'stop' | 'resume' | null {
     if (turn === 'working')

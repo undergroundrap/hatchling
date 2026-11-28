@@ -2992,7 +2992,7 @@ mod gate_scope_tests {
             bus.after(None)
                 .into_iter()
                 .filter_map(|event| {
-                    if let hatchling_core::ui::UiEventBody::AgentStep { tool } = event.body {
+                    if let hatchling_core::ui::UiEventBody::AgentStep { tool, .. } = event.body {
                         Some(tool)
                     } else {
                         None
@@ -3327,7 +3327,7 @@ mod gate_scope_tests {
             bus.after(None)
                 .into_iter()
                 .filter_map(|event| {
-                    if let hatchling_core::ui::UiEventBody::AgentStep { tool } = event.body {
+                    if let hatchling_core::ui::UiEventBody::AgentStep { tool, .. } = event.body {
                         Some(tool)
                     } else {
                         None

@@ -62,6 +62,9 @@ pub struct Trail {
     memory_low: bool,
     /// Where the computer's memory is read: [`crate::model_window::memory`].
     memory: fn() -> Option<(u64, u64)>,
+    /// Asks the model's server whether it has the model loaded:
+    /// [`crate::model_window::is_loaded`].
+    loaded: fn(&str, &str) -> Option<bool>,
     tools: Vec<ToolTally>,
     model_calls: u32,
     model_calls_refused: u32,
@@ -107,6 +110,7 @@ impl Trail {
             model_on_cpu: None,
             memory_low: false,
             memory: crate::model_window::memory,
+            loaded: crate::model_window::is_loaded,
             tools: Vec::new(),
             model_calls: 0,
             model_calls_refused: 0,
@@ -136,15 +140,39 @@ impl Trail {
     ///
     /// The app is told what kind of thing is being done, as the summary
     /// says it afterwards, and nothing of what with.
+    ///
+    /// With each step goes what the run's model has written so far, and,
+    /// as it waits for a model whose server on this machine says it isn't
+    /// loaded, that model's name: its answer waits for it to load (#775).
     pub fn starting(&mut self, tool: Option<ToolUse>) {
         let step = tool.map_or(Step::Model, Step::Tool);
         if !self.chat || self.step == Some(step) {
             return;
         }
         if let Some(app) = &self.app {
-            app.step(tool);
+            let loading = if step == Step::Model {
+                self.model
+                    .as_ref()
+                    .filter(|(endpoint, name)| (self.loaded)(endpoint, name) == Some(false))
+                    .map(|(_, name)| name.clone())
+            } else {
+                None
+            };
+            app.step_with(tool, self.tokens(), loading);
         }
         self.step = Some(step);
+    }
+
+    /// The tokens the run's model has written so far: none before any.
+    fn tokens(&self) -> Option<u64> {
+        (self.output_tokens > 0).then_some(self.output_tokens)
+    }
+
+    /// The trail, asking whether the model is loaded with `loaded`.
+    #[cfg(test)]
+    pub(crate) const fn asking_loaded(mut self, loaded: fn(&str, &str) -> Option<bool>) -> Self {
+        self.loaded = loaded;
+        self
     }
 
     /// Tells the owner's app that a chat run took `count` more of their
@@ -276,6 +304,13 @@ impl Trail {
                 }
             }
             self.model_call(input, output);
+            // A chat's app is told what its model has written so far, and
+            // that it's no longer loading (#775).
+            if self.chat && self.step == Some(Step::Model) {
+                if let Some(app) = &self.app {
+                    app.step_with(None, self.tokens(), None);
+                }
+            }
         }
     }
 
@@ -894,7 +929,7 @@ mod tests {
         bus.after(None)
             .into_iter()
             .filter_map(|event| {
-                if let hatchling_core::ui::UiEventBody::AgentStep { tool } = event.body {
+                if let hatchling_core::ui::UiEventBody::AgentStep { tool, .. } = event.body {
                     Some(tool)
                 } else {
                     None
@@ -953,6 +988,109 @@ mod tests {
         let mut alone = Trail::new(None, "run", "cell").of_chat(true);
         alone.starting(None);
         alone.starting(Some(ToolUse::Room));
+    }
+
+    /// Each step told, with the tokens and the model being loaded it says.
+    fn progress_told(
+        bus: &crate::api_stream::Bus,
+    ) -> Vec<(Option<ToolUse>, Option<u64>, Option<String>)> {
+        bus.after(None)
+            .into_iter()
+            .filter_map(|event| {
+                if let hatchling_core::ui::UiEventBody::AgentStep {
+                    tool,
+                    tokens,
+                    loading,
+                } = event.body
+                {
+                    Some((tool, tokens, loading))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// As a chat run waits for its model, the app is told the model is
+    /// loading only when its server listed what it has loaded and that
+    /// isn't there (#775); each reply then tells what the model has written
+    /// so far, and that it's no longer loading.
+    #[test]
+    fn a_chat_run_tells_the_model_loading_and_its_tokens_so_far() {
+        let usage =
+            std::env::temp_dir().join(format!("hatchling-trail-progress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&usage);
+        let (app, bus) = attached();
+        let mut trail = Trail::new(None, "run", "cell")
+            .of_chat(true)
+            .telling(app)
+            .counting_in(&usage)
+            .asking(Some("http://localhost:11434/v1"), Some("gemma4:12b"))
+            .asking_loaded(|endpoint, name| {
+                assert_eq!(
+                    (endpoint, name),
+                    ("http://localhost:11434/v1", "gemma4:12b")
+                );
+                Some(false)
+            });
+        let request = hatchling_egress::EgressRequest {
+            method: s("POST"),
+            destination: s("localhost:11434"),
+            path: s("/v1/chat/completions"),
+            headers: Vec::new(),
+            body: Vec::new(),
+            surrogate_b64: String::new(),
+        };
+        let reply = hatchling_egress::EgressResponse {
+            status: 200,
+            headers: Vec::new(),
+            body: br#"{"model":"m","usage":{"prompt_tokens":40,"completion_tokens":7}}"#.to_vec(),
+        };
+        let now = hatchling_scheduler::Timestamp::now().as_second();
+        trail.starting(None);
+        trail.count(&request, &reply, now);
+        trail.starting(Some(ToolUse::Room));
+        trail.starting(None);
+        trail.count(&request, &reply, now);
+        assert_eq!(
+            progress_told(&bus),
+            [
+                (None, None, Some(s("gemma4:12b"))),
+                (None, Some(7), None),
+                (Some(ToolUse::Room), Some(7), None),
+                (None, Some(7), Some(s("gemma4:12b"))),
+                (None, Some(14), None),
+            ]
+        );
+        // Loaded, or a server that can't say: never said to be loading.
+        for answer in [|_: &str, _: &str| Some(true), |_: &str, _: &str| None] {
+            let (app, bus) = attached();
+            let mut trail = Trail::new(None, "run", "cell")
+                .of_chat(true)
+                .telling(app)
+                .asking(Some("http://localhost:11434/v1"), Some("gemma4:12b"))
+                .asking_loaded(answer);
+            trail.starting(None);
+            assert_eq!(progress_told(&bus), [(None, None, None)]);
+        }
+        // With no model named, nothing is said to be loading, whatever a
+        // server would say.
+        let (app, bus) = attached();
+        let mut trail = Trail::new(None, "run", "cell")
+            .of_chat(true)
+            .telling(app)
+            .asking_loaded(|_, _| Some(false));
+        trail.starting(None);
+        assert_eq!(progress_told(&bus), [(None, None, None)]);
+        // A run that isn't answering the owner tells nothing as it counts.
+        let (app, bus) = attached();
+        let mut background = Trail::new(None, "run", "cell")
+            .telling(app)
+            .counting_in(&usage);
+        background.starting(None);
+        background.count(&request, &reply, now);
+        assert_eq!(progress_told(&bus), []);
+        let _ = std::fs::remove_dir_all(&usage);
     }
 
     /// A chat run that took some of the owner's further messages tells

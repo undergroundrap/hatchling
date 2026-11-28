@@ -88,6 +88,17 @@ impl AppStream {
     /// attached. It goes to the app alone, and isn't kept in the activity
     /// log: what a run did is written there when it ends.
     pub fn step(&self, tool: Option<ToolUse>) -> bool {
+        self.step_with(tool, None, None)
+    }
+
+    /// [`Self::step`], with the tokens the run's model has written so far
+    /// and the model its server is loading, when there are (#775).
+    pub fn step_with(
+        &self,
+        tool: Option<ToolUse>,
+        tokens: Option<u64>,
+        loading: Option<String>,
+    ) -> bool {
         let Some(bus) = self
             .bus
             .lock()
@@ -98,7 +109,11 @@ impl AppStream {
         };
         bus.push(
             Timestamp::now().to_string(),
-            UiEventBody::AgentStep { tool },
+            UiEventBody::AgentStep {
+                tool,
+                tokens,
+                loading,
+            },
         );
         true
     }
@@ -157,7 +172,7 @@ mod tests {
         bus.after(None)
             .into_iter()
             .filter_map(|event| {
-                if let UiEventBody::AgentStep { tool } = event.body {
+                if let UiEventBody::AgentStep { tool, .. } = event.body {
                     Some(tool)
                 } else {
                     None

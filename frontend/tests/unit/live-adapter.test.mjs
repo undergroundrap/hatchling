@@ -259,11 +259,19 @@ test('a waiting task says the step its run last started, as the broker said it; 
     assert.equal(title(), 'Working on it', 'until the broker says what');
     // No tool named, or none: the run waits for its model.
     replay(transport, [step(3)]);
-    assert.equal(title(), 'Asking the model');
+    assert.equal(title(), 'Thinking');
     replay(transport, [step(4, 'room')]);
     assert.equal(title(), 'Using its computer');
     replay(transport, [step(5, null)]);
-    assert.equal(title(), 'Asking the model');
+    assert.equal(title(), 'Thinking');
+    // A model its server on this machine is still loading is said by name (#775), until a step says otherwise.
+    replay(transport, [sampleEvent(6, 6, { kind: 'agent_step', tool: null, loading: 'gemma4:12b' })]);
+    assert.equal(title(), 'Loading gemma4:12b');
+    assert.ok(validThreadCopy('A task', 'The agent is working on it.', title()));
+    replay(transport, [sampleEvent(7, 7, { kind: 'agent_step', tool: null, tokens: 2140 })]);
+    assert.equal(title(), 'Thinking');
+    assert.equal(adapter.usage.written('main'), 2140, 'what the model has written so far');
+    assert.equal(adapter.usage.written('side-1'), null);
     const waiting = adapter.getSnapshot().threads[0];
     assert.deepEqual([waiting.state, waiting.subtitle, waiting.startedAt, waiting.chatId], ['running', 'The agent is working on it.', sampleTime(2), 'main'], 'the task began when it was asked, whatever its step');
     assert.ok(validThreadCopy(waiting.name, waiting.subtitle, waiting.statusTitle));
@@ -272,12 +280,12 @@ test('a waiting task says the step its run last started, as the broker said it; 
     const tools = schema.$defs.ToolUse.oneOf.map(option => option.const);
     assert.equal(tools.length, 22);
     const said = tools.map((tool, index) => {
-        replay(transport, [step(6 + index, tool)]);
+        replay(transport, [step(8 + index, tool)]);
         return title();
     });
     assert.equal(new Set(said).size, tools.length, 'no two tools read alike');
     for (const words of said) {
-        assert.ok(!['Working on it', 'Asking the model', 'Answered'].includes(words), words);
+        assert.ok(!['Working on it', 'Thinking', 'Answered'].includes(words), words);
         assert.ok(validThreadCopy('A task', 'The agent is working on it.', words), words);
     }
     assert.equal(said[tools.indexOf('memory_recall')], 'Recalling your memory');
