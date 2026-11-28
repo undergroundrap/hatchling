@@ -32,7 +32,7 @@ export function renderChat(ctx: AppContext): HTMLElement {
     const pending = ctx.delivery.visibleEntries(chat.id);
     // What this conversation gave in replies it doesn't show, kept apart under none.
     const elsewhere = chat.id === 'main' && messages.length > 0 ? givenElsewhere(ctx) : null;
-    const column = h('div', { class: 'chat-column' }, messages.length ? null : historyPlaceholder(ctx), elsewhere, ...messages.map(message => renderMessage(ctx, message)), ...pending.map(item => outboxRow(ctx, item)), ctx.state.turn === 'working' && ctx.delivery.connection.kind === 'ready' && history.phase === 'ready' ? h('div', { class: 'typing-indicator', 'aria-label': 'Working on it' }, h('i'), h('i'), h('i')) : null);
+    const column = h('div', { class: 'chat-column' }, messages.length ? null : historyPlaceholder(ctx), elsewhere, ...messages.map(message => renderMessage(ctx, message)), ...pending.map(item => outboxRow(ctx, item)));
     const stream = h('div', { class: `chat-scroll${messages.length === 0 ? ' has-history-state' : ''}`, 'data-scroll': `chat-${ctx.ui.chatId}`, role: 'log', 'aria-label': 'Conversation', 'aria-live': 'polite', 'aria-busy': history.phase === 'loading' }, column);
     const connection = connectionBanner(ctx);
     const stale = historyNotice(ctx);
@@ -203,18 +203,25 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     ]);
     const summary = attach.querySelector('summary');
     summary?.replaceChildren(icon('plus', 22));
-    const sendButton = h('button', { class: 'send-button', type: 'submit', 'aria-label': 'Send message' }, icon('arrow', 20));
+    // Enter, as the key it stands for (#777).
+    const sendButton = h('button', { class: 'send-button glyph-only', type: 'submit', 'aria-label': 'Send message' }, enterGlyph());
     bindIconMotion(sendButton);
     const microphone = iconButton('mic', 'Voice dictation preview', () => openVoice(ctx, 'dictation'));
+    // While the agent works, the send button's place, left of the
+    // microphone, holds Stop (#777), until the owner types: then it's Send.
+    const working = turnAction(ctx.state.mode, ctx.state.turn) === 'stop';
+    const stopButton = h('button', { class: 'stop-button glyph-only', type: 'button', 'aria-label': 'Stop', title: 'Stop the agent' }, stopGlyph());
+    stopButton.addEventListener('click', () => { void ctx.run({ type: 'turn.interrupt' }); });
     const updateComposer = (): void => {
         const hasContent = input.value.trim().length > 0 || ctx.ui.attachmentNames.length > 0;
         sendButton.hidden = !hasContent;
+        stopButton.hidden = !working || hasContent;
         sendButton.disabled = !hasContent || !!ctx.delivery.blockedReason(ctx.ui.chatId) || ctx.ui.preparingChats.has(ctx.ui.chatId) || [...ctx.ui.fileImports.values()].some(item => item.chatId === ctx.ui.chatId && item.phase === 'reading');
         sendButton.title = ctx.delivery.blockedReason(ctx.ui.chatId) || (ctx.delivery.connection.kind !== 'ready' ? 'Queue message until the connection returns' : 'Send message');
         microphone.hidden = false;
     };
     // A real install takes a file in the chats that take one, and has no voice yet.
-    form.append(...(offersFiles(ctx) ? [attach] : []), input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton);
+    form.append(...(offersFiles(ctx) ? [attach] : []), input, sendButton, stopButton, ...(ctx.state.mode === 'live' ? [] : [microphone]));
     updateComposer();
     requestAnimationFrame(() => {
         if (input.isConnected && input.value) {
@@ -243,7 +250,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         // Live, the broker says what the run is doing: the chat says that, and how long it has been.
         const running = ctx.state.mode === 'live' && ctx.state.turn === 'working' ? ctx.state.threads.find((thread) => thread.state === 'running' && thread.chatId === ctx.ui.chatId) : undefined;
         const stateLabel = ctx.state.turn === 'working' ? running?.statusTitle ?? 'Working on it' : ctx.state.turn === 'awaiting' ? 'Waiting for your confirmation' : ctx.state.turn === 'interrupted' ? 'Interrupted — context saved' : 'Stalled — waiting on a source';
-        area.append(h('div', { class: 'turn-state', role: 'status' }, icon(ctx.state.turn === 'working' ? 'run' : 'pause', 14), stateLabel, running?.startedAt ? elapsedSince(running.startedAt) : null, turnButton(ctx)));
+        area.append(h('div', { class: 'turn-state', role: 'status' }, ctx.state.turn === 'working' ? workingMark() : icon('pause', 14), ctx.state.turn === 'working' ? h('span', { class: 'working-label' }, stateLabel) : stateLabel, running?.startedAt ? elapsedSince(running.startedAt) : null, turnButton(ctx)));
     }
     if (ctx.ui.attachmentNames.length)
         area.append(h('div', { class: 'attached-files' }, ...ctx.ui.attachmentNames.map((id) => h('span', { class: 'attachment-chip' }, icon('file', 14), ctx.state.artifacts.find((item) => item.id === id)?.title ?? 'Local file', iconButton('close', 'Remove attachment', () => { ctx.ui.attachmentNames = ctx.ui.attachmentNames.filter((item) => item !== id); ctx.render(); })))));
@@ -267,11 +274,51 @@ export function turnAction(mode: AppContext['state']['mode'], turn: AppContext['
         return 'stop';
     return mode !== 'live' && turn === 'interrupted' ? 'resume' : null;
 }
+/** The status line's own choice: Resume, in the demo, once a run is paused. Stop is the composer's button. */
 function turnButton(ctx: AppContext): HTMLElement | null {
-    const action = turnAction(ctx.state.mode, ctx.state.turn);
-    if (action === 'stop')
-        return button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' });
-    return action === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
+    return turnAction(ctx.state.mode, ctx.state.turn) === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
+}
+/**
+ * While the agent works: six dots on an orbit tilted away from the owner,
+ * turning, so the nearer ones are larger, each brightening in turn, around a
+ * core that glows. Hatchling's own warm colour. Still for anyone who asks for
+ * less motion.
+ */
+function workingMark(): HTMLElement {
+    const orbit = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [key, value] of Object.entries({ viewBox: '0 0 20 20', width: '20', height: '20', class: 'working-orbit', 'aria-hidden': 'true', focusable: 'false' }))
+        orbit.setAttribute(key, value);
+    for (let dot = 0; dot < 6; dot++) {
+        const angle = (dot * Math.PI) / 3;
+        const circle = document.createElementNS(orbit.namespaceURI, 'circle');
+        for (const [key, value] of Object.entries({ cx: (10 + 7 * Math.sin(angle)).toFixed(2), cy: (10 - 7 * Math.cos(angle)).toFixed(2), r: '2', fill: 'currentColor' }))
+            circle.setAttribute(key, value);
+        orbit.append(circle);
+    }
+    return h('span', { class: 'working-mark' }, orbit, h('span', { class: 'working-core' }));
+}
+/** Stop: a rounded square, filled (#777). */
+function stopGlyph(): SVGSVGElement {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '24', height: '24', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-stop-square' }))
+        svg.setAttribute(key, value);
+    const square = document.createElementNS(svg.namespaceURI, 'rect');
+    for (const [key, value] of Object.entries({ x: '5', y: '5', width: '14', height: '14', rx: '3.5', fill: 'currentColor' }))
+        square.setAttribute(key, value);
+    svg.append(square);
+    return svg;
+}
+/** Enter, ↵, drawn as the app's icons are: the key Send stands for (#777). */
+function enterGlyph(): SVGSVGElement {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '24', height: '24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-enter' }))
+        svg.setAttribute(key, value);
+    for (const d of ['M19 5v7a3 3 0 0 1-3 3H5', 'm9 11-4 4 4 4']) {
+        const path = document.createElementNS(svg.namespaceURI, 'path');
+        path.setAttribute('d', d);
+        svg.append(path);
+    }
+    return svg;
 }
 /** A ring showing `share` percent of the window used: its arc is the share; with no window known, an empty ring. */
 function contextRing(share: number | null): SVGSVGElement {

@@ -95,6 +95,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
+- **Stop is a button where Send goes** ([#777](https://github.com/undergroundrap/hatchling/issues/777)). While the agent works, the composer's send button becomes a stop button, a plain rounded square left of the microphone, instead of a "Stop" link at the end of the status line. Type something and it's Send again, now an enter sign (↵) for the key it stands for. The microphone comes to the live app with voice dictation (WO-049). While the agent works, the status line has its own animated mark (a ring of warm-yellow dots turning in perspective around a glowing core) and a band of light passing through its words, and the "•••" above it is gone. Both hold still with reduced motion.
+
 - **Breaking for hatchling-broker:** `approvals::Refusal` gains `NotWaiting`, and `Approvals` gains `propose_items` and `revise` ([WO-055](docs/workorders/workorder-055-several-memories-one-card.md), slice 1). A request waiting for the owner can be revised by its task: a new revision and digest, keeping its scopes, grant and deadline, so a decision on what the owner saw before is refused. A request made of items refuses each item once it's denied. Nothing uses it yet: the memory card that does follows. Not in any release.
 
 - **Breaking for hatchling-isolation:** `IsolationBackend::supervise` takes the helper's `std::process::Child` by value, not `&mut` ([#688](https://github.com/undergroundrap/hatchling/issues/688)). Once supervised, nothing else can wait on the helper or signal it by its pid. Callers pass the child instead of a reference, and drop nothing after.
