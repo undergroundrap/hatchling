@@ -210,7 +210,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     // While the agent works, the send button's place, left of the
     // microphone, holds Stop (#777), until the owner types: then it's Send.
     const working = turnAction(ctx.state.mode, ctx.state.turn) === 'stop';
-    const stopButton = h('button', { class: 'send-button stop-button glyph-only', type: 'button', 'aria-label': 'Stop', title: 'Stop the agent' }, stopGlyph());
+    const stopButton = h('button', { class: 'stop-button glyph-only', type: 'button', 'aria-label': 'Stop', title: 'Stop the agent' }, stopGlyph());
     stopButton.addEventListener('click', () => { void ctx.run({ type: 'turn.interrupt' }); });
     const updateComposer = (): void => {
         const hasContent = input.value.trim().length > 0 || ctx.ui.attachmentNames.length > 0;

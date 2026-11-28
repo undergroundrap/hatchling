@@ -97,8 +97,9 @@ button[data-tooltip] { position: relative; }
 @keyframes working-shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
 @media (prefers-reduced-motion: reduce) { .working-orbit, .working-orbit circle, .working-core, .working-label { animation: none; } .working-orbit circle { opacity: 1; } .working-label { background: none; color: var(--muted); } }
 /* Send (↵) and Stop (a square) are glyphs beside the microphone, as plain as it is (#777). */
-.composer .send-button.glyph-only { width: 32px; height: 32px; flex-basis: 32px; align-self: center; background: transparent !important; color: var(--text) !important; }
-.composer .send-button.glyph-only:hover, .composer .send-button.glyph-only:focus-visible { background: var(--surface-control) !important; }
+.composer .stop-button { display: grid; place-items: center; border-radius: 50%; flex-shrink: 0; }
+.composer .send-button.glyph-only, .composer .stop-button { width: 32px; height: 32px; flex-basis: 32px; align-self: center; background: transparent !important; color: var(--text) !important; }
+.composer .send-button.glyph-only:hover, .composer .send-button.glyph-only:focus-visible, .composer .stop-button:hover, .composer .stop-button:focus-visible { background: var(--surface-control) !important; }
 .composer-caption { font-size: calc(11px * var(--ui-scale, 1)); }
 .jump-to-latest { position: absolute !important; left: 50%; bottom: 87px; transform: translateX(-50%); z-index: 10; background: var(--surface-raised); border: 1px solid var(--border); width: 35px; height: 35px; color: var(--text); box-shadow: 0 3px 12px #00000033; }
 .jump-to-latest > svg { transform: rotate(180deg); width: 17px; }
