@@ -305,8 +305,9 @@ impl Trail {
             }
             self.model_call(input, output);
             // A chat's app is told what its model has written so far, and
-            // that it's no longer loading (#775).
-            if self.chat && self.step == Some(Step::Model) {
+            // that it's no longer loading (#775): a reply follows the
+            // model's step, so the step told is the model's.
+            if self.chat {
                 if let Some(app) = &self.app {
                     app.step_with(None, self.tokens(), None);
                 }
