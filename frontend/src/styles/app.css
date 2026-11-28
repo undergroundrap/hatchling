@@ -179,6 +179,7 @@ hr { border: 0; border-top: 1px solid var(--border); }
 .composer .menu-popover { top: auto; bottom: 48px; left: 0; right: auto; }
 .send-button { flex: 0 0 36px; width: 36px; height: 36px; border-radius: 50%; background: var(--primary); color: var(--primary-text); display: grid; place-items: center; }
 .send-button svg { transform: rotate(-90deg); }
+.stop-button svg { transform: none; fill: currentColor; }
 .composer-caption { text-align: center; font-size: calc(10px * var(--ui-scale, 1)); color: var(--muted); margin-top: 10px; }
 .turn-state { display: flex; align-items: center; gap: 8px; font-size: calc(12px * var(--ui-scale, 1)); margin: -7px 10px 10px; color: var(--muted); }
 .turn-state .button { margin-left: auto; }

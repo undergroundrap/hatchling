@@ -206,15 +206,21 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     const sendButton = h('button', { class: 'send-button', type: 'submit', 'aria-label': 'Send message' }, icon('arrow', 20));
     bindIconMotion(sendButton);
     const microphone = iconButton('mic', 'Voice dictation preview', () => openVoice(ctx, 'dictation'));
+    // While the agent works, the send button's place holds Stop (#777), until
+    // the owner types: then it's Send again.
+    const working = turnAction(ctx.state.mode, ctx.state.turn) === 'stop';
+    const stopButton = h('button', { class: 'send-button stop-button', type: 'button', 'aria-label': 'Stop', title: 'Stop the agent' }, icon('stop', 16));
+    stopButton.addEventListener('click', () => { void ctx.run({ type: 'turn.interrupt' }); });
     const updateComposer = (): void => {
         const hasContent = input.value.trim().length > 0 || ctx.ui.attachmentNames.length > 0;
         sendButton.hidden = !hasContent;
+        stopButton.hidden = !working || hasContent;
         sendButton.disabled = !hasContent || !!ctx.delivery.blockedReason(ctx.ui.chatId) || ctx.ui.preparingChats.has(ctx.ui.chatId) || [...ctx.ui.fileImports.values()].some(item => item.chatId === ctx.ui.chatId && item.phase === 'reading');
         sendButton.title = ctx.delivery.blockedReason(ctx.ui.chatId) || (ctx.delivery.connection.kind !== 'ready' ? 'Queue message until the connection returns' : 'Send message');
         microphone.hidden = false;
     };
     // A real install takes a file in the chats that take one, and has no voice yet.
-    form.append(...(offersFiles(ctx) ? [attach] : []), input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton);
+    form.append(...(offersFiles(ctx) ? [attach] : []), input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton, stopButton);
     updateComposer();
     requestAnimationFrame(() => {
         if (input.isConnected && input.value) {
@@ -267,11 +273,9 @@ export function turnAction(mode: AppContext['state']['mode'], turn: AppContext['
         return 'stop';
     return mode !== 'live' && turn === 'interrupted' ? 'resume' : null;
 }
+/** The status line's own choice: Resume, in the demo, once a run is paused. Stop is the composer's button. */
 function turnButton(ctx: AppContext): HTMLElement | null {
-    const action = turnAction(ctx.state.mode, ctx.state.turn);
-    if (action === 'stop')
-        return button('Stop', () => { void ctx.run({ type: 'turn.interrupt' }); }, { variant: 'link' });
-    return action === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
+    return turnAction(ctx.state.mode, ctx.state.turn) === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
 }
 /** A ring showing `share` percent of the window used: its arc is the share; with no window known, an empty ring. */
 function contextRing(share: number | null): SVGSVGElement {
