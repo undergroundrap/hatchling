@@ -400,7 +400,8 @@ export class LiveAdapter implements ProtocolAdapter {
                     });
                 return undefined;
             case 'agent_step':
-                this.#activity.step(body.tool ?? null, event.ts);
+                this.#activity.step(body.tool ?? null, event.ts, body.loading ?? null);
+                this.#usage.observeStep(body);
                 return undefined;
             case 'messages_joined':
                 this.#activity.joined(body.count, event.ts);

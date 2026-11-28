@@ -16519,6 +16519,22 @@
               "const": "agent_step",
               "type": "string"
             },
+            "loading": {
+              "description": "The model the run waits for, while its server on this machine\nis still loading it (v19, #775): its first answer after a\nrestart can take a minute or two. The broker's word, from the\nserver's own list of what it has loaded.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tokens": {
+              "description": "The tokens the run's model has written so far, as its server\nreported them (v19, #775): told again after each of its replies.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "tool": {
               "anyOf": [
                 {
@@ -17551,7 +17567,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 40,
-    "ui_schema_version": 18
+    "ui_schema_version": 19
   },
   "x-roots": {
     "ActivityEvent": {

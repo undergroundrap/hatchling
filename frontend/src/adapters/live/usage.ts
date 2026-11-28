@@ -37,6 +37,8 @@ export class LiveUsage implements UsagePort {
     #state: UsageState = { kind: 'unread' };
     /** Each chat's last answer's context, by the app's chat id (WO-056). */
     readonly #contexts = new Map<string, ContextUse>();
+    /** What the model has written so far for the run answering the owner, as the broker counted it (#775). */
+    #writing: number | null = null;
     #settling = false;
     #ready = false;
     constructor(client: LiveClient, changed: () => void, nextId: () => string, later: (run: () => void) => void = run => { setTimeout(run, SETTLE_MS); }) {
@@ -51,6 +53,17 @@ export class LiveUsage implements UsagePort {
     }
     context(chatId: string): ContextUse | null {
         return this.#contexts.get(chatId) ?? null;
+    }
+    /** The broker tells the steps of the run answering the owner alone: the main chat's. */
+    written(chatId: string): number | null {
+        return chatId === MAIN_CHAT ? this.#writing : null;
+    }
+    /** A step of the run answering the owner, with what its model has written so far when the broker said. */
+    observeStep(step: {
+        readonly tokens?: number | null;
+    }): void {
+        if (typeof step.tokens === 'number')
+            this.#writing = step.tokens;
     }
     /**
      * A run's record: a chat answer's model calls say how full the context got,
@@ -81,8 +94,11 @@ export class LiveUsage implements UsagePort {
     }
     /** An answer from the agent, or Hatchling's own word, came after model calls: read again. */
     observe(message: ChatMessage): void {
-        if (message.author !== 'user')
-            void this.refresh();
+        if (message.author === 'user')
+            return;
+        // Its answer, or Hatchling's word that it ended: the run is over.
+        this.#writing = null;
+        void this.refresh();
     }
     async refresh(): Promise<void> {
         const reply = await this.#client.request(this.#nextId(), { action: 'read_usage' });

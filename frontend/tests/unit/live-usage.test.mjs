@@ -71,9 +71,12 @@ test('usage is read once each time the connection opens, and is unread until the
 test('an answer from the agent or Hatchling reads it again; the owner\'s own message does not', async () => {
     const { client, live } = surface([usage(REPORT), usage(REPORT)]);
     const message = author => ({ author, chat_id: 'local', message_id: 'm1', text: 'hi' });
+    live.observeStep({ kind: 'agent_step', tool: null, tokens: 9 });
     live.observe(message('user'));
     assert.equal(client.sent.length, 0);
+    assert.equal(live.written('main'), 9, 'a message from the owner ends no run');
     live.observe(message('agent'));
+    assert.equal(live.written('main'), null, 'its answer ends the run');
     live.observe(message('system'));
     await flush();
     assert.equal(client.sent.length, 2);
@@ -225,4 +228,16 @@ test('a limit reads as the owner writes it, and shows short', () => {
         assert.equal(parseTokens(tokensText(limit)), limit, String(limit));
     assert.equal(monthName('2026-11'), 'November');
     assert.equal(monthName('not a month'), 'This month');
+});
+test('what a working run model has written is kept from its steps, for the main chat alone, until its answer (#775)', () => {
+    const { live } = surface([]);
+    assert.equal(live.written('main'), null, 'none before its first reply');
+    live.observeStep({ kind: 'agent_step', tool: null });
+    assert.equal(live.written('main'), null);
+    live.observeStep({ kind: 'agent_step', tool: null, tokens: 7 });
+    live.observeStep({ kind: 'agent_step', tool: 'room' });
+    assert.equal(live.written('main'), 7, 'a step that says nothing keeps what was said');
+    live.observeStep({ kind: 'agent_step', tool: null, tokens: 2140 });
+    assert.equal(live.written('main'), 2140);
+    assert.equal(live.written('side-1'), null);
 });

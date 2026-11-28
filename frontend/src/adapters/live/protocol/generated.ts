@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 18;
+export const UI_SCHEMA_VERSION = 19;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 40;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -6669,6 +6669,18 @@ export type UiEventBody = {
     readonly state: AgentState;
 } | {
     readonly kind: 'agent_step';
+    /**
+     * The model the run waits for, while its server on this machine
+     * is still loading it (v19, #775): its first answer after a
+     * restart can take a minute or two. The broker's word, from the
+     * server's own list of what it has loaded.
+     */
+    readonly loading?: string | null;
+    /**
+     * The tokens the run's model has written so far, as its server
+     * reported them (v19, #775): told again after each of its replies.
+     */
+    readonly tokens?: number | null;
     /**
      * The tool it is using, named by what the tool does; none while
      * it waits for its model.
