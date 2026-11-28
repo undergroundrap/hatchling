@@ -97,6 +97,7 @@ WO-002 to WO-011 come from the pre-launch review of the trust boundary: see [Kno
 | [055](workorder-055-several-memories-one-card.md) | Several memories, one card | yes | CLOSED |
 | [056](workorder-056-context-panel-and-model-in-use.md) | The context panel, and the model in use | yes | CLOSED |
 | [057](workorder-057-automatic-memory.md) | Automatic memory, every memory traceable | yes | CLOSED |
+| [058](workorder-058-memory-loop.md) | The memory loop | yes | QUEUED |
 
 ## Candidates
 
