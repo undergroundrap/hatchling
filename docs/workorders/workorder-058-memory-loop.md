@@ -24,7 +24,10 @@ The memory loop is the first to run on them. It proves them end to end, as WO-05
 
 **What's missing, found reading the code (2026-11-28):**
 - The broker never launches a seat, builds a snapshot, or applies a seat's output. WO-054's slice 3c was folded into this work order.
-- The clock is started with no loops (`run_launcher.rs`: `Clock::new(Vec::new())`, `NoLoops`). Nothing tells it about activity, and the pause is hard-coded to off.
+- The clock is started with no loops (`run_launcher.rs`: `Clock::new(Vec::new())`, `NoLoops`). Nothing tells it about activity, and the pause is hard-coded to off: the owner's pause (#673) isn't built yet.
+- **A seat can't be handed to a cell.** A cell gets its work in its cell config (`ScheduledRun`), as argv and environment, and answers on stdout. Nothing there carries a seat's packet, and the agent has no seat command. `hatchling_agent::seat::run` is called only by its tests.
+- **The conversation store keeps one current conversation,** as exchanges (the owner's message and the agent's answer), numbered by slot, with no ids or times. Its taint is per conversation, not per message.
+- **There's no memory prompt kind:** `PromptKind` has six, and the memory sections are waiting.
 - **A memory record has no fingerprint,** so "changed between snapshot and apply" can't be checked. `updated_at_secs` isn't restamped by `rerecord` or `retag`.
 - **The #714 prompt describes `MEMORY.md` and `USER.md` files and dated logs,** which Hatchling doesn't have. It keeps items in a store. The prompt has to be adapted to items and to the claims below. Its rules carry over: evidence only, merge duplicates only, age alone is no reason, and a sensitive value never kept.
 
@@ -39,7 +42,7 @@ The model only proposes. Code checks every claim against the run's snapshot and 
 | **Merge** | Two or more memories saying the same thing become one. | The kept words are **one of the duplicates' own words, verbatim** (code checks it), and every duplicate is still as snapshotted. The others are retired (`superseded`), never deleted. | Rewording, or merging memories of different kinds: dropped. |
 | **Correct** | A memory the owner's later words contradict is replaced. | It cites the owner's own message (origin `Owner`) with a quote, and the memory is about their work or where something is (`work`, `pointer`), or was kept automatically. The old one is retired. | About the owner or how they want it to work (`owner`, `guidance`), and approved by them: waits on the Memory page (`replace`). |
 | **Check** | A memory that may no longer be so is put to the owner: "Is this still so?" (WO-048's due check). | It cites why (a later message, its age with a reason, a dated fact). It only sets the day to ask: nothing changes until they answer. | — |
-| **Keep** | Something the owner said and the agent didn't ask to keep. | It cites the owner's own message with a quote that says it, and the conversation it's from read nothing from outside up to that message (WO-057's taint, per conversation). Kept as automatic, counted in the day's 20. | From a conversation that read from outside: waits on the Memory page (`remember`). Citing only the agent's words: dropped. |
+| **Keep** | Something the owner said and the agent didn't ask to keep. | It cites the owner's own message with a quote that says it, and the conversation it's from read nothing from outside (WO-057's taint, per conversation: a conversation that read from outside at any point counts as having read it). Kept as automatic, counted in the day's 20. | From a conversation that read from outside: waits on the Memory page (`remember`). Citing only the agent's words: dropped. |
 
 **Never, by code:**
 - **A removal.** The loop retires only what it merges or corrects. Nothing is forgotten without the owner.
@@ -64,13 +67,13 @@ WO-054's threats all hold. These are the memory loop's own:
 
 ### Running
 
-- **The clock's first loop:** `memory`, cadence `AfterActivity` (an hour after the owner's last chat). Each chat run's end tells the clock there was activity. The owner's pause (#673) is read for real instead of `false`.
+- **The clock's first loop:** `memory`, cadence `AfterActivity` (an hour after the owner's last chat). Each chat run's end tells the clock there was activity. The pause holds it once #673 builds the pause: the clock's gate already honours it.
 - **The snapshot,** taken in one pass when the run starts:
   - every memory the agent is given (the recall tag), each a `Record` with handle `memory:<scope>/<id>`, origin `Owner` for owner-approved memories and `Agent` for automatic ones, its words, and its fingerprint;
-  - the conversation since the loop last ran: the owner's messages (`Owner`) and the agent's answers (`Agent`), each `message:<conversation>/<id>`;
-  - each conversation's taint at each message.
+  - the conversation since the loop last ran: each exchange's owner's message (`Owner`, `message:<conversation>/<slot>-owner`) and the agent's answer (`Agent`, `message:<conversation>/<slot>-agent`). The loop keeps the last slot it read, under its own state;
+  - the conversation's taint.
   - Bounded by the seat's limits (256 records, 32 KiB of brief). Past them, the oldest conversation is left for the next run.
-- **The seat:** a cell launched by the broker as a run's is, with `PromptKind::Memory` (its sections: the adapted reconciliation section and its four memory siblings). Its tools are the seat's: read the records, read one, and `finish` with the four claims' schema.
+- **The seat:** a cell launched by the broker as a run's is, its packet in its cell config (`ScheduledRun` gains `seat`) and an agent `seat` command that runs `hatchling_agent::seat::run` and answers on stdout. It's given `PromptKind::Memory`, a seventh kind (its sections: the adapted reconciliation section and its four memory siblings). Its tools are the seat's: read the records, read one, and `finish` with the four claims' schema.
 - **Apply:** one serial pass in the broker, in the order Merge, Correct, Keep, Check. It rechecks fingerprints and uses the existing writes (`keep_as`, `retire`, `rerecord`). Each change is recorded with the run's id, so the record says the loop made it.
 - **The gate record:** counts proposed, applied, waiting, dropped, stale and the tokens spent. Never text.
 
@@ -99,13 +102,14 @@ UI schema v20:
     + {"op": "set_loop", "on": bool}  the owner's alone
 ```
 
-No session protocol change: the seat speaks the seat cell's protocol, already in place.
+No session protocol change: the seat's packet rides in its cell config, as a run's task does, and its model is reached through the egress session every run uses.
 
 ## Scope
 
-**In scope:** the four claims, the fingerprint, the clock's first loop with activity and the pause, launching a seat, apply, the gate record, the adapted prompt, the Memory page's report and labels.
+**In scope:** the four claims, the fingerprint, the clock's first loop with activity, launching a seat, apply, the gate record, the adapted prompt, the Memory page's report and labels.
 
 **Not in scope:**
+- **The owner's pause** (#673): its own issue. The clock already holds every loop when it's set.
 - **Links between memories** (#740): next in the order, on this record.
 - **Recall by meaning**: after links.
 - **Removing memories**: the owner's alone.
@@ -113,7 +117,7 @@ No session protocol change: the seat speaks the seat cell's protocol, already in
 
 ## Slices
 
-1. **The loop runs, and applies nothing:** the fingerprint, the clock's `memory` loop with activity and the pause, the snapshot, the seat launched with `PromptKind::Memory`, the four claims' schema and check, and the gate record. Each run's claims are counted and logged as "would apply" or "would wait". This proves the runner end to end before anything changes memory.
+1. **The loop runs, and applies nothing:** the fingerprint, the clock's `memory` loop with activity, the snapshot, the seat's cell config and command, `PromptKind::Memory`, the four claims' schema and check, and the gate record. Each run's claims are counted and logged as "would apply" or "would wait". This proves the runner end to end before anything changes memory.
 2. **Apply:** each claim's rule above, the queue for what waits, `stale` on a changed target, and the record's `merged`.
 3. **The app:** the report, the labels and the switch (UI v20).
 4. **A real-model trial on the demo,** with the maintainer's yes: seeded duplicates merge, a moved city is corrected or waits, a stale fact is asked about, a page's injected "remember …" is dropped. Then close.
@@ -127,7 +131,7 @@ No session protocol change: the seat speaks the seat cell's protocol, already in
 - [ ] Nothing is removed; what's retired stays, tagged `superseded`.
 - [ ] A memory changed between snapshot and apply is skipped and counted; its waiting item turns `stale`.
 - [ ] Keep counts in the day's 20, and a conversation that read from outside makes it wait.
-- [ ] The loop runs an hour after activity, never during a chat run, never when paused, and spends nothing with nothing new.
+- [ ] The loop runs an hour after activity, never during a chat run, and spends nothing with nothing new. (Never when paused comes with #673.)
 - [ ] The Memory page says when it last ran and what it did.
 - [ ] Each slice has its evidence record, with hand-breaks of each rule above.
 
