@@ -203,11 +203,12 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     ]);
     const summary = attach.querySelector('summary');
     summary?.replaceChildren(icon('plus', 22));
-    const sendButton = h('button', { class: 'send-button', type: 'submit', 'aria-label': 'Send message' }, icon('arrow', 20));
+    // Enter, as the key it stands for (#777).
+    const sendButton = h('button', { class: 'send-button', type: 'submit', 'aria-label': 'Send message' }, enterGlyph());
     bindIconMotion(sendButton);
     const microphone = iconButton('mic', 'Voice dictation preview', () => openVoice(ctx, 'dictation'));
-    // While the agent works, the send button's place holds Stop (#777), until
-    // the owner types: then it's Send again.
+    // While the agent works, the send button's place, left of the
+    // microphone, holds Stop (#777), until the owner types: then it's Send.
     const working = turnAction(ctx.state.mode, ctx.state.turn) === 'stop';
     const stopButton = h('button', { class: 'send-button stop-button', type: 'button', 'aria-label': 'Stop', title: 'Stop the agent' }, icon('stop', 16));
     stopButton.addEventListener('click', () => { void ctx.run({ type: 'turn.interrupt' }); });
@@ -220,7 +221,7 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
         microphone.hidden = false;
     };
     // A real install takes a file in the chats that take one, and has no voice yet.
-    form.append(...(offersFiles(ctx) ? [attach] : []), input, ...(ctx.state.mode === 'live' ? [] : [microphone]), sendButton, stopButton);
+    form.append(...(offersFiles(ctx) ? [attach] : []), input, sendButton, stopButton, ...(ctx.state.mode === 'live' ? [] : [microphone]));
     updateComposer();
     requestAnimationFrame(() => {
         if (input.isConnected && input.value) {
@@ -276,6 +277,18 @@ export function turnAction(mode: AppContext['state']['mode'], turn: AppContext['
 /** The status line's own choice: Resume, in the demo, once a run is paused. Stop is the composer's button. */
 function turnButton(ctx: AppContext): HTMLElement | null {
     return turnAction(ctx.state.mode, ctx.state.turn) === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
+}
+/** Enter, ↵, drawn as the app's icons are: the key Send stands for (#777). */
+function enterGlyph(): SVGSVGElement {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '20', height: '20', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.65', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-enter' }))
+        svg.setAttribute(key, value);
+    for (const d of ['M19 5v7a3 3 0 0 1-3 3H5', 'm9 11-4 4 4 4']) {
+        const path = document.createElementNS(svg.namespaceURI, 'path');
+        path.setAttribute('d', d);
+        svg.append(path);
+    }
+    return svg;
 }
 /** A ring showing `share` percent of the window used: its arc is the share; with no window known, an empty ring. */
 function contextRing(share: number | null): SVGSVGElement {
