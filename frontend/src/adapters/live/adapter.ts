@@ -98,6 +98,7 @@ export class LiveAdapter implements ProtocolAdapter {
     readonly memoryDetails: MemoryDetailsPort;
     /** What background work may not apply on its own, waiting on the Memory page: straight to the broker, never as a Command. */
     readonly review: ReviewPort;
+    readonly #review: LiveReview;
     /** The owner's Feed page: its prompt, its time, and what was written. */
     readonly feed: FeedPort;
     readonly #feed: LiveFeed;
@@ -146,7 +147,8 @@ export class LiveAdapter implements ProtocolAdapter {
         this.ideas = this.#ideas;
         this.#memory = new LiveMemory(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.memoryDetails = this.#memory;
-        this.review = new LiveReview(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.#review = new LiveReview(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
+        this.review = this.#review;
         this.#inbox = new LiveInbox(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`);
         this.inbox = this.#inbox;
         this.#agentFiles = new LiveAgentFiles(this.#client, () => this.#publish(), () => `live-command-${++this.#serial}`, { runs: { of: id => this.#chats.runOf(id), shown: () => this.#chats.runsShown() } });
@@ -373,8 +375,11 @@ export class LiveAdapter implements ProtocolAdapter {
                 this.#usage.observe(body);
                 // Hatchling's own word follows what it did for the owner, a
                 // schedule they approved among it: read the list again.
-                if (body.author === 'system')
+                // So may a memory that now waits on the Memory page (#776).
+                if (body.author === 'system') {
                     void this.#schedules.refresh();
+                    this.#review.opened();
+                }
                 return undefined;
             case 'attachment':
                 this.#chats.attach(body, event.ts);

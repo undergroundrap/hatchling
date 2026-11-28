@@ -1736,6 +1736,21 @@ test('the review queue: listed on connecting, decided straight with the broker, 
     assert.deepEqual(await deciding, { ok: true, message: 'Rejected. Nothing changes.' });
     assert.equal(adapter.review.current().entries[0].state, 'rejected');
 });
+test('Hatchling\'s notice reads the review queue again, so a memory that now waits shows on an open Memory page (#776); an answer does not', async () => {
+    const { transport, adapter } = connected();
+    const lists = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_review' && frame.action.op.op === 'list');
+    answer(transport, lists().at(-1).request_id, { result: 'review', outcome: { result: 'listed', items: [] } });
+    await flush();
+    const read = lists().length;
+    transport.deliver(sampleEvent(1, 1, { kind: 'chat_message', chat_id: 'local', message_id: 'a-1', author: 'agent', text: 'I asked to remember it.', run: 'run-1' }));
+    assert.equal(lists().length, read, 'an answer reads nothing');
+    transport.deliver(sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'n-1', author: 'system', text: 'Waiting on your Memory page: “They live in Bath.”' }));
+    assert.equal(lists().length, read + 1);
+    const item = { item_id: 'r2', proposed_by: 'chat', kind: 'remember', target: null, change: 'They live in Bath.', why: 'Asked after reading from outside.', evidence: ['chat:local'], proposed_at: '2026-11-28T02:00:00Z', state: 'waiting', decided_at: null };
+    answer(transport, lists().at(-1).request_id, { result: 'review', outcome: { result: 'listed', items: [item] } });
+    await flush();
+    assert.deepEqual(adapter.review.current().entries.map(entry => [entry.id, entry.kind]), [['r2', 'Something to remember about you']]);
+});
 test('an approval that says what approving does is labelled so; one that doesn\'t is Allow once', () => {
     const { transport, adapter } = connected();
     const card = (id, extra) => sampleEvent(1, 1, { kind: 'confirmation', grant_key: null, scopes: ['once'], confirmation_id: id, revision: 1, chat_id: 'main', summary: 'Remember this about you?', expires_at: null, digest: `digest-${id}`, fields: [{ label: 'What it would remember', value: 'Their cat is Biscuit.', source: 'agent' }], ...extra });
