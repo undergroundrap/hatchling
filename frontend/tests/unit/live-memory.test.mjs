@@ -32,6 +32,7 @@ const AT = 1793707200;
 const kept = (id, content, approved = true, extra = {}) => ({ id, content, kept_at: AT, approved, from: { from: 'not_recorded' }, ...extra });
 const memory = outcome => ({ kind: 'answered', result: { result: 'memory', outcome } });
 const listed = (...items) => memory({ result: 'listed', kept: items });
+const moded = mode => memory({ result: 'mode', mode });
 const flush = () => new Promise(resolve => setImmediate(resolve));
 const surface = answers => {
     const client = new FakeClient(answers);
@@ -51,14 +52,16 @@ test('a kept thing reads as a Memory page entry, titled by its first words', () 
     assert.equal(titleOf(''), '');
 });
 test('what is kept is listed once each time the connection opens, and is empty until then', async () => {
-    const { client, live, changes } = surface([listed(kept('user/a', 'A')), memory({ result: 'off' })]);
+    const { client, live, changes } = surface([listed(kept('user/a', 'A')), moded('automatic'), memory({ result: 'off' })]);
     assert.deepEqual(live.entries(), []);
     client.set('ready');
     client.set('ready');
     await flush();
-    assert.deepEqual(client.sent, [{ action: 'manage_memory', op: { op: 'list' } }]);
+    // Then whether memory is automatic (WO-057), so the page says it from the start.
+    assert.deepEqual(client.sent, [{ action: 'manage_memory', op: { op: 'list' } }, { action: 'manage_memory', op: { op: 'mode' } }]);
     assert.deepEqual(live.entries().map(entry => entry.id), ['user/a']);
-    assert.equal(changes(), 1);
+    assert.equal(live.mode(), 'automatic');
+    assert.equal(changes(), 2);
     // A list that isn't one leaves it as it was.
     await live.refresh();
     assert.deepEqual(live.entries().map(entry => entry.id), ['user/a']);
@@ -102,10 +105,16 @@ test('a kept memory\'s details read in the page\'s words', () => {
         confirmed_at: AT + 86400, check_by: '2000-01-01', due: true, replaces: 'They use miles.',
     })), {
         kind: 'How you want it to work', why: 'They live in Europe.', howToApply: 'Any measurement.', absence: false,
-        origin: 'Asked to remember in your chat', confirmed: 'Last confirmed Nov 4, 2026', due: true, replaces: 'They use miles.',
+        origin: 'Asked to remember in your chat', confirmed: 'Last confirmed Nov 4, 2026', due: true, replaces: 'They use miles.', automatic: false,
     });
     const plain = detailOf(kept('user/b', 'x'));
-    assert.deepEqual(plain, { kind: null, why: null, howToApply: null, absence: false, origin: 'Where it came from isn’t recorded', confirmed: null, due: false, replaces: null });
+    assert.deepEqual(plain, { kind: null, why: null, howToApply: null, absence: false, origin: 'Where it came from isn’t recorded', confirmed: null, due: false, replaces: null, automatic: false });
+    // Kept automatically (WO-057): labelled so, on its line and in its details.
+    const automatic = kept('user/i', 'Pepper is a cat.', false, { kept_by: 'automatic', from: { from: 'chat', chat: 'local' } });
+    assert.equal(detailOf(automatic).automatic, true);
+    assert.equal(entryOf(automatic).date, 'Kept automatically, Nov 3, 2026');
+    assert.equal(detailOf(kept('user/j', 'x', true, { kept_by: 'owner' })).automatic, false);
+    assert.equal(entryOf(kept('user/j', 'x', true, { kept_by: 'owner' })).date, 'Approved by you, Nov 3, 2026');
     for (const [kind, words] of [['owner', 'About you'], ['work', 'About your work'], ['pointer', 'Where something is'], ['other', null]])
         assert.equal(detailOf(kept('user/c', 'x', true, { kind })).kind, words, kind);
     for (const [from, words] of [[{ from: 'chat', chat: 'side-1' }, 'Asked to remember in a chat'], [{ from: 'run' }, 'Asked to remember by a scheduled run'], [{ from: 'approval' }, 'Approved by you']])
@@ -119,7 +128,7 @@ test('a kept memory\'s details read in the page\'s words', () => {
     assert.equal(detailOf(older).origin, 'Where it came from isn’t recorded');
 });
 test('a listed memory\'s details are kept beside it, and confirming reads the list again', async () => {
-    const { client, live } = surface([listed(kept('user/a', 'A', true, { due: true, kind: 'owner' }))]);
+    const { client, live } = surface([listed(kept('user/a', 'A', true, { due: true, kind: 'owner' })), moded('automatic')]);
     client.set('ready');
     await flush();
     assert.equal(live.of('user/a')?.due, true);
@@ -146,4 +155,49 @@ test('a listed memory\'s details are kept beside it, and confirming reads the li
     // Forgetting answered with a confirmation is something else.
     const odd = surface([memory({ result: 'confirmed' })]);
     assert.match((await odd.live.forget('user/a')).message, /something else/);
+});
+test('whether memory is automatic is read as a page that says it opens, and set only by the owner', async () => {
+    const { client, live, changes } = surface([listed(), moded('automatic'), moded('automatic'), moded('ask'), memory({ result: 'off' })]);
+    assert.equal(live.mode(), 'unread');
+    // Not connected, opening reads nothing.
+    await live.opened();
+    assert.equal(client.sent.length, 0);
+    client.set('ready');
+    await flush();
+    assert.equal(live.mode(), 'automatic');
+    // Opened again, it's read again: unchanged, nothing is drawn again.
+    const read = changes();
+    await live.opened();
+    assert.deepEqual(client.sent.at(-1), { action: 'manage_memory', op: { op: 'mode' } });
+    assert.equal(client.sent.length, 3);
+    assert.equal(changes(), read);
+    const drawn = changes();
+    assert.deepEqual(await live.setMode(false), { ok: true, message: 'The agent asks you first now: nothing is kept until you approve its words.' });
+    assert.deepEqual(client.sent.at(-1), { action: 'manage_memory', op: { op: 'set_mode', mode: 'ask' } });
+    assert.equal(live.mode(), 'ask');
+    assert.equal(changes(), drawn + 1);
+    // Memory off on this install: no mode, and the setting isn't shown.
+    await live.opened();
+    assert.equal(live.mode(), 'off');
+});
+test('setting the mode says what it is now, or why it is not set', async () => {
+    const { client, live } = surface([listed(), moded('ask'), moded('automatic'), memory({ result: 'failed' }), { kind: 'answered', result: { result: 'refused', reason: 'not_granted' } }, memory({ result: 'forgotten' })]);
+    client.set('ready');
+    await flush();
+    assert.equal(live.mode(), 'ask');
+    assert.deepEqual(await live.setMode(true), { ok: true, message: 'Memory is automatic: what you tell the agent about yourself is kept at once, unless the conversation read something from outside.' });
+    assert.deepEqual(client.sent.at(-1), { action: 'manage_memory', op: { op: 'set_mode', mode: 'automatic' } });
+    assert.deepEqual(await live.setMode(false), { ok: false, message: 'Hatchling couldn’t change your memory. Its log says why.' });
+    assert.equal(live.mode(), 'automatic');
+    assert.equal((await live.setMode(false)).ok, false);
+    assert.match((await live.setMode(false)).message, /something else/);
+    assert.equal(live.mode(), 'automatic');
+});
+test('a mode that does not read leaves what was read', async () => {
+    const { client, live } = surface([listed(), moded('ask'), memory({ result: 'failed' })]);
+    client.set('ready');
+    await flush();
+    await live.opened();
+    assert.equal(client.sent.length, 3);
+    assert.equal(live.mode(), 'ask');
 });

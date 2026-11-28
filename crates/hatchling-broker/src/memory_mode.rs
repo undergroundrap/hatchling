@@ -30,15 +30,9 @@ const MAX_FILE_BYTES: u64 = 256;
 /// One write at a time.
 static WRITES: Mutex<()> = Mutex::new(());
 
-/// What the owner chose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Mode {
-    /// Kept at once when the broker's rule holds; a card otherwise.
-    Automatic,
-    /// Every proposal is a card.
-    Ask,
-}
+/// What the owner chose, as the app names it: kept on disk in the same
+/// words.
+pub use hatchling_core::ui::MemoryMode as Mode;
 
 /// The choice, as it's kept.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -80,6 +74,13 @@ pub fn mode(scheduler: &SchedulerConfig) -> Mode {
     } else {
         Mode::Ask
     }
+}
+
+/// Whether a choice is kept where `scheduler` keeps it, whatever it says:
+/// until one is, memory is automatic because nobody chose otherwise.
+#[must_use]
+pub fn chosen(scheduler: &SchedulerConfig) -> bool {
+    scheduler.enabled() && std::fs::symlink_metadata(scheduler.owner_dir().join(MODE_FILE)).is_ok()
 }
 
 /// Keeps `mode` as the owner's choice, written whole beside and put in

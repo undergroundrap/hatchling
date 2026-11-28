@@ -117,6 +117,7 @@ All must pass before the WO closes:
 
 - Slice 1, the conversation's taint, the mode and keeping at once: [wo057-taint.md](../evidence/wo057-taint.md).
 - Slice 2, a memory that waits on the owner's Review: [wo057-routes.md](../evidence/wo057-routes.md).
+- Slice 3, the app: [wo057-app.md](../evidence/wo057-app.md).
 
 ## Notes
 
@@ -144,3 +145,8 @@ Found while designing:
 1. **The conversation's taint and the mode,** in the broker, with automatic keeping, the record's `kept_by`, the daily cap, and `Kept` to the agent (session v40), so it never says it asked when it didn't. Until slice 2, everything else is a card, as before.
 2. **The routes:** the review queue for tainted conversations and background runs (UI v17, the review kind `remember`), with the owner's decision applied as it's made: approved, kept on their word; rejected, its words refused from then on.
 3. **The app:** the chat notice's Forget link, the Memory page's label and filter, and the setting. They come after slice 2's UI v17, so the record's `kept_by` and `manage_memory`'s `mode` and `set_mode` are UI v18: the approved shape, one version on.
+
+### Found building slice 3 (2026-11-27)
+
+- **The Forget link needs the memory's id.** The approved shape has no way for the chat to know which memory a notice is about: the UI renders notices as plain text, and matching their words would break when the wording changes. So the notice carries it, `remembered` on the `chat_message` (v18, optional, the listed id), set only by the broker on its own notice. It's a field beyond the approved shape, so it needs the maintainer's yes before slice 3 merges.
+- **Said once, as it happens.** The upgrade's notice ("Memory is now automatic …") comes with the first memory kept automatically, and keeping it writes Automatic as the owner's choice, so it isn't said again. A new install hears it the same way, at the moment it matters.

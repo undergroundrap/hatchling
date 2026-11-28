@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 17;
+export const UI_SCHEMA_VERSION = 18;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 40;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -1006,6 +1006,13 @@ export type ChatMessage = {
      * ([`SuggestionOp::Keep`]). Said only of an answer in their chat.
      */
     readonly out_of_steps?: boolean;
+    /**
+     * The memory this notice says the broker kept automatically, by its
+     * id as [`KeptOp::List`] lists it (v18, WO-057): for the app's link to
+     * forget it. The broker's word, said only on its own notice. Never
+     * read from the text.
+     */
+    readonly remembered?: string | null;
     /**
      * The run that wrote it, by its cell id, when an agent run did: the
      * broker's own word, which the activity record's run summary names
@@ -2239,6 +2246,10 @@ export type Kept = {
      */
     readonly kept_at: number;
     /**
+     * Who kept it (v18): none for what was kept some other way.
+     */
+    readonly kept_by?: KeptBy | null;
+    /**
      * What kind of thing it is: `owner`, `guidance`, `work` or `pointer`.
      */
     readonly kind?: string | null;
@@ -2251,6 +2262,10 @@ export type Kept = {
      */
     readonly why?: string | null;
 };
+/**
+ * Who kept a memory (v18, WO-057).
+ */
+export type KeptBy = 'owner' | 'automatic';
 /**
  * Where a kept memory came from, as the broker recorded it (WO-048).
  */
@@ -2285,6 +2300,14 @@ export type KeptOp = {
      */
     readonly id: string;
     readonly op: 'confirm';
+} | {
+    readonly op: 'mode';
+} | {
+    /**
+     * The choice.
+     */
+    readonly mode: MemoryMode;
+    readonly op: 'set_mode';
 };
 /**
  * The result of a [`KeptOp`].
@@ -2299,6 +2322,12 @@ export type KeptResult = {
     readonly result: 'forgotten';
 } | {
     readonly result: 'confirmed';
+} | {
+    /**
+     * The owner's choice.
+     */
+    readonly mode: MemoryMode;
+    readonly result: 'mode';
 } | {
     readonly result: 'not_found';
 } | {
@@ -2504,6 +2533,11 @@ export type MediaHeader = {
      */
     readonly value: string;
 };
+/**
+ * Whether what the agent asks to remember is kept at once (WO-057): the
+ * owner's choice.
+ */
+export type MemoryMode = 'automatic' | 'ask';
 /**
  * The broker's reply to one [`MemoryOp`].
  *

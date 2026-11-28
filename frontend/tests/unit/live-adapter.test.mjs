@@ -813,6 +813,42 @@ test('an answer that ran out of steps offers to keep what was asked; the owner\'
     assert.equal(messages()[2].selected, 'Keep for later');
     assert.deepEqual(adapter.getSnapshot().ideas.map(idea => [idea.id, idea.title]), [['idea-k', 'Pick up where a chat stopped']]);
 });
+test('Hatchling\'s notice of a memory it kept automatically offers to forget it, by the id the broker gave; the owner\'s press forgets it', async () => {
+    const { transport, adapter } = connected();
+    const forgets = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_memory' && frame.action.op.op === 'forget');
+    const lists = () => transport.sent.filter(frame => frame.type === 'action' && frame.action.action === 'manage_memory' && frame.action.op.op === 'list');
+    replay(transport, [
+        sampleEvent(1, 1, { kind: 'chat_message', chat_id: 'local', message_id: 'n-1', author: 'system', text: 'Remembered: “Pepper is a cat.” Kept automatically.', remembered: 'user/kept-1' }),
+        sampleEvent(2, 2, { kind: 'chat_message', chat_id: 'local', message_id: 'n-2', author: 'system', text: 'Remembered: “They like tea.” You approved it.' }),
+        sampleEvent(3, 3, { kind: 'chat_message', chat_id: 'local', message_id: 'n-3', author: 'agent', text: 'Noted, user/kept-2.', remembered: 'user/kept-2' }),
+    ]);
+    const messages = () => adapter.getSnapshot().messages;
+    assert.deepEqual(messages().map(item => item.id), ['n-1', 'n-1:forget', 'n-2', 'n-3'], 'only the broker\'s notice that names what it kept');
+    const offer = messages()[1];
+    assert.deepEqual(offer, { ...offer, id: 'n-1:forget', chatId: 'main', source: null, reaction: null, kind: 'choice', role: 'agent', text: 'Not right? Forget it, and the agent isn’t given it from your next message on.', options: ['Forget it'], selected: null });
+    // Any other choice, or an offer that isn't one, forgets nothing.
+    for (const [id, option] of [['n-1:forget', 'Something else'], ['n-2:forget', 'Forget it'], ['n-3:forget', 'Forget it'], ['n-1', 'Forget it']])
+        assert.match((await adapter.execute({ type: 'message.choose', id, option })).message, /cannot do this from the app yet/, id);
+    assert.equal(forgets().length, 0);
+    // It was gone already: said, and the offer stands.
+    let choosing = adapter.execute({ type: 'message.choose', id: 'n-1:forget', option: 'Forget it' });
+    await flush();
+    assert.deepEqual(transport.last().action, { action: 'manage_memory', op: { op: 'forget', id: 'user/kept-1' } });
+    answer(transport, transport.last().request_id, { result: 'memory', outcome: { result: 'not_found' } });
+    await flush();
+    answer(transport, lists().at(-1).request_id, { result: 'memory', outcome: { result: 'listed', kept: [] } });
+    assert.deepEqual(await choosing, { ok: false, message: 'That was no longer kept.' });
+    assert.equal(messages()[1].selected, null);
+    // Forgotten: the offer shows the choice made.
+    choosing = adapter.execute({ type: 'message.choose', id: 'n-1:forget', option: 'Forget it' });
+    await flush();
+    answer(transport, transport.last().request_id, { result: 'memory', outcome: { result: 'forgotten' } });
+    await flush();
+    answer(transport, lists().at(-1).request_id, { result: 'memory', outcome: { result: 'listed', kept: [] } });
+    assert.deepEqual(await choosing, { ok: true, message: 'Forgotten. The agent isn’t given it any more.' });
+    assert.equal(forgets().length, 2);
+    assert.equal(messages()[1].selected, 'Forget it');
+});
 test('an answer from a run is followed by what the run used, opening its record; until the record comes, the answer stands alone', () => {
     const { transport, adapter } = connected();
     const summary = (seq, cell, chat, tools) => sampleEvent(seq, seq, { kind: 'activity', state: 'success', event: { event: 'run_summary', event_id: `s-${seq}:summary`, run_id: `s-${seq}`, ts: sampleTime(seq), cell_id: cell, chat, tools, model_calls: 2, model_calls_refused: 0, peak_input_tokens: 5000, output_tokens: 40, context_window: 16384 } });

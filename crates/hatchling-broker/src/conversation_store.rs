@@ -668,6 +668,7 @@ fn show_with(bus: &Bus, resumed: &Resumed, runs: &[String]) {
                         author,
                         run: run.filter(|run| !run.is_empty()).cloned(),
                         out_of_steps: false,
+                        remembered: None,
                         text: text.to_owned(),
                     }),
                 );

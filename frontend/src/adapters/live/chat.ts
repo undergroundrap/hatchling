@@ -42,6 +42,12 @@ export const KEEP_ASK = 'The agent ran out of steps before it finished. Keep wha
 export const KEEP = 'Keep for later';
 /** How the offer to keep is named, after the answer it is under. */
 const KEEP_SUFFIX = ':keep';
+/** What the chat offers under Hatchling's notice of a memory it kept automatically (WO-057). */
+export const FORGET_ASK = 'Not right? Forget it, and the agent isn’t given it from your next message on.';
+/** The one choice it offers. */
+export const FORGET = 'Forget it';
+/** How the offer to forget is named, after the notice it is under. */
+const FORGET_SUFFIX = ':forget';
 /** What the owner is told of a file given that holds a secret Hatchling keeps. */
 /** Why a file the agent tried to give was withheld. */
 export const WITHHELD = 'it holds a secret Hatchling keeps. Giving files is off for this conversation; a new conversation turns it back on.';
@@ -63,10 +69,16 @@ export class ChatBook {
     readonly #unfinished = new Map<string, string>();
     /** The runs whose unfinished asks the owner kept. */
     readonly #kept = new Set<string>();
+    /** The memory each of Hatchling's notices says it kept automatically, by the notice's id: the broker's word. */
+    readonly #remembered = new Map<string, string>();
+    /** The memories the owner forgot from the chat. */
+    readonly #forgotten = new Set<string>();
     /** Apply one message, at its event's time. */
     apply(entry: ChatMessage, at: string): void {
         this.#updated.set(appChat(entry.chat_id), at);
         this.#messages.set(entry.message_id, message(entry, at));
+        if (entry.author === 'system' && typeof entry.remembered === 'string')
+            this.#remembered.set(entry.message_id, entry.remembered);
         if (entry.author === 'agent' && typeof entry.run === 'string') {
             this.#runs.set(entry.message_id, entry.run);
             // The broker's word that its run ran out of steps: the owner may keep what they asked.
@@ -85,6 +97,14 @@ export class ChatBook {
     /** The run an offer to keep is for, by the offer's id; none for any other message. */
     keepable(id: string): string | undefined {
         return id.endsWith(KEEP_SUFFIX) ? this.#unfinished.get(id.slice(0, -KEEP_SUFFIX.length)) : undefined;
+    }
+    /** The memory an offer to forget is for, by the offer's id; none for any other message. */
+    forgettable(id: string): string | undefined {
+        return id.endsWith(FORGET_SUFFIX) ? this.#remembered.get(id.slice(0, -FORGET_SUFFIX.length)) : undefined;
+    }
+    /** The owner forgot `memory` from the chat: its offer shows the choice made. */
+    forgotten(memory: string): void {
+        this.#forgotten.add(memory);
     }
     /** The owner kept what they asked in `run`: its offer shows the choice made. */
     kept(run: string): void {
@@ -166,6 +186,9 @@ export class ChatBook {
             const unfinished = this.#unfinished.get(entry.id);
             if (unfinished !== undefined)
                 shown.push({ id: `${entry.id}${KEEP_SUFFIX}`, chatId: entry.chatId, time: entry.time, source: null, reaction: null, kind: 'choice', role: 'agent', text: KEEP_ASK, options: [KEEP], selected: this.#kept.has(unfinished) ? KEEP : null });
+            const remembered = this.#remembered.get(entry.id);
+            if (remembered !== undefined)
+                shown.push({ id: `${entry.id}${FORGET_SUFFIX}`, chatId: entry.chatId, time: entry.time, source: null, reaction: null, kind: 'choice', role: 'agent', text: FORGET_ASK, options: [FORGET], selected: this.#forgotten.has(remembered) ? FORGET : null });
             return shown;
         });
     }

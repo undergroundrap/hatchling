@@ -1127,6 +1127,12 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "out_of_steps": {
                 "type": "boolean"
             },
+            "remembered": {
+                "type": [
+                    "string",
+                    "null"
+                ]
+            },
             "run": {
                 "type": [
                     "string",
@@ -2640,6 +2646,16 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 "minimum": 0,
                 "type": "integer"
             },
+            "kept_by": {
+                "anyOf": [
+                    {
+                        "$ref": "#/$defs/KeptBy"
+                    },
+                    {
+                        "type": "null"
+                    }
+                ]
+            },
             "kind": {
                 "type": [
                     "string",
@@ -2666,6 +2682,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "approved"
         ],
         "type": "object"
+    },
+    "KeptBy": {
+        "oneOf": [
+            {
+                "const": "owner",
+                "type": "string"
+            },
+            {
+                "const": "automatic",
+                "type": "string"
+            }
+        ]
     },
     "KeptFrom": {
         "oneOf": [
@@ -2768,6 +2796,34 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                     "id"
                 ],
                 "type": "object"
+            },
+            {
+                "properties": {
+                    "op": {
+                        "const": "mode",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "mode": {
+                        "$ref": "#/$defs/MemoryMode"
+                    },
+                    "op": {
+                        "const": "set_mode",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "op",
+                    "mode"
+                ],
+                "type": "object"
             }
         ]
     },
@@ -2813,6 +2869,22 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
                 },
                 "required": [
                     "result"
+                ],
+                "type": "object"
+            },
+            {
+                "properties": {
+                    "mode": {
+                        "$ref": "#/$defs/MemoryMode"
+                    },
+                    "result": {
+                        "const": "mode",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "result",
+                    "mode"
                 ],
                 "type": "object"
             },
@@ -3098,6 +3170,18 @@ export const WIRE_DEFINITIONS: Readonly<Record<string, SchemaNode>> = {
             "conversation"
         ],
         "type": "object"
+    },
+    "MemoryMode": {
+        "oneOf": [
+            {
+                "const": "automatic",
+                "type": "string"
+            },
+            {
+                "const": "ask",
+                "type": "string"
+            }
+        ]
     },
     "ModelServer": {
         "properties": {

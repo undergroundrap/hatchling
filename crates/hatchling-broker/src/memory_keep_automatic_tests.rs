@@ -3,11 +3,12 @@
 use std::sync::Arc;
 
 use hatchling_core::MemoryResult;
-use hatchling_core::ui::{ChatAuthor, Decision, UiEventBody};
+use hatchling_core::ui::{ChatAuthor, Decision, Kept, KeptOp, KeptResult, MemoryMode, UiEventBody};
 use hatchling_memory::{KeptBy, KeptRecord, MemoryPrincipal, MemoryScope, SessionId, Tag};
 
 use super::{
-    DAY_SECS, MAX_AUTOMATIC_PER_DAY, ProposedIn, RECALL_TAG, SUPERSEDED_TAG, open, propose_in,
+    DAY_SECS, MAX_AUTOMATIC_PER_DAY, ProposedIn, RECALL_TAG, SUPERSEDED_TAG, handle_kept_op, open,
+    propose_in,
 };
 use crate::Config;
 use crate::approval_board::board;
@@ -81,6 +82,33 @@ fn told(bus: &crate::api_stream::Bus) -> Vec<String> {
         .collect()
 }
 
+/// What the owner was told in the chat, with the memory each notice names.
+fn notices(bus: &crate::api_stream::Bus) -> Vec<(String, Option<String>)> {
+    bus.after(None)
+        .into_iter()
+        .filter_map(|event| {
+            if let UiEventBody::ChatMessage(message) = event.body {
+                (message.author == ChatAuthor::System).then_some((message.text, message.remembered))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// What the first memory kept automatically adds to its notice.
+const FIRST: &str = " Memory is now automatic: what you tell the agent about yourself is kept at once, unless the conversation read something from outside. Change it in Settings.";
+
+/// What the owner's list says is kept.
+fn listed(config: &Config) -> Vec<Kept> {
+    if let KeptResult::Listed { kept } = handle_kept_op(config, &KeptOp::List) {
+        Some(kept)
+    } else {
+        None
+    }
+    .expect("listed")
+}
+
 /// The id a proposal kept at once was kept as.
 fn kept_as(result: &MemoryResult) -> String {
     if let MemoryResult::Kept { id } = result {
@@ -147,9 +175,9 @@ fn a_clean_chat_proposal_is_kept_at_once_and_the_owner_told() {
     assert!(!carded(&bus), "no card");
     assert_eq!(
         told(&bus),
-        [
-            "Remembered: “Pepper is a cat.” The agent is given it from now on. Kept automatically: nothing in this conversation came from outside. If it's wrong, forget it on the Memory page."
-        ]
+        [format!(
+            "Remembered: “Pepper is a cat.” The agent is given it from now on. Kept automatically: nothing in this conversation came from outside. If it's wrong, forget it here or on the Memory page.{FIRST}"
+        )]
     );
     // Kept is kept once: asked again, it's said to be.
     assert!(matches!(
@@ -380,5 +408,214 @@ fn the_days_count_starts_after_its_first_second() {
         super::kept_automatically_since(&store, &principal, 1_000, 2_000),
         0
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The first memory kept automatically says memory is automatic now, once,
+/// and each notice names what it kept, as the owner's list does: the app's
+/// link forgets it.
+#[test]
+fn the_first_kept_automatically_says_so_once_and_each_names_what_it_kept() {
+    let (config, dir) = broker("first");
+    let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+    board(&config).attach(Arc::clone(&bus));
+    assert!(!crate::memory_mode::chosen(&config.scheduler));
+    let keep = |words: &str| {
+        kept_as(&propose_in(
+            &config,
+            None,
+            "task-f",
+            &Asked::about_owner(words),
+            in_chat(),
+            true,
+        ))
+    };
+    let first = keep("Pepper is a cat.");
+    let second = keep("They take tea black.");
+    let tail = "Kept automatically: nothing in this conversation came from outside. If it's wrong, forget it here or on the Memory page.";
+    assert_eq!(
+        notices(&bus),
+        [
+            (
+                format!(
+                    "Remembered: “Pepper is a cat.” The agent is given it from now on. {tail}{FIRST}"
+                ),
+                Some(format!("user/{first}"))
+            ),
+            (
+                format!(
+                    "Remembered: “They take tea black.” The agent is given it from now on. {tail}"
+                ),
+                Some(format!("user/{second}"))
+            ),
+        ]
+    );
+    // Said once because it's kept: Automatic, as the owner's choice now.
+    assert!(crate::memory_mode::chosen(&config.scheduler));
+    assert_eq!(
+        crate::memory_mode::mode(&config.scheduler),
+        MemoryMode::Automatic
+    );
+    // The notice's memory is the listed one, kept automatically.
+    let named = format!("user/{first}");
+    let kept = listed(&config);
+    let it = kept.iter().find(|kept| kept.id == named).expect("listed");
+    assert_eq!(it.kept_by, Some(hatchling_core::ui::KeptBy::Automatic));
+    assert!(!it.approved);
+    assert_eq!(
+        handle_kept_op(&config, &KeptOp::Forget { id: named.clone() }),
+        KeptResult::Forgotten
+    );
+    assert!(listed(&config).iter().all(|kept| kept.id != named));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An owner who chose is never told memory is automatic now, and a
+/// memory kept already names none.
+#[test]
+fn an_owner_who_chose_is_never_told_it_is_now_automatic() {
+    let (config, dir) = broker("chose");
+    let bus = Arc::new(crate::api_stream::Bus::starting_at(1));
+    board(&config).attach(Arc::clone(&bus));
+    crate::memory_mode::set(&config.scheduler, Mode::Automatic).unwrap();
+    for _ in 0..2 {
+        let _ = propose_in(
+            &config,
+            None,
+            "task-g",
+            &Asked::about_owner("Pepper is a cat."),
+            in_chat(),
+            true,
+        );
+    }
+    let said = notices(&bus);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said.iter().all(|(text, _)| !text.contains("now automatic")),
+        "{said:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The owner says and sets the mode from their app; a broker that keeps no
+/// memory has none, and one that schedules nothing asks.
+#[test]
+fn the_owner_says_and_sets_the_mode_from_their_app() {
+    let (config, dir) = broker("ops");
+    let mode = |config: &Config| handle_kept_op(config, &KeptOp::Mode);
+    let set = |config: &Config, mode| handle_kept_op(config, &KeptOp::SetMode { mode });
+    assert_eq!(
+        mode(&config),
+        KeptResult::Mode {
+            mode: MemoryMode::Automatic
+        }
+    );
+    assert_eq!(
+        set(&config, MemoryMode::Ask),
+        KeptResult::Mode {
+            mode: MemoryMode::Ask
+        }
+    );
+    assert_eq!(
+        mode(&config),
+        KeptResult::Mode {
+            mode: MemoryMode::Ask
+        }
+    );
+    // Set, it's how the next memory goes: a card.
+    assert_eq!(
+        propose_in(
+            &config,
+            None,
+            "task-h",
+            &Asked::about_owner("They cycle to work."),
+            in_chat(),
+            true
+        ),
+        MemoryResult::Proposed
+    );
+    assert!(recalled(&config, RECALL_TAG).is_empty());
+    assert_eq!(
+        set(&config, MemoryMode::Automatic),
+        KeptResult::Mode {
+            mode: MemoryMode::Automatic
+        }
+    );
+    assert_eq!(
+        crate::memory_mode::mode(&config.scheduler),
+        MemoryMode::Automatic
+    );
+    // Where it can't be kept, it fails, and the mode it had is kept.
+    let mut broken = config.clone();
+    broken.scheduler.root = dir.join("broken").join("schedules");
+    std::fs::create_dir_all(dir.join("broken")).unwrap();
+    std::fs::write(broken.scheduler.owner_dir(), b"").unwrap();
+    assert_eq!(set(&broken, MemoryMode::Ask), KeptResult::Failed);
+    // Scheduling off: nothing's kept, so it asks, and can't be set.
+    let mut unscheduled = config.clone();
+    unscheduled.scheduler = crate::SchedulerConfig::disabled();
+    assert_eq!(
+        mode(&unscheduled),
+        KeptResult::Mode {
+            mode: MemoryMode::Ask
+        }
+    );
+    assert_eq!(set(&unscheduled, MemoryMode::Automatic), KeptResult::Off);
+    // Memory off: there's no mode.
+    let mut off = config;
+    off.memory.root = std::path::PathBuf::new();
+    assert_eq!(mode(&off), KeptResult::Off);
+    assert_eq!(set(&off, MemoryMode::Ask), KeptResult::Off);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The owner's list says who kept each: the owner, the broker
+/// automatically, or nobody it records.
+#[test]
+fn the_owners_list_says_who_kept_each() {
+    let (config, dir) = broker("who");
+    kept_before(
+        &config,
+        1,
+        &KeptRecord::automatic(None, Some(String::from("local")), now()),
+        RECALL_TAG,
+    );
+    let (principal, store) = open(&config).unwrap();
+    store
+        .keep(
+            &principal,
+            &MemoryScope::User,
+            &"kept-owner".parse().unwrap(),
+            "Approved by them.",
+            &[RECALL_TAG.parse::<Tag>().unwrap()],
+            KeptRecord::agent_words(Some(String::from("req-1")), None, None, now()),
+        )
+        .unwrap();
+    store
+        .write(
+            &principal,
+            &MemoryScope::User,
+            &"kept-none".parse().unwrap(),
+            "Written by a run.",
+            &[RECALL_TAG.parse::<Tag>().unwrap()],
+            hatchling_memory::RetentionPolicy::Keep,
+            now(),
+        )
+        .unwrap();
+    let kept = listed(&config);
+    let by = |id: &str| {
+        kept.iter()
+            .find(|kept| kept.id == format!("user/{id}"))
+            .map(|kept| (kept.kept_by, kept.approved))
+    };
+    assert_eq!(
+        by("kept-before-0"),
+        Some((Some(hatchling_core::ui::KeptBy::Automatic), false))
+    );
+    assert_eq!(
+        by("kept-owner"),
+        Some((Some(hatchling_core::ui::KeptBy::Owner), true))
+    );
+    assert_eq!(by("kept-none"), Some((None, false)));
     let _ = std::fs::remove_dir_all(&dir);
 }

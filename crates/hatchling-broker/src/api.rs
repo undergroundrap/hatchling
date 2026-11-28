@@ -949,6 +949,7 @@ mod tests {
             author: ChatAuthor::Agent,
             run: None,
             out_of_steps: false,
+            remembered: None,
             text: text.to_owned(),
         })
     }
@@ -1744,6 +1745,7 @@ mod tests {
                 author: ChatAuthor::Agent,
                 run: None,
                 out_of_steps: false,
+                remembered: None,
                 text: text.to_owned(),
             })
         };

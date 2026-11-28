@@ -252,9 +252,17 @@ fn keep_at_once(
     match keep_as(config, proposal, record, now) {
         Ok(keeping) => {
             let said = said(&proposal.content, &keeping);
-            board(config).tell_owner(&format!(
-                "{said} Kept automatically: nothing in this conversation came from outside. If it's wrong, forget it on the Memory page."
-            ));
+            let text = format!(
+                "{said} Kept automatically: nothing in this conversation came from outside. If it's wrong, forget it here or on the Memory page.{}",
+                first_automatic(config)
+            );
+            let board = board(config);
+            match &keeping {
+                Keeping::Kept { id } | Keeping::Replaced { id, .. } => {
+                    board.tell_owner_kept(&text, format!("user/{id}"));
+                }
+                Keeping::Already => board.tell_owner(&text),
+            }
             match keeping {
                 Keeping::Kept { id } | Keeping::Replaced { id, .. } => {
                     MemoryResult::Kept { id: id.to_string() }
@@ -269,6 +277,21 @@ fn keep_at_once(
             MemoryResult::MemoryError
         }
     }
+}
+
+/// What the first memory kept automatically adds to its notice, once, on a
+/// new install or an upgraded one: that memory is automatic now, and where
+/// to change it. Said until the owner's choice is kept, which this keeps.
+fn first_automatic(config: &Config) -> &'static str {
+    if crate::memory_mode::chosen(&config.scheduler) {
+        return "";
+    }
+    if let Err(error) =
+        crate::memory_mode::set(&config.scheduler, crate::memory_mode::Mode::Automatic)
+    {
+        tracing::warn!(%error, "the memory mode wasn't kept: the next memory says it's automatic again");
+    }
+    " Memory is now automatic: what you tell the agent about yourself is kept at once, unless the conversation read something from outside. Change it in Settings."
 }
 
 /// Puts `proposal` on the owner's Review page, asked where `from` says,
@@ -617,12 +640,31 @@ fn already_kept(
         })
 }
 
-/// Lists or forgets what the agent is given from the owner's memory, as
-/// the owner asks from their app.
+/// Lists or forgets what the agent is given from the owner's memory, or
+/// says or sets whether it's kept automatically, as the owner asks from
+/// their app.
 #[must_use]
 pub fn handle_kept_op(config: &Config, op: &KeptOp) -> KeptResult {
     if config.memory.root.as_os_str().is_empty() {
         return KeptResult::Off;
+    }
+    match op {
+        KeptOp::Mode => {
+            return KeptResult::Mode {
+                mode: crate::memory_mode::mode(&config.scheduler),
+            };
+        }
+        KeptOp::SetMode { mode } => {
+            return match crate::memory_mode::set(&config.scheduler, *mode) {
+                Ok(()) => KeptResult::Mode { mode: *mode },
+                Err(error) if error.kind() == std::io::ErrorKind::Unsupported => KeptResult::Off,
+                Err(error) => {
+                    tracing::error!(%error, "the memory mode couldn't be kept");
+                    KeptResult::Failed
+                }
+            };
+        }
+        KeptOp::List | KeptOp::Forget { .. } | KeptOp::Confirm { .. } => {}
     }
     let (principal, store) = match open(config) {
         Ok(opened) => opened,
@@ -635,7 +677,8 @@ pub fn handle_kept_op(config: &Config, op: &KeptOp) -> KeptResult {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
     match op {
-        KeptOp::List => list(&store, &principal, now),
+        // The mode is said and set above.
+        KeptOp::Mode | KeptOp::SetMode { .. } | KeptOp::List => list(&store, &principal, now),
         KeptOp::Forget { id } => {
             let Some((scope, id)) = parse_kept_id(id, &principal) else {
                 return KeptResult::NotFound;
@@ -711,6 +754,13 @@ fn kept_of(
     now: u64,
 ) -> Kept {
     let approved = item.approved_by_owner();
+    let kept_by = if item.kept_automatically() {
+        Some(hatchling_core::ui::KeptBy::Automatic)
+    } else if approved {
+        Some(hatchling_core::ui::KeptBy::Owner)
+    } else {
+        None
+    };
     let record = item.record;
     let from = record
         .as_ref()
@@ -738,6 +788,7 @@ fn kept_of(
     Kept {
         id,
         approved,
+        kept_by,
         kept_at: record
             .as_ref()
             .map_or(item.created_at_secs, |record| record.kept_at_secs),

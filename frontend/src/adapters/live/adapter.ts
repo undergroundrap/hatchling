@@ -12,7 +12,7 @@ import type { AppState, Command, CommandResult, DeepReadonly, ProtocolAdapter, S
 import { keepPreferences, rememberedPreferences } from './preferences.js';
 import { ActivityBook } from './activity.js';
 import { LiveApprovals } from './approvals.js';
-import { ChatBook, KEEP, MAIN_CHAT, wireChat } from './chat.js';
+import { ChatBook, FORGET, KEEP, MAIN_CHAT, wireChat } from './chat.js';
 import { LiveClient, askTheHost } from './client.js';
 import type { UiTransport } from './client.js';
 import type { ActionRefusal, UiEvent } from './protocol/generated.js';
@@ -283,11 +283,21 @@ export class LiveAdapter implements ProtocolAdapter {
         this.#listeners.clear();
     }
     /**
-     * The owner chose what the chat offered. The one offer is to keep what they
-     * asked in a run that ran out of steps, as a card in their own words: the
-     * broker keeps it only if it still offers it.
+     * The owner chose what the chat offered: to keep what they asked in a run
+     * that ran out of steps, as a card in their own words, which the broker
+     * keeps only if it still offers it; or to forget a memory Hatchling kept
+     * automatically, by the id its notice gave (WO-057).
      */
     async #choose(id: string, option: string): Promise<CommandResult> {
+        const memory = this.#chats.forgettable(id);
+        if (memory !== undefined && option === FORGET) {
+            const forgot = await this.#memory.forget(memory);
+            if (forgot.ok) {
+                this.#chats.forgotten(memory);
+                this.#publish();
+            }
+            return forgot;
+        }
         const run = this.#chats.keepable(id);
         if (run === undefined || option !== KEEP)
             return { ok: false, message: NOT_YET };

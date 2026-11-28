@@ -3,12 +3,17 @@
 // connection opens and when an approval is decided, and forgotten from the
 // Memory page. The list is the broker's, never this app's guess.
 import type { CommandResult, MemoryEntry } from '../../protocol/models.js';
-import type { MemoryDetail, MemoryDetailsPort } from '../../session/memory.js';
+import type { MemoryDetail, MemoryDetailsPort, MemoryModeView } from '../../session/memory.js';
 import type { LiveClient } from './client.js';
 import type { Kept, KeptOp, KeptResult, UiEvent } from './protocol/generated.js';
 const FORGOTTEN = 'Forgotten. The agent isn’t given it any more.';
 const CONFIRMED = 'Confirmed: it’s still so, as of today.';
-const SAID: Readonly<Record<Exclude<KeptResult['result'], 'listed' | 'forgotten' | 'confirmed'>, string>> = {
+/** What setting the mode is answered, by what it is now. */
+const MODE_SET: Readonly<Record<'automatic' | 'ask', string>> = {
+    automatic: 'Memory is automatic: what you tell the agent about yourself is kept at once, unless the conversation read something from outside.',
+    ask: 'The agent asks you first now: nothing is kept until you approve its words.',
+};
+const SAID: Readonly<Record<Exclude<KeptResult['result'], 'listed' | 'forgotten' | 'confirmed' | 'mode'>, string>> = {
     not_found: 'That was no longer kept.',
     off: 'Hatchling keeps no memory on this install: its configuration doesn’t give it a place (HATCHLING_MEMORY_DIR).',
     failed: 'Hatchling couldn’t change your memory. Its log says why.',
@@ -33,7 +38,7 @@ export function entryOf(kept: Kept): MemoryEntry {
         kind: 'memory',
         title: titleOf(kept.content),
         body: kept.content,
-        date: kept.approved ? `Approved by you, ${day}` : `Kept ${day}`,
+        date: kept.kept_by === 'automatic' ? `Kept automatically, ${day}` : kept.approved ? `Approved by you, ${day}` : `Kept ${day}`,
         closeness: 0,
     };
 }
@@ -69,6 +74,7 @@ export function detailOf(kept: Kept): MemoryDetail {
         confirmed: kept.confirmed_at === undefined || kept.confirmed_at === null || kept.confirmed_at === kept.kept_at ? null : `Last confirmed ${dayOf(kept.confirmed_at)}`,
         due: kept.due ?? false,
         replaces: kept.replaces ?? null,
+        automatic: kept.kept_by === 'automatic',
     };
 }
 /** What a change is answered: anything but a listing. */
@@ -81,6 +87,7 @@ export class LiveMemory implements MemoryDetailsPort {
     readonly #nextId: () => string;
     #entries: readonly MemoryEntry[] = [];
     #details = new Map<string, MemoryDetail>();
+    #mode: MemoryModeView = 'unread';
     #ready = false;
     constructor(client: LiveClient, changed: () => void, nextId: () => string) {
         this.#client = client;
@@ -102,6 +109,31 @@ export class LiveMemory implements MemoryDetailsPort {
         if (outcome.result === 'confirmed' || outcome.result === 'not_found')
             await this.refresh();
         return outcome.result === 'confirmed' ? { ok: true, message: CONFIRMED } : { ok: false, message: this.#says(outcome) };
+    }
+    mode(): MemoryModeView {
+        return this.#mode;
+    }
+    opened(): Promise<void> {
+        return this.#ready ? this.#readMode() : Promise.resolve();
+    }
+    async setMode(automatic: boolean): Promise<CommandResult> {
+        const outcome = await this.#change({ op: 'set_mode', mode: automatic ? 'automatic' : 'ask' });
+        if (typeof outcome === 'string')
+            return { ok: false, message: outcome };
+        if (outcome.result !== 'mode')
+            return { ok: false, message: this.#says(outcome) };
+        this.#mode = outcome.mode;
+        this.#changed();
+        return { ok: true, message: MODE_SET[outcome.mode] };
+    }
+    /** The mode as the broker says it: unchanged when it couldn't be read. */
+    async #readMode(): Promise<void> {
+        const outcome = await this.#ask({ op: 'mode' });
+        const mode = outcome?.result === 'mode' ? outcome.mode : outcome?.result === 'off' ? 'off' : undefined;
+        if (mode === undefined || mode === this.#mode)
+            return;
+        this.#mode = mode;
+        this.#changed();
     }
     /**
      * An approval decided may keep something, and the broker's notice says
@@ -148,14 +180,15 @@ export class LiveMemory implements MemoryDetailsPort {
                 return SAID[outcome.result];
             case 'forgotten':
             case 'confirmed':
+            case 'mode':
                 return UNEXPECTED;
         }
     }
-    /** Load the list each time the connection opens. */
+    /** Load the list, then whether memory is automatic, each time the connection opens. */
     #watch(): void {
         const ready = this.#client.connection().kind === 'ready';
         if (ready && !this.#ready)
-            void this.refresh();
+            void this.refresh().then(() => this.#readMode());
         this.#ready = ready;
     }
     async #ask(op: KeptOp): Promise<KeptResult | undefined> {
