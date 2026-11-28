@@ -602,7 +602,7 @@ impl Tool for MemoryProposeTool<'_> {
         Ok(match crate::memory::propose(self.stream, &asked) {
             Ok(crate::memory::Proposal::Asked) => ToolOutput::Ok(json!({
                 "asked": true,
-                "note": "The owner was asked in the app, on one card with anything else you asked them to remember in this answer. Each is kept only if they approve it."
+                "note": "The owner was asked in the app: on a card with anything else you asked them to remember in this answer, or on their Memory page. Each is kept only if they approve it."
             })),
             Ok(crate::memory::Proposal::Kept(id)) => ToolOutput::Ok(json!({
                 "kept": true,
@@ -5132,7 +5132,7 @@ mod tests {
         // What's asked together is one card (WO-055): the agent is told so.
         assert_eq!(
             listed(output),
-            json!({"asked": true, "note": "The owner was asked in the app, on one card with anything else you asked them to remember in this answer. Each is kept only if they approve it."})
+            json!({"asked": true, "note": "The owner was asked in the app: on a card with anything else you asked them to remember in this answer, or on their Memory page. Each is kept only if they approve it."})
         );
         assert_eq!(
             broker.join().unwrap(),

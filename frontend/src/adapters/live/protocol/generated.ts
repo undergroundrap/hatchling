@@ -2,7 +2,7 @@
 // generated from hatchling-core by `cargo run -p hatchling-dev -- protocol-schema --write`.
 // Do not edit: regenerate with `npm run protocol:generate`. `npm run protocol:check` fails on drift.
 /** The frontend protocol version this build speaks. */
-export const UI_SCHEMA_VERSION = 16;
+export const UI_SCHEMA_VERSION = 17;
 /** The broker session protocol version the schema was generated at. */
 export const SESSION_PROTOCOL_VERSION = 40;
 /** The mismatch sentence when this frontend is the newer side. */
@@ -3042,7 +3042,7 @@ export type ReviewItem = {
  * What kind of change a review item is: each one a loop may not make
  * on its own (WO-054).
  */
-export type ReviewKind = 'replace' | 'remove' | 'identity' | 'unresolved' | 'guidance';
+export type ReviewKind = 'replace' | 'remove' | 'identity' | 'unresolved' | 'guidance' | 'remember';
 /**
  * An operation on the owner's Review page (WO-054).
  */

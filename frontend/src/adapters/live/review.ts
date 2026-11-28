@@ -1,10 +1,12 @@
 // What background work may not apply on its own, as the broker's review queue
 // keeps it (WO-054): replacing or removing one of the owner's preferences,
 // boundaries or commitments, a fact about who they are, something a loop
-// couldn't settle, new guidance. Read when the connection opens and whenever
-// the owner opens the Memory page; approved or rejected there, one at a time.
-// A decision is recorded, not applied: the loop that proposed it applies an
-// approved one, after checking that what it would change hasn't changed.
+// couldn't settle, new guidance, and a memory the agent asked for after reading
+// from outside, or in a background run (WO-057). Read when the connection opens
+// and whenever the owner opens the Memory page; approved or rejected there, one
+// at a time. A decision is recorded, not applied: the loop that proposed it
+// applies an approved one, after checking that what it would change hasn't
+// changed. A memory is the exception: the broker keeps it as it's approved.
 import type { CommandResult } from '../../protocol/models.js';
 import type { ReviewEntry, ReviewList, ReviewPort } from '../../session/review.js';
 import type { LiveClient } from './client.js';
@@ -16,6 +18,7 @@ const KINDS: Readonly<Record<ReviewKind, string>> = {
     identity: 'About who you are',
     unresolved: 'Something it couldn’t settle on its own',
     guidance: 'New guidance for how the agent works',
+    remember: 'Something to remember about you',
 };
 /** Where a proposal stands, said under it. */
 const OUTCOMES: Readonly<Record<ReviewItem['state'], string>> = {
@@ -25,6 +28,9 @@ const OUTCOMES: Readonly<Record<ReviewItem['state'], string>> = {
     stale: 'What it would change has changed since, so it won’t be applied.',
 };
 const APPROVED = 'Approved. It’s applied the next time that work runs.';
+/** A memory approved: the broker kept it as it was approved. */
+const REMEMBERED_OUTCOME = 'You approved it, so it’s remembered: the agent is given it from now on.';
+const REMEMBERED = 'Approved. It’s remembered.';
 const REJECTED = 'Rejected. Nothing changes.';
 const GONE = 'That is no longer waiting for you.';
 const DECIDED = 'That was already decided.';
@@ -42,7 +48,7 @@ export function entryOf(item: ReviewItem): ReviewEntry {
         why: item.why,
         date: Number.isNaN(at.getTime()) ? '' : `Proposed ${at.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`,
         state: item.state,
-        outcome: OUTCOMES[item.state],
+        outcome: item.kind === 'remember' && item.state === 'approved' ? REMEMBERED_OUTCOME : OUTCOMES[item.state],
     };
 }
 export class LiveReview implements ReviewPort {
@@ -85,7 +91,7 @@ export class LiveReview implements ReviewPort {
         if (outcome.result === 'decided' || outcome.result === 'not_waiting' || outcome.result === 'not_found')
             await this.refresh();
         if (outcome.result === 'decided')
-            return { ok: true, message: approve ? APPROVED : REJECTED };
+            return { ok: true, message: approve ? (outcome.item.kind === 'remember' ? REMEMBERED : APPROVED) : REJECTED };
         return { ok: false, message: this.#says(outcome) };
     }
     #says(outcome: ReviewResult): string {

@@ -280,6 +280,18 @@ impl<A: Clone> Approvals<A> {
         self.propose_items(proposal, &[], now)
     }
 
+    /// Denies the effect `fingerprint` from now on, as a denied request's
+    /// is (WO-057): the owner said no to it somewhere a request wasn't.
+    /// One that can't be digested is denied by nothing, and logged.
+    pub fn deny(&self, fingerprint: &Value) {
+        match action::digest(fingerprint) {
+            Ok(digest) => {
+                self.ledger().denied.insert(digest);
+            }
+            Err(error) => tracing::error!(%error, "a denial couldn't be recorded"),
+        }
+    }
+
     /// Whether the owner denied the effect `fingerprint`, on a request of
     /// its own or as an item of one (WO-057): what's done without a request
     /// checks first, so a denial or a skip still holds. One that can't be

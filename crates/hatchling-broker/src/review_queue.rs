@@ -6,7 +6,11 @@
 //!   commitments;
 //! - a fact about who the owner is;
 //! - anything a loop's checks couldn't resolve;
-//! - installing new guidance.
+//! - installing new guidance;
+//! - a memory asked for in a conversation that read from outside, or by a
+//!   background run (WO-057). Its whole proposal is sealed beside it
+//!   ([`propose_with`]), and approving it keeps it at once
+//!   ([`crate::memory_keep::reviewed`]).
 //!
 //! The queue never blocks a loop: [`propose`] queues and returns.
 //!
@@ -87,6 +91,12 @@ fn entry(id: &str) -> String {
     format!("review-{id}")
 }
 
+/// The entry what applying an item needs is kept in, when it needs more
+/// than the item says.
+fn detail_entry(id: &str) -> String {
+    format!("review-detail-{id}")
+}
+
 /// Whether an item written out as `bytes` fits one sealed entry.
 const fn fits(bytes: usize) -> bool {
     bytes <= hatchling_core::MAX_SECRET_BYTES
@@ -133,6 +143,23 @@ pub fn propose(
     proposal: &Proposal<'_>,
     now: Timestamp,
 ) -> Result<Proposed, Error> {
+    propose_with(scheduler, key, proposal, None, now)
+}
+
+/// [`propose`], with `detail`, what applying it needs, sealed beside it:
+/// read back by [`detail`].
+///
+/// # Errors
+///
+/// [`Error`] on a backend failure, or a detail past what one sealed entry
+/// holds: then nothing is queued.
+pub fn propose_with(
+    scheduler: &SchedulerConfig,
+    key: &dyn OpensStores,
+    proposal: &Proposal<'_>,
+    detail: Option<&serde_json::Value>,
+    now: Timestamp,
+) -> Result<Proposed, Error> {
     if let Some(why) = refusal(proposal) {
         return Ok(Proposed::Refused(why));
     }
@@ -153,8 +180,10 @@ pub fn propose(
             return Ok(Proposed::Full);
         };
         let id = index.remove(at);
-        if let Ok(name) = entry(&id).parse() {
-            let _ = vault.remove(&name);
+        for gone in [entry(&id), detail_entry(&id)] {
+            if let Ok(name) = gone.parse() {
+                let _ = vault.remove(&name);
+            }
         }
     }
     let id = crate::approval::random_hex("").map_err(|error| Error::ScheduleStore {
@@ -177,10 +206,28 @@ pub fn propose(
     if !serde_json::to_vec(&item).is_ok_and(|bytes| fits(bytes.len())) {
         return Ok(Proposed::Refused("too long to keep, written out"));
     }
+    // The detail first: an item is never listed without it.
+    if let Some(detail) = detail {
+        write_json(&vault, &detail_entry(&id), detail)?;
+    }
     write_json(&vault, &entry(&id), &item)?;
     index.push(id.clone());
     write_json(&vault, INDEX, &index)?;
     Ok(Proposed::Queued(id))
+}
+
+/// What applying item `id` needs, as [`propose_with`] sealed it: none for
+/// an item queued without.
+///
+/// # Errors
+///
+/// [`Error`] on a backend failure, or a detail that doesn't read.
+pub fn detail(
+    scheduler: &SchedulerConfig,
+    key: &dyn OpensStores,
+    id: &str,
+) -> Result<Option<serde_json::Value>, Error> {
+    read_json(&vault(scheduler, key)?, &detail_entry(id))
 }
 
 /// The items, the newest first.
@@ -245,7 +292,15 @@ pub fn handle(config: &Config, key: &dyn OpensStores, op: &ReviewOp) -> ReviewRe
     let done = match op {
         ReviewOp::List => list(&config.scheduler, key).map(|items| ReviewResult::Listed { items }),
         ReviewOp::Decide { item_id, approve } => {
-            decide(&config.scheduler, key, item_id, *approve, Timestamp::now())
+            decide(&config.scheduler, key, item_id, *approve, Timestamp::now()).inspect(|decided| {
+                // A memory is applied as it's decided: kept, or its words
+                // refused from then on (WO-057).
+                if let ReviewResult::Decided { item } = decided {
+                    if item.kind == ReviewKind::Remember {
+                        crate::memory_keep::reviewed(config, key, item);
+                    }
+                }
+            })
         }
     };
     done.unwrap_or_else(|error| {

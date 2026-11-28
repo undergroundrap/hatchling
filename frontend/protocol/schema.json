@@ -7317,6 +7317,11 @@
           "const": "guidance",
           "description": "Install new guidance: what changes how the agent works.",
           "type": "string"
+        },
+        {
+          "const": "remember",
+          "description": "Remember something about the owner (WO-057): asked in a conversation\nthat read from outside, or by a background run, so it's kept only if\nthe owner approves. Approved, the broker keeps it at once.",
+          "type": "string"
         }
       ]
     },
@@ -17449,7 +17454,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 40,
-    "ui_schema_version": 16
+    "ui_schema_version": 17
   },
   "x-roots": {
     "ActivityEvent": {

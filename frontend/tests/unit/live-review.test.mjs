@@ -46,8 +46,11 @@ test('a proposal reads as the page shows it, each kind and state in the page\'s 
         id: 'a', kind: 'Would change a preference, boundary or commitment', change: 'Say they prefer tea.', why: 'They said so twice.',
         date: 'Proposed Nov 26, 2026', state: 'waiting', outcome: '',
     });
-    for (const [kind, says] of [['remove', /remove/], ['identity', /who you are/], ['unresolved', /settle/], ['guidance', /guidance/]])
+    for (const [kind, says] of [['remove', /remove/], ['identity', /who you are/], ['unresolved', /settle/], ['guidance', /guidance/], ['remember', /remember about you/]])
         assert.match(entryOf(item('a', 'waiting', kind)).kind, says);
+    // A memory approved is kept as it's approved (WO-057), not applied later.
+    assert.equal(entryOf(item('a', 'approved', 'remember')).outcome, 'You approved it, so it’s remembered: the agent is given it from now on.');
+    assert.match(entryOf(item('a', 'rejected', 'remember')).outcome, /Nothing changed/);
     assert.match(entryOf(item('a', 'approved')).outcome, /approved it/);
     assert.match(entryOf(item('a', 'rejected')).outcome, /Nothing changed/);
     assert.match(entryOf(item('a', 'stale')).outcome, /won’t be applied/);
@@ -94,6 +97,8 @@ test('with scheduled work off nothing waits; any other answer is said instead of
 test('deciding sends the owner\'s choice and reads the list again, and every answer is said', async () => {
     const { client, live } = surface([review({ result: 'decided', item: item('a', 'approved') }), listed(item('a', 'approved'))]);
     assert.deepEqual(await live.decide('a', true), { ok: true, message: 'Approved. It’s applied the next time that work runs.' });
+    const memory = surface([review({ result: 'decided', item: item('m', 'approved', 'remember') }), listed()]);
+    assert.deepEqual(await memory.live.decide('m', true), { ok: true, message: 'Approved. It’s remembered.' });
     assert.deepEqual(client.sent[0], { action: 'manage_review', op: { op: 'decide', item_id: 'a', approve: true } });
     assert.equal(client.sent.length, 2);
     assert.equal(live.current().entries[0].state, 'approved');
