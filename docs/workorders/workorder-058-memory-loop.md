@@ -117,7 +117,9 @@ No session protocol change: the seat's packet rides in its cell config, as a run
 
 ## Slices
 
-1. **The loop runs, and applies nothing:** the fingerprint, the clock's `memory` loop with activity, the snapshot, the seat's cell config and command, `PromptKind::Memory`, the four claims' schema and check, and the gate record. Each run's claims are counted and logged as "would apply" or "would wait". This proves the runner end to end before anything changes memory.
+1. **The loop runs, and applies nothing,** in two parts:
+   - **1a, what needs no cell:** `PromptKind::Memory` and its adapted section, the four claims' schema and check, the broker's rule for each claim, the fingerprint and the snapshot.
+   - **1b, running it:** the clock's `memory` loop with activity, the seat's cell config and command, launching it, and the gate record. Each run's claims are counted and logged as "would apply", "would wait" or "dropped". This proves the runner end to end before anything changes memory.
 2. **Apply:** each claim's rule above, the queue for what waits, `stale` on a changed target, and the record's `merged`.
 3. **The app:** the report, the labels and the switch (UI v20).
 4. **A real-model trial on the demo,** with the maintainer's yes: seeded duplicates merge, a moved city is corrected or waits, a stale fact is asked about, a page's injected "remember …" is dropped. Then close.
@@ -142,6 +144,8 @@ The usual: fmt, clippy on both toolchains, the whole workspace's tests, the audi
 ## Evidence
 
 Each slice commits its evidence under `docs/evidence/`.
+
+- Slice 1a, the claims and the rule: [wo058-claims.md](../evidence/wo058-claims.md).
 
 ## Notes
 

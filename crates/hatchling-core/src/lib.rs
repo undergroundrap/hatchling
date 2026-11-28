@@ -21,6 +21,7 @@ pub mod conversation;
 pub mod error;
 pub mod framing;
 pub mod log_level;
+pub mod memory_loop;
 pub mod messages;
 pub mod model_reasoning;
 pub mod peer;
