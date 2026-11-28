@@ -1,6 +1,6 @@
 # WO-058: The memory loop
 
-**Status:** QUEUED (the design waits for the maintainer's approval before code)
+**Status:** IN-PROGRESS
 **Area:** `crates/hatchling-broker` (the clock's first loop, the seat launch, apply), `crates/hatchling-core` (the loop's claims, the UI), `crates/hatchling-prompt` (the loop's prompt), `crates/hatchling-memory` (a record's fingerprint), `frontend/` (the Memory page)
 **Issue:** [#782](https://github.com/undergroundrap/hatchling/issues/782)
 **Trust boundary:** yes (the owner's memory changed while nobody is there)
@@ -141,7 +141,7 @@ Each slice commits its evidence under `docs/evidence/`.
 
 ## Notes
 
-- **Decisions for the maintainer** (asked in the design PR):
+- **The maintainer's decisions (2026-11-27): approved as proposed,** with the UI v20 wire shape above:
   1. **Which corrections wait.** As proposed, one of an owner-approved `owner` or `guidance` memory waits. `work`, `pointer`, and anything kept automatically are corrected without asking, from the owner's own quoted words. The owner's own correction in a clean chat is already kept at once (WO-057).
   2. **Keep in the loop at all.** It catches what a small model didn't ask for. It's the most powerful claim, and the one most open to laundering. As proposed, it needs the owner's quoted words from a clean conversation, inside the day's 20.
   3. **The cadence:** an hour after the last chat.
