@@ -109,6 +109,7 @@ pub use ingress::{Ingress, open_ingress};
 pub mod listener;
 pub mod machine;
 pub mod memory_keep;
+pub mod memory_loop;
 pub mod memory_mode;
 pub mod memory_ops;
 pub mod memory_proposal;
