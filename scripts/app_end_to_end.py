@@ -103,17 +103,18 @@ RUNS = "() => [...document.querySelectorAll('#machine-cells-title ~ * td:nth-chi
 
 # True while the chat's working line says the run waits for its model, in
 # the broker's word for that step, with the time since the person asked,
-# and offers Stop (WO-051).
+# and the composer offers Stop in the send button's place (WO-051, #777).
 WAITING_ON_THE_MODEL = """() => {
     const line = document.querySelector('.turn-state');
-    return line !== null && /^Asking the model\\s*·\\s*\\d+ s\\s*Stop$/.test(line.textContent.trim())
-        && line.querySelector('button') !== null;
+    const stop = document.querySelector('.composer .stop-button');
+    return line !== null && /^Asking the model\\s*·\\s*\\d+ s$/.test(line.textContent.trim())
+        && stop !== null && !stop.hidden;
 }"""
 
 
 def check_a_run_comes_and_goes(app, machine):
     """Raise unless, while the app's slow message runs, the chat says the run
-    is waiting for its model and for how long, and offers Stop, and the
+    is waiting for its model and for how long, the composer offers Stop, and the
     Machine view lists a run cell; and once it is answered, the Machine view
     lists none."""
     app.locator("#message-input").fill(SLOW_TASK)
