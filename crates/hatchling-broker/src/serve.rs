@@ -3684,6 +3684,9 @@ mod memory_proposal_tests {
             depth: 0,
             ask: String::new(),
         });
+        // A card is what this records from (WO-057): the owner chose Ask
+        // me, at the broker the run's scope names (#773).
+        crate::memory_mode::set(&config.scheduler.owners(), crate::memory_mode::Mode::Ask).unwrap();
         let key = MasterKey::generate().unwrap();
         let skills = Skills::default();
         let bus = std::sync::Arc::new(crate::api_stream::Bus::starting_at(1));

@@ -354,6 +354,22 @@ impl SchedulerConfig {
     pub fn enabled(&self) -> bool {
         !self.root.as_os_str().is_empty()
     }
+
+    /// The broker's own store, where the owner's choices and Review page
+    /// are kept (WO-057), from the broker's configuration or a run's. A
+    /// run's own scheduling is off, and its follow-up scope names the
+    /// broker's store: without this, a run would read every choice of the
+    /// owner's as never made.
+    #[must_use]
+    pub fn owners(&self) -> Self {
+        match &self.followup {
+            Some(scope) if !self.enabled() => Self {
+                root: scope.root.clone(),
+                ..Self::disabled()
+            },
+            _ => self.clone(),
+        }
+    }
 }
 
 /// Broker-side vault mediation configuration.
@@ -2256,6 +2272,37 @@ fn parse_other_model(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Oth
 
 #[cfg(test)]
 mod tests {
+
+    /// The owner's store (#773): a run's own scheduling is off, and its
+    /// follow-up scope names the broker's; the broker's is its own, scope or
+    /// not; with neither, there's none.
+    #[test]
+    fn the_owners_store_is_the_brokers_from_a_run_or_the_broker() {
+        let scope = |root: &str| FollowupScope {
+            root: PathBuf::from(root),
+            run: String::from("run-1"),
+            grants: Vec::new(),
+            channel: String::from("local"),
+            depth: 0,
+            ask: String::new(),
+        };
+        let mut run = SchedulerConfig::disabled();
+        run.followup = Some(scope("/srv/hatchling/schedules"));
+        assert_eq!(run.owners().root, PathBuf::from("/srv/hatchling/schedules"));
+        assert!(
+            run.owners().followup.is_none(),
+            "only the store, not the run's scope"
+        );
+        let mut broker = SchedulerConfig::disabled();
+        broker.root = PathBuf::from("/srv/hatchling/schedules");
+        assert_eq!(broker.owners().root, broker.root);
+        broker.followup = Some(scope("/elsewhere"));
+        assert_eq!(
+            broker.owners().root,
+            PathBuf::from("/srv/hatchling/schedules")
+        );
+        assert!(!SchedulerConfig::disabled().owners().enabled());
+    }
 
     /// A declared context window is a whole number of tokens, at least
     /// what the agent accepts; undeclared, there's none.

@@ -396,3 +396,88 @@ fn each_memory_waits_alone_and_is_kept_as_it_was_asked() {
     assert_eq!(words, ["They live in Bath."]);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The seam the real-model trial found (2026-11-28): a run's session has the
+/// run's own configuration, built by the launcher, whose scheduling is off.
+/// The owner's choice and Review page are still theirs: a clean chat's
+/// memory is kept at once, one after reading from outside waits on the
+/// broker's Review page, and Ask me, chosen at the broker, is a card.
+#[test]
+fn a_runs_own_configuration_reads_the_owners_mode_and_review_page() {
+    let (config, dir, bus) = broker("run-config");
+    let key = MasterKey::generate().unwrap();
+    let chat = hatchling_scheduler::RunRequest {
+        schedule_id: String::from("chat"),
+        task: String::from("t"),
+        grants: vec![hatchling_core::ScheduleGrant::Memory {
+            scope: String::from("user"),
+            action: String::from("propose"),
+        }],
+        due: hatchling_scheduler::Timestamp::from_second(1_790_000_000).unwrap(),
+        missed: false,
+        channel: String::from("local"),
+        depth: 1,
+        event: None,
+        space: None,
+        feed: None,
+        chat: true,
+        history: Vec::new(),
+        earlier: Vec::new(),
+        records: Vec::new(),
+    };
+    let socket = dir.join("run.sock").to_str().unwrap().parse().unwrap();
+    let run = crate::run_launcher::scoped_config(&config, &chat, RUN, socket);
+    assert!(!run.scheduler.enabled(), "a run's own scheduling is off");
+    // Clean: kept at once, and the once notice keeps the choice where the
+    // broker reads it.
+    assert!(matches!(
+        propose_in(
+            &run,
+            Some(&key),
+            "task-r",
+            &Asked::about_owner("Pepper is a cat."),
+            in_chat(),
+            true
+        ),
+        MemoryResult::Kept { .. }
+    ));
+    assert!(crate::memory_mode::chosen(&config.scheduler));
+    assert!(
+        told(&bus)
+            .iter()
+            .filter(|said| said.contains("now automatic"))
+            .count()
+            == 1,
+        "{:?}",
+        told(&bus)
+    );
+    // After reading from outside: on the broker's Review page, no card.
+    assert_eq!(
+        propose_in(
+            &run,
+            Some(&key),
+            "task-r",
+            &Asked::about_owner("They live in Bath."),
+            in_chat(),
+            false
+        ),
+        MemoryResult::Proposed
+    );
+    assert_eq!(listed(&config, &key).len(), 1);
+    assert!(!carded(&bus), "no card");
+    // Ask me, chosen at the broker: the run asks on a card.
+    crate::memory_mode::set(&config.scheduler, Mode::Ask).unwrap();
+    assert_eq!(
+        propose_in(
+            &run,
+            Some(&key),
+            "task-r",
+            &Asked::about_owner("They cycle to work."),
+            in_chat(),
+            true
+        ),
+        MemoryResult::Proposed
+    );
+    assert!(carded(&bus));
+    let _ = std::fs::remove_dir_all(&dir);
+}
