@@ -281,10 +281,10 @@ function turnButton(ctx: AppContext): HTMLElement | null {
 /** Stop: a rounded square, filled (#777). */
 function stopGlyph(): SVGSVGElement {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '20', height: '20', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-stop-square' }))
+    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '24', height: '24', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-stop-square' }))
         svg.setAttribute(key, value);
     const square = document.createElementNS(svg.namespaceURI, 'rect');
-    for (const [key, value] of Object.entries({ x: '4.5', y: '4.5', width: '15', height: '15', rx: '3.5', fill: 'currentColor' }))
+    for (const [key, value] of Object.entries({ x: '5', y: '5', width: '14', height: '14', rx: '3.5', fill: 'currentColor' }))
         square.setAttribute(key, value);
     svg.append(square);
     return svg;
@@ -292,7 +292,7 @@ function stopGlyph(): SVGSVGElement {
 /** Enter, ↵, drawn as the app's icons are: the key Send stands for (#777). */
 function enterGlyph(): SVGSVGElement {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '20', height: '20', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.65', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-enter' }))
+    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '24', height: '24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.8', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-enter' }))
         svg.setAttribute(key, value);
     for (const d of ['M19 5v7a3 3 0 0 1-3 3H5', 'm9 11-4 4 4 4']) {
         const path = document.createElementNS(svg.namespaceURI, 'path');
