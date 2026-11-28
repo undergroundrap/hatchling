@@ -134,6 +134,8 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Fixed
 
+- **Automatic memory never applied in a real chat** ([#773](https://github.com/undergroundrap/hatchling/issues/773)). A run is served with its own settings, in which scheduling is off, so inside a chat Hatchling read your memory choice as Ask me and couldn't reach your Memory page's waiting list: every memory was a card. It now reads both where the broker keeps them. Found in the WO-057 trial; not in any release.
+
 - **The app asked the broker for the same list several times a second, for as long as it was open** ([#747](https://github.com/undergroundrap/hatchling/issues/747)). Since 0.9.0, every activity event made the app ask again what your standing grants had allowed, and that request was itself kept as activity, so the app asked again, about eight times a second. Each request added a line to the activity log on disk (about 300 MB a day with the app open), filled Activity with "Read what your standing grants allowed", and redrew the page so often that a button could be replaced under your click. Now the app asks again only for what a run did, never for its own requests.
 
 - **What the agent read of its memory was shown as "Wrote to memory"** ([#749](https://github.com/undergroundrap/hatchling/issues/749)). Each run's recall, and the agent's memory search and read, appeared in a chat's "Used:" line and its evidence as writes. They now say "Recalled your memory", so a run that only read is seen to have kept nothing. Not in any release.

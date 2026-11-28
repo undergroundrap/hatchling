@@ -21,7 +21,7 @@ Part of [#767](https://github.com/undergroundrap/hatchling/issues/767), [WO-057]
 
 ## Beyond the approved shape
 
-`remembered` on `chat_message` is a field the approved wire shape didn't list: the Forget link needs the memory's id, and the app renders notices as plain text, so it can't be read from the words. It's optional, set only by the broker on its own notice, and recorded in the WO's notes. It needs the maintainer's yes before this merges.
+`remembered` on `chat_message` is a field the approved wire shape didn't list: the Forget link needs the memory's id, and the app renders notices as plain text, so it can't be read from the words. It's optional, set only by the broker on its own notice, and recorded in the WO's notes. The maintainer said yes to it before this merged.
 
 ## Tests
 

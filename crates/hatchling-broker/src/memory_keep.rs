@@ -172,7 +172,8 @@ pub fn propose_in(
     }
     // Words the owner said no to are never kept or queued without them:
     // the card path below tells the agent so.
-    let automatic = crate::memory_mode::mode(&config.scheduler)
+    // The owner's, whether this is the broker or one of its runs.
+    let automatic = crate::memory_mode::mode(&config.scheduler.owners())
         == crate::memory_mode::Mode::Automatic
         && !board(config).refuses_memory(&proposal);
     if automatic
@@ -283,12 +284,11 @@ fn keep_at_once(
 /// new install or an upgraded one: that memory is automatic now, and where
 /// to change it. Said until the owner's choice is kept, which this keeps.
 fn first_automatic(config: &Config) -> &'static str {
-    if crate::memory_mode::chosen(&config.scheduler) {
+    let owners = config.scheduler.owners();
+    if crate::memory_mode::chosen(&owners) {
         return "";
     }
-    if let Err(error) =
-        crate::memory_mode::set(&config.scheduler, crate::memory_mode::Mode::Automatic)
-    {
+    if let Err(error) = crate::memory_mode::set(&owners, crate::memory_mode::Mode::Automatic) {
         tracing::warn!(%error, "the memory mode wasn't kept: the next memory says it's automatic again");
     }
     " Memory is now automatic: what you tell the agent about yourself is kept at once, unless the conversation read something from outside. Change it in Settings."
@@ -303,7 +303,7 @@ fn wait_for_review(
     proposal: &crate::memory_proposal::Checked,
     from: &ProposedIn,
 ) -> Option<MemoryResult> {
-    let scheduler = &config.scheduler;
+    let scheduler = &config.scheduler.owners();
     // The same words waiting already: asked once.
     let waiting = crate::review_queue::list(scheduler, key).ok()?;
     if waiting.iter().any(|item| {
