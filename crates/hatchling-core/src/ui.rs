@@ -104,7 +104,10 @@ pub use surfaces::{
 /// 17: a memory waiting on the owner's Review (WO-057): the review kind
 /// `remember`, for one asked in a conversation that read from outside or by
 /// a background run.
-pub const UI_SCHEMA_VERSION: u16 = 17;
+/// 18: the owner's say over automatic memory (WO-057): `manage_memory`'s
+/// `mode` and `set_mode`, a kept memory's `kept_by`, and a chat notice's
+/// `remembered`, the memory it says was kept.
+pub const UI_SCHEMA_VERSION: u16 = 18;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -451,6 +454,12 @@ pub struct ChatMessage {
     /// ([`SuggestionOp::Keep`]). Said only of an answer in their chat.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub out_of_steps: bool,
+    /// The memory this notice says the broker kept automatically, by its
+    /// id as [`KeptOp::List`] lists it (v18, WO-057): for the app's link to
+    /// forget it. The broker's word, said only on its own notice. Never
+    /// read from the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remembered: Option<String>,
 }
 
 /// Who wrote a chat message.
@@ -1451,6 +1460,39 @@ pub enum KeptOp {
         /// It, as listed.
         id: String,
     },
+    /// Say whether what the agent asks to remember is kept at once
+    /// (v18, WO-057).
+    Mode,
+    /// Choose it (v18): from the next thing the agent asks to remember.
+    SetMode {
+        /// The choice.
+        mode: MemoryMode,
+    },
+}
+
+/// Whether what the agent asks to remember is kept at once (WO-057): the
+/// owner's choice.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryMode {
+    /// Kept at once from a chat whose conversation read nothing from
+    /// outside, so many a day; asked otherwise.
+    Automatic,
+    /// Every one is asked.
+    Ask,
+}
+
+/// Who kept a memory (v18, WO-057).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum KeptBy {
+    /// The owner approved it.
+    Owner,
+    /// The broker kept it at once, from what the owner said: they didn't
+    /// approve it.
+    Automatic,
 }
 
 /// Where a kept memory came from, as the broker recorded it (WO-048).
@@ -1487,6 +1529,9 @@ pub struct Kept {
     /// Where it came from (v14).
     #[serde(default = "not_recorded")]
     pub from: KeptFrom,
+    /// Who kept it (v18): none for what was kept some other way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kept_by: Option<KeptBy>,
     /// What kind of thing it is: `owner`, `guidance`, `work` or `pointer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
@@ -1532,6 +1577,11 @@ pub enum KeptResult {
     Forgotten,
     /// It's confirmed as still so (v14).
     Confirmed,
+    /// Whether what the agent asks to remember is kept at once, now (v18).
+    Mode {
+        /// The owner's choice.
+        mode: MemoryMode,
+    },
     /// Nothing kept has the id.
     NotFound,
     /// The broker keeps no memory: the operator hasn't given it a place to.
@@ -2863,7 +2913,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 17);
+        assert_eq!(UI_SCHEMA_VERSION, 18);
     }
 
     /// A batch card's items on the wire (WO-055, v15): each memory's fields
@@ -3409,6 +3459,7 @@ mod tests {
                     author: ChatAuthor::Agent,
                     run: None,
                     out_of_steps: false,
+                    remembered: None,
                     text: String::from("<b>hi</b>"),
                 }),
             ),
@@ -4654,6 +4705,7 @@ mod tests {
             kept_at: 10,
             approved: true,
             from: KeptFrom::NotRecorded,
+            kept_by: None,
             kind: None,
             why: None,
             how_to_apply: None,
@@ -4716,6 +4768,52 @@ mod tests {
             let wire = serde_json::to_value(UiActionResult::Memory { outcome }).unwrap();
             assert_eq!(wire.pointer("/outcome/result"), Some(&json!(tag)), "{wire}");
         }
+    }
+
+    /// v18 (WO-057): the owner's say over automatic memory, and who kept
+    /// each memory, on the wire.
+    #[test]
+    fn the_memory_mode_and_who_kept_each_are_on_the_wire() {
+        let older: Kept = serde_json::from_value(
+            json!({"id": "kept-1", "content": "x", "kept_at": 1, "approved": false}),
+        )
+        .unwrap();
+        pinned(
+            &UiAction::ManageMemory { op: KeptOp::Mode },
+            &json!({"action": "manage_memory", "op": {"op": "mode"}}),
+        );
+        pinned(
+            &UiAction::ManageMemory {
+                op: KeptOp::SetMode {
+                    mode: MemoryMode::Ask,
+                },
+            },
+            &json!({"action": "manage_memory", "op": {"op": "set_mode", "mode": "ask"}}),
+        );
+        pinned(
+            &UiActionResult::Memory {
+                outcome: KeptResult::Mode {
+                    mode: MemoryMode::Automatic,
+                },
+            },
+            &json!({"result": "memory", "outcome": {"result": "mode", "mode": "automatic"}}),
+        );
+        for (by, tag) in [(KeptBy::Owner, "owner"), (KeptBy::Automatic, "automatic")] {
+            let kept = Kept {
+                kept_by: Some(by),
+                ..older.clone()
+            };
+            let wire = serde_json::to_value(&kept).unwrap();
+            assert_eq!(wire.get("kept_by"), Some(&json!(tag)), "{wire}");
+            assert_eq!(serde_json::from_value::<Kept>(wire).unwrap(), kept);
+        }
+        assert_eq!(older.kept_by, None);
+        assert!(
+            serde_json::to_value(&older)
+                .unwrap()
+                .get("kept_by")
+                .is_none()
+        );
     }
 
     #[test]
@@ -4817,6 +4915,7 @@ mod tests {
             text: String::from("this far"),
             run: Some(String::from("run-1")),
             out_of_steps,
+            remembered: None,
         };
         pinned(
             &answer(false),
@@ -4833,6 +4932,17 @@ mod tests {
             &json!({"op": "keep", "run": "run-1"}),
         );
         pinned(&SuggestionSource::Chat, &json!({"kind": "chat"}));
+        // v18: the broker's notice of a memory it kept automatically names
+        // it, for the app's link to forget it.
+        pinned(
+            &ChatMessage {
+                author: ChatAuthor::System,
+                run: None,
+                remembered: Some(String::from("user/mem-1")),
+                ..answer(false)
+            },
+            &json!({"chat_id": "local", "message_id": "m1", "author": "system", "text": "this far", "remembered": "user/mem-1"}),
+        );
     }
 
     /// v31: a card kept from a chat carries where its run said it

@@ -8,6 +8,16 @@ import { editIdentity } from '../context/identity.js';
 import { liveUsage } from './usage.js';
 import { liveModel } from './model.js';
 import { liveSetup } from './live-data.js';
+import { memoryModeToggle } from '../memory/memory.js';
+/**
+ * Connected to Hatchling: whether what the agent asks to remember is kept
+ * at once (WO-057), as on the Memory page.
+ */
+function liveMemoryMode(ctx: AppContext, refresh: () => void): HTMLElement {
+    const mode = ctx.memoryDetails?.mode();
+    const choice = memoryModeToggle(ctx, refresh);
+    return h('section', { class: 'general-section' }, h('h3', {}, 'Memory'), choice ?? h('div', { class: 'settings-group' }, h('p', {}, mode === 'off' ? 'Hatchling keeps no memory on this install.' : 'Reading your memory setting…')));
+}
 function usage(label: string, used: number, note: string, suffix = ''): HTMLElement {
     return h('div', { class: 'usage-meter' }, h('div', { class: 'split-row' }, h('span', {}, label), h('span', { class: 'quota-used' }, `${used}% used${suffix}`)), h('p', {}, note), h('meter', { min: 0, max: 100, value: used, 'aria-label': label, title: 'Synthetic sample quota. Not an actual account balance.' }));
 }
@@ -21,7 +31,7 @@ export function generalTab(ctx: AppContext, refresh: () => void): HTMLElement {
     }, { variant: 'link', className: 'upgrade-link' })));
     // Connected to Hatchling, what the model really used, as the broker counted
     // it: never a sample quota shown as though it were the owner's.
-    root.append(...(ctx.state.mode === 'live' ? [liveModel(ctx, refresh), ...liveSetup(ctx), liveUsage(ctx, refresh)] : [account, sampleUsage()]));
+    root.append(...(ctx.state.mode === 'live' ? [liveModel(ctx, refresh), liveMemoryMode(ctx, refresh), ...liveSetup(ctx), liveUsage(ctx, refresh)] : [account, sampleUsage()]));
     const language = h('button', { class: 'settings-group general-language', type: 'button' }, h('span', {}, 'Language'), icon('chevron', 15));
     language.addEventListener('click', () => {
         const choices = selectField('Language', 'language', [{ value: 'English', label: 'English' }], 'English');

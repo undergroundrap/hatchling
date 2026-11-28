@@ -49,6 +49,7 @@ export function entryOf(item: ReviewItem): ReviewEntry {
         date: Number.isNaN(at.getTime()) ? '' : `Proposed ${at.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`,
         state: item.state,
         outcome: item.kind === 'remember' && item.state === 'approved' ? REMEMBERED_OUTCOME : OUTCOMES[item.state],
+        atOnce: item.kind === 'remember',
     };
 }
 export class LiveReview implements ReviewPort {

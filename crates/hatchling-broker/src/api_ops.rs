@@ -886,6 +886,7 @@ impl<'a> Ops<'a> {
                         author: ChatAuthor::User,
                         run: None,
                         out_of_steps: false,
+                        remembered: None,
                         text: text.to_owned(),
                     }),
                 );
@@ -1000,6 +1001,7 @@ impl Ops<'_> {
                 author: ChatAuthor::System,
                 run: None,
                 out_of_steps: false,
+                remembered: None,
                 text: String::from(NEW_CONVERSATION),
             }),
         );
@@ -1077,6 +1079,7 @@ pub fn chat_sink(bus: Arc<Bus>) -> hatchling_channel::Sink {
                 text: reply.text.clone(),
                 run: origin.run.clone(),
                 out_of_steps: origin.out_of_steps,
+                remembered: None,
             }),
         );
         bus.push(

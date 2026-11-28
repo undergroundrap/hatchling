@@ -811,6 +811,18 @@ impl Board {
     /// local channel, whose replies the app shows as the agent's, and which
     /// has no one to deliver to until the owner sends a message.
     pub fn tell_owner(&self, text: &str) {
+        self.tell(text, None);
+    }
+
+    /// [`Self::tell_owner`], of a memory the broker kept automatically
+    /// (WO-057): `remembered`, its id as the owner's list names it, is the
+    /// app's link to forget it.
+    pub fn tell_owner_kept(&self, text: &str, remembered: String) {
+        self.tell(text, Some(remembered));
+    }
+
+    /// Tells the owner `text`, naming the memory it says was kept.
+    fn tell(&self, text: &str, remembered: Option<String>) {
         let Ok(message_id) = crate::approval::random_hex("msg-") else {
             tracing::warn!("an approval's outcome was not told: no entropy for its id");
             return;
@@ -821,6 +833,7 @@ impl Board {
             author: ChatAuthor::System,
             run: None,
             out_of_steps: false,
+            remembered,
             text: text.to_owned(),
         }));
         if !told {

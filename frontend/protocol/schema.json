@@ -2482,6 +2482,13 @@
           "description": "Whether the run that wrote it ran out of steps as it answered,\nby its agent's own exit status: what the owner asked may be\nunfinished, and they may keep it for later\n([`SuggestionOp::Keep`]). Said only of an answer in their chat.",
           "type": "boolean"
         },
+        "remembered": {
+          "description": "The memory this notice says the broker kept automatically, by its\nid as [`KeptOp::List`] lists it (v18, WO-057): for the app's link to\nforget it. The broker's word, said only on its own notice. Never\nread from the text.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "run": {
           "description": "The run that wrote it, by its cell id, when an agent run did: the\nbroker's own word, which the activity record's run summary names\ntoo. Never read from the text.",
           "type": [
@@ -5477,6 +5484,17 @@
           "minimum": 0,
           "type": "integer"
         },
+        "kept_by": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/KeptBy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Who kept it (v18): none for what was kept some other way."
+        },
         "kind": {
           "description": "What kind of thing it is: `owner`, `guidance`, `work` or `pointer`.",
           "type": [
@@ -5506,6 +5524,21 @@
         "approved"
       ],
       "type": "object"
+    },
+    "KeptBy": {
+      "description": "Who kept a memory (v18, WO-057).",
+      "oneOf": [
+        {
+          "const": "owner",
+          "description": "The owner approved it.",
+          "type": "string"
+        },
+        {
+          "const": "automatic",
+          "description": "The broker kept it at once, from what the owner said: they didn't\napprove it.",
+          "type": "string"
+        }
+      ]
     },
     "KeptFrom": {
       "description": "Where a kept memory came from, as the broker recorded it (WO-048).",
@@ -5620,6 +5653,37 @@
             "id"
           ],
           "type": "object"
+        },
+        {
+          "description": "Say whether what the agent asks to remember is kept at once\n(v18, WO-057).",
+          "properties": {
+            "op": {
+              "const": "mode",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Choose it (v18): from the next thing the agent asks to remember.",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/MemoryMode",
+              "description": "The choice."
+            },
+            "op": {
+              "const": "set_mode",
+              "type": "string"
+            }
+          },
+          "required": [
+            "op",
+            "mode"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -5670,6 +5734,24 @@
           },
           "required": [
             "result"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Whether what the agent asks to remember is kept at once, now (v18).",
+          "properties": {
+            "mode": {
+              "$ref": "#/$defs/MemoryMode",
+              "description": "The owner's choice."
+            },
+            "result": {
+              "const": "mode",
+              "type": "string"
+            }
+          },
+          "required": [
+            "result",
+            "mode"
           ],
           "type": "object"
         },
@@ -6048,6 +6130,21 @@
         "value"
       ],
       "type": "object"
+    },
+    "MemoryMode": {
+      "description": "Whether what the agent asks to remember is kept at once (WO-057): the\nowner's choice.",
+      "oneOf": [
+        {
+          "const": "automatic",
+          "description": "Kept at once from a chat whose conversation read nothing from\noutside, so many a day; asked otherwise.",
+          "type": "string"
+        },
+        {
+          "const": "ask",
+          "description": "Every one is asked.",
+          "type": "string"
+        }
+      ]
     },
     "MemoryResult": {
       "description": "The broker's reply to one [`MemoryOp`].\n\nMirrors the request: write ops get [`Stored`](MemoryResult::Stored),\nrecall ops get [`Item`](MemoryResult::Item) or\n[`NotFound`](MemoryResult::NotFound).",
@@ -17454,7 +17551,7 @@
       "frontend_newer": "frontend v{frontend} needs broker ≥ v{frontend}; broker is v{backend} — restart the broker to update"
     },
     "session_protocol": 40,
-    "ui_schema_version": 17
+    "ui_schema_version": 18
   },
   "x-roots": {
     "ActivityEvent": {

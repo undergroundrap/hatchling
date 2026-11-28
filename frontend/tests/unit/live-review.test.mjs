@@ -44,8 +44,10 @@ const surface = answers => {
 test('a proposal reads as the page shows it, each kind and state in the page\'s words', () => {
     assert.deepEqual(entryOf(item('a')), {
         id: 'a', kind: 'Would change a preference, boundary or commitment', change: 'Say they prefer tea.', why: 'They said so twice.',
-        date: 'Proposed Nov 26, 2026', state: 'waiting', outcome: '',
+        date: 'Proposed Nov 26, 2026', state: 'waiting', outcome: '', atOnce: false,
     });
+    // Approving a memory keeps it at once; anything else waits for its work.
+    assert.equal(entryOf(item('a', 'waiting', 'remember')).atOnce, true);
     for (const [kind, says] of [['remove', /remove/], ['identity', /who you are/], ['unresolved', /settle/], ['guidance', /guidance/], ['remember', /remember about you/]])
         assert.match(entryOf(item('a', 'waiting', kind)).kind, says);
     // A memory approved is kept as it's approved (WO-057), not applied later.

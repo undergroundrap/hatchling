@@ -57,7 +57,7 @@ const routeTitles: Readonly<Record<Route, string>> = { chat: 'Chat', search: 'Se
 function isLibraryFilter(value: string): value is LibraryFilter { return ['all', 'documents', 'web', 'images', 'videos', 'audio', 'system', 'trash'].includes(value); }
 /** Composition/controller: UI view state is local; product mutations cross the adapter only. */
 export class App implements AppContext {
-    readonly ui: UiState = { sideChatsOpen: true, connectorChatsOpen: true, fileImports: new Map(), preparingChats: new Set(), navigationWidth: 240, route: 'chat', chatId: 'reference', libraryFilter: 'all', search: '', navSearch: '', draft: '', navOpen: window.innerWidth > 800, pageNavOpen: false, lastMotionRoute: null, contextOpen: window.innerWidth > 1100, contextTab: 'identity', contextScroll: new Map(), recentChatIds: ['reference', 'chat-0', 'main', 'chat-1', 'chat-2', 'chat-3'], libraryLayout: 'grid', librarySort: 'opened', selectionMode: false, selectedArtifacts: new Set<string>(), goalFilter: 'active', goalExamples: false, ideaExamples: false, feedPromptOpen: false, systemSort: 'asc', ideaFilter: 'suggested', memoryFilter: 'profile', scheduleFilter: 'all', showArchived: false, attachmentNames: [], systemFolder: '', systemExpanded: new Set<string>(), systemSelected: '', publicationId: '' };
+    readonly ui: UiState = { sideChatsOpen: true, connectorChatsOpen: true, fileImports: new Map(), preparingChats: new Set(), navigationWidth: 240, route: 'chat', chatId: 'reference', libraryFilter: 'all', search: '', navSearch: '', draft: '', navOpen: window.innerWidth > 800, pageNavOpen: false, lastMotionRoute: null, contextOpen: window.innerWidth > 1100, contextTab: 'identity', contextScroll: new Map(), recentChatIds: ['reference', 'chat-0', 'main', 'chat-1', 'chat-2', 'chat-3'], libraryLayout: 'grid', librarySort: 'opened', selectionMode: false, selectedArtifacts: new Set<string>(), goalFilter: 'active', goalExamples: false, ideaExamples: false, feedPromptOpen: false, systemSort: 'asc', ideaFilter: 'suggested', memoryFilter: 'profile', keptFilter: 'all', scheduleFilter: 'all', showArchived: false, attachmentNames: [], systemFolder: '', systemExpanded: new Set<string>(), systemSelected: '', publicationId: '' };
     readonly delivery: ChatDelivery;
     readonly contentLoading: ContentLoading;
     readonly approvals: ApprovalReview;
@@ -318,6 +318,9 @@ export class App implements AppContext {
         // Background work proposes without the app being told, too.
         if (route === 'memory')
             this.review?.opened();
+        // It says whether memory is automatic: read it as it opens.
+        if (route === 'memory')
+            void this.memoryDetails?.opened();
         if (window.innerWidth <= 800)
             this.ui.navOpen = false;
         else if (route === 'library' || route === 'chat')

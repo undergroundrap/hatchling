@@ -17,6 +17,8 @@ export interface ReviewEntry {
     readonly state: 'waiting' | 'approved' | 'rejected' | 'stale';
     /** Where a decided one stands, in the page's words. */
     readonly outcome: string;
+    /** Whether approving it applies it at once, as a memory to keep does, rather than when its work next runs. */
+    readonly atOnce: boolean;
 }
 /** The list as last read: not yet, couldn't be, or what the broker keeps, the newest first. */
 export type ReviewList = {

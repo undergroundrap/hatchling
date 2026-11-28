@@ -56,6 +56,8 @@ export interface UiState {
     systemSort: 'asc' | 'desc';
     ideaFilter: 'suggested' | 'active' | 'dismissed';
     memoryFilter: 'profile' | 'people' | 'memory' | 'preferences' | 'logs';
+    /** Connected to Hatchling, which kept memories the Memory page shows (WO-057). */
+    keptFilter: 'all' | 'automatic';
     scheduleFilter: 'all' | 'time' | 'hook';
     showArchived: boolean;
     attachmentNames: string[];

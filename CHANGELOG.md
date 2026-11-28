@@ -8,6 +8,13 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Added
 
+- **Your say over automatic memory, in the app** ([WO-057](docs/workorders/workorder-057-automatic-memory.md), slice 3).
+  - Settings and the Memory page have one switch: "Keep what you tell it automatically". Off, the agent asks you first every time, as before.
+  - The chat's "Remembered: …" notice for a memory kept automatically has a "Forget it" choice under it: one press, and the agent isn't given it from your next message on.
+  - The Memory page labels each one "Kept automatically", with its own filter, and approving a memory that waits there says it's kept at once.
+  - The first memory kept automatically says once that memory is automatic now, and where to change it.
+  - UI schema v18: `manage_memory`'s `mode` and `set_mode`, each memory's `kept_by`, and the notice's `remembered`.
+
 - **A memory asked for after reading from outside waits on your Memory page** ([WO-057](docs/workorders/workorder-057-automatic-memory.md), slice 2).
   - With memory automatic, a memory the agent asks for in a conversation that searched the web, read a page or messages, or used its computer or a skill, or one you sent a file into, no longer stops you with a card. It waits on your Memory page, under "Something to remember about you", with why it waits, and the chat says so.
   - So does one a scheduled or background run asks for, without a word in the chat.
@@ -21,7 +28,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
   - At most 20 a day. Past that, they're cards again.
   - Each one's record says it was kept automatically, from which run and chat, and when. Later runs are told it was kept automatically, not approved by you.
   - The agent says it'll remember, not that it asked.
-  - Memory is automatic unless you choose Ask me. The setting, a Forget link on the notice and the Memory page's label come next.
+  - Memory is automatic unless you choose Ask me.
 
 - **The agent says who made Hatchling** ([#764](https://github.com/undergroundrap/hatchling/issues/764)). Asked who it is or who made it, the agent used to say only that it's Hatchling, and a model could fill the rest from its training, naming its own lab. Now it says Hatchling was created by Ocean Bennett, an independent developer, not an AI lab, and that the model it runs on right now is someone else's, named from Hatchling's settings. It names the model's maker only if it can tell.
 

@@ -136,6 +136,12 @@ export function openSettings(ctx: AppContext, initial = 'general'): void {
         pane.scrollTop = scroll;
     };
     refresh();
+    // Whether memory is automatic is read as Settings opens (WO-057), and
+    // General drawn again once it's said.
+    void ctx.memoryDetails?.opened().then(() => {
+        if (ref.element.isConnected && active === 'general' && !detail)
+            refresh();
+    });
     ref.element.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && !detail) {
             event.preventDefault();

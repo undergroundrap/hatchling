@@ -20,10 +20,23 @@ export interface MemoryDetail {
     readonly due: boolean;
     /** The words of the memory it replaced. */
     readonly replaces: string | null;
+    /** Whether Hatchling kept it automatically, from what the owner said, without their approval (WO-057). */
+    readonly automatic: boolean;
 }
+/**
+ * Whether what the agent asks to remember is kept at once, as last read
+ * (WO-057): not yet, kept at once, asked first, or no memory on this install.
+ */
+export type MemoryModeView = 'unread' | 'automatic' | 'ask' | 'off';
 export interface MemoryDetailsPort {
     /** The details of the kept memory `id`, when it's listed. */
     of(id: string): MemoryDetail | undefined;
     /** Say the kept memory `id` is still so. */
     confirm(id: string): Promise<CommandResult>;
+    /** Whether what the agent asks to remember is kept at once. */
+    mode(): MemoryModeView;
+    /** The owner's choice: kept at once, or asked first. Only their own click sets it. */
+    setMode(automatic: boolean): Promise<CommandResult>;
+    /** The owner opened a page that says the mode: read it again, settled once it's read or couldn't be. */
+    opened(): Promise<void>;
 }
