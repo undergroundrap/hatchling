@@ -79,6 +79,9 @@ button[data-tooltip] { position: relative; }
 .composer > .menu > summary { width: 30px; height: 30px; }
 .composer > .menu > summary > svg { width: 20px; height: 20px; }
 .send-button { height: 34px; width: 34px; flex-basis: 34px; background: var(--bubble-user) !important; color: var(--bubble-text) !important; }
+/* Send (↵) and Stop (a square) are glyphs beside the microphone, as plain as it is (#777). */
+.composer .send-button.glyph-only { width: 30px; height: 30px; flex-basis: 30px; background: transparent !important; color: var(--text) !important; }
+.composer .send-button.glyph-only:hover, .composer .send-button.glyph-only:focus-visible { background: var(--surface-control) !important; }
 .composer-caption { font-size: calc(11px * var(--ui-scale, 1)); }
 .jump-to-latest { position: absolute !important; left: 50%; bottom: 87px; transform: translateX(-50%); z-index: 10; background: var(--surface-raised); border: 1px solid var(--border); width: 35px; height: 35px; color: var(--text); box-shadow: 0 3px 12px #00000033; }
 .jump-to-latest > svg { transform: rotate(180deg); width: 17px; }

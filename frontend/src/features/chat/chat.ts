@@ -204,13 +204,13 @@ function renderComposer(ctx: AppContext, readOnly: boolean): HTMLElement {
     const summary = attach.querySelector('summary');
     summary?.replaceChildren(icon('plus', 22));
     // Enter, as the key it stands for (#777).
-    const sendButton = h('button', { class: 'send-button', type: 'submit', 'aria-label': 'Send message' }, enterGlyph());
+    const sendButton = h('button', { class: 'send-button glyph-only', type: 'submit', 'aria-label': 'Send message' }, enterGlyph());
     bindIconMotion(sendButton);
     const microphone = iconButton('mic', 'Voice dictation preview', () => openVoice(ctx, 'dictation'));
     // While the agent works, the send button's place, left of the
     // microphone, holds Stop (#777), until the owner types: then it's Send.
     const working = turnAction(ctx.state.mode, ctx.state.turn) === 'stop';
-    const stopButton = h('button', { class: 'send-button stop-button', type: 'button', 'aria-label': 'Stop', title: 'Stop the agent' }, icon('stop', 16));
+    const stopButton = h('button', { class: 'send-button stop-button glyph-only', type: 'button', 'aria-label': 'Stop', title: 'Stop the agent' }, stopGlyph());
     stopButton.addEventListener('click', () => { void ctx.run({ type: 'turn.interrupt' }); });
     const updateComposer = (): void => {
         const hasContent = input.value.trim().length > 0 || ctx.ui.attachmentNames.length > 0;
@@ -277,6 +277,17 @@ export function turnAction(mode: AppContext['state']['mode'], turn: AppContext['
 /** The status line's own choice: Resume, in the demo, once a run is paused. Stop is the composer's button. */
 function turnButton(ctx: AppContext): HTMLElement | null {
     return turnAction(ctx.state.mode, ctx.state.turn) === 'resume' ? button('Resume', () => { void ctx.run({ type: 'turn.resume' }); }, { variant: 'link' }) : null;
+}
+/** Stop: a rounded square, filled (#777). */
+function stopGlyph(): SVGSVGElement {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    for (const [key, value] of Object.entries({ viewBox: '0 0 24 24', width: '20', height: '20', 'aria-hidden': 'true', focusable: 'false', class: 'glyph glyph-stop-square' }))
+        svg.setAttribute(key, value);
+    const square = document.createElementNS(svg.namespaceURI, 'rect');
+    for (const [key, value] of Object.entries({ x: '4.5', y: '4.5', width: '15', height: '15', rx: '3.5', fill: 'currentColor' }))
+        square.setAttribute(key, value);
+    svg.append(square);
+    return svg;
 }
 /** Enter, ↵, drawn as the app's icons are: the key Send stands for (#777). */
 function enterGlyph(): SVGSVGElement {

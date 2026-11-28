@@ -95,7 +95,7 @@ Each pull request adds its line under **Unreleased**. When a version is cut, tha
 
 ### Changed
 
-- **Stop is a button where Send goes** ([#777](https://github.com/undergroundrap/hatchling/issues/777)). While the agent works, the composer's send button becomes a stop button (a square), left of the microphone, instead of a "Stop" link at the end of the status line. Type something and it's Send again, now an enter sign (↵) for the key it stands for. The microphone comes to the live app with voice dictation (WO-049).
+- **Stop is a button where Send goes** ([#777](https://github.com/undergroundrap/hatchling/issues/777)). While the agent works, the composer's send button becomes a stop button, a plain rounded square left of the microphone, instead of a "Stop" link at the end of the status line. Type something and it's Send again, now an enter sign (↵) for the key it stands for. The microphone comes to the live app with voice dictation (WO-049).
 
 - **Breaking for hatchling-broker:** `approvals::Refusal` gains `NotWaiting`, and `Approvals` gains `propose_items` and `revise` ([WO-055](docs/workorders/workorder-055-several-memories-one-card.md), slice 1). A request waiting for the owner can be revised by its task: a new revision and digest, keeping its scopes, grant and deadline, so a decision on what the owner saw before is refused. A request made of items refuses each item once it's denied. Nothing uses it yet: the memory card that does follows. Not in any release.
 
