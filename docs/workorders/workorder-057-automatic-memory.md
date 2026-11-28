@@ -1,6 +1,6 @@
 # WO-057: Automatic memory, every memory traceable
 
-**Status:** IN-PROGRESS
+**Status:** CLOSED
 **Area:** `crates/hatchling-broker` (memory keep, the run's taint, the review queue), `crates/hatchling-core` (UI and session protocol), `crates/hatchling-agent` (memory_propose), `frontend/` (the Memory page, chat notices, the setting)
 **Issue:** [#767](https://github.com/undergroundrap/hatchling/issues/767)
 **Trust boundary:** yes (what's kept in the owner's memory without their click)
@@ -92,32 +92,33 @@ Session protocol v40:
 
 ## Acceptance criteria
 
-- [ ] In Automatic, a clean chat conversation's proposal is kept at once. The agent is told "kept", the chat says "Remembered: …", and its record says kept automatically, with chat, run and time.
-- [ ] Once any run in a conversation read from outside, that conversation's proposals go to the review queue, through to the end of the conversation, even in turns that used no tools.
-- [ ] A scheduled or background run's proposals go to the review queue.
-- [ ] In Ask me, every proposal is a card, as today.
-- [ ] Past 20 in a day, proposals are cards.
-- [ ] A denied or skipped memory isn't kept automatically, and corrections retire what they replace.
-- [ ] Only the owner sets the mode. The Memory page labels and filters what was kept automatically, and forgets in one click.
-- [ ] Each slice has its evidence record, with hand-breaks of each rule above.
+- [x] In Automatic, a clean chat conversation's proposal is kept at once. The agent is told "kept", the chat says "Remembered: …", and its record says kept automatically, with chat, run and time.
+- [x] Once any run in a conversation read from outside, that conversation's proposals go to the review queue, through to the end of the conversation, even in turns that used no tools.
+- [x] A scheduled or background run's proposals go to the review queue.
+- [x] In Ask me, every proposal is a card, as today.
+- [x] Past 20 in a day, proposals are cards.
+- [x] A denied or skipped memory isn't kept automatically, and corrections retire what they replace.
+- [x] Only the owner sets the mode. The Memory page labels and filters what was kept automatically, and forgets in one click.
+- [x] Each slice has its evidence record, with hand-breaks of each rule above.
 
 ## Gates
 
 All must pass before the WO closes:
 
-- [ ] `bash scripts/check.sh` green on the pinned toolchain **and** 1.85.0.
-- [ ] Real-cell tests ran rather than skipped (`HATCHLING_REQUIRE_CELL=1`).
-- [ ] **Mutation, kill floor 1.0** on each slice's change.
-- [ ] `cd frontend && npm ci && npm run check`.
-- [ ] Wire types regenerated and committed.
-- [ ] Docs updated in the same change.
-- [ ] A real-model trial: a clean conversation keeps at once; one that read a page queues.
+- [x] `bash scripts/check.sh` green on the pinned toolchain **and** 1.85.0.
+- [x] Real-cell tests ran rather than skipped (`HATCHLING_REQUIRE_CELL=1`).
+- [x] **Mutation, kill floor 1.0** on each slice's change.
+- [x] `cd frontend && npm ci && npm run check`.
+- [x] Wire types regenerated and committed.
+- [x] Docs updated in the same change.
+- [x] A real-model trial: a clean conversation keeps at once; one that read a page queues.
 
 ## Evidence
 
 - Slice 1, the conversation's taint, the mode and keeping at once: [wo057-taint.md](../evidence/wo057-taint.md).
 - Slice 2, a memory that waits on the owner's Review: [wo057-routes.md](../evidence/wo057-routes.md).
 - Slice 3, the app: [wo057-app.md](../evidence/wo057-app.md).
+- The real-model trial, and the bug it found ([#773](https://github.com/undergroundrap/hatchling/issues/773)): [wo057-trial.md](../evidence/wo057-trial.md).
 
 ## Notes
 
@@ -148,5 +149,5 @@ Found while designing:
 
 ### Found building slice 3 (2026-11-27)
 
-- **The Forget link needs the memory's id.** The approved shape has no way for the chat to know which memory a notice is about: the UI renders notices as plain text, and matching their words would break when the wording changes. So the notice carries it, `remembered` on the `chat_message` (v18, optional, the listed id), set only by the broker on its own notice. It's a field beyond the approved shape, so it needs the maintainer's yes before slice 3 merges.
+- **The Forget link needs the memory's id.** The approved shape has no way for the chat to know which memory a notice is about: the UI renders notices as plain text, and matching their words would break when the wording changes. So the notice carries it, `remembered` on the `chat_message` (v18, optional, the listed id), set only by the broker on its own notice. It's a field beyond the approved shape: the maintainer said yes to it on 2026-11-27, before slice 3 merged.
 - **Said once, as it happens.** The upgrade's notice ("Memory is now automatic …") comes with the first memory kept automatically, and keeping it writes Automatic as the owner's choice, so it isn't said again. A new install hears it the same way, at the moment it matters.
