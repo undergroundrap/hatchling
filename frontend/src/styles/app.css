@@ -208,10 +208,6 @@ hr { border: 0; border-top: 1px solid var(--border); }
 .secure-card p { font-size: calc(13px * var(--ui-scale, 1)); }
 .channel-banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 9px; font-size: calc(12px * var(--ui-scale, 1)); padding: 9px; border-bottom: 1px solid var(--border); color: var(--muted); }
 .read-only-composer { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 20px; background: var(--surface); border-radius: 25px; color: var(--muted); font-size: calc(13px * var(--ui-scale, 1)); }
-.typing-indicator { display: flex; gap: 5px; padding: 12px 20px; }
-.typing-indicator i { width: 5px; height: 5px; background: var(--muted); border-radius: 50%; animation: breathing 1.4s infinite; }
-.typing-indicator i:nth-child(2) { animation-delay: .16s; }
-.typing-indicator i:nth-child(3) { animation-delay: .32s; }
 @keyframes breathing { 50% { opacity: .3; transform: translateY(-2px); } }
 /* Status, trust and linked evidence */
 .context-panel { flex: 0 0 var(--context-width); width: var(--context-width); border-left: 1px solid var(--border); padding: 14px 24px 22px; overflow-y: auto; background: var(--bg); }

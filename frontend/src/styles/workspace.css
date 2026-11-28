@@ -79,6 +79,23 @@ button[data-tooltip] { position: relative; }
 .composer > .menu > summary { width: 30px; height: 30px; }
 .composer > .menu > summary > svg { width: 20px; height: 20px; }
 .send-button { height: 34px; width: 34px; flex-basis: 34px; background: var(--bubble-user) !important; color: var(--bubble-text) !important; }
+/* While the agent works: a tilted orbit of dots, turning in perspective, around a glowing core. */
+.turn-state .working-mark { --working: #f5b53d; position: relative; display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--working); perspective: 70px; }
+.working-orbit { grid-area: 1 / 1; transform: rotateX(50deg); animation: working-orbit 1.6s linear infinite; filter: drop-shadow(0 0 1.5px var(--working)); }
+.working-orbit circle { opacity: .35; animation: working-dot 1.6s ease-in-out infinite; }
+.working-orbit circle:nth-child(2) { animation-delay: -1.333s; }
+.working-orbit circle:nth-child(3) { animation-delay: -1.067s; }
+.working-orbit circle:nth-child(4) { animation-delay: -.8s; }
+.working-orbit circle:nth-child(5) { animation-delay: -.533s; }
+.working-orbit circle:nth-child(6) { animation-delay: -.267s; }
+.working-core { grid-area: 1 / 1; width: 6px; height: 6px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff6d6, var(--working) 60%, #e07a1f); box-shadow: 0 0 6px 1px color-mix(in srgb, var(--working) 70%, transparent); animation: working-core 1.6s ease-in-out infinite; }
+@keyframes working-orbit { from { transform: rotateX(50deg) rotate(0deg); } to { transform: rotateX(50deg) rotate(360deg); } }
+@keyframes working-dot { 0%, 100% { opacity: .35; } 30% { opacity: 1; } }
+@keyframes working-core { 0%, 100% { transform: scale(.85); } 50% { transform: scale(1.15); } }
+/* And a band of light passes through its words. */
+.working-label { background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 38%, var(--text) 50%, var(--muted) 62%, var(--muted) 100%); background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; animation: working-shimmer 2.2s linear infinite; }
+@keyframes working-shimmer { from { background-position: 100% 0; } to { background-position: 0% 0; } }
+@media (prefers-reduced-motion: reduce) { .working-orbit, .working-orbit circle, .working-core, .working-label { animation: none; } .working-orbit circle { opacity: 1; } .working-label { background: none; color: var(--muted); } }
 /* Send (↵) and Stop (a square) are glyphs beside the microphone, as plain as it is (#777). */
 .composer .send-button.glyph-only { width: 32px; height: 32px; flex-basis: 32px; align-self: center; background: transparent !important; color: var(--text) !important; }
 .composer .send-button.glyph-only:hover, .composer .send-button.glyph-only:focus-visible { background: var(--surface-control) !important; }
