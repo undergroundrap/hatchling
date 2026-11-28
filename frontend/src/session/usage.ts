@@ -85,4 +85,6 @@ export interface UsagePort {
     setLimits(limits: UsageLimits): Promise<CommandResult>;
     /** How full the context was on chat `chatId`'s last answer: none until one is recorded there. */
     context(chatId: string): ContextUse | null;
+    /** The tokens the model has written so far for the run working in chat `chatId`, as the broker counted them (#775): none before its first reply. */
+    written(chatId: string): number | null;
 }

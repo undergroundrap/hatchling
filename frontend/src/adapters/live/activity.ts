@@ -197,7 +197,11 @@ const DOING: Readonly<Record<ToolUse, string>> = {
     room: 'Using its computer',
 };
 /** What a run is doing while it waits for its model's reply. */
-const ASKING_MODEL = 'Asking the model';
+const THINKING = 'Thinking';
+/** What it's doing while the model's server on this machine loads it (#775): two words, as a status says it. */
+function loadingWords(model: string): string {
+    return `Loading ${model}`;
+}
 /** What a run is doing before the broker has said: its first step hasn't started. */
 const WORKING = 'Working on it';
 const COMPACT = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
@@ -266,6 +270,8 @@ interface Task {
     answer: string | null;
     /** The step its run last started, as the broker said: a tool, or its model. */
     step: ToolUse | 'model' | null;
+    /** The model its run waits for while that model's server loads it (#775). */
+    loading: string | null;
 }
 /** The most words a task's name and its summary hold: the activity views' own bounds. */
 const TASK_NAME_WORDS = 8;
@@ -279,6 +285,10 @@ function firstWords(text: string, most: number): string {
 function ownApp(caller: string): boolean {
     return caller === 'ui' || caller.startsWith('ui,');
 }
+/** What a working task's run is doing. */
+function stepWords(task: Task): string {
+    return task.loading !== null ? loadingWords(task.loading) : task.step === null ? WORKING : task.step === 'model' ? THINKING : DOING[task.step];
+}
 function projectTask(task: Task): ActivityThread {
     const done = task.answer !== null;
     const said = task.answer === null ? '' : firstWords(task.answer, TASK_SUMMARY_WORDS);
@@ -291,7 +301,7 @@ function projectTask(task: Task): ActivityThread {
         chatId: 'main',
         name: firstWords(task.ask, TASK_NAME_WORDS),
         subtitle: summary,
-        statusTitle: done ? 'Answered' : task.step === null ? WORKING : task.step === 'model' ? ASKING_MODEL : DOING[task.step],
+        statusTitle: done ? 'Answered' : stepWords(task),
         state: done ? 'completed' : 'running',
         verdict: null,
         summary,
@@ -716,7 +726,7 @@ export class ActivityBook {
         if (message.chat_id !== 'local' || this.#tasks.has(message.message_id))
             return;
         if (message.author === 'user') {
-            this.#waiting.push(this.#begin<Task>(this.#tasks, { kind: 'task', id: message.message_id, startedAt: ts, lastAt: ts, ask: message.text, answer: null, step: null }));
+            this.#waiting.push(this.#begin<Task>(this.#tasks, { kind: 'task', id: message.message_id, startedAt: ts, lastAt: ts, ask: message.text, answer: null, step: null, loading: null }));
             return;
         }
         const asked = this.#waiting.shift();
@@ -741,14 +751,16 @@ export class ActivityBook {
     }
     /**
      * The step the run answering the waiting task just started: a tool, or
-     * none while it waits for its model. With no task waiting it is
-     * nobody's, and changes nothing.
+     * none while it waits for its model; with the model its server is
+     * loading, as the broker said (#775).
+     * With no task waiting it is nobody's, and changes nothing.
      */
-    step(tool: ToolUse | null, ts: string): void {
+    step(tool: ToolUse | null, ts: string, loading: string | null = null): void {
         const [asked] = this.#waiting;
         if (asked === undefined)
             return;
         asked.step = tool ?? 'model';
+        asked.loading = loading;
         asked.lastAt = ts;
     }
     /** Records a new thread under its id, in arrival order. */

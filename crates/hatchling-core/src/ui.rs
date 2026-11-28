@@ -107,7 +107,10 @@ pub use surfaces::{
 /// 18: the owner's say over automatic memory (WO-057): `manage_memory`'s
 /// `mode` and `set_mode`, a kept memory's `kept_by`, and a chat notice's
 /// `remembered`, the memory it says was kept.
-pub const UI_SCHEMA_VERSION: u16 = 18;
+/// 19: what a working chat run has spent and is waiting on (#775): an
+/// `agent_step`'s `tokens`, and `loading`, the model its server is
+/// loading.
+pub const UI_SCHEMA_VERSION: u16 = 19;
 
 /// The incompatibility sentence when the frontend is newer than the
 /// backend. `{frontend}` and `{backend}` are replaced by the versions.
@@ -274,6 +277,16 @@ pub enum UiEventBody {
         /// The tool it is using, named by what the tool does; none while
         /// it waits for its model.
         tool: Option<ToolUse>,
+        /// The tokens the run's model has written so far, as its server
+        /// reported them (v19, #775): told again after each of its replies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<u64>,
+        /// The model the run waits for, while its server on this machine
+        /// is still loading it (v19, #775): its first answer after a
+        /// restart can take a minute or two. The broker's word, from the
+        /// server's own list of what it has loaded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        loading: Option<String>,
     },
     /// The run answering the owner took more of their messages into it
     /// (v24): the oldest `count` of those sent since the one it was
@@ -2913,7 +2926,7 @@ mod tests {
                 &expected,
             );
         }
-        assert_eq!(UI_SCHEMA_VERSION, 18);
+        assert_eq!(UI_SCHEMA_VERSION, 19);
     }
 
     /// A batch card's items on the wire (WO-055, v15): each memory's fields
@@ -4768,6 +4781,34 @@ mod tests {
             let wire = serde_json::to_value(UiActionResult::Memory { outcome }).unwrap();
             assert_eq!(wire.pointer("/outcome/result"), Some(&json!(tag)), "{wire}");
         }
+    }
+
+    /// v19 (#775): a step says what the run has spent, and the model its
+    /// server is loading; a step from before says neither.
+    #[test]
+    fn a_step_says_its_tokens_and_the_model_being_loaded() {
+        pinned(
+            &UiEventBody::AgentStep {
+                tool: None,
+                tokens: Some(2100),
+                loading: Some(s("gemma4:12b")),
+            },
+            &json!({"kind": "agent_step", "tool": null, "tokens": 2100, "loading": "gemma4:12b"}),
+        );
+        let older: UiEventBody =
+            serde_json::from_value(json!({"kind": "agent_step", "tool": null})).unwrap();
+        assert_eq!(
+            older,
+            UiEventBody::AgentStep {
+                tool: None,
+                tokens: None,
+                loading: None,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&older).unwrap(),
+            json!({"kind": "agent_step", "tool": null})
+        );
     }
 
     /// v18 (WO-057): the owner's say over automatic memory, and who kept

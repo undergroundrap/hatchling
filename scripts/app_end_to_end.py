@@ -102,12 +102,13 @@ RUNS = "() => [...document.querySelectorAll('#machine-cells-title ~ * td:nth-chi
 
 
 # True while the chat's working line says the run waits for its model, in
-# the broker's word for that step, with the time since the person asked,
+# the broker's word for that step (Thinking, #775), with the time since the
+# person asked and what the model has written once it has,
 # and the composer offers Stop in the send button's place (WO-051, #777).
 WAITING_ON_THE_MODEL = """() => {
     const line = document.querySelector('.turn-state');
     const stop = document.querySelector('.composer .stop-button');
-    return line !== null && /^Asking the model\\s*·\\s*\\d+ s$/.test(line.textContent.trim())
+    return line !== null && /^Thinking\\s*·\\s*\\d+ s(\\s*·\\s*[\\d.]+K? tokens)?$/.test(line.textContent.trim())
         && stop !== null && !stop.hidden;
 }"""
 

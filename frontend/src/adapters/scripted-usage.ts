@@ -15,6 +15,8 @@ export const SAMPLE_CONTEXT: ContextUse = {
     parts: { system: 3100, tools: 2400, memory: 720, conversation: 2100 },
 };
 const NOTHING_COUNTED = 'The local preview runs no model, so it counts no usage. Connect to Hatchling to see yours.';
+/** What the sample working run has written, in tokens. */
+const SAMPLE_WRITTEN = 2140;
 export class ScriptedUsage implements UsagePort {
     current(): UsageState {
         return { kind: 'failed', detail: NOTHING_COUNTED };
@@ -27,5 +29,9 @@ export class ScriptedUsage implements UsagePort {
     }
     context(_chatId: string): ContextUse | null {
         return SAMPLE_CONTEXT;
+    }
+    /** A sample of what a working run's model has written. */
+    written(_chatId: string): number | null {
+        return SAMPLE_WRITTEN;
     }
 }

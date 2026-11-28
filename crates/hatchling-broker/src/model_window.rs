@@ -57,6 +57,39 @@ impl Loaded {
     }
 }
 
+/// How long a run's model call waits to connect when it asks whether its
+/// model is loaded (#775): it's asked as the call starts, so it must never
+/// hold the call up for long.
+const LOADED_CONNECT: Duration = Duration::from_millis(300);
+
+/// How long it waits for the answer.
+const LOADED_ANSWER: Duration = Duration::from_millis(700);
+
+/// Whether the model's server, at the plain-HTTP `endpoint`, has the model
+/// `name` loaded (#775).
+///
+/// `Some(false)` only when it listed what it has loaded and `name` isn't
+/// there, so its first answer waits for the model to load. `None` when it
+/// can't be told: a server in HTTPS, one that isn't Ollama, or no answer
+/// in time.
+#[must_use]
+pub fn is_loaded(endpoint: &str, name: &str) -> Option<bool> {
+    let (authority, _) = crate::doctor::plain_http(endpoint)?;
+    match crate::doctor::ask_within(authority, LOADED_MODELS, LOADED_CONNECT, LOADED_ANSWER) {
+        Ok(Some(body)) => listed_in(&body, name),
+        Ok(None) | Err(_) => None,
+    }
+}
+
+/// Whether the model `name` (or `name:latest`) is in Ollama's list of
+/// loaded models, `answer`: none when the answer isn't such a list.
+#[must_use]
+pub fn listed_in(answer: &[u8], name: &str) -> Option<bool> {
+    let list: serde_json::Value = serde_json::from_slice(answer).ok()?;
+    list.get("models")?.as_array()?;
+    Some(named_in(&list, name).is_some())
+}
+
 /// What the model's server, at the plain-HTTP `endpoint`, says of the
 /// model `name`, when it's loaded and the server says.
 #[must_use]
@@ -549,6 +582,46 @@ mod tests {
         let refusing = crate::test_port::RefusingPort::new();
         assert_eq!(
             learned(&format!("http://{}/v1", refusing.addr()), "m"),
+            None
+        );
+    }
+
+    /// Whether the model is loaded (#775): said only from a list of loaded
+    /// models, by the model's name or `latest` tag; anything else can't
+    /// tell.
+    #[test]
+    fn a_model_is_loaded_only_when_the_server_lists_it() {
+        assert_eq!(listed_in(br#"{"models":[]}"#, "m"), Some(false));
+        assert_eq!(
+            listed_in(br#"{"models":[{"name":"other"}]}"#, "m"),
+            Some(false)
+        );
+        assert_eq!(
+            listed_in(br#"{"models":[{"model":"m:latest"}]}"#, "m"),
+            Some(true)
+        );
+        for answer in [r#"{"models":{"name":"m"}}"#, r#"{"data":[]}"#, "not json"] {
+            assert_eq!(listed_in(answer.as_bytes(), "m"), None, "{answer}");
+        }
+        let (address, served) = answering(vec![loaded(QWEN)]);
+        assert_eq!(
+            is_loaded(&format!("http://{address}/v1"), "qwen3.5:9b"),
+            Some(true)
+        );
+        served.join().unwrap();
+        let (address, served) = answering(vec![loaded("")]);
+        assert_eq!(
+            is_loaded(&format!("http://{address}/v1"), "qwen3.5:9b"),
+            Some(false)
+        );
+        served.join().unwrap();
+        let (address, served) = answering(vec![String::from("HTTP/1.0 404 Not Found\r\n\r\n")]);
+        assert_eq!(is_loaded(&format!("http://{address}/v1"), "m"), None);
+        served.join().unwrap();
+        assert_eq!(is_loaded("https://api.example/v1", "m"), None);
+        let refusing = crate::test_port::RefusingPort::new();
+        assert_eq!(
+            is_loaded(&format!("http://{}/v1", refusing.addr()), "m"),
             None
         );
     }
